@@ -59,6 +59,9 @@
         },
         "serve": {
           "builder": "@angular/build:dev-server",
+          "options": {
+            "port": 2000
+          },
           "configurations": {
             "production": {
               "buildTarget": "nexus-frontend:build:production"
