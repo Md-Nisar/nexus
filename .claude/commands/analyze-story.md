@@ -1,6 +1,6 @@
 ---
 description: Phase 1 — Requirement analysis on a Jira story. Produces 01-requirements.md.
-argument-hint: <FEATURE-ID>
+argument-hint: <FEATURE_ID>
 ---
 
 Use the **business-analyst** sub-agent to analyze the requirements for `$1`.

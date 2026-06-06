@@ -1,6 +1,6 @@
 ---
 description: Phase 7 — Security audit of the implementation.
-argument-hint: <FEATURE-ID>
+argument-hint: <FEATURE_ID>
 ---
 
 Use the **security-reviewer** sub-agent in **Mode B (Code Audit)** for feature `$1`.

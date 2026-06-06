@@ -150,7 +150,7 @@ Every feature that ships must have a Grafana dashboard row (or panel group) with
 | Active sessions | (if applicable) |
 | Feature-specific KPI | Business metric (e.g., password reset success rate) |
 
-Link from `docs/features/<FEATURE-ID>/monitoring.md`.
+Link from `docs/features/<FEATURE_ID>/monitoring.md`.
 
 ---
 

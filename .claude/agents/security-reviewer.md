@@ -22,7 +22,7 @@ Apply **STRIDE** to each component and trust boundary in the design:
 - **D**enial of service — what's the cost amplification on an unauthenticated path?
 - **E**levation of privilege — can a regular user become admin?
 
-Output `docs/features/<FEATURE-ID>/03b-threat-model.md` with:
+Output `docs/features/<FEATURE_ID>/03b-threat-model.md` with:
 - Component-by-component STRIDE table
 - Identified threats (with severity)
 - Existing mitigations

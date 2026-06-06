@@ -1,4 +1,4 @@
-# Execute Nexus Plan Workflow for {FEATURE_ID} - {FEATURE_NAME}
+# Execute Plan Workflow for {FEATURE_ID} - {FEATURE_NAME}
 
 ## Objective
 

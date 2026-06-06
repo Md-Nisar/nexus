@@ -1,6 +1,6 @@
 ---
 description: Phase 10 — Release readiness artifacts and production-readiness gate.
-argument-hint: <FEATURE-ID>
+argument-hint: <FEATURE_ID>
 ---
 
 Use the **release-manager** sub-agent to produce release artifacts for feature `$1`.

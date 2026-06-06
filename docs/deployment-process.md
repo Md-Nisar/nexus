@@ -53,7 +53,7 @@ Nexus uses `spring.jpa.hibernate.ddl-auto=update`, which applies only **additive
 **For additive changes** (new table, new nullable column, new index):
 - JPA entity change is sufficient.
 - Test in dev and staging before promoting to prod.
-- Include the expected schema change in `docs/features/<FEATURE-ID>/deployment.md`.
+- Include the expected schema change in `docs/features/<FEATURE_ID>/deployment.md`.
 
 **For non-additive changes** (rename, drop, type change, NOT NULL constraint on existing column):
 - `ddl-auto=update` will NOT apply these.
@@ -68,7 +68,7 @@ Nexus uses `spring.jpa.hibernate.ddl-auto=update`, which applies only **additive
 
 ## Feature Flags
 
-All new features ship behind a flag. Flag naming: `feature.nexus-<FEATURE-ID>-<slug>.enabled`.
+All new features ship behind a flag. Flag naming: `feature.nexus-<FEATURE_ID>-<slug>.enabled`.
 
 | Environment | Default | Notes |
 |-------------|---------|-------|
@@ -94,7 +94,7 @@ Pause rollout if error rate or latency degrades beyond the alert thresholds.
 
 ## Deployment Checklist (abbreviated)
 
-For the full artifact, see `docs/features/<FEATURE-ID>/10-release/deployment-checklist.md`.
+For the full artifact, see `docs/features/<FEATURE_ID>/10-release/deployment-checklist.md`.
 
 Before deploy:
 - [ ] All CI stages green on the staging branch
@@ -124,7 +124,7 @@ After:
 
 **DB rollback:** Only possible if the migration was expand-only (new column/table). Additive schema changes survive a code rollback. Destructive rollbacks require DBA involvement and are escalated.
 
-**Feature flag kill switch:** Set `feature.nexus-<FEATURE-ID>.enabled=false` in all environments. This should take effect without a reboot for feature-toggled code paths.
+**Feature flag kill switch:** Set `feature.nexus-<FEATURE_ID>.enabled=false` in all environments. This should take effect without a reboot for feature-toggled code paths.
 
 Target: rollback completed in < 5 minutes.
 

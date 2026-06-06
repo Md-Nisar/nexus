@@ -24,9 +24,9 @@ ADRs live in [`docs/adr/`](./adr/). See [0001-record-architecture-decisions.md](
 
 ## Feature Documentation
 
-Each feature produced by the enterprise workflow creates a folder under `docs/features/<FEATURE-ID>-<FEATURE-NAME>/`.
+Each feature produced by the enterprise workflow creates a folder under `docs/features/<FEATURE_ID>-<FEATURE_NAME>/`.
 
-Artifact naming convention: `{FEATURE-ID}.{artifact}.md` — all files are flat in the feature folder.
+Artifact naming convention: `{FEATURE_ID}.{artifact}.md` — all files are flat in the feature folder.
 
 Example for `US001-tenant-management`:
 
@@ -146,7 +146,7 @@ docs/features/US001-tenant-management/
 
 ## Keeping docs current
 
-- After every feature retro (`/retro {FEATURE-ID}`), update standards if conventions changed.
+- After every feature retro (`/retro {FEATURE_ID}`), update standards if conventions changed.
 - Any change to coding, security, or testing standards requires a PR reviewed by a senior engineer.
 - ADRs are append-only — amend by adding a new ADR that supersedes the old one.
 - The story file (`{ID}.story.md`) is the source of truth and is never modified after Gate 1.

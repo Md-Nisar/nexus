@@ -1,6 +1,6 @@
 ---
 description: Phase 2 — Codebase impact analysis. Produces 02-impact.md.
-argument-hint: <FEATURE-ID>
+argument-hint: <FEATURE_ID>
 ---
 
 Use the **architect** sub-agent in plan mode (read-only) to analyze codebase impact for `$1`.

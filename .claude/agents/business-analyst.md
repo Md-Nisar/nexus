@@ -34,7 +34,7 @@ A Requirement Analysis Document with these sections, in order:
 - Never invent details. If the source is silent, say so under Gaps.
 - Distinguish "the spec says X" from "I infer X" with explicit `[INFERENCE]` tags.
 - If you spot conflicting requirements across docs, surface both quotes and ask which wins.
-- Output as Markdown. Save to `docs/features/<FEATURE-ID>/01-requirements.md`.
+- Output as Markdown. Save to `docs/features/<FEATURE_ID>/01-requirements.md`.
 
 ## Anti-patterns
 

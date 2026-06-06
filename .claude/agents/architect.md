@@ -18,7 +18,7 @@ Design systems. Do not write implementation code. Your output is documents and d
 ## Deliverables
 
 ### For Impact Analysis (Phase 2)
-Save to `docs/features/<FEATURE-ID>/02-impact.md`:
+Save to `docs/features/<FEATURE_ID>/02-impact.md`:
 
 1. Modules affected — with file paths and line ranges where relevant
 2. Database changes — tables, columns, indexes, constraints (note: app uses `ddl-auto=update`, so flag any non-additive change)
@@ -32,7 +32,7 @@ Save to `docs/features/<FEATURE-ID>/02-impact.md`:
 10. Data migration strategy if shape changes
 
 ### For Solution Design (Phase 3)
-Save to `docs/features/<FEATURE-ID>/03-design.md`:
+Save to `docs/features/<FEATURE_ID>/03-design.md`:
 
 1. **Architecture diagram** — mermaid `graph` showing components
 2. **Sequence diagrams** — mermaid `sequenceDiagram` for each key flow

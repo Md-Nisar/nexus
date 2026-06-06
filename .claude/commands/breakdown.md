@@ -1,6 +1,6 @@
 ---
 description: Phase 4 — Task breakdown from approved design.
-argument-hint: <FEATURE-ID>
+argument-hint: <FEATURE_ID>
 ---
 
 Break the approved design for `$1` into implementation tasks.

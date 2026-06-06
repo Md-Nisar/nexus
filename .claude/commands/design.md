@@ -1,6 +1,6 @@
 ---
 description: Phase 3 — Solution design + threat model. Produces 03-design.md and 03b-threat-model.md.
-argument-hint: <FEATURE-ID>
+argument-hint: <FEATURE_ID>
 ---
 
 Phase 3 has two steps. Run them sequentially.

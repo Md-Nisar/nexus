@@ -1,4 +1,4 @@
-# .claude/ — Nexus Enterprise Workflow Configuration
+# .claude/ — Enterprise Workflow Configuration
 
 This directory configures Claude Code for the Nexus project. Everything here is committed (except `settings.local.json`).
 
@@ -18,17 +18,17 @@ This directory configures Claude Code for the Nexus project. Everything here is 
 │   ├── qa-engineer.md
 │   └── release-manager.md
 ├── commands/              # Slash commands — one per workflow phase
-│   ├── analyze-story.md   # /analyze-story <FEATURE-ID>
-│   ├── impact-analysis.md # /impact-analysis <FEATURE-ID>
-│   ├── design.md          # /design <FEATURE-ID>
-│   ├── breakdown.md       # /breakdown <FEATURE-ID>
-│   ├── implement.md       # /implement <FEATURE-ID> <TASK-ID>
-│   ├── review.md          # /review <FEATURE-ID>
-│   ├── security-scan.md   # /security-scan <FEATURE-ID>
-│   ├── test-validate.md   # /test-validate <FEATURE-ID>
-│   ├── docs.md            # /docs <FEATURE-ID>
-│   ├── release-prep.md    # /release-prep <FEATURE-ID>
-│   └── retro.md           # /retro <FEATURE-ID>
+│   ├── analyze-story.md   # /analyze-story <FEATURE_ID>
+│   ├── impact-analysis.md # /impact-analysis <FEATURE_ID>
+│   ├── design.md          # /design <FEATURE_ID>
+│   ├── breakdown.md       # /breakdown <FEATURE_ID>
+│   ├── implement.md       # /implement <FEATURE_ID> <TASK-ID>
+│   ├── review.md          # /review <FEATURE_ID>
+│   ├── security-scan.md   # /security-scan <FEATURE_ID>
+│   ├── test-validate.md   # /test-validate <FEATURE_ID>
+│   ├── docs.md            # /docs <FEATURE_ID>
+│   ├── release-prep.md    # /release-prep <FEATURE_ID>
+│   └── retro.md           # /retro <FEATURE_ID>
 ├── skills/                # Reusable standards docs
 │   ├── spring-boot-standards/SKILL.md
 │   ├── angular-standards/SKILL.md
@@ -66,22 +66,22 @@ claude mcp add github npx -- @modelcontextprotocol/server-github
 Each phase is one slash command. Approval gates between phases.
 
 ```
-/analyze-story JIRA-1234     → Phase 1: requirements
-/impact-analysis JIRA-1234   → Phase 2: codebase impact
-/design JIRA-1234            → Phase 3: TDD + threat model
-/breakdown JIRA-1234         → Phase 4: tasks
-/implement JIRA-1234 T-001   → Phase 5: per task, test-first, plan-mode-first
-/implement JIRA-1234 T-002
+/analyze-story FEATURE_ID     → Phase 1: requirements
+/impact-analysis FEATURE_ID   → Phase 2: codebase impact
+/design FEATURE_ID            → Phase 3: TDD + threat model
+/breakdown FEATURE_ID         → Phase 4: tasks
+/implement FEATURE_ID T-001   → Phase 5: per task, test-first, plan-mode-first
+/implement FEATURE_ID T-002
 ... (repeat per task)
-/review JIRA-1234            → Phase 6: code review (fresh-context sub-agent)
-/security-scan JIRA-1234     → Phase 7: security audit
-/test-validate JIRA-1234     → Phase 8: coverage audit
-/docs JIRA-1234              → Phase 9: documentation
-/release-prep JIRA-1234      → Phase 10: release readiness
-/retro JIRA-1234             → Phase 11: post-deploy retrospective
+/review FEATURE_ID            → Phase 6: code review (fresh-context sub-agent)
+/security-scan FEATURE_ID     → Phase 7: security audit
+/test-validate FEATURE_ID     → Phase 8: coverage audit
+/docs FEATURE_ID              → Phase 9: documentation
+/release-prep FEATURE_ID      → Phase 10: release readiness
+/retro FEATURE_ID             → Phase 11: post-deploy retrospective
 ```
 
-All artifacts land in `docs/features/<FEATURE-ID> or <FEATURE-NAME>/` with naming convention `<JIRA-D>.<TYPE_OF_DOC>.md`.
+All artifacts land in `docs/features/<FEATURE_ID>-<FEATURE_NAME>/` with naming convention `<FEATURE_ID>.<ARTIFACT>.md`.
 
 ## Cost & context tips
 
@@ -92,6 +92,6 @@ All artifacts land in `docs/features/<FEATURE-ID> or <FEATURE-NAME>/` with namin
 
 ## Maintaining this directory
 
-- After every feature, run `/retro <FEATURE-ID>`. If new conventions emerged, update the relevant agent or skill files.
+- After every feature, run `/retro <FEATURE_ID>`. If new conventions emerged, update the relevant agent or skill files.
 - Treat agent and skill files as code: PR them, review them, keep them in sync with reality.
 - If a hook fires too often or not enough, tune it — hooks are leverage; bad hooks are friction.
