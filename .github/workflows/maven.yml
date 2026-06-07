@@ -1,4 +1,4 @@
-name: Java CI with Maven
+name: Maven CI
 
 on:
   push:
@@ -13,6 +13,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: read
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -24,7 +27,7 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      - name: Build and Test with Maven
+      - name: Build, Test and Verify
         working-directory: nexus-backend
         run: mvn -B clean verify
 
@@ -35,7 +38,16 @@ jobs:
           name: test-results
           path: nexus-backend/target/surefire-reports
 
-      - name: Update Dependency Graph
-        uses: advanced-security/maven-dependency-submission-action@571e99aab1055c2e71a1e2309b9691de18d6b7d6
+      - name: Upload JaCoCo Report
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          directory: nexus-backend
+          name: jacoco-report
+          path: nexus-backend/target/site/jacoco
+
+      - name: Upload SpotBugs Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spotbugs-report
+          path: nexus-backend/target
