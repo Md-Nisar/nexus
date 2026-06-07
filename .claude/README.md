@@ -1,6 +1,7 @@
 # .claude/ — Enterprise Workflow Configuration
 
 This directory configures Claude Code for the Nexus project. Everything here is committed (except `settings.local.json`).
+The slash commands under commands/ are the authoritative workflow definition. This README is an orientation guide only.
 
 ## Structure
 

@@ -1,12 +1,12 @@
-# Execute Nexus Action Workflow for {FEATURE_ID} - {FEATURE_NAME}
+# Execute Nexus Action Workflow for US001 - Tenant Management
 
 ## Objective
 
 Implement the approved design, validate it, document it, and prepare it for release.
 
-Feature: {FEATURE_NAME}
-Feature ID: {FEATURE_ID}
-Artifacts location: {FEATURE_OUTPUT_PATH}
+Feature: Tenant Management
+Feature ID: US001
+Artifacts location: docs/features/US001-tenant-management/
 
 ---
 
@@ -14,15 +14,15 @@ Artifacts location: {FEATURE_OUTPUT_PATH}
 
 Before starting, verify every artifact exists and is marked approved:
 
-* `{FEATURE_ID}.business-analysis.md`
-* `{FEATURE_ID}.impact-analysis.md`
-* `{FEATURE_ID}.domain-design.md`
-* `{FEATURE_ID}.solution-architecture.md`
-* `{FEATURE_ID}.security-threat-model.md`
-* `{FEATURE_ID}.api-design.md`
-* `{FEATURE_ID}.database-design.md`
-* `{FEATURE_ID}.frontend-design.md`
-* `{FEATURE_ID}.task-breakdown.md`
+* `US001.business-analysis.md`
+* `US001.impact-analysis.md`
+* `US001.domain-design.md`
+* `US001.solution-architecture.md`
+* `US001.security-threat-model.md`
+* `US001.api-design.md`
+* `US001.database-design.md`
+* `US001.frontend-design.md`
+* `US001.task-breakdown.md`
 
 If any artifact is missing: stop. Do not continue. List which artifacts are missing and instruct the user to run the plan workflow first.
 
@@ -43,15 +43,15 @@ These are non-negotiable standards. Every implementation decision is measured ag
 
 **Agents:** `backend-engineer` (backend tasks), `frontend-engineer` (frontend tasks)
 
-Work through tasks in the order defined in `{FEATURE_ID}.task-breakdown.md`.
+Work through tasks in the order defined in `US001.task-breakdown.md`.
 Implement exactly one task per invocation. Do not slide into the next task.
 
 **Read the relevant design artifact(s) before implementing each task:**
 
-* DB tasks → `{FEATURE_ID}.database-design.md`
-* Backend tasks → `{FEATURE_ID}.domain-design.md`, `{FEATURE_ID}.solution-architecture.md`, `{FEATURE_ID}.api-design.md`
-* Frontend tasks → `{FEATURE_ID}.frontend-design.md`, `{FEATURE_ID}.api-design.md`
-* Security tasks → `{FEATURE_ID}.security-threat-model.md`
+* DB tasks → `US001.database-design.md`
+* Backend tasks → `US001.domain-design.md`, `US001.solution-architecture.md`, `US001.api-design.md`
+* Frontend tasks → `US001.frontend-design.md`, `US001.api-design.md`
+* Security tasks → `US001.security-threat-model.md`
 
 ---
 
@@ -132,8 +132,8 @@ Print to chat:
 The code reviewer did not write this code. This is an independent review.
 
 Before reviewing, read:
-* `{FEATURE_ID}.solution-architecture.md` — does the code match the design?
-* `{FEATURE_ID}.security-threat-model.md` — are all required mitigations present?
+* `US001.solution-architecture.md` — does the code match the design?
+* `US001.security-threat-model.md` — are all required mitigations present?
 * `docs/coding-standards.md`
 
 Determine the diff scope:
@@ -187,7 +187,7 @@ If `CHANGES REQUESTED`: list Blockers and Highs inline so the user can triage im
 
 ---
 
-**Output:** `{FEATURE_ID}.review-report.md`
+**Output:** `US001.review-report.md`
 
 If verdict is `CHANGES REQUESTED`: fix Blocker and High findings, then re-run `/review` before proceeding.
 
@@ -199,7 +199,7 @@ If verdict is `CHANGES REQUESTED`: fix Blocker and High findings, then re-run `/
 
 Prerequisites:
 * `/review` verdict is `APPROVE` or `APPROVE WITH NITS`
-* `{FEATURE_ID}.security-threat-model.md` — cross-reference every required mitigation
+* `US001.security-threat-model.md` — cross-reference every required mitigation
 
 Determine the diff:
 
@@ -211,7 +211,7 @@ Walk every changed file. Apply the full OWASP Top 10 checklist from `docs/securi
 
 ### Cross-Reference Threat Model
 
-For every threat in `{FEATURE_ID}.security-threat-model.md` marked as "required mitigation":
+For every threat in `US001.security-threat-model.md` marked as "required mitigation":
 verify the mitigation is present in code. Flag any that are missing.
 
 ### Detailed Review Areas
@@ -244,7 +244,7 @@ A **Blocker** finding is a release-stopper. Fix and re-run `/security-scan` befo
 
 ---
 
-**Output:** `{FEATURE_ID}.security-review.md`
+**Output:** `US001.security-review.md`
 
 ---
 
@@ -317,7 +317,7 @@ Paste results. **Do not declare done with red tests.**
 ## Output Format
 
 ```
-## Coverage Audit — {FEATURE_ID}
+## Coverage Audit — US001
 
 ### Existing tests (before this phase)
 ### Gaps identified (severity + resolution)
@@ -329,7 +329,7 @@ Paste results. **Do not declare done with red tests.**
 
 ---
 
-**Output:** `{FEATURE_ID}.test-validation.md`
+**Output:** `US001.test-validation.md`
 
 ---
 
@@ -384,7 +384,7 @@ Add entry under `[Unreleased]` with a summary of the feature.
 
 ---
 
-**Output:** `{FEATURE_ID}.implementation-docs.md` (plus any new ADR and CHANGELOG update)
+**Output:** `US001.implementation-docs.md` (plus any new ADR and CHANGELOG update)
 
 ---
 
@@ -393,14 +393,14 @@ Add entry under `[Unreleased]` with a summary of the feature.
 **Agent:** `release-manager`
 
 Prerequisites — all of these must exist with green status:
-* `{FEATURE_ID}.review-report.md` — verdict `APPROVE` or `APPROVE WITH NITS`
-* `{FEATURE_ID}.security-review.md` — verdict `APPROVED` or `APPROVED WITH FOLLOW-UP`, no unresolved Blockers
-* `{FEATURE_ID}.test-validation.md` — all tests passing, coverage targets met
-* `{FEATURE_ID}.implementation-docs.md` — complete
+* `US001.review-report.md` — verdict `APPROVE` or `APPROVE WITH NITS`
+* `US001.security-review.md` — verdict `APPROVED` or `APPROVED WITH FOLLOW-UP`, no unresolved Blockers
+* `US001.test-validation.md` — all tests passing, coverage targets met
+* `US001.implementation-docs.md` — complete
 
 Read `docs/deployment-process.md` before producing checklists.
 
-Produce four sections, all in `{FEATURE_ID}.release-preparation.md`:
+Produce four sections, all in `US001.release-preparation.md`:
 
 ### 1. Deployment Checklist
 
@@ -463,7 +463,7 @@ With explicit reasoning. If `NOT READY`, list blockers and stop. Do not proceed 
 
 ---
 
-**Output:** `{FEATURE_ID}.release-preparation.md`
+**Output:** `US001.release-preparation.md`
 
 ---
 
@@ -475,7 +475,7 @@ No specific agent required.
 
 ## Observability Validation
 
-Walk through the monitoring guide in `{FEATURE_ID}.implementation-docs.md` and confirm:
+Walk through the monitoring guide in `US001.implementation-docs.md` and confirm:
 * All declared metrics are flowing (check `/actuator/prometheus`)
 * All audit events are in the audit log
 * Dashboards render correctly
@@ -488,7 +488,7 @@ Compare against pre-deploy baseline:
 * p95 / p99 latency — overall and feature-specific
 * Throughput
 * Resource utilisation (DB pool, memory, CPU)
-* Feature-specific success metrics from `{FEATURE_ID}.business-analysis.md`
+* Feature-specific success metrics from `US001.business-analysis.md`
 
 Note any deviations and whether they are within acceptable bounds.
 
@@ -517,7 +517,7 @@ List every file updated.
 
 ---
 
-**Output:** `{FEATURE_ID}.retrospective.md`
+**Output:** `US001.retrospective.md`
 
 ---
 
@@ -526,7 +526,7 @@ List every file updated.
 Implementation is not complete until every item is checked:
 
 ```
-[ ] All tasks in {FEATURE_ID}.task-breakdown.md implemented
+[ ] All tasks in US001.task-breakdown.md implemented
 [ ] All tests passing — backend and frontend
 [ ] Coverage targets met for all layers
 [ ] /review verdict: APPROVE or APPROVE WITH NITS (all nits resolved)
@@ -543,12 +543,12 @@ Implementation is not complete until every item is checked:
 
 This workflow produces:
 
-* `{FEATURE_ID}.review-report.md`
-* `{FEATURE_ID}.security-review.md`
-* `{FEATURE_ID}.test-validation.md`
-* `{FEATURE_ID}.implementation-docs.md`
-* `{FEATURE_ID}.release-preparation.md`
-* `{FEATURE_ID}.retrospective.md`
+* `US001.review-report.md`
+* `US001.security-review.md`
+* `US001.test-validation.md`
+* `US001.implementation-docs.md`
+* `US001.release-preparation.md`
+* `US001.retrospective.md`
 
 Plus (if applicable):
 * `docs/adr/NNNN-<title>.md`

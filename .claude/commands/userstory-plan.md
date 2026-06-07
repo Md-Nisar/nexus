@@ -1,4 +1,11 @@
-# Execute Plan Workflow for {FEATURE_ID} - {FEATURE_NAME}
+# Execute Plan Workflow for US001 - Tenant Management
+
+
+### FEATURE_ID: US001
+### FEATURE_NAME: Tenant Management
+### FEATURE_STORY_PATH: docs/features/US001-tenant-management/US001.story.md
+### FEATURE_OUTPUT_PATH: docs/features/US001-tenant-management/
+
 
 ## Objective
 
@@ -9,14 +16,12 @@ No implementation code. No migrations. No frontend development.
 Analysis, design, architecture, and planning only.
 
 Feature Story (source of truth):
-
-{FEATURE_STORY_PATH}
+docs/features/US001-tenant-management/US001.story.md
 
 Output all artifacts under:
+docs/features/US001-tenant-management/
 
-{FEATURE_OUTPUT_PATH}
-
-Naming convention: `{FEATURE_ID}.{artifact}.md`
+Naming convention: `US001.{artifact}.md`
 
 ---
 
@@ -70,7 +75,7 @@ How will we know this feature is working correctly in production?
 
 ---
 
-**Output:** `{FEATURE_ID}.business-analysis.md`
+**Output:** `US001.business-analysis.md`
 
 ---
 
@@ -91,7 +96,7 @@ Present the following to the user and wait for explicit confirmation before proc
 
 **Agent:** `architect`
 
-Prerequisites: `{FEATURE_ID}.business-analysis.md` (approved)
+Prerequisites: `US001.business-analysis.md` (approved)
 
 Read the approved business analysis and explore the full codebase
 (`nexus-backend/`, `nexus-frontend/`, `docs/`). Do not rely on memory — read the actual files.
@@ -129,7 +134,7 @@ Document: technical debt implications, architectural risks, backward-compatibili
 
 ---
 
-**Output:** `{FEATURE_ID}.impact-analysis.md`
+**Output:** `US001.impact-analysis.md`
 
 ---
 
@@ -145,8 +150,8 @@ Do not run all steps simultaneously.
 **Agent:** `architect`
 
 Prerequisites:
-* `{FEATURE_ID}.business-analysis.md` (approved)
-* `{FEATURE_ID}.impact-analysis.md`
+* `US001.business-analysis.md` (approved)
+* `US001.impact-analysis.md`
 
 Read both. Read `.claude/skills/spring-boot-standards/SKILL.md` and `.claude/skills/api-design/SKILL.md`.
 
@@ -167,7 +172,7 @@ Generate:
 * Aggregate design table (aggregate | entities | value objects | invariants)
 * Domain event catalog (event | trigger | consumers | payload)
 
-**Output section:** included in `{FEATURE_ID}.domain-design.md`
+**Output section:** included in `US001.domain-design.md`
 
 ### Solution Architecture
 
@@ -191,9 +196,9 @@ Assess compatibility with future platform capabilities:
 * AI Platform / Analytics / Dashboards / Reports
 * Files / Integrations / Notifications / Billing / Future Modules
 
-Identify future risks and recommendations. Include in `{FEATURE_ID}.solution-architecture.md`.
+Identify future risks and recommendations. Include in `US001.solution-architecture.md`.
 
-**Output:** `{FEATURE_ID}.solution-architecture.md` (including future compatibility review)
+**Output:** `US001.solution-architecture.md` (including future compatibility review)
 
 ### API Design
 
@@ -212,7 +217,7 @@ Design:
 
 Generate OpenAPI-style contracts for every endpoint.
 
-**Output:** `{FEATURE_ID}.api-design.md`
+**Output:** `US001.api-design.md`
 
 ### Database Design
 
@@ -228,7 +233,7 @@ Design:
 
 Generate ERD (mermaid `erDiagram`) and data dictionary table.
 
-**Output:** `{FEATURE_ID}.database-design.md`
+**Output:** `US001.database-design.md`
 
 ---
 
@@ -236,7 +241,7 @@ Generate ERD (mermaid `erDiagram`) and data dictionary table.
 
 **Agent:** `security-reviewer` (Mode A — design threat model)
 
-Prerequisites: `{FEATURE_ID}.solution-architecture.md`, `{FEATURE_ID}.api-design.md` (from Step A)
+Prerequisites: `US001.solution-architecture.md`, `US001.api-design.md` (from Step A)
 
 Apply STRIDE to every component and trust boundary in the design.
 Read `docs/security-guidelines.md` before starting.
@@ -254,7 +259,7 @@ For each threat document:
 
 Flag any threat that requires a design change back to the architect — surface these explicitly.
 
-**Output:** `{FEATURE_ID}.security-threat-model.md`
+**Output:** `US001.security-threat-model.md`
 
 If any threats require design changes, return to Step A for architect to revise before proceeding to Step C.
 
@@ -265,8 +270,8 @@ If any threats require design changes, return to Step A for architect to revise 
 **Agent:** `frontend-engineer`
 
 Prerequisites:
-* `{FEATURE_ID}.api-design.md` (from Step A — API contracts must be settled)
-* `{FEATURE_ID}.security-threat-model.md` (from Step B — no security surprises)
+* `US001.api-design.md` (from Step A — API contracts must be settled)
+* `US001.security-threat-model.md` (from Step B — no security surprises)
 
 Read `.claude/skills/angular-standards/SKILL.md` and the existing `nexus-frontend/` codebase before designing.
 
@@ -307,7 +312,7 @@ Design (standalone components, signals-first):
 * API integration — service method signatures, error transformation to `AppError`
 * TypeScript types — DTO types in `src/app/api/types/`, domain types at service boundary
 
-**Output:** `{FEATURE_ID}.frontend-design.md`
+**Output:** `US001.frontend-design.md`
 
 ---
 
@@ -421,7 +426,7 @@ Provide a total effort estimate and a suggested implementation order for a singl
 
 ---
 
-**Output:** `{FEATURE_ID}.task-breakdown.md`
+**Output:** `US001.task-breakdown.md`
 
 ---
 
@@ -460,14 +465,14 @@ Those phases are executed by the action workflow after explicit approval.
 
 This workflow produces exactly:
 
-* `{FEATURE_ID}.business-analysis.md`
-* `{FEATURE_ID}.impact-analysis.md`
-* `{FEATURE_ID}.domain-design.md`
-* `{FEATURE_ID}.solution-architecture.md`
-* `{FEATURE_ID}.security-threat-model.md`
-* `{FEATURE_ID}.api-design.md`
-* `{FEATURE_ID}.database-design.md`
-* `{FEATURE_ID}.frontend-design.md`
-* `{FEATURE_ID}.task-breakdown.md`
+* `US001.business-analysis.md`
+* `US001.impact-analysis.md`
+* `US001.domain-design.md`
+* `US001.solution-architecture.md`
+* `US001.security-threat-model.md`
+* `US001.api-design.md`
+* `US001.database-design.md`
+* `US001.frontend-design.md`
+* `US001.task-breakdown.md`
 
 Nothing else. No code. No migrations. No implementation.
