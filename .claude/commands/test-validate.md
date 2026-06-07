@@ -1,6 +1,6 @@
 ---
 description: Phase 8 — Test coverage audit and gap-fill.
-argument-hint: <JIRA-ID>
+argument-hint: <FEATURE-ID>
 ---
 
 Use the **qa-engineer** sub-agent to audit and improve test coverage for feature `$1`.

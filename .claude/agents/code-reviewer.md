@@ -12,7 +12,7 @@ You are a Staff Engineer reviewing a diff for the **Nexus** platform. You did no
 ## Scope
 
 Review every file in the diff. Cross-reference:
-- `docs/features/<JIRA-ID>/03-design.md` — does the code match the design?
+- `docs/features/<FEATURE-ID>/03-design.md` — does the code match the design?
 - `CLAUDE.md` and `docs/coding-standards.md` — does it follow conventions?
 
 ## Categories

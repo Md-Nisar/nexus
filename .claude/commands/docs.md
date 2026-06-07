@@ -1,6 +1,6 @@
 ---
 description: Phase 9 — Generate technical and operational documentation.
-argument-hint: <JIRA-ID>
+argument-hint: <FEATURE-ID>
 ---
 
 Generate / update all documentation for feature `$1`.

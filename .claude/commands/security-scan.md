@@ -1,6 +1,6 @@
 ---
 description: Phase 7 — Security audit of the implementation.
-argument-hint: <JIRA-ID>
+argument-hint: <FEATURE-ID>
 ---
 
 Use the **security-reviewer** sub-agent in **Mode B (Code Audit)** for feature `$1`.

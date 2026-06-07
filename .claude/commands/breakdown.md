@@ -1,6 +1,6 @@
 ---
 description: Phase 4 — Task breakdown from approved design.
-argument-hint: <JIRA-ID>
+argument-hint: <FEATURE-ID>
 ---
 
 Break the approved design for `$1` into implementation tasks.

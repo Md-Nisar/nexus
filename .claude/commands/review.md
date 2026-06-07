@@ -1,6 +1,6 @@
 ---
 description: Phase 6 — Code review on the current diff using a fresh-context sub-agent.
-argument-hint: <JIRA-ID>
+argument-hint: <FEATURE-ID>
 ---
 
 Use the **code-reviewer** sub-agent (fresh context — unbiased review) to review the diff for feature `$1`.

@@ -1,6 +1,6 @@
 ---
 description: Phase 11 — Post-deployment validation and retrospective.
-argument-hint: <JIRA-ID>
+argument-hint: <FEATURE-ID>
 ---
 
 Post-deployment phase for feature `$1`. Run 24–48h after the feature has shipped.

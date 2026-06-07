@@ -18,17 +18,17 @@ This directory configures Claude Code for the Nexus project. Everything here is 
 │   ├── qa-engineer.md
 │   └── release-manager.md
 ├── commands/              # Slash commands — one per workflow phase
-│   ├── analyze-story.md   # /analyze-story <JIRA-ID>
-│   ├── impact-analysis.md # /impact-analysis <JIRA-ID>
-│   ├── design.md          # /design <JIRA-ID>
-│   ├── breakdown.md       # /breakdown <JIRA-ID>
-│   ├── implement.md       # /implement <JIRA-ID> <TASK-ID>
-│   ├── review.md          # /review <JIRA-ID>
-│   ├── security-scan.md   # /security-scan <JIRA-ID>
-│   ├── test-validate.md   # /test-validate <JIRA-ID>
-│   ├── docs.md            # /docs <JIRA-ID>
-│   ├── release-prep.md    # /release-prep <JIRA-ID>
-│   └── retro.md           # /retro <JIRA-ID>
+│   ├── analyze-story.md   # /analyze-story <FEATURE-ID>
+│   ├── impact-analysis.md # /impact-analysis <FEATURE-ID>
+│   ├── design.md          # /design <FEATURE-ID>
+│   ├── breakdown.md       # /breakdown <FEATURE-ID>
+│   ├── implement.md       # /implement <FEATURE-ID> <TASK-ID>
+│   ├── review.md          # /review <FEATURE-ID>
+│   ├── security-scan.md   # /security-scan <FEATURE-ID>
+│   ├── test-validate.md   # /test-validate <FEATURE-ID>
+│   ├── docs.md            # /docs <FEATURE-ID>
+│   ├── release-prep.md    # /release-prep <FEATURE-ID>
+│   └── retro.md           # /retro <FEATURE-ID>
 ├── skills/                # Reusable standards docs
 │   ├── spring-boot-standards/SKILL.md
 │   ├── angular-standards/SKILL.md
@@ -81,7 +81,7 @@ Each phase is one slash command. Approval gates between phases.
 /retro JIRA-1234             → Phase 11: post-deploy retrospective
 ```
 
-All artifacts land in `docs/features/<JIRA-ID> or <feature-name>/` with naming convention `<JIRA-D>.<TYPE_OF_DOC>.md`.
+All artifacts land in `docs/features/<FEATURE-ID> or <FEATURE-NAME>/` with naming convention `<JIRA-D>.<TYPE_OF_DOC>.md`.
 
 ## Cost & context tips
 
@@ -92,6 +92,6 @@ All artifacts land in `docs/features/<JIRA-ID> or <feature-name>/` with naming c
 
 ## Maintaining this directory
 
-- After every feature, run `/retro <JIRA-ID>`. If new conventions emerged, update the relevant agent or skill files.
+- After every feature, run `/retro <FEATURE-ID>`. If new conventions emerged, update the relevant agent or skill files.
 - Treat agent and skill files as code: PR them, review them, keep them in sync with reality.
 - If a hook fires too often or not enough, tune it — hooks are leverage; bad hooks are friction.

@@ -1,6 +1,6 @@
 ---
 description: Phase 5 — Implement a single task, test-first, with plan-mode approval.
-argument-hint: <JIRA-ID> <TASK-ID>
+argument-hint: <FEATURE-ID> <TASK-ID>
 ---
 
 Implement exactly one task: **`$2`** for feature **`$1`**.

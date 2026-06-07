@@ -15,7 +15,7 @@ For the feature about to ship, produce the artifacts the deploy team needs to ex
 
 ## Deliverables
 
-Save to `docs/features/<JIRA-ID>/10-release/`:
+Save to `docs/features/<FEATURE-ID>/10-release/`:
 
 ### 1. `deployment-checklist.md`
 Pre-deploy → During deploy → Post-deploy. Concrete steps, with owners.
