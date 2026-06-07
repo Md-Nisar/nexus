@@ -330,6 +330,39 @@ Pull Requests:
 
 ## CI Pipeline Flow
 
+### Frontend CI
+
+```text
+Developer Push
+       │
+       ▼
+Checkout Source
+       │
+       ▼
+Setup Node.js 24
+       │
+       ▼
+NPM Install (npm ci)
+       │
+       ▼
+Angular Production Build
+       │
+       ├── TypeScript Compilation
+       ├── Template Validation
+       ├── Dependency Resolution
+       └── Production Bundle Generation
+       │
+       ▼
+Upload Build Artifact
+       │
+       ▼
+Build Complete
+```
+
+---
+
+### Backend CI
+
 ```text
 Developer Push
        │
@@ -369,6 +402,22 @@ Build Complete
 
 ---
 
+### Quality Gates
+
+| Area                    | Frontend              | Backend                       |
+| ----------------------- | --------------------- | ----------------------------- |
+| Dependency Installation | ✅ npm ci              | ✅ Maven Dependency Resolution |
+| Compilation             | ✅ Angular Build       | ✅ Java Compilation            |
+| Testing                 | ⏳ Planned (Vitest)    | ✅ JUnit / Spring Tests        |
+| Code Coverage           | ⏳ Planned             | ✅ JaCoCo                      |
+| Static Analysis         | ⏳ Planned             | ✅ SpotBugs                    |
+| Style Validation        | ⏳ Planned             | ✅ Checkstyle                  |
+| Artifact Generation     | ✅ Angular Dist Bundle | ✅ Spring Boot JAR             |
+| CI Platform             | ✅ GitHub Actions      | ✅ GitHub Actions              |
+
+
+---
+
 # Future Roadmap
 
 Planned enhancements include:
@@ -390,5 +439,3 @@ Planned enhancements include:
 
 Proprietary - Internal Use Only.
 
-```
-```
