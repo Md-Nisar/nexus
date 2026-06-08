@@ -34,7 +34,7 @@ Output `docs/features/<FEATURE-ID>/03b-threat-model.md` with:
 Walk through every file changed. Check:
 
 1. **Authentication** — token validation, expiry, refresh handling, replay protection
-2. **Authorization** — every endpoint has explicit auth (`@PreAuthorize` or equivalent); object-level checks against IDOR; tenant isolation
+2. **Authorization** — every endpoint has explicit auth (`@PreAuthorize` or equivalent); object-level checks against IDOR; tenant isolation (if auth module exists)
 3. **Input validation** — bean validation on DTOs; size limits; sanitisation for any string rendered downstream
 4. **OWASP Top 10:**
    - A01 Broken Access Control

@@ -111,7 +111,7 @@ Contexts communicate through application-layer interfaces, not direct entity ref
 | Concern | Mechanism | Location |
 |---------|-----------|----------|
 | Authentication | JWT (Bearer) validated by Spring Security filter | `infrastructure/security` |
-| Authorization | `@PreAuthorize` on application services | `application/` |
+| Authorization | `@PreAuthorize` on application services (if auth module exists) | `application/` |
 | Error handling | `@RestControllerAdvice` → standard error shape | `interfaces/rest` |
 | Logging | SLF4J + MDC fields (`traceId`, `userId`) | Throughout — inject logger |
 | Tracing | W3C `traceparent`, propagated via filter | `infrastructure/web` |

@@ -15,12 +15,14 @@
     <groupId>com.example</groupId>
     <artifactId>nexus-backend</artifactId>
     <version>0.0.1-SNAPSHOT</version>
+    <url>https://github.com/Md-Nisar/nexus/tree/main/nexus-backend</url>
 
     <properties>
         <java.version>25</java.version>
 
         <jacoco.version>0.8.13</jacoco.version>
         <checkstyle.plugin.version>3.6.0</checkstyle.plugin.version>
+        <maven-jxr-plugin.version>3.6.0</maven-jxr-plugin.version>
         <spotbugs.plugin.version>4.9.4.1</spotbugs.plugin.version>
     </properties>
 
@@ -66,6 +68,7 @@
     <build>
         <plugins>
 
+            <!-- Packages the application as an executable JAR and provides Spring Boot Maven support -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
@@ -80,6 +83,7 @@
                 </configuration>
             </plugin>
 
+            <!-- Enables Lombok annotation processing during compilation -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
@@ -94,7 +98,7 @@
                 </configuration>
             </plugin>
 
-            <!-- JaCoCo -->
+            <!-- Measures and generates code coverage reports for unit tests -->
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
@@ -117,7 +121,7 @@
                 </executions>
             </plugin>
 
-            <!-- SpotBugs -->
+            <!-- Scans for potential bugs and code quality issues in Java source code -->
             <plugin>
                 <groupId>com.github.spotbugs</groupId>
                 <artifactId>spotbugs-maven-plugin</artifactId>
@@ -134,7 +138,13 @@
                 </executions>
             </plugin>
 
-            <!-- Checkstyle -->
+            <!-- Validates code style compliance against Google's coding standards -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jxr-plugin</artifactId>
+                <version>${maven-jxr-plugin.version}</version>
+            </plugin>
+
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-checkstyle-plugin</artifactId>
@@ -142,7 +152,8 @@
 
                 <configuration>
                     <configLocation>google_checks.xml</configLocation>
-                    <failsOnError>false</failsOnError>
+                    <consoleOutput>true</consoleOutput>
+                    <failsOnError>true</failsOnError>
                 </configuration>
 
                 <executions>
@@ -150,7 +161,7 @@
                         <id>checkstyle</id>
                         <phase>validate</phase>
                         <goals>
-                            <goal>checkstyle</goal>
+                            <goal>check</goal>
                         </goals>
                     </execution>
                 </executions>

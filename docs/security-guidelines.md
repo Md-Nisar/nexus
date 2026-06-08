@@ -34,7 +34,7 @@
 ## Authorization
 
 - **Default deny.** Spring Security config: `anyRequest().authenticated()`. Every endpoint opts in.
-- `@PreAuthorize` on application service methods for role / permission checks.
+- `@PreAuthorize` on application service methods for role / permission checks (if auth module exists).
 - **Object-level authorization (IDOR prevention):** Every resource fetch verifies the requesting user owns or has permission for that specific object. Returning 404 (not 403) for inaccessible resources prevents enumeration.
 - Tenant ID comes from the JWT — never from the request body or path parameters.
 - Admin endpoints require an explicit admin role check, not just authentication.

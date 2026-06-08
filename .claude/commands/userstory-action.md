@@ -30,6 +30,7 @@ Also read:
 * `docs/coding-standards.md`
 * `docs/security-guidelines.md`
 * `docs/testing-standards.md`
+* `docs/observability-standards.md`
 * `.claude/skills/spring-boot-standards/SKILL.md`
 * `.claude/skills/angular-standards/SKILL.md`
 * `.claude/skills/api-design/SKILL.md`

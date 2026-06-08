@@ -116,7 +116,7 @@ class GlobalExceptionHandler {
   ```java
   http.authorizeHttpRequests(auth -> auth.anyRequest().authenticated());
   ```
-- `@PreAuthorize` on service methods that need authorization.
+- `@PreAuthorize` on service methods that need authorization (if auth module exists).
 - Object-level checks for IDOR — never trust the client-provided owner ID.
 - Use `SecureRandom`, never `Math.random`, for any security-sensitive randomness.
 - Bean validation is **not** a security boundary. Always validate again at the service layer for sensitive operations.
