@@ -6,7 +6,7 @@
 - Classes: `UpperCamelCase` — `UserService`, `PasswordResetToken`
 - Methods / variables: `lowerCamelCase` — `findByEmail`, `tokenHash`
 - Constants: `UPPER_SNAKE_CASE`
-- Packages: `lowercase.dots` — `com.nexus.auth.application`
+- Packages: `lowercase.dots` — `com.example.nexus.auth.application`
 - Test classes: `<Subject>Test` — `PasswordResetServiceTest`
 - Test methods: `should_<expected>_when_<condition>` — `should_returnEmpty_when_tokenExpired`
 - Exceptions: name the cause — `TokenExpiredException`, not `PasswordResetException`
@@ -33,14 +33,14 @@
 ## Formatting
 
 ### Java
-- Configured via Spotless in `pom.xml` (Google Java Format style, if configured).
-- Else: 4-space indent, no tabs, 120-char line limit.
+- Style is enforced by **Checkstyle** (`google_checks.xml`) — runs in the `validate` phase of every build and fails on violation.
+- Google Java Format conventions: 2-space continuation indent, no tabs, 100-char lines.
 - Blank line between class members, after every logical section in a method.
-- Run the format-and-lint hook or `./mvnw spotless:apply` before committing.
+- Run `./mvnw checkstyle:check` before committing; the pre-push hook runs it for you.
 
 ### TypeScript
 - Prettier is configured in `package.json`: 100-char line width, single quotes, Angular HTML parser.
-- Run `npm run format` (or Prettier on save in your IDE) — the hook calls it automatically after every write.
+- Run `npm run format` (or Prettier on save in your IDE) — the Claude PostToolUse hook also formats frontend files automatically after every write, and CI runs `npm run format:check`.
 - Do not commit code with Prettier violations. CI enforces this.
 
 ---

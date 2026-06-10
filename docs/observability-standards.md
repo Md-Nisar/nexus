@@ -117,8 +117,10 @@ For HTTP response latency, use buckets: `[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0
 
 ### Spring Actuator
 
-Expose Actuator at a separate port (e.g., 1001) not accessible from the public internet:
-- `/actuator/health` — liveness + readiness
+Only health/info/metrics/prometheus are exposed (`management.endpoints.web.exposure.include`), and
+`SecurityConfig` makes only `health`/`info` public — metrics require auth. In production, restrict the
+management endpoints to the internal network (separate management port or ingress rule):
+- `/actuator/health` — liveness + readiness probes (k8s-ready)
 - `/actuator/metrics` — Micrometer
 - `/actuator/prometheus` — Prometheus scrape endpoint
 
@@ -134,7 +136,10 @@ traceparent: 00-<traceId>-<parentSpanId>-<flags>
 
 - Extract from inbound request in a filter; set in MDC as `traceId`.
 - Forward in all outbound HTTP calls.
-- Return `X-Trace-Id: <traceId>` in responses so clients can correlate errors.
+- The current implementation (`CorrelationIdFilter`) uses the `X-Correlation-Id` header for the
+  browser↔backend hop and echoes it on responses so clients can correlate errors. When a
+  distributed-tracing collector is introduced, adopt full `traceparent` propagation on top of it
+  (the MDC key is already `traceId`).
 
 ---
 

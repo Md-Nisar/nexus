@@ -1,441 +1,57 @@
 # Nexus
 
-## Overview
-
 Nexus is a modern enterprise application platform designed to provide a scalable, maintainable, and secure foundation for business applications.
 
-The project follows a modern full-stack architecture consisting of:
+| Module | Stack | Port |
+|--------|-------|------|
+| [`nexus-backend`](nexus-backend/) | Spring Boot 4 · Java 25 · MySQL · Flyway | 1000 |
+| [`nexus-frontend`](nexus-frontend/) | Angular 21 · TypeScript 5.9 · Vitest · Playwright | 2000 |
 
-* Angular frontend
-* Spring Boot backend
-* Relational database layer
-* Automated CI/CD quality pipeline
-* Enterprise-grade development standards
-
----
-
-# Architecture
-
-```text
-┌─────────────────────┐
-│     Frontend        │
-│      Angular        │
-└──────────┬──────────┘
-           │ REST API
-           ▼
-┌─────────────────────┐
-│      Backend        │
-│    Spring Boot      │
-└──────────┬──────────┘
-           │ JPA
-           ▼
-┌─────────────────────┐
-│      Database       │
-│       MySQL         │
-└─────────────────────┘
-```
-
----
-
-# Technology Stack
-
-| Layer                 | Technology      | Version                |
-| --------------------- | --------------- | ---------------------- |
-| Frontend              | Angular         | Latest                 |
-| Frontend Language     | TypeScript      | Latest                 |
-| Frontend Styling      | SCSS            | Latest                 |
-| Backend               | Spring Boot     | 4.0.6                  |
-| Backend Language      | Java            | 25                     |
-| ORM                   | Spring Data JPA | Managed by Spring Boot |
-| Database              | MySQL           | Runtime Driver         |
-| Test Database         | H2              | Latest                 |
-| Build Tool            | Maven           | Latest                 |
-| CI/CD                 | GitHub Actions  | Latest                 |
-| Code Coverage         | JaCoCo          | 0.8.13                 |
-| Static Analysis       | SpotBugs        | 4.9.4.1                |
-| Style Validation      | Checkstyle      | 3.6.0                  |
-| Boilerplate Reduction | Lombok          | Latest                 |
-
----
-
-# Frontend
-
-## Application
-
-**Project Name**
-
-```text
-nexus-frontend
-```
-
-## Technology
-
-* Angular
-* TypeScript
-* SCSS
-* NPM
-
-## Configuration
-
-| Property         | Value                 |
-| ---------------- | --------------------- |
-| Default Port     | 2000                  |
-| Styling          | SCSS                  |
-| Package Manager  | NPM                   |
-| Source Root      | src                   |
-| Production Build | Enabled               |
-| Source Maps      | Enabled (Development) |
-
-## Frontend Structure
-
-```text
-nexus-frontend/
-├── src/
-├── public/
-├── angular.json
-├── package.json
-└── tsconfig*.json
-```
-
-## Frontend Commands
-
-### Install Dependencies
+## Quickstart
 
 ```bash
-npm install
+# 1. Database
+docker compose up -d            # MySQL 8.4 on :3306 (db: nexus, root/root)
+
+# 2. Backend
+cd nexus-backend
+./mvnw spring-boot:run          # http://localhost:1000  (Swagger: /swagger-ui.html)
+
+# 3. Frontend
+cd nexus-frontend
+npm ci && npm start             # http://localhost:2000
 ```
 
-### Start Development Server
-
-```bash
-npm start
-```
-
-or
-
-```bash
-ng serve
-```
-
-Application URL:
-
-```text
-http://localhost:2000
-```
-
-### Production Build
-
-```bash
-ng build --configuration production
-```
-
----
-
-# Backend
-
-## Application
-
-**Project Name**
-
-```text
-nexus-backend
-```
-
-## Technology
-
-* Spring Boot 4.0.6
-* Java 25
-* Spring Data JPA
-* Hibernate
-* Maven
-* Lombok
-
-## Backend Structure
-
-```text
-nexus-backend/
-├── src/
-│   ├── main/
-│   └── test/
-├── pom.xml
-└── mvnw
-```
-
-## Backend Commands
-
-### Build
-
-```bash
-mvn clean package
-```
-
-### Run Tests
-
-```bash
-mvn test
-```
-
-### Verify Build
-
-```bash
-mvn clean verify
-```
-
-### Run Application
-
-```bash
-mvn spring-boot:run
-```
-
----
-
-# Database
-
-## Primary Database
-
-### MySQL
-
-Used for:
-
-* Application data
-* Transactional workloads
-* Production environments
-
-### Connectivity
-
-Configured through Spring Boot datasource configuration.
-
-Example:
-
-```yaml
-spring:
-  datasource:
-    url: jdbc:mysql://localhost:3306/nexus
-    username: nexus
-    password: password
-```
-
----
-
-## Test Database
-
-### H2
-
-Used for:
-
-* Unit tests
-* Integration tests
-* CI/CD pipelines
-
-Benefits:
-
-* Fast startup
-* In-memory execution
-* No external infrastructure dependency
-
----
-
-# Quality Engineering
-
-## Automated Testing
-
-The project includes:
-
-* Unit Tests
-* Spring Context Tests
-* Repository Tests
-* Integration Tests
-
----
-
-## Code Coverage
-
-### JaCoCo
-
-Provides:
-
-* Line Coverage
-* Branch Coverage
-* Method Coverage
-
-Generated during:
-
-```bash
-mvn verify
-```
-
-Report Location:
-
-```text
-target/site/jacoco
-```
-
----
-
-## Static Code Analysis
-
-### SpotBugs
-
-Detects:
-
-* Potential bugs
-* Null pointer risks
-* Resource leaks
-* Bad coding practices
-
-Executed during:
-
-```bash
-mvn verify
-```
-
----
-
-## Code Style Validation
-
-### Checkstyle
-
-Based on:
-
-```text
-Google Java Style Guide
-```
-
-Provides:
-
-* Consistent formatting
-* Naming convention validation
-* Code style enforcement
-
----
-
-# DevOps
-
-## Continuous Integration
-
-GitHub Actions is used to automate validation and quality checks.
-
-### Trigger Conditions
-
-```text
-Push:
-  - main
-  - feature/**
-
-Pull Requests:
-  - main
-```
-
----
-
-## CI Pipeline Flow
-
-### Frontend CI
-
-```text
-Developer Push
-       │
-       ▼
-Checkout Source
-       │
-       ▼
-Setup Node.js 24
-       │
-       ▼
-NPM Install (npm ci)
-       │
-       ▼
-Angular Production Build
-       │
-       ├── TypeScript Compilation
-       ├── Template Validation
-       ├── Dependency Resolution
-       └── Production Bundle Generation
-       │
-       ▼
-Upload Build Artifact
-       │
-       ▼
-Build Complete
-```
-
----
-
-### Backend CI
-
-```text
-Developer Push
-       │
-       ▼
-Checkout Source
-       │
-       ▼
-Setup JDK 25
-       │
-       ▼
-Maven Clean Verify
-       │
-       ├── Compile
-       │
-       ├── Execute Tests
-       │
-       ├── H2 Test Database
-       │
-       ├── Checkstyle
-       │
-       ├── SpotBugs
-       │
-       ├── JaCoCo Coverage
-       │
-       └── Package Application
-       │
-       ▼
-Upload Reports
-       │
-       ├── Test Results
-       ├── JaCoCo Report
-       └── SpotBugs Report
-       │
-       ▼
-Build Complete
-```
-
----
-
-### Quality Gates
-
-| Area                    | Frontend              | Backend                       |
-| ----------------------- | --------------------- | ----------------------------- |
-| Dependency Installation | ✅ npm ci              | ✅ Maven Dependency Resolution |
-| Compilation             | ✅ Angular Build       | ✅ Java Compilation            |
-| Testing                 | ⏳ Planned (Vitest)    | ✅ JUnit / Spring Tests        |
-| Code Coverage           | ⏳ Planned             | ✅ JaCoCo                      |
-| Static Analysis         | ⏳ Planned             | ✅ SpotBugs                    |
-| Style Validation        | ⏳ Planned             | ✅ Checkstyle                  |
-| Artifact Generation     | ✅ Angular Dist Bundle | ✅ Spring Boot JAR             |
-| CI Platform             | ✅ GitHub Actions      | ✅ GitHub Actions              |
-
-
----
-
-# Future Roadmap
-
-Planned enhancements include:
-
-* CodeQL Security Analysis
-* OWASP Dependency Check
-* SonarQube Integration
-* Containerization
-* Kubernetes Deployment
-* Infrastructure as Code
-* Automated Release Pipelines
-* Security Scanning
-* Performance Testing
-* Multi-Tenant Architecture
-
----
-
-# License
-
-Proprietary - Internal Use Only.
-
+Full containerized stack: `docker compose --profile full up -d`.
+
+> **Building a feature?** Start with `/new-feature <FEATURE-ID>` in Claude Code — the mandatory operating model (discovery → design gates → test-first build → reviews) is in [DEVELOPMENT_GUIDE.md → The Operating Model](DEVELOPMENT_GUIDE.md).
+
+## Everyday commands
+
+| Task | Backend (`nexus-backend/`) | Frontend (`nexus-frontend/`) |
+|------|---------------------------|------------------------------|
+| Run | `./mvnw spring-boot:run` | `npm start` |
+| Unit tests | `./mvnw test` | `npm test` |
+| Full verify | `./mvnw verify` (needs Docker) | `npm run test:ci` |
+| Lint / style | `./mvnw checkstyle:check` | `npm run lint` · `npm run format:check` |
+| Extra analysis | `./mvnw verify -Pquality` | — |
+| E2E | — | `npm run e2e` |
+
+## Documentation
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) — system design, layering, conventions
+- [DEVELOPMENT_GUIDE.md](DEVELOPMENT_GUIDE.md) — setup, profiles, tooling, **the operating model**, gate enforcement
+- [TESTING.md](TESTING.md) — test strategy and coverage requirements
+- [SECURITY.md](SECURITY.md) — security baseline and roadmap
+- [CONTRIBUTING.md](CONTRIBUTING.md) — branching, commits, PRs
+- [docs/adr/](docs/adr/) — architecture decision records
+- [docs/coding-standards.md](docs/coding-standards.md) — naming, formatting, forbidden patterns
+
+## CI
+
+- **Backend CI** (`maven.yml`) — build, Checkstyle, unit + integration tests (Testcontainers), per-layer JaCoCo coverage gates (see [TESTING.md](TESTING.md)), SpotBugs, ArchUnit; optional SonarQube job
+- **Frontend CI** (`node.yml`) — format check, ESLint, Vitest with coverage, production build, Playwright E2E
+- **PR Title** (`commit-lint.yml`) — Conventional Commit title check
+- **Security Scan** (`security.yml`, weekly) — OWASP Dependency-Check, npm audit, Trivy (vulns + secrets)
+
+Merges to `main` additionally require ≥1 code-owner approval and green required checks — `scripts/setup-branch-protection.sh` (run once by a repo admin).
