@@ -14,6 +14,9 @@ jobs:
     name: backend-build
     runs-on: ubuntu-latest
 
+    env:
+      NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+
     permissions:
       contents: read
 
