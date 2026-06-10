@@ -1,0 +1,11 @@
+# Local development overrides
+spring:
+  jpa:
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: false
+
+logging:
+  level:
+    com.example.nexus: DEBUG

@@ -1,0 +1,51 @@
+#!/usr/bin/env node
+// Pre-push gate for human developers (Claude sessions are gated separately by
+// .claude hooks). Cross-platform: git runs this file through its bundled sh on all
+// platforms (incl. Git for Windows), which honors the node shebang. Runs the fast
+// local gates that CI will otherwise reject. Enable once with:
+//   git config core.hooksPath .githooks
+//
+// Bypass in a genuine emergency with:  git push --no-verify  (use sparingly).
+
+import { spawnSync } from 'node:child_process';
+import { resolve } from 'node:path';
+
+const isWin = process.platform === 'win32';
+
+// Maven wrapper lives in cwd, not on PATH → resolve to an absolute path; npm is on PATH.
+const mvnw = (cwd) => resolve(cwd, isWin ? 'mvnw.cmd' : 'mvnw');
+const npm = isWin ? 'npm.cmd' : 'npm';
+
+function changed() {
+  const r = spawnSync('git', ['diff', '--name-only', '@{push}..HEAD'], { encoding: 'utf8' });
+  // Fallback for first push of a branch (no upstream): diff against origin/main.
+  const out = r.status === 0 && r.stdout
+    ? r.stdout
+    : spawnSync('git', ['diff', '--name-only', 'origin/main...HEAD'], { encoding: 'utf8' }).stdout || '';
+  return out.split('\n').filter(Boolean);
+}
+
+function run(label, cmd, args, cwd) {
+  process.stdout.write(`\n• ${label}...\n`);
+  const r = spawnSync(cmd, args, { cwd, stdio: 'inherit', shell: isWin });
+  if ((r.status ?? 1) !== 0) {
+    process.stderr.write(`\n✗ pre-push failed at: ${label}\n`);
+    process.exit(1);
+  }
+}
+
+const files = changed();
+const be = files.some((f) => f.startsWith('nexus-backend/src/'));
+const fe = files.some((f) => f.startsWith('nexus-frontend/src/'));
+
+if (fe) {
+  run('frontend format check', npm, ['run', 'format:check'], 'nexus-frontend');
+  run('frontend lint', npm, ['run', 'lint'], 'nexus-frontend');
+  run('frontend unit tests', npm, ['test', '--', '--no-watch'], 'nexus-frontend');
+}
+if (be) {
+  run('backend tests + quality gates', mvnw('nexus-backend'), ['-q', 'verify', '-DskipITs'], 'nexus-backend');
+}
+if (!be && !fe) process.stdout.write('pre-push: no source changes — skipping.\n');
+
+process.stdout.write('\n✓ pre-push gates passed.\n');

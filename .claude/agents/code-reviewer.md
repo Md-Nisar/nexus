@@ -46,6 +46,7 @@ End with a **Summary** section: count of findings by severity, and a verdict —
 
 ## Rules
 
+- **Read-only.** Never modify, stage, or commit code — Bash is for running tests/diff tools only. Findings go in the report; fixes belong to the engineer agents.
 - Be specific. "This could be better" is not a review comment.
 - Suggest fixes. Don't just point.
 - Don't nitpick formatting — Prettier and the format hook handle that.

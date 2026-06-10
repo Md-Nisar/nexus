@@ -3,15 +3,19 @@
   "permissions": {
     "allow": [
       "Bash(./mvnw test:*)",
-      "Bash(./mvnw clean *:*)",
+      "Bash(./mvnw clean:*)",
+      "Bash(./mvnw verify:*)",
       "Bash(./mvnw spring-boot:run)",
       "Bash(./mvnw dependency:*)",
-      "Bash(mvnw.cmd *:*)",
+      "Bash(./mvnw checkstyle:*)",
+      "Bash(mvnw.cmd:*)",
       "Bash(npm test:*)",
-      "Bash(npm run *:*)",
-      "Bash(npm start)",
+      "Bash(npm run:*)",
       "Bash(npm ci)",
       "Bash(npm install:*)",
+      "Bash(npx prettier:*)",
+      "Bash(npx playwright:*)",
+      "Bash(node .claude/hooks/:*)",
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)",
@@ -19,28 +23,27 @@
       "Bash(git add:*)",
       "Bash(git commit:*)",
       "Bash(git stash:*)",
-      "Bash(mysql -u root *:*)",
       "Read(**)",
       "Edit(nexus-backend/**)",
       "Edit(nexus-frontend/**)",
       "Edit(docs/**)",
+      "Edit(.claude/**)",
+      "Edit(.github/**)",
       "Write(nexus-backend/**)",
       "Write(nexus-frontend/**)",
       "Write(docs/**)",
-      "Write(.claude/**)"
+      "Write(.claude/**)",
+      "Write(.github/**)"
     ],
     "deny": [
       "Bash(git push:*)",
-      "Bash(git push --force:*)",
       "Bash(git reset --hard:*)",
       "Bash(rm -rf:*)",
       "Bash(sudo:*)",
-      "Bash(curl * | sh)",
-      "Bash(curl * | bash)",
-      "Bash(wget * | sh)",
       "Read(./.env)",
       "Read(./.env.*)",
       "Read(./**/application-prod.yml)",
+      "Read(./**/application-prod.yaml)",
       "Read(./**/application-prod.properties)",
       "Read(./**/*.pem)",
       "Read(./**/*.key)",
@@ -48,49 +51,31 @@
       "Read(~/.ssh/**)",
       "Read(~/.aws/**)",
       "Edit(./.env*)",
-      "Edit(./**/application-prod.*)"
+      "Edit(./**/application-prod.*)",
+      "Write(./.env*)",
+      "Write(./**/application-prod.*)"
     ]
   },
   "hooks": {
     "PreToolUse": [
       {
         "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": ".claude/hooks/block-prod-commands.sh"
-          }
-        ]
+        "hooks": [{ "type": "command", "command": "node .claude/hooks/block-prod-commands.mjs" }]
       },
       {
         "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": ".claude/hooks/secret-scan.sh"
-          }
-        ]
+        "hooks": [{ "type": "command", "command": "node .claude/hooks/secret-scan.mjs" }]
       }
     ],
     "PostToolUse": [
       {
         "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": ".claude/hooks/format-and-lint.sh"
-          }
-        ]
+        "hooks": [{ "type": "command", "command": "node .claude/hooks/format.mjs" }]
       }
     ],
     "Stop": [
       {
-        "hooks": [
-          {
-            "type": "command",
-            "command": ".claude/hooks/run-tests.sh"
-          }
-        ]
+        "hooks": [{ "type": "command", "command": "node .claude/hooks/run-tests.mjs" }]
       }
     ]
   },

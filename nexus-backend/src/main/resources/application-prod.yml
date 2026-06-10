@@ -1,0 +1,29 @@
+# Production overrides — all credentials MUST come from the environment (no defaults).
+# Kept here because application-prod.* files are write-protected for agents (see .claude/settings.json).
+spring:
+  config:
+    activate:
+      on-profile: prod
+
+  datasource:
+    url: ${DB_URL}
+    username: ${DB_USERNAME}
+    password: ${DB_PASSWORD}
+
+# JSON structured logging (Elastic Common Schema) for log aggregation
+logging:
+  structured:
+    format:
+      console: ecs
+
+# No API documentation exposure in production
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
+
+management:
+  endpoint:
+    health:
+      show-details: never

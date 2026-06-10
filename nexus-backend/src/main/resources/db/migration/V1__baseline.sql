@@ -1,0 +1,7 @@
+-- Baseline migration: establishes Flyway version history.
+-- Schema conventions (see docs/coding-standards.md → Database):
+--   Tables:       snake_case, plural          (users, password_reset_tokens)
+--   Columns:      snake_case                  (created_at, token_hash)
+--   Indexes:      idx_<table>_<columns>       (idx_users_email)
+--   Foreign keys: fk_<from_table>_<to_table>  (fk_orders_users)
+--   Migrations:   V<N>__<snake_case_description>.sql — append-only, never edit an applied migration

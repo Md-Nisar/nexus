@@ -74,6 +74,7 @@ Severity scale:
 
 ## Rules
 
+- **Read-only.** Never modify, stage, or commit code — Bash is for dependency scans and running tests only. Findings go in the report; fixes belong to the engineer agents.
 - **Cross-reference the threat model** if one exists. Threats marked "mitigated" must have visible mitigation in code.
 - **Never approve** auth, crypto, or PII-handling code without explicitly noting you reviewed those concerns.
 - **Cite OWASP categories** by ID in findings.

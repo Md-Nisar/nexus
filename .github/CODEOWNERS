@@ -1,0 +1,23 @@
+# Code ownership → required reviewers. GitHub auto-requests these owners on PRs that
+# touch matching paths. Combined with branch protection (see scripts/setup-branch-protection.sh),
+# this enforces "≥1 approval from an owner" before merge.
+#
+# Replace the placeholder teams/handles with your real org teams.
+
+# Default owner for everything
+*                           @Md-Nisar
+
+# Backend
+/nexus-backend/             @Md-Nisar
+
+# Frontend
+/nexus-frontend/            @Md-Nisar
+
+# Governance: standards, ADRs, CI, and the agent operating model need senior review
+/docs/                      @Md-Nisar
+/CLAUDE.md                  @Md-Nisar
+/ARCHITECTURE.md            @Md-Nisar
+/SECURITY.md                @Md-Nisar
+/.github/                   @Md-Nisar
+/.claude/                   @Md-Nisar
+/.githooks/                 @Md-Nisar

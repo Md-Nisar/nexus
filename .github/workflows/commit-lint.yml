@@ -1,0 +1,31 @@
+name: PR Title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pr-title:
+    name: pr-title
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate Conventional Commit title
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = context.payload.pull_request.title;
+            // type(optional-scope)(optional !): summary  — types from CONTRIBUTING.md
+            const re = /^(feat|fix|docs|test|refactor|chore|perf|security|build|ci)(\([a-z0-9\-]+\))?!?: .{1,}/;
+            if (!re.test(title)) {
+              core.setFailed(
+                `PR title is not a Conventional Commit:\n  "${title}"\n` +
+                `Expected: <type>(<scope>): <summary>\n` +
+                `Types: feat, fix, docs, test, refactor, chore, perf, security, build, ci`
+              );
+            } else {
+              core.info(`OK: ${title}`);
+            }

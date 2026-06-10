@@ -4,7 +4,7 @@
 
 | Environment | Purpose | URL | DB | Notes |
 |-------------|---------|-----|----|-------|
-| `local` | Development | localhost:2000 / :1000 | localhost:3306 | `ddl-auto=update`, root/root |
+| `local` | Development | localhost:2000 / :1000 | localhost:3306 | Flyway migrations, root/root |
 | `dev` | Shared integration | dev.nexus.internal | dev-db | Auto-deploy on merge to `main` |
 | `staging` | Pre-prod mirror | staging.nexus.internal | staging-db | Production data shape; synthetic data |
 | `production` | Live | nexus.example.com | prod-db | Guarded deploys |
@@ -20,7 +20,7 @@ feature/* ──PR──► main ──auto──► dev ──manual──► s
 ```
 
 - `main` always deploys to `dev` automatically on merge.
-- Staging promotions are manual — run `./scripts/promote-to-staging.sh <tag>`.
+- Staging promotions are manual — `./scripts/promote-to-staging.sh <tag>` (*planned; script does not exist yet — promote via your CD tool until it does*).
 - Production deployments require: staging green, 2-person approval, business hours.
 
 ---
@@ -48,21 +48,18 @@ Each stage gates the next. A failure stops the pipeline.
 
 ## Schema Management
 
-Nexus uses `spring.jpa.hibernate.ddl-auto=update`, which applies only **additive** changes automatically.
+Nexus uses **Flyway** for all schema changes (ADR 0003). Hibernate runs `ddl-auto=validate` and will refuse to start if entities and schema disagree — so every change ships as a migration. Migrations live in `nexus-backend/src/main/resources/db/migration` as `V<N>__<description>.sql` and are **append-only** (never edit an applied migration).
 
 **For additive changes** (new table, new nullable column, new index):
-- JPA entity change is sufficient.
-- Test in dev and staging before promoting to prod.
-- Include the expected schema change in `docs/features/<FEATURE-ID>/deployment.md`.
+- Write a new `V<N>__add_*.sql` migration.
+- It runs automatically on startup in every environment; verify in dev and staging before prod.
+- Include the migration in `docs/features/<FEATURE-ID>/deployment.md`.
 
-**For non-additive changes** (rename, drop, type change, NOT NULL constraint on existing column):
-- `ddl-auto=update` will NOT apply these.
-- Requires an explicit SQL migration script.
-- Use the **expand/contract** pattern:
-  1. **Expand deploy:** add new column/table alongside old (backward compatible).
-  2. **Migrate data:** backfill script (tested on prod-size dataset with timing).
-  3. **Contract deploy:** remove old column/table once all code uses new.
-- Non-additive migrations require DBA review and separate deployment step.
+**For non-additive changes** (rename, drop, type change, NOT NULL on an existing column):
+- Requires DBA review and the **expand/contract** pattern across two deploys:
+  1. **Expand deploy:** migration adds the new column/table alongside the old (backward compatible).
+  2. **Migrate data:** backfill migration (tested on prod-size dataset with timing).
+  3. **Contract deploy:** later migration removes the old column/table once all code uses the new one.
 
 ---
 
@@ -122,7 +119,7 @@ After:
 
 **Code rollback:** redeploy the previous artifact (same jar, same frontend build).
 
-**DB rollback:** Only possible if the migration was expand-only (new column/table). Additive schema changes survive a code rollback. Destructive rollbacks require DBA involvement and are escalated.
+**DB rollback:** Flyway migrations are forward-only. A code rollback is safe as long as schema changes were expand-only (additive) — the old artifact runs against the newer additive schema. Destructive changes are why the expand/contract pattern is mandatory; reversing them requires DBA involvement and is escalated.
 
 **Feature flag kill switch:** Set `feature.nexus-<FEATURE-ID>.enabled=false` in all environments. This should take effect without a reboot for feature-toggled code paths.
 
