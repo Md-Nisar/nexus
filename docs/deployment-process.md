@@ -20,7 +20,7 @@ feature/* ──PR──► main ──auto──► dev ──manual──► s
 ```
 
 - `main` always deploys to `dev` automatically on merge.
-- Staging promotions are manual — run `./scripts/promote-to-staging.sh <tag>`.
+- Staging promotions are manual — `./scripts/promote-to-staging.sh <tag>` (*planned; script does not exist yet — promote via your CD tool until it does*).
 - Production deployments require: staging green, 2-person approval, business hours.
 
 ---

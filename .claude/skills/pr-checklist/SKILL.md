@@ -32,16 +32,9 @@ npm run build                  # production build (validates strict templates + 
 npm run e2e                    # if UI behavior changed (first run: npx playwright install chromium)
 ```
 
-## Definition of Done (must all be true)
-- [ ] Tests written/updated and green; coverage gates pass
-- [ ] Lint + format clean both sides as applicable
-- [ ] New/changed endpoints follow `api-design` standards; errors are RFC 7807
-- [ ] Schema changes are append-only Flyway migrations (`ddl-auto=validate`)
-- [ ] Security: authz checks present, no secrets, no PII in logs (see `SECURITY.md`)
-- [ ] Observability: metrics/logs/audit events for new paths (see `docs/observability-standards.md`)
-- [ ] Docs/ADR updated if the change constrains future work
-- [ ] No TODO/FIXME, no commented-out code, no `console.log`/`System.out`
-- [ ] PR title is a Conventional Commit; description has what/why/how-to-test
+## Definition of Done
+
+The canonical checklist is **`CONTRIBUTING.md` → Definition of Done** — read it and walk every item against the diff. This skill adds nothing to that list; it only automates the executable parts above.
 
 ## Report
 Summarize each gate as PASS/FAIL with the failing output. **Do not** recommend opening the PR while any gate is red.

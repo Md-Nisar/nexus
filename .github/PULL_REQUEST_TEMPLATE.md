@@ -16,14 +16,8 @@
 
 ## Definition of Done
 
-<!-- Run `/pre-pr-check` (or the pr-checklist skill) to verify these. -->
+The canonical checklist lives in [CONTRIBUTING.md → Definition of Done](../CONTRIBUTING.md#definition-of-done-canonical--the-pr-template-and-pr-checklist-skill-reference-this-list).
 
-- [ ] `/pre-pr-check` green — tests, coverage gates, lint, format, build (the gates CI enforces)
-- [ ] New/changed endpoints follow API standards; errors are RFC 7807
-- [ ] Schema changes are append-only Flyway migrations (`ddl-auto=validate`)
-- [ ] Security: authz present, no secrets, no PII in logs (see `SECURITY.md`)
-- [ ] Observability: metrics/logs/audit events for new code paths
-- [ ] No TODO/FIXME, no commented-out code, no `console.log`/`System.out`
-- [ ] Docs/ADR updated if this constrains future work
+- [ ] I ran `/pre-pr-check` (or walked the checklist manually) and every item passes
 
-<!-- For substantial features, link the docs/features/<ID>/ artifacts and confirm reviews passed. -->
+<!-- For substantial features, link the docs/features/<ID>/ artifacts and confirm code + security reviews passed. -->
