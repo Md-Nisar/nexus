@@ -8,16 +8,16 @@
 *                           @Md-Nisar
 
 # Backend
-/nexus-backend/             @nexus-backend
+/nexus-backend/             @Md-Nisar
 
 # Frontend
-/nexus-frontend/            @nexus-frontend
+/nexus-frontend/            @Md-Nisar
 
 # Governance: standards, ADRs, CI, and the agent operating model need senior review
-/docs/                      @nexus-leads
-/CLAUDE.md                  @nexus-leads
-/ARCHITECTURE.md            @nexus-leads
-/SECURITY.md                @nexus-leads @nexus-security
-/.github/                   @nexus-leads
-/.claude/                   @nexus-leads
-/.githooks/                 @nexus-leads
+/docs/                      @Md-Nisar
+/CLAUDE.md                  @Md-Nisar
+/ARCHITECTURE.md            @Md-Nisar
+/SECURITY.md                @Md-Nisar
+/.github/                   @Md-Nisar
+/.claude/                   @Md-Nisar
+/.githooks/                 @Md-Nisar
