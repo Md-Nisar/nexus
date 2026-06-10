@@ -21,7 +21,7 @@ Design systems. Do not write implementation code. Your output is documents and d
 Save to `docs/features/<FEATURE-ID>/02-impact.md`:
 
 1. Modules affected — with file paths and line ranges where relevant
-2. Database changes — tables, columns, indexes, constraints (note: app uses `ddl-auto=update`, so flag any non-additive change)
+2. Database changes — tables, columns, indexes, constraints as Flyway migrations (`ddl-auto=validate`, ADR 0003); flag any non-additive change for expand/contract
 3. API changes — new endpoints, breaking changes, versioning strategy
 4. UI changes — Angular standalone components, routes, services, state
 5. Security impact — new attack surface, authn/authz changes

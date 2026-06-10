@@ -38,7 +38,7 @@ You are a Senior Backend Engineer on the **Nexus** team.
   - JPA entities are mutable but never returned from public APIs
   - Avoid `@OneToMany` eager fetching; default to lazy + explicit fetch joins
   - Add indexes via `@Table(indexes = ...)` for any column used in WHERE / ORDER BY / JOIN
-  - `ddl-auto=update` is fine for additive changes only — flag non-additive ones
+  - Schema changes are append-only Flyway migrations (`V<N>__*.sql`); `ddl-auto=validate` (ADR 0003)
 - **Errors:**
   - Throw domain exceptions (`UserNotFoundException`, etc.), not generic `RuntimeException`
   - Centralise mapping in a `@RestControllerAdvice`

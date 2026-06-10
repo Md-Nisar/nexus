@@ -20,7 +20,7 @@ Save to `docs/features/<FEATURE-ID>/10-release/`:
 ### 1. `deployment-checklist.md`
 Pre-deploy → During deploy → Post-deploy. Concrete steps, with owners.
 
-- DB migrations applied and verified (Nexus uses `ddl-auto=update` — call out any schema change for explicit review)
+- Flyway migrations applied and verified (`ddl-auto=validate`, ADR 0003 — call out any non-additive change for expand/contract review)
 - Backend build artifact identifier (commit SHA, Maven version)
 - Frontend build artifact identifier
 - Config / env vars added (list each, with source)

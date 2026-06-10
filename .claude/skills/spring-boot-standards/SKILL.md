@@ -8,7 +8,7 @@ description: Use when writing or reviewing Spring Boot 4 / Java 25 code in the N
 ## Package layout (hexagonal)
 
 ```
-com.nexus.<bounded-context>
+com.example.nexus.<bounded-context>
 ├── domain/              # Entities, value objects, domain services, domain exceptions
 ├── application/         # Use-case services, ports (interfaces), DTOs internal to use cases
 ├── infrastructure/      # JPA repositories, external clients, port implementations
@@ -57,10 +57,10 @@ public ResponseEntity<UserResponse> create(@Valid @RequestBody CreateUserRequest
 - Add indexes via `@Table(indexes = ...)` for any column used in WHERE / ORDER BY / JOIN.
 - **Eager fetching is opt-in.** Default to lazy. Use explicit fetch joins where needed.
 - Use `@Version` for optimistic locking on entities subject to concurrent writes.
-- Schema management: `ddl-auto=update`. **Additive changes only.** Non-additive (rename, drop, type change) requires:
+- Schema management: **Flyway owns the schema** (`ddl-auto=validate`, see ADR 0003). Migrations live in `src/main/resources/db/migration` as `V<N>__<description>.sql` — append-only, never edit an applied migration.
+- Non-additive changes (rename, drop, type change) require:
   1. Two-step deploy plan (expand → contract)
   2. Explicit review in the design phase
-- Prefer Flyway for any production-bound non-trivial migration. Document this if introducing it.
 
 ## Transactions
 
