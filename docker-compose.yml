@@ -1,0 +1,47 @@
+# Local development infrastructure.
+#
+#   docker compose up -d                  → MySQL only (run apps from your IDE)
+#   docker compose --profile full up -d   → full stack: MySQL + backend + frontend
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: nexus-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: nexus
+    ports:
+      - "3306:3306"
+    volumes:
+      - nexus-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-root}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    profiles: ["full"]
+    build: ./nexus-backend
+    container_name: nexus-backend
+    environment:
+      SPRING_PROFILES_ACTIVE: dev
+      DB_URL: jdbc:mysql://mysql:3306/nexus?useSSL=false&serverTimezone=UTC
+      DB_USERNAME: root
+      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+    ports:
+      - "1000:1000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  frontend:
+    profiles: ["full"]
+    build: ./nexus-frontend
+    container_name: nexus-frontend
+    ports:
+      - "2000:80"
+    depends_on:
+      - backend
+
+volumes:
+  nexus-mysql-data:

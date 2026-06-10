@@ -9,12 +9,12 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 @SpringBootApplication
 public class NexusApplication {
 
-    /**
-     * Starts the Spring Boot application.
-     *
-     * @param args command-line arguments
-     */
-    public static void main(String[] args) {
-        SpringApplication.run(NexusApplication.class, args);
-    }
+  /**
+   * Starts the Spring Boot application.
+   *
+   * @param args command-line arguments
+   */
+  public static void main(String[] args) {
+    SpringApplication.run(NexusApplication.class, args);
+  }
 }
