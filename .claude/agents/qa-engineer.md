@@ -33,7 +33,7 @@ For the task under review:
 
 - **Unit tests:** service-level, Mockito for collaborators, no Spring context.
 - **Slice tests:** `@DataJpaTest` for repositories, `@WebMvcTest` for controllers.
-- **Integration tests:** `@SpringBootTest` + Testcontainers MySQL. Avoid H2 — it doesn't match MySQL behaviour.
+- **Integration tests:** `@SpringBootTest` + Testcontainers MySQL. Never H2 for integration tests — it doesn't match MySQL behaviour. H2 is reserved for the `test`-profile context smoke test only.
 - **Naming:** `should_<expected>_when_<condition>()`.
 - **Arrange–Act–Assert** with blank line separators.
 - **One logical assertion per test.** Multiple `assertThat` calls are fine if they describe one outcome.
