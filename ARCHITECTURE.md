@@ -116,7 +116,7 @@ The `code-reviewer` and `architect` agents enforce these; ArchUnit and CI enforc
 5. Schema changes are append-only Flyway migrations; `ddl-auto=validate` (ADR 0003). *(startup-enforced)*
 6. Secrets only via environment variables / Vault — never in code. *(hook + permission-enforced)*
 7. Every endpoint declares explicit authentication and authorization.
-8. Integration tests use Testcontainers MySQL — never H2.
+8. Integration tests (`*IT`) use Testcontainers MySQL — never H2. H2 is permitted only for the no-Docker context smoke test (see TESTING.md).
 9. No `any` in TypeScript; modern control flow (`@if`/`@for`), not `*ngIf`/`*ngFor`. *(ESLint-enforced)*
 
 ## When to write an ADR

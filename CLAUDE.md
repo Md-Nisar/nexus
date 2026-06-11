@@ -8,6 +8,7 @@ Nexus is a **modular monolith**:
 - **`nexus-backend/`** — Spring Boot 4, Java 25, Maven, Spring Data JPA, MySQL, Flyway, hexagonal architecture.
 - **`nexus-frontend/`** — Angular 21, TypeScript 5.9 (strict), standalone components, signals, Vitest, Playwright.
 - **`docs/`** — standards (`coding-standards`, `observability-standards`, `deployment-process`), ADRs, and `features/<ID>/` artifacts.
+- **`story/`** — epic/story inputs (e.g. `story/epic-01-authentication/`) that feed `/new-feature`.
 - **`.claude/`** — agents, commands, skills, and enforcement hooks (see `.claude/README.md`).
 
 ## Documentation index (single source of truth per topic)
@@ -48,7 +49,7 @@ Full reference: **DEVELOPMENT_GUIDE.md → The Operating Model**. Front door: **
 - **Flyway owns the schema** (`ddl-auto=validate`, ADR 0003) — append-only `V<N>__*.sql` migrations.
 - Errors are **RFC 7807** problem documents with `code` + `traceId`; never leak internals.
 - Frontend: standalone + signals + modern control flow (`@if`/`@for`); no `any`; HTTP only via interceptors (components see `AppError`, never `HttpErrorResponse`); config via `APP_CONFIG`.
-- Integration tests use **Testcontainers MySQL**, never H2.
+- Integration tests (`*IT`) use **Testcontainers MySQL**, never H2; H2 serves only the no-Docker context smoke test (TESTING.md).
 
 ## Enforcement (gates fail automatically — DEVELOPMENT_GUIDE.md → How gates are enforced)
 

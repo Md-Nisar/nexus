@@ -125,7 +125,7 @@ class GlobalExceptionHandler {
 
 - **Unit:** plain JUnit 5 + Mockito. No Spring context.
 - **Slice:** `@DataJpaTest`, `@WebMvcTest` for focused layer tests.
-- **Integration:** `@SpringBootTest` + Testcontainers MySQL — not H2.
+- **Integration:** `@SpringBootTest` + Testcontainers MySQL — not H2. H2 exists only for the `test`-profile context smoke test (`NexusBackendApplicationTests`).
 - Naming: `should_<expected>_when_<condition>`.
 - One logical assertion per test.
 

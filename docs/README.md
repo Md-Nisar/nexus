@@ -37,7 +37,7 @@ ADRs are append-only — supersede an old decision with a new ADR; never edit an
 
 ## Feature documentation
 
-Each feature run through the operating model (see DEVELOPMENT_GUIDE.md) creates `docs/features/<FEATURE-ID>/` with **numbered, phase-ordered artifacts**:
+Epic and story source texts live in `/story/<epic-id>/` at the repo root — they are the *inputs* to `/new-feature`. Each feature run through the operating model (see DEVELOPMENT_GUIDE.md) creates `docs/features/<FEATURE-ID>/` with **numbered, phase-ordered artifacts**:
 
 ```
 docs/features/<FEATURE-ID>/
