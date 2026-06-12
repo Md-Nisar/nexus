@@ -8,7 +8,7 @@ Nexus is a **modular monolith**:
 - **`nexus-backend/`** — Spring Boot 4, Java 25, Maven, Spring Data JPA, MySQL, Flyway, hexagonal architecture.
 - **`nexus-frontend/`** — Angular 21, TypeScript 5.9 (strict), standalone components, signals, Vitest, Playwright.
 - **`docs/`** — standards (`coding-standards`, `observability-standards`, `deployment-process`), ADRs, and `features/<ID>/` artifacts.
-- **`story/`** — epic/story inputs (e.g. `story/epic-01-authentication/`) that feed `/new-feature`.
+- **`story/`** — epic/story inputs (e.g. `story/S1-authentication/`) that feed `/new-feature`.
 - **`.claude/`** — agents, commands, skills, and enforcement hooks (see `.claude/README.md`).
 
 ## Documentation index (single source of truth per topic)
