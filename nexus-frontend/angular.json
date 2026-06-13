@@ -33,7 +33,8 @@
               }
             ],
             "styles": [
-              "src/styles.scss"
+              "src/styles.scss",
+              "src/app/shared/ui/toast/toast.scss"
             ]
           },
           "configurations": {

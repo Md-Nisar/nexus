@@ -1,0 +1,41 @@
+:host {
+  display: block;
+}
+
+.nx-error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--nx-space-3);
+  padding: var(--nx-space-12) var(--nx-space-6);
+  text-align: center;
+
+  &__icon {
+    font-size: 64px;
+    width: 64px;
+    height: 64px;
+    color: var(--nx-color-error);
+  }
+
+  &__title {
+    font-size: var(--nx-text-lg);
+    font-weight: var(--nx-weight-medium);
+    color: var(--nx-color-on-surface);
+    margin: 0;
+  }
+
+  &__message {
+    font-size: var(--nx-text-base);
+    color: var(--nx-color-on-surface-muted);
+    margin: 0;
+    max-width: 360px;
+    line-height: var(--nx-leading-normal);
+  }
+
+  &__retry {
+    background-color: var(--nx-color-primary);
+    color: var(--nx-color-on-primary);
+    margin-top: var(--nx-space-2);
+  }
+}

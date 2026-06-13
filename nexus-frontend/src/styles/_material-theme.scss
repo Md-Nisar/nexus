@@ -1,0 +1,62 @@
+// Material 3 theme — Linear aesthetic (dark-first, violet palette).
+// Reference: docs/design/DESIGN.md
+
+@use '@angular/material' as mat;
+
+@include mat.core();
+
+// Violet is the closest M3 system palette to Linear's lavender-blue (#5e6ad2).
+$nexus-theme: mat.define-theme(
+  (
+    color: (
+      theme-type: dark,
+      primary: mat.$violet-palette,
+      tertiary: mat.$violet-palette,
+    ),
+    typography: (
+      brand-family: 'Inter, -apple-system, system-ui, Segoe UI, Roboto, sans-serif',
+      plain-family: 'Inter, -apple-system, system-ui, Segoe UI, Roboto, sans-serif',
+      bold-weight: 600,
+      medium-weight: 500,
+      regular-weight: 400,
+    ),
+    density: (
+      scale: 0,
+    ),
+  )
+);
+
+html {
+  @include mat.all-component-themes($nexus-theme);
+}
+
+// ── Bridge Material system vars to --nx-* tokens ──────────────────────────
+// Overrides ensure shared/ui components always use the Linear palette.
+html {
+  --nx-color-primary: #{mat.get-theme-color($nexus-theme, primary)};
+  --nx-color-on-primary: #{mat.get-theme-color($nexus-theme, on-primary)};
+  --nx-color-error: #{mat.get-theme-color($nexus-theme, error)};
+  --nx-color-on-error: #{mat.get-theme-color($nexus-theme, on-error)};
+  --nx-color-surface: #{mat.get-theme-color($nexus-theme, surface)};
+  --nx-color-on-surface: #{mat.get-theme-color($nexus-theme, on-surface)};
+  --nx-color-outline: #{mat.get-theme-color($nexus-theme, outline)};
+  --nx-color-outline-variant: #{mat.get-theme-color($nexus-theme, outline-variant)};
+}
+
+// ── Override Material component vars with Linear hairline radius ──────────
+// Linear uses 8px on buttons/inputs, 12px on cards — not Material's defaults.
+html {
+  --mdc-filled-button-container-shape: var(--nx-radius-md);
+  --mdc-outlined-button-container-shape: var(--nx-radius-md);
+  --mdc-text-button-container-shape: var(--nx-radius-md);
+  --mdc-protected-button-container-shape: var(--nx-radius-md);
+  --mdc-outlined-text-field-container-shape: var(--nx-radius-md);
+  --mdc-filled-text-field-container-shape: var(--nx-radius-md) var(--nx-radius-md) 0 0;
+  --mdc-dialog-container-shape: var(--nx-radius-lg);
+  --mat-card-container-shape: var(--nx-radius-lg);
+  --mdc-snackbar-container-shape: var(--nx-radius-md);
+
+  // Surface colours — Material overlays its own bg tokens; align them.
+  --mat-app-background-color: var(--nx-color-canvas);
+  --mat-app-text-color: var(--nx-color-on-surface);
+}

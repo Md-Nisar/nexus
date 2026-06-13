@@ -60,22 +60,42 @@
     "PreToolUse": [
       {
         "matcher": "Bash",
-        "hooks": [{ "type": "command", "command": "node .claude/hooks/block-prod-commands.mjs" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/entomo/AI/nexus/.claude/hooks/block-prod-commands.mjs"
+          }
+        ]
       },
       {
         "matcher": "Write|Edit",
-        "hooks": [{ "type": "command", "command": "node .claude/hooks/secret-scan.mjs" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/entomo/AI/nexus/.claude/hooks/secret-scan.mjs"
+          }
+        ]
       }
     ],
     "PostToolUse": [
       {
         "matcher": "Write|Edit",
-        "hooks": [{ "type": "command", "command": "node .claude/hooks/format.mjs" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/entomo/AI/nexus/.claude/hooks/format.mjs"
+          }
+        ]
       }
     ],
     "Stop": [
       {
-        "hooks": [{ "type": "command", "command": "node .claude/hooks/run-tests.mjs" }]
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/entomo/AI/nexus/.claude/hooks/run-tests.mjs"
+          }
+        ]
       }
     ]
   },

@@ -1,1 +1,63 @@
-/* You can add global styles to this file, and also import other style files */
+@use 'styles/tokens';
+@use 'styles/material-theme';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  font-family: var(--nx-font-family);
+  font-size: var(--nx-text-md);
+  line-height: var(--nx-leading-normal);
+  color: var(--nx-color-on-surface);
+  background-color: var(--nx-color-canvas);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11'; // Inter optical features
+}
+
+// ── Focus ring — Linear's lavender focus at 50% opacity ───────────────────
+:focus-visible {
+  outline: 2px solid var(--nx-color-primary-focus);
+  outline-offset: 2px;
+  opacity: 1; // override; ring colour already carries the 50% impression
+}
+
+// ── Scrollbar ─────────────────────────────────────────────────────────────
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--nx-color-canvas);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--nx-color-outline-variant);
+  border-radius: var(--nx-radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--nx-color-on-surface-faint);
+}
+
+// ── Selection ─────────────────────────────────────────────────────────────
+::selection {
+  background-color: var(--nx-color-primary-surface);
+  color: var(--nx-color-on-surface);
+}
+
+// ── CDK overlay global overrides (component stylesheets can't reach overlays) ──
+.nx-dialog-panel .mat-mdc-dialog-container {
+  border-radius: var(--nx-radius-lg) !important;
+}
+
+.nx-dialog-panel .mdc-dialog__surface {
+  background-color: var(--nx-color-surface) !important;
+}
