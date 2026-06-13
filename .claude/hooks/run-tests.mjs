@@ -25,7 +25,10 @@ if (sides.has('backend')) {
 
 if (sides.has('frontend')) {
   console.log('\n[stop-hook] Frontend source changed — running Vitest (no watch)...');
-  if (run('npm', ['test', '--', '--no-watch'], 'nexus-frontend') !== 0) failures.push('frontend unit tests');
+  // Use test:ci (ng test --no-watch --coverage) rather than `npm test -- --no-watch`:
+  // the :ci variant exits reliably on Windows and avoids port conflicts with any
+  // foreground ng-test process still winding down from a Claude tool call.
+  if (run('npm', ['run', 'test:ci'], 'nexus-frontend') !== 0) failures.push('frontend unit tests');
 }
 
 if (failures.length) {

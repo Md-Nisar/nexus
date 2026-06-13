@@ -1,0 +1,35 @@
+.nx-dialog {
+  padding: var(--nx-space-2);
+
+  &__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--nx-space-4) var(--nx-space-4) 0;
+  }
+
+  &__title {
+    font-size: var(--nx-text-lg);
+    font-weight: var(--nx-weight-medium);
+    color: var(--nx-color-on-surface);
+    margin: 0;
+  }
+
+  &__content {
+    padding: var(--nx-space-4);
+    color: var(--nx-color-on-surface-muted);
+    font-size: var(--nx-text-base);
+    line-height: var(--nx-leading-normal);
+    max-height: 60vh;
+  }
+
+  &__actions {
+    padding: var(--nx-space-3) var(--nx-space-4) var(--nx-space-4);
+    gap: var(--nx-space-2);
+  }
+
+  &__confirm--danger {
+    background-color: var(--nx-color-error) !important;
+    color: var(--nx-color-on-error) !important;
+  }
+}

@@ -1,0 +1,164 @@
+// Nexus design tokens — Linear aesthetic.
+// Source: docs/design/DESIGN.md (Linear.app analysis, getdesign.md).
+// All values are --nx-* CSS custom properties. Never use raw hex/px in components.
+
+// ── Dark canvas (default) ──────────────────────────────────────────────────
+:root {
+  // ── Surface ladder (depth via lift + hairline, not drop shadows) ──────────
+  --nx-color-canvas: #010102; // deepest shell / sidebar anchor
+  --nx-color-surface: #0f1011; // default card / panel
+  --nx-color-surface-2: #141516; // featured card, hovered
+  --nx-color-surface-3: #18191a; // sub-nav, dropdowns
+  --nx-color-surface-variant: #141516; // alias of surface-2, used by shared/ui
+
+  // ── Borders / hairlines ───────────────────────────────────────────────────
+  --nx-color-outline: #23252a;
+  --nx-color-outline-variant: #34343a; // stronger hairline, focus rings
+  --nx-color-outline-strong: #3e3e44;
+
+  // ── Brand accent — lavender-blue (scarce: brand mark, CTA, focus, links) ──
+  --nx-color-primary: #5e6ad2;
+  --nx-color-primary-hover: #828fff;
+  --nx-color-primary-focus: #5e69d1;
+  --nx-color-primary-surface: rgba(94, 106, 210, 0.12);
+  --nx-color-on-primary: #ffffff;
+
+  // ── Semantic ──────────────────────────────────────────────────────────────
+  --nx-color-success: #27a644;
+  --nx-color-success-surface: rgba(39, 166, 68, 0.12);
+  --nx-color-error: #e5484d;
+  --nx-color-error-surface: rgba(229, 72, 77, 0.12);
+  --nx-color-warning: #f76b15;
+  --nx-color-warning-surface: rgba(247, 107, 21, 0.12);
+  --nx-color-info: #5e6ad2;
+  --nx-color-info-surface: rgba(94, 106, 210, 0.12);
+
+  // ── Ink / text scale ──────────────────────────────────────────────────────
+  --nx-color-on-surface: #f7f8f8; // ink — headlines + body
+  --nx-color-on-surface-muted: #d0d6e0; // ink-muted — secondary
+  --nx-color-on-surface-faint: #8a8f98; // ink-subtle — tertiary / deselected
+  --nx-color-on-surface-dim: #62666d; // ink-tertiary — disabled / footnotes
+  --nx-color-on-error: #ffffff;
+
+  // ── Inverse (white surfaces used for inverse CTAs) ────────────────────────
+  --nx-color-inverse-canvas: #ffffff;
+  --nx-color-inverse-surface: #f5f6f6;
+  --nx-color-inverse-on: #000000;
+
+  // ── Elevation — surface lift only, no drop shadows ────────────────────────
+  // Use surface-2/3 background + hairline border for depth.
+  --nx-shadow-xs: none;
+  --nx-shadow-sm: none;
+  --nx-shadow-md: none;
+  --nx-shadow-lg: none;
+  --nx-shadow-xl: none;
+
+  // ── Spacing (4px base unit) ────────────────────────────────────────────────
+  --nx-space-1: 4px;
+  --nx-space-2: 8px;
+  --nx-space-3: 12px;
+  --nx-space-4: 16px;
+  --nx-space-5: 20px;
+  --nx-space-6: 24px;
+  --nx-space-8: 32px;
+  --nx-space-10: 40px;
+  --nx-space-12: 48px;
+  --nx-space-16: 64px;
+  --nx-space-24: 96px;
+
+  // ── Border radius ─────────────────────────────────────────────────────────
+  --nx-radius-xs: 4px; // chips, badges
+  --nx-radius-sm: 6px; // inline tags
+  --nx-radius-md: 8px; // buttons, inputs — Linear's CTA radius
+  --nx-radius-lg: 12px; // cards, panels
+  --nx-radius-xl: 16px; // screenshot panels
+  --nx-radius-2xl: 24px; // oversized banners (rare)
+  --nx-radius-full: 9999px; // avatars, pills, toggle tabs
+
+  // ── Typography — Inter (closest free substitute for Linear's custom sans) ──
+  --nx-font-family: 'Inter', -apple-system, system-ui, 'Segoe UI', Roboto, sans-serif;
+  --nx-font-family-mono: 'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
+
+  // Sizes
+  --nx-text-xs: 12px; // caption
+  --nx-text-sm: 13px; // eyebrow / mono
+  --nx-text-base: 14px; // body-sm / button labels
+  --nx-text-md: 16px; // body default
+  --nx-text-lg: 18px; // body-lg / lead
+  --nx-text-xl: 20px; // subhead
+  --nx-text-2xl: 22px; // card-title
+  --nx-text-3xl: 28px; // headline
+  --nx-text-4xl: 40px; // display-md
+  --nx-text-5xl: 56px; // display-lg
+  --nx-text-6xl: 80px; // display-xl hero
+
+  // Weights
+  --nx-weight-regular: 400;
+  --nx-weight-medium: 500;
+  --nx-weight-semibold: 600; // Linear display weight
+  --nx-weight-bold: 700;
+
+  // Line heights
+  --nx-leading-tight: 1.05;
+  --nx-leading-snug: 1.2;
+  --nx-leading-normal: 1.5;
+  --nx-leading-loose: 1.75;
+
+  // Letter spacing — aggressively negative on large type (Linear's signature)
+  --nx-tracking-display-xl: -3px;
+  --nx-tracking-display-lg: -1.8px;
+  --nx-tracking-display-md: -1px;
+  --nx-tracking-headline: -0.6px;
+  --nx-tracking-card-title: -0.4px;
+  --nx-tracking-subhead: -0.2px;
+  --nx-tracking-body-lg: -0.1px;
+  --nx-tracking-body: -0.05px;
+  --nx-tracking-body-sm: 0;
+  --nx-tracking-caption: 0;
+  --nx-tracking-eyebrow: 0.4px; // only positive — marks section taxonomy
+
+  // ── Motion — slightly snappier than default Material ─────────────────────
+  --nx-duration-fast: 100ms;
+  --nx-duration-base: 150ms;
+  --nx-duration-slow: 250ms;
+  --nx-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+  --nx-easing-decelerate: cubic-bezier(0, 0, 0, 1);
+  --nx-easing-accelerate: cubic-bezier(0.3, 0, 1, 1);
+
+  // ── Z-index ───────────────────────────────────────────────────────────────
+  --nx-z-dropdown: 100;
+  --nx-z-sticky: 200;
+  --nx-z-overlay: 300;
+  --nx-z-modal: 400;
+  --nx-z-toast: 500;
+  --nx-z-tooltip: 600;
+}
+
+// ── Light mode overrides ────────────────────────────────────────────────────
+// Linear's product ships both modes. Same lavender accent; surface ladder flips.
+@media (prefers-color-scheme: light) {
+  :root {
+    --nx-color-canvas: #ffffff;
+    --nx-color-surface: #f5f6f6;
+    --nx-color-surface-2: #f6f7f7;
+    --nx-color-surface-3: #ebebec;
+    --nx-color-surface-variant: #f6f7f7;
+
+    --nx-color-outline: #e4e5e7;
+    --nx-color-outline-variant: #d1d2d5;
+    --nx-color-outline-strong: #b8babe;
+
+    --nx-color-on-surface: #111113;
+    --nx-color-on-surface-muted: #3b3d40;
+    --nx-color-on-surface-faint: #6f7178;
+    --nx-color-on-surface-dim: #9b9da2;
+
+    --nx-color-primary-surface: rgba(94, 106, 210, 0.08);
+
+    --nx-shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.06);
+    --nx-shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.08), 0 1px 2px -1px rgb(0 0 0 / 0.08);
+    --nx-shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.07), 0 2px 4px -2px rgb(0 0 0 / 0.07);
+    --nx-shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.07), 0 4px 6px -4px rgb(0 0 0 / 0.07);
+    --nx-shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.07), 0 8px 10px -6px rgb(0 0 0 / 0.07);
+  }
+}

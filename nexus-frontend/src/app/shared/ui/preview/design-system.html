@@ -1,0 +1,1008 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nexus Design System — Linear Aesthetic</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet" />
+    <style>
+      /* ── Linear tokens (inlined for standalone preview) ────────────────── */
+      :root {
+        --nx-color-canvas: #010102;
+        --nx-color-surface: #0f1011;
+        --nx-color-surface-2: #141516;
+        --nx-color-surface-3: #18191a;
+        --nx-color-outline: #23252a;
+        --nx-color-outline-variant: #34343a;
+        --nx-color-primary: #5e6ad2;
+        --nx-color-primary-hover: #828fff;
+        --nx-color-primary-focus: #5e69d1;
+        --nx-color-primary-surface: rgba(94, 106, 210, 0.12);
+        --nx-color-on-primary: #ffffff;
+        --nx-color-on-surface: #f7f8f8;
+        --nx-color-on-surface-muted: #d0d6e0;
+        --nx-color-on-surface-faint: #8a8f98;
+        --nx-color-on-surface-dim: #62666d;
+        --nx-color-success: #27a644;
+        --nx-color-success-surface: rgba(39, 166, 68, 0.12);
+        --nx-color-error: #e5484d;
+        --nx-color-error-surface: rgba(229, 72, 77, 0.12);
+        --nx-color-warning: #f76b15;
+        --nx-color-warning-surface: rgba(247, 107, 21, 0.12);
+
+        --nx-font-family: 'Inter', -apple-system, system-ui, sans-serif;
+        --nx-font-family-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+        --nx-space-1: 4px;
+        --nx-space-2: 8px;
+        --nx-space-3: 12px;
+        --nx-space-4: 16px;
+        --nx-space-6: 24px;
+        --nx-space-8: 32px;
+        --nx-space-12: 48px;
+
+        --nx-radius-xs: 4px;
+        --nx-radius-sm: 6px;
+        --nx-radius-md: 8px;
+        --nx-radius-lg: 12px;
+        --nx-radius-xl: 16px;
+        --nx-radius-full: 9999px;
+
+        --nx-text-xs: 12px;
+        --nx-text-sm: 13px;
+        --nx-text-base: 14px;
+        --nx-text-md: 16px;
+        --nx-text-lg: 18px;
+        --nx-text-xl: 20px;
+        --nx-text-2xl: 22px;
+        --nx-text-3xl: 28px;
+
+        --nx-weight-regular: 400;
+        --nx-weight-medium: 500;
+        --nx-weight-semibold: 600;
+
+        --nx-duration-base: 150ms;
+        --nx-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+      body {
+        font-family: var(--nx-font-family);
+        font-size: var(--nx-text-md);
+        line-height: 1.5;
+        color: var(--nx-color-on-surface);
+        background-color: var(--nx-color-canvas);
+        margin: 0;
+        padding: var(--nx-space-8);
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* ── Layout ── */
+      .page-header {
+        margin-bottom: var(--nx-space-12);
+        padding-bottom: var(--nx-space-8);
+        border-bottom: 1px solid var(--nx-color-outline);
+      }
+      .page-header h1 {
+        font-size: var(--nx-text-3xl);
+        font-weight: var(--nx-weight-semibold);
+        letter-spacing: -0.6px;
+        color: var(--nx-color-on-surface);
+        margin: 0 0 var(--nx-space-2);
+      }
+      .page-header p {
+        font-size: var(--nx-text-base);
+        color: var(--nx-color-on-surface-faint);
+        margin: 0;
+      }
+      .page-header code {
+        font-family: var(--nx-font-family-mono);
+        font-size: var(--nx-text-sm);
+        background: var(--nx-color-surface-2);
+        border: 1px solid var(--nx-color-outline);
+        border-radius: var(--nx-radius-xs);
+        padding: 2px 6px;
+        color: var(--nx-color-primary);
+      }
+
+      h2 {
+        font-size: var(--nx-text-base);
+        font-weight: var(--nx-weight-medium);
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        color: var(--nx-color-on-surface-faint);
+        margin: var(--nx-space-12) 0 var(--nx-space-4);
+      }
+      h2:first-of-type {
+        margin-top: 0;
+      }
+
+      .preview-grid {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--nx-space-3);
+        align-items: flex-start;
+      }
+
+      /* card = surface-1 panel with hairline */
+      .card {
+        background: var(--nx-color-surface);
+        border: 1px solid var(--nx-color-outline);
+        border-radius: var(--nx-radius-lg);
+        padding: var(--nx-space-6);
+      }
+      .card--surface2 {
+        background: var(--nx-color-surface-2);
+        border-color: var(--nx-color-outline-variant);
+      }
+      .card-label {
+        font-size: var(--nx-text-sm);
+        font-weight: var(--nx-weight-medium);
+        color: var(--nx-color-on-surface-faint);
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+        margin: 0 0 var(--nx-space-4);
+      }
+
+      /* ── Colour swatches ── */
+      .swatch-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--nx-space-2);
+      }
+      .swatch {
+        border-radius: var(--nx-radius-sm);
+        overflow: hidden;
+        width: 72px;
+      }
+      .swatch__color {
+        height: 40px;
+      }
+      .swatch__name {
+        font-family: var(--nx-font-family-mono);
+        font-size: 10px;
+        padding: 4px;
+        background: var(--nx-color-surface-2);
+        color: var(--nx-color-on-surface-faint);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      /* ── Buttons ── */
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--nx-space-2);
+        border: none;
+        border-radius: var(--nx-radius-md);
+        font-family: var(--nx-font-family);
+        font-size: var(--nx-text-base);
+        font-weight: var(--nx-weight-medium);
+        line-height: 1.2;
+        padding: 8px 14px;
+        cursor: pointer;
+        transition: background-color var(--nx-duration-base) var(--nx-easing-standard);
+        white-space: nowrap;
+      }
+      .btn--primary {
+        background: var(--nx-color-primary);
+        color: var(--nx-color-on-primary);
+        border: none;
+      }
+      .btn--primary:hover {
+        background: var(--nx-color-primary-hover);
+      }
+      .btn--secondary {
+        background: var(--nx-color-surface);
+        color: var(--nx-color-on-surface);
+        border: 1px solid var(--nx-color-outline);
+      }
+      .btn--secondary:hover {
+        background: var(--nx-color-surface-2);
+      }
+      .btn--tertiary {
+        background: transparent;
+        color: var(--nx-color-on-surface);
+        border: none;
+      }
+      .btn--tertiary:hover {
+        background: var(--nx-color-surface);
+      }
+      .btn--danger {
+        background: var(--nx-color-error);
+        color: #fff;
+        border: none;
+      }
+      .btn--ghost {
+        background: transparent;
+        color: var(--nx-color-on-surface-faint);
+        border: none;
+      }
+      .btn--inverse {
+        background: #ffffff;
+        color: #000000;
+        border: none;
+      }
+      .btn--sm {
+        padding: 5px 10px;
+        font-size: var(--nx-text-sm);
+      }
+      .btn--lg {
+        padding: 10px 18px;
+        font-size: var(--nx-text-md);
+      }
+      .btn:disabled {
+        opacity: 0.38;
+        cursor: not-allowed;
+      }
+
+      /* ── Inputs ── */
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: var(--nx-space-1);
+        min-width: 220px;
+      }
+      .field label {
+        font-size: var(--nx-text-sm);
+        font-weight: var(--nx-weight-medium);
+        color: var(--nx-color-on-surface-muted);
+      }
+      .field input,
+      .field select {
+        height: 36px;
+        padding: 0 12px;
+        background: var(--nx-color-surface);
+        border: 1px solid var(--nx-color-outline);
+        border-radius: var(--nx-radius-md);
+        font-family: var(--nx-font-family);
+        font-size: var(--nx-text-base);
+        color: var(--nx-color-on-surface);
+        outline: none;
+        transition: border-color var(--nx-duration-base) var(--nx-easing-standard);
+      }
+      .field input::placeholder {
+        color: var(--nx-color-on-surface-dim);
+      }
+      .field input:focus {
+        border-color: var(--nx-color-outline-variant);
+        box-shadow: 0 0 0 2px rgba(94, 106, 210, 0.2);
+      }
+      .field input.has-error {
+        border-color: var(--nx-color-error);
+      }
+      .field .hint {
+        font-size: var(--nx-text-xs);
+        color: var(--nx-color-on-surface-dim);
+      }
+      .field .error-text {
+        font-size: var(--nx-text-xs);
+        color: var(--nx-color-error);
+      }
+
+      /* ── Cards ── */
+      .nx-card {
+        background: var(--nx-color-surface);
+        border: 1px solid var(--nx-color-outline);
+        border-radius: var(--nx-radius-lg);
+        overflow: hidden;
+        width: 260px;
+      }
+      .nx-card--surface2 {
+        background: var(--nx-color-surface-2);
+        border-color: var(--nx-color-outline-variant);
+      }
+      .nx-card__header {
+        padding: var(--nx-space-6) var(--nx-space-6) 0;
+      }
+      .nx-card__title {
+        font-size: var(--nx-text-2xl);
+        font-weight: var(--nx-weight-medium);
+        letter-spacing: -0.4px;
+        color: var(--nx-color-on-surface);
+        margin: 0 0 var(--nx-space-1);
+      }
+      .nx-card__subtitle {
+        font-size: var(--nx-text-sm);
+        color: var(--nx-color-on-surface-faint);
+        margin: 0;
+      }
+      .nx-card__body {
+        padding: var(--nx-space-4) var(--nx-space-6);
+        font-size: var(--nx-text-base);
+        color: var(--nx-color-on-surface-muted);
+        line-height: 1.5;
+      }
+      .nx-card__footer {
+        padding: var(--nx-space-4) var(--nx-space-6) var(--nx-space-6);
+        display: flex;
+        justify-content: flex-end;
+        gap: var(--nx-space-2);
+        border-top: 1px solid var(--nx-color-outline);
+      }
+
+      /* ── Table ── */
+      .nx-table-wrap {
+        border: 1px solid var(--nx-color-outline);
+        border-radius: var(--nx-radius-lg);
+        overflow: hidden;
+        min-width: 560px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      thead tr {
+        background: var(--nx-color-surface-2);
+      }
+      th {
+        font-size: var(--nx-text-sm);
+        font-weight: var(--nx-weight-medium);
+        color: var(--nx-color-on-surface-faint);
+        padding: 10px var(--nx-space-4);
+        text-align: left;
+        white-space: nowrap;
+        letter-spacing: 0.2px;
+        border-bottom: 1px solid var(--nx-color-outline);
+      }
+      td {
+        font-size: var(--nx-text-base);
+        color: var(--nx-color-on-surface-muted);
+        padding: 10px var(--nx-space-4);
+        border-bottom: 1px solid var(--nx-color-outline);
+      }
+      tbody tr:last-child td {
+        border-bottom: none;
+      }
+      tbody tr:hover {
+        background: var(--nx-color-surface);
+        cursor: pointer;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 2px 8px;
+        border-radius: var(--nx-radius-full);
+        font-size: var(--nx-text-xs);
+        font-weight: var(--nx-weight-medium);
+      }
+      .badge--success {
+        background: var(--nx-color-success-surface);
+        color: var(--nx-color-success);
+      }
+      .badge--error {
+        background: var(--nx-color-error-surface);
+        color: var(--nx-color-error);
+      }
+      .badge--warning {
+        background: var(--nx-color-warning-surface);
+        color: var(--nx-color-warning);
+      }
+      .badge--neutral {
+        background: var(--nx-color-surface-2);
+        color: var(--nx-color-on-surface-faint);
+      }
+
+      /* ── Dialog ── */
+      .dialog-mock {
+        background: var(--nx-color-surface);
+        border: 1px solid var(--nx-color-outline-variant);
+        border-radius: var(--nx-radius-lg);
+        width: 420px;
+        overflow: hidden;
+      }
+      .dialog-mock__header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: var(--nx-space-6) var(--nx-space-6) 0;
+      }
+      .dialog-mock__title {
+        font-size: var(--nx-text-lg);
+        font-weight: var(--nx-weight-semibold);
+        letter-spacing: -0.2px;
+        color: var(--nx-color-on-surface);
+        margin: 0;
+      }
+      .dialog-mock__close {
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: var(--nx-color-on-surface-faint);
+        font-family: 'Material Icons Round';
+        font-size: 18px;
+        padding: 4px;
+        border-radius: var(--nx-radius-sm);
+        transition: background var(--nx-duration-base) var(--nx-easing-standard);
+      }
+      .dialog-mock__close:hover {
+        background: var(--nx-color-surface-2);
+      }
+      .dialog-mock__body {
+        padding: var(--nx-space-4) var(--nx-space-6);
+        font-size: var(--nx-text-base);
+        color: var(--nx-color-on-surface-muted);
+        line-height: 1.5;
+      }
+      .dialog-mock__footer {
+        display: flex;
+        justify-content: flex-end;
+        gap: var(--nx-space-2);
+        padding: var(--nx-space-4) var(--nx-space-6) var(--nx-space-6);
+        border-top: 1px solid var(--nx-color-outline);
+      }
+
+      /* ── Toast ── */
+      .toast {
+        display: flex;
+        align-items: center;
+        gap: var(--nx-space-3);
+        padding: 10px var(--nx-space-4);
+        background: var(--nx-color-surface);
+        border: 1px solid var(--nx-color-outline);
+        border-left: 3px solid transparent;
+        border-radius: var(--nx-radius-md);
+        font-size: var(--nx-text-base);
+        min-width: 300px;
+      }
+      .toast span.icon {
+        font-family: 'Material Icons Round';
+        font-size: 16px;
+      }
+      .toast--success {
+        border-left-color: var(--nx-color-success);
+        color: var(--nx-color-on-surface-muted);
+      }
+      .toast--success .icon {
+        color: var(--nx-color-success);
+      }
+      .toast--error {
+        border-left-color: var(--nx-color-error);
+        color: var(--nx-color-on-surface-muted);
+      }
+      .toast--error .icon {
+        color: var(--nx-color-error);
+      }
+      .toast--warning {
+        border-left-color: var(--nx-color-warning);
+        color: var(--nx-color-on-surface-muted);
+      }
+      .toast--warning .icon {
+        color: var(--nx-color-warning);
+      }
+      .toast--info {
+        border-left-color: var(--nx-color-primary);
+        color: var(--nx-color-on-surface-muted);
+      }
+      .toast--info .icon {
+        color: var(--nx-color-primary);
+      }
+
+      /* ── Empty / Error state ── */
+      .state {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: var(--nx-space-3);
+        padding: var(--nx-space-12) var(--nx-space-6);
+        text-align: center;
+        min-width: 280px;
+      }
+      .state__icon {
+        font-family: 'Material Icons Round';
+        font-size: 48px;
+        line-height: 1;
+      }
+      .state__icon--empty {
+        color: var(--nx-color-outline-variant);
+      }
+      .state__icon--error {
+        color: var(--nx-color-error);
+      }
+      .state__title {
+        font-size: var(--nx-text-lg);
+        font-weight: var(--nx-weight-semibold);
+        letter-spacing: -0.2px;
+        color: var(--nx-color-on-surface);
+        margin: 0;
+      }
+      .state__desc {
+        font-size: var(--nx-text-base);
+        color: var(--nx-color-on-surface-faint);
+        margin: 0;
+        max-width: 280px;
+        line-height: 1.5;
+      }
+
+      /* ── Typography specimen ── */
+      .type-row {
+        display: flex;
+        align-items: baseline;
+        gap: var(--nx-space-6);
+        padding: var(--nx-space-3) 0;
+        border-bottom: 1px solid var(--nx-color-outline);
+      }
+      .type-row:last-child {
+        border-bottom: none;
+      }
+      .type-meta {
+        width: 110px;
+        flex-shrink: 0;
+        font-family: var(--nx-font-family-mono);
+        font-size: 11px;
+        color: var(--nx-color-on-surface-dim);
+      }
+      .type-sample {
+        color: var(--nx-color-on-surface);
+      }
+
+      /* ── Divider ── */
+      .divider {
+        height: 1px;
+        background: var(--nx-color-outline);
+        margin: var(--nx-space-12) 0;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- ── Header ─────────────────────────────────────────────────────────── -->
+    <div class="page-header">
+      <h1>Nexus Design System</h1>
+      <p>
+        Angular Material 3 · Linear aesthetic · <code>--nx-*</code> tokens ·
+        <code>shared/ui</code> wrappers · Inter typeface
+      </p>
+    </div>
+
+    <!-- ── Colour Palette ──────────────────────────────────────────────────── -->
+    <h2>Colour Palette</h2>
+    <div class="preview-grid">
+      <div class="card">
+        <p class="card-label">Surface ladder</p>
+        <div class="swatch-row">
+          <div class="swatch">
+            <div class="swatch__color" style="background: #010102; border: 1px solid #23252a"></div>
+            <div class="swatch__name">canvas</div>
+          </div>
+          <div class="swatch">
+            <div class="swatch__color" style="background: #0f1011"></div>
+            <div class="swatch__name">surface</div>
+          </div>
+          <div class="swatch">
+            <div class="swatch__color" style="background: #141516"></div>
+            <div class="swatch__name">surface-2</div>
+          </div>
+          <div class="swatch">
+            <div class="swatch__color" style="background: #18191a"></div>
+            <div class="swatch__name">surface-3</div>
+          </div>
+          <div class="swatch">
+            <div class="swatch__color" style="background: #23252a"></div>
+            <div class="swatch__name">outline</div>
+          </div>
+          <div class="swatch">
+            <div class="swatch__color" style="background: #34343a"></div>
+            <div class="swatch__name">outline-v</div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <p class="card-label">Brand accent — lavender-blue</p>
+        <div class="swatch-row">
+          <div class="swatch">
+            <div class="swatch__color" style="background: #5e6ad2"></div>
+            <div class="swatch__name">primary</div>
+          </div>
+          <div class="swatch">
+            <div class="swatch__color" style="background: #828fff"></div>
+            <div class="swatch__name">hover</div>
+          </div>
+          <div class="swatch">
+            <div class="swatch__color" style="background: rgba(94, 106, 210, 0.12)"></div>
+            <div class="swatch__name">surface</div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <p class="card-label">Ink / text scale</p>
+        <div class="swatch-row">
+          <div class="swatch">
+            <div class="swatch__color" style="background: #f7f8f8"></div>
+            <div class="swatch__name">ink</div>
+          </div>
+          <div class="swatch">
+            <div class="swatch__color" style="background: #d0d6e0"></div>
+            <div class="swatch__name">muted</div>
+          </div>
+          <div class="swatch">
+            <div class="swatch__color" style="background: #8a8f98"></div>
+            <div class="swatch__name">subtle</div>
+          </div>
+          <div class="swatch">
+            <div class="swatch__color" style="background: #62666d"></div>
+            <div class="swatch__name">dim</div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <p class="card-label">Semantic</p>
+        <div class="swatch-row">
+          <div class="swatch">
+            <div class="swatch__color" style="background: #27a644"></div>
+            <div class="swatch__name">success</div>
+          </div>
+          <div class="swatch">
+            <div class="swatch__color" style="background: #e5484d"></div>
+            <div class="swatch__name">error</div>
+          </div>
+          <div class="swatch">
+            <div class="swatch__color" style="background: #f76b15"></div>
+            <div class="swatch__name">warning</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Typography ──────────────────────────────────────────────────────── -->
+    <h2>Typography — Inter</h2>
+    <div class="card" style="max-width: 680px">
+      <div class="type-row">
+        <span class="type-meta">28px / 600 / -0.6</span
+        ><span class="type-sample" style="font-size: 28px; font-weight: 600; letter-spacing: -0.6px"
+          >Headline — Project overview</span
+        >
+      </div>
+      <div class="type-row">
+        <span class="type-meta">22px / 500 / -0.4</span
+        ><span class="type-sample" style="font-size: 22px; font-weight: 500; letter-spacing: -0.4px"
+          >Card title — Sprint backlog</span
+        >
+      </div>
+      <div class="type-row">
+        <span class="type-meta">20px / 400 / -0.2</span
+        ><span
+          class="type-sample"
+          style="font-size: 20px; font-weight: 400; letter-spacing: -0.2px; color: #d0d6e0"
+          >Subhead — 14 open issues</span
+        >
+      </div>
+      <div class="type-row">
+        <span class="type-meta">16px / 400 / -0.05</span
+        ><span
+          class="type-sample"
+          style="font-size: 16px; font-weight: 400; letter-spacing: -0.05px; color: #d0d6e0"
+          >Body — The quick brown fox jumps over the lazy dog.</span
+        >
+      </div>
+      <div class="type-row">
+        <span class="type-meta">14px / 500 / 0</span
+        ><span class="type-sample" style="font-size: 14px; font-weight: 500; color: #d0d6e0"
+          >Button label / body-sm</span
+        >
+      </div>
+      <div class="type-row">
+        <span class="type-meta">12px / 400 / 0</span
+        ><span class="type-sample" style="font-size: 12px; color: #8a8f98"
+          >Caption · meta · timestamp</span
+        >
+      </div>
+      <div class="type-row">
+        <span class="type-meta">13px / 500 / +0.4</span
+        ><span
+          class="type-sample"
+          style="
+            font-size: 13px;
+            font-weight: 500;
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
+            color: #8a8f98;
+          "
+          >EYEBROW / SECTION LABEL</span
+        >
+      </div>
+      <div class="type-row">
+        <span class="type-meta">mono / 13px / 400</span
+        ><span
+          class="type-sample"
+          style="font-family: 'JetBrains Mono', monospace; font-size: 13px; color: #5e6ad2"
+          >NXS-1042 · commit: a3f9c2d</span
+        >
+      </div>
+    </div>
+
+    <!-- ── Buttons ─────────────────────────────────────────────────────────── -->
+    <h2>Buttons — nx-button</h2>
+    <div class="preview-grid">
+      <div class="card">
+        <p class="card-label">Variants</p>
+        <div style="display: flex; flex-wrap: wrap; gap: var(--nx-space-2)">
+          <button class="btn btn--primary">Get started</button>
+          <button class="btn btn--secondary">Sign in</button>
+          <button class="btn btn--tertiary">Learn more</button>
+          <button class="btn btn--danger">Delete</button>
+          <button class="btn btn--ghost">Dismiss</button>
+          <button class="btn btn--inverse">Inverse CTA</button>
+        </div>
+      </div>
+      <div class="card">
+        <p class="card-label">Sizes</p>
+        <div style="display: flex; align-items: center; gap: var(--nx-space-3)">
+          <button class="btn btn--primary btn--sm">Small</button>
+          <button class="btn btn--primary">Medium</button>
+          <button class="btn btn--primary btn--lg">Large</button>
+        </div>
+      </div>
+      <div class="card">
+        <p class="card-label">States</p>
+        <div style="display: flex; gap: var(--nx-space-2)">
+          <button class="btn btn--primary" disabled>Disabled</button>
+          <button class="btn btn--secondary" disabled>Disabled</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Inputs ──────────────────────────────────────────────────────────── -->
+    <h2>Inputs — nx-input &amp; nx-select</h2>
+    <div class="preview-grid">
+      <div class="card">
+        <p class="card-label">Default</p>
+        <div class="field">
+          <label for="f-title">Issue title</label>
+          <input id="f-title" type="text" placeholder="Add a title…" />
+        </div>
+      </div>
+      <div class="card">
+        <p class="card-label">With hint</p>
+        <div class="field">
+          <label for="f-email">Email</label>
+          <input id="f-email" type="email" placeholder="you@company.com" />
+          <span class="hint">Used for notifications only.</span>
+        </div>
+      </div>
+      <div class="card">
+        <p class="card-label">Error state</p>
+        <div class="field">
+          <label for="f-ident">Identifier</label>
+          <input id="f-ident" type="text" value="NXS-???" class="has-error" />
+          <span class="error-text">Invalid issue identifier format.</span>
+        </div>
+      </div>
+      <div class="card">
+        <p class="card-label">Select</p>
+        <div class="field">
+          <label for="f-priority">Priority</label>
+          <select id="f-priority">
+            <option>Urgent</option>
+            <option selected>High</option>
+            <option>Medium</option>
+            <option>Low</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Cards ───────────────────────────────────────────────────────────── -->
+    <h2>Cards — nx-card</h2>
+    <div class="preview-grid">
+      <div class="nx-card">
+        <div class="nx-card__header">
+          <p class="nx-card__title">Authentication</p>
+          <p class="nx-card__subtitle">Feature · 4 open issues</p>
+        </div>
+        <div class="nx-card__body">
+          JWT-based auth with refresh token rotation. Login, registration, and password reset flows.
+        </div>
+        <div class="nx-card__footer">
+          <button class="btn btn--tertiary btn--sm">View</button>
+          <button class="btn btn--primary btn--sm">Open</button>
+        </div>
+      </div>
+      <div class="nx-card nx-card--surface2">
+        <div class="nx-card__header">
+          <p class="nx-card__title">Design System</p>
+          <p class="nx-card__subtitle">Foundation · In progress</p>
+        </div>
+        <div class="nx-card__body">
+          Angular Material 3 + Linear aesthetic tokens + shared/ui component layer.
+        </div>
+        <div class="nx-card__footer">
+          <button class="btn btn--primary btn--sm">Continue</button>
+        </div>
+      </div>
+      <div class="nx-card">
+        <div class="nx-card__header">
+          <p class="nx-card__title">API Gateway</p>
+          <p class="nx-card__subtitle">Infrastructure · Backlog</p>
+        </div>
+        <div class="nx-card__body">
+          Rate limiting, versioning, and request correlation across all bounded contexts.
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Table ───────────────────────────────────────────────────────────── -->
+    <h2>Table — nx-table</h2>
+    <div class="nx-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Identifier</th>
+            <th>Title</th>
+            <th>Assignee</th>
+            <th>Priority</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>
+              <span
+                style="
+                  font-family: 'JetBrains Mono', monospace;
+                  font-size: 12px;
+                  color: var(--nx-color-primary);
+                "
+                >NXS-041</span
+              >
+            </td>
+            <td>Implement nx-button wrapper</td>
+            <td>Alice Lim</td>
+            <td><span class="badge badge--error">Urgent</span></td>
+            <td><span class="badge badge--success">Done</span></td>
+          </tr>
+          <tr>
+            <td>
+              <span
+                style="
+                  font-family: 'JetBrains Mono', monospace;
+                  font-size: 12px;
+                  color: var(--nx-color-primary);
+                "
+                >NXS-042</span
+              >
+            </td>
+            <td>Design token remapping to Linear</td>
+            <td>Bob Tan</td>
+            <td><span class="badge badge--warning">High</span></td>
+            <td><span class="badge badge--neutral">In Progress</span></td>
+          </tr>
+          <tr>
+            <td>
+              <span
+                style="
+                  font-family: 'JetBrains Mono', monospace;
+                  font-size: 12px;
+                  color: var(--nx-color-primary);
+                "
+                >NXS-043</span
+              >
+            </td>
+            <td>DesignSync push to Claude Design</td>
+            <td>Carol Singh</td>
+            <td><span class="badge badge--neutral">Medium</span></td>
+            <td><span class="badge badge--neutral">Backlog</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- ── Dialog ──────────────────────────────────────────────────────────── -->
+    <h2>Dialog — nx-dialog</h2>
+    <div class="preview-grid">
+      <div class="dialog-mock">
+        <div class="dialog-mock__header">
+          <span class="dialog-mock__title">Archive project</span>
+          <button class="dialog-mock__close" aria-label="Close">close</button>
+        </div>
+        <div class="dialog-mock__body">
+          This will archive
+          <strong style="color: var(--nx-color-on-surface)">Design System v1</strong> and remove it
+          from your active projects. You can restore it at any time.
+        </div>
+        <div class="dialog-mock__footer">
+          <button class="btn btn--tertiary btn--sm">Cancel</button>
+          <button class="btn btn--primary btn--sm">Archive</button>
+        </div>
+      </div>
+      <div class="dialog-mock" style="border-color: var(--nx-color-error)">
+        <div class="dialog-mock__header">
+          <span class="dialog-mock__title" style="color: var(--nx-color-error)">Delete issue</span>
+          <button class="dialog-mock__close" aria-label="Close">close</button>
+        </div>
+        <div class="dialog-mock__body">
+          This will permanently delete
+          <strong style="color: var(--nx-color-on-surface)">NXS-041</strong>. This action cannot be
+          undone.
+        </div>
+        <div class="dialog-mock__footer">
+          <button class="btn btn--tertiary btn--sm">Cancel</button>
+          <button class="btn btn--danger btn--sm">Delete</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Toast ───────────────────────────────────────────────────────────── -->
+    <h2>Toast — NxToast</h2>
+    <div class="preview-grid">
+      <div class="toast toast--success">
+        <span class="icon">check_circle</span>Issue NXS-041 marked as done.
+      </div>
+      <div class="toast toast--error">
+        <span class="icon">error</span>Failed to save. Check your connection.
+      </div>
+      <div class="toast toast--warning">
+        <span class="icon">warning</span>Session expires in 5 minutes.
+      </div>
+      <div class="toast toast--info">
+        <span class="icon">info</span>New release available. Refresh to update.
+      </div>
+    </div>
+
+    <!-- ── Empty State ─────────────────────────────────────────────────────── -->
+    <h2>Empty &amp; Error States</h2>
+    <div class="preview-grid">
+      <div class="card">
+        <div class="state">
+          <span class="state__icon state__icon--empty">inbox</span>
+          <p class="state__title">No issues yet</p>
+          <p class="state__desc">Create your first issue to start tracking work on this project.</p>
+          <button class="btn btn--primary btn--sm" style="margin-top: var(--nx-space-2)">
+            New issue
+          </button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="state">
+          <span class="state__icon state__icon--empty">filter_list_off</span>
+          <p class="state__title">No results</p>
+          <p class="state__desc">No issues match your current filters. Try changing your search.</p>
+          <button class="btn btn--secondary btn--sm" style="margin-top: var(--nx-space-2)">
+            Clear filters
+          </button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="state">
+          <span class="state__icon state__icon--error">error_outline</span>
+          <p class="state__title">Something went wrong</p>
+          <p class="state__desc">We couldn't load the issues. Our team has been notified.</p>
+          <button class="btn btn--secondary btn--sm" style="margin-top: var(--nx-space-2)">
+            Try again
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Status badges ───────────────────────────────────────────────────── -->
+    <h2>Status Badges</h2>
+    <div class="preview-grid">
+      <div class="card">
+        <div style="display: flex; flex-wrap: wrap; gap: var(--nx-space-2)">
+          <span class="badge badge--success">Done</span>
+          <span class="badge badge--error">Urgent</span>
+          <span class="badge badge--warning">In Progress</span>
+          <span class="badge badge--neutral">Backlog</span>
+          <span
+            class="badge"
+            style="background: var(--nx-color-primary-surface); color: var(--nx-color-primary)"
+            >In Review</span
+          >
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

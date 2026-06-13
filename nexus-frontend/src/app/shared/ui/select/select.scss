@@ -1,0 +1,9 @@
+:host {
+  display: block;
+}
+
+.nx-select {
+  width: 100%;
+
+  --mdc-outlined-text-field-container-shape: var(--nx-radius-sm);
+}

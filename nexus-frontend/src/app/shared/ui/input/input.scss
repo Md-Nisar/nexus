@@ -1,0 +1,14 @@
+:host {
+  display: block;
+}
+
+.nx-input {
+  width: 100%;
+
+  --mdc-outlined-text-field-container-shape: var(--nx-radius-sm);
+  --mdc-filled-text-field-container-shape: var(--nx-radius-sm) var(--nx-radius-sm) 0 0;
+
+  &.mat-mdc-form-field-has-icon-prefix .mat-mdc-form-field-infix {
+    padding-inline-start: var(--nx-space-2);
+  }
+}

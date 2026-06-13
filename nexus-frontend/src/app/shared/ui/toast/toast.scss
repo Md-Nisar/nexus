@@ -1,0 +1,42 @@
+// Global toast styles — applied via panelClass on MatSnackBar overlays.
+// Loaded in angular.json styles[] so the CDK overlay (outside component tree) picks them up.
+.nx-toast {
+  &.mat-mdc-snack-bar-container {
+    border-radius: var(--nx-radius-sm);
+    min-width: 320px;
+    max-width: 480px;
+  }
+
+  .mdc-snackbar__surface {
+    // Dark surface with light ink — matches the Linear dark-canvas aesthetic.
+    // NOT inverted (on-surface / surface swap was wrong in dark mode).
+    background-color: var(--nx-color-surface-2) !important;
+    color: var(--nx-color-on-surface) !important;
+    border-left: 4px solid transparent;
+    box-shadow: 0 2px 8px 0 rgba(0, 0, 0, 0.4);
+  }
+
+  .mat-mdc-snack-bar-label {
+    color: var(--nx-color-on-surface-muted);
+  }
+
+  .mat-mdc-button.mat-mdc-snack-bar-action {
+    color: var(--nx-color-primary);
+  }
+
+  &--success .mdc-snackbar__surface {
+    border-left-color: var(--nx-color-success);
+  }
+
+  &--error .mdc-snackbar__surface {
+    border-left-color: var(--nx-color-error);
+  }
+
+  &--warning .mdc-snackbar__surface {
+    border-left-color: var(--nx-color-warning);
+  }
+
+  &--info .mdc-snackbar__surface {
+    border-left-color: var(--nx-color-primary);
+  }
+}
