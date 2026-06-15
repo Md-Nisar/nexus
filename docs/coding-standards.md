@@ -26,7 +26,7 @@
 - Columns: `snake_case` — `created_at`, `token_hash`
 - Indexes: `idx_<table>_<columns>` — `idx_users_email`
 - Foreign keys: `fk_<from_table>_<to_table>` — `fk_orders_users`
-- Primary keys: `id` (prefer CHAR(26) ULID for distributed contexts)
+- Primary keys: `id` as `BINARY(16)` UUIDv7 — see ADR-0005 (`docs/adr/0005-uuidv7-primary-keys.md`)
 
 ---
 

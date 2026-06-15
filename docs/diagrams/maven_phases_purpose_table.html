@@ -1,0 +1,179 @@
+
+<style>
+table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+th { font-weight: 500; font-size: 12px; color: var(--color-text-secondary); text-align: left; padding: 8px 12px; border-bottom: 0.5px solid var(--color-border-secondary); }
+td { padding: 9px 12px; border-bottom: 0.5px solid var(--color-border-tertiary); color: var(--color-text-primary); vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: var(--color-background-secondary); }
+.phase { font-family: var(--font-mono); font-size: 12px; white-space: nowrap; }
+.cmd { font-family: var(--font-mono); font-size: 11px; color: var(--color-text-secondary); white-space: nowrap; }
+.badge { display: inline-block; font-size: 11px; font-weight: 500; padding: 2px 8px; border-radius: 4px; white-space: nowrap; }
+.b-teal  { background: #E1F5EE; color: #085041; }
+.b-purple{ background: #EEEDFE; color: #3C3489; }
+.b-amber { background: #FAEEDA; color: #633806; }
+.group-label { font-size: 11px; font-weight: 500; color: var(--color-text-tertiary); padding: 10px 12px 4px; letter-spacing: 0.04em; text-transform: uppercase; background: var(--color-background-secondary); }
+</style>
+
+<h2 class="sr-only">Maven lifecycle phases, commands, and their purpose</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:22%">Phase</th>
+      <th style="width:28%">Command</th>
+      <th style="width:14%">Lifecycle</th>
+      <th style="width:36%">Purpose</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr><td colspan="4" class="group-label">Clean</td></tr>
+    <tr>
+      <td><span class="phase">pre-clean</span></td>
+      <td><span class="cmd">mvn pre-clean</span></td>
+      <td><span class="badge b-teal">clean</span></td>
+      <td>Executes processes needed before the actual project cleaning</td>
+    </tr>
+    <tr>
+      <td><span class="phase">clean</span></td>
+      <td><span class="cmd">mvn clean</span></td>
+      <td><span class="badge b-teal">clean</span></td>
+      <td>Removes the <span style="font-family:var(--font-mono);font-size:11px">target/</span> directory and all generated build outputs</td>
+    </tr>
+    <tr>
+      <td><span class="phase">post-clean</span></td>
+      <td><span class="cmd">mvn post-clean</span></td>
+      <td><span class="badge b-teal">clean</span></td>
+      <td>Executes processes needed to finalise the project cleaning</td>
+    </tr>
+
+    <tr><td colspan="4" class="group-label">Default</td></tr>
+    <tr>
+      <td><span class="phase">validate</span></td>
+      <td><span class="cmd">mvn validate</span></td>
+      <td><span class="badge b-purple">default</span></td>
+      <td>Validates that the project is correct and all necessary information is available</td>
+    </tr>
+    <tr>
+      <td><span class="phase">initialize</span></td>
+      <td><span class="cmd">mvn initialize</span></td>
+      <td><span class="badge b-purple">default</span></td>
+      <td>Initialises build state — sets properties, creates directories</td>
+    </tr>
+    <tr>
+      <td><span class="phase">generate-sources</span></td>
+      <td><span class="cmd">mvn generate-sources</span></td>
+      <td><span class="badge b-purple">default</span></td>
+      <td>Generates source code (e.g. from WSDL, Thrift, or annotation processors)</td>
+    </tr>
+    <tr>
+      <td><span class="phase">process-sources</span></td>
+      <td><span class="cmd">mvn process-sources</span></td>
+      <td><span class="badge b-purple">default</span></td>
+      <td>Processes the source code, e.g. filtering or replacing tokens</td>
+    </tr>
+    <tr>
+      <td><span class="phase">compile</span></td>
+      <td><span class="cmd">mvn compile</span></td>
+      <td><span class="badge b-purple">default</span></td>
+      <td>Compiles the project's main source code into <span style="font-family:var(--font-mono);font-size:11px">target/classes</span></td>
+    </tr>
+    <tr>
+      <td><span class="phase">process-classes</span></td>
+      <td><span class="cmd">mvn process-classes</span></td>
+      <td><span class="badge b-purple">default</span></td>
+      <td>Post-processes compiled classes — bytecode enhancement or instrumentation</td>
+    </tr>
+    <tr>
+      <td><span class="phase">generate-test-sources</span></td>
+      <td><span class="cmd">mvn generate-test-sources</span></td>
+      <td><span class="badge b-purple">default</span></td>
+      <td>Generates test source code to include in compilation</td>
+    </tr>
+    <tr>
+      <td><span class="phase">test-compile</span></td>
+      <td><span class="cmd">mvn test-compile</span></td>
+      <td><span class="badge b-purple">default</span></td>
+      <td>Compiles test source code into <span style="font-family:var(--font-mono);font-size:11px">target/test-classes</span></td>
+    </tr>
+    <tr>
+      <td><span class="phase">test</span></td>
+      <td><span class="cmd">mvn test</span></td>
+      <td><span class="badge b-purple">default</span></td>
+      <td>Runs unit tests using a framework such as JUnit or TestNG — does not package</td>
+    </tr>
+    <tr>
+      <td><span class="phase">prepare-package</span></td>
+      <td><span class="cmd">mvn prepare-package</span></td>
+      <td><span class="badge b-purple">default</span></td>
+      <td>Performs pre-packaging operations — unpacking, merging, or modifying resources</td>
+    </tr>
+    <tr>
+      <td><span class="phase">package</span></td>
+      <td><span class="cmd">mvn package</span></td>
+      <td><span class="badge b-purple">default</span></td>
+      <td>Packages compiled code into a distributable format — JAR, WAR, EAR</td>
+    </tr>
+    <tr>
+      <td><span class="phase">pre-integration-test</span></td>
+      <td><span class="cmd">mvn pre-integration-test</span></td>
+      <td><span class="badge b-purple">default</span></td>
+      <td>Sets up the environment for integration tests — starts servers or databases</td>
+    </tr>
+    <tr>
+      <td><span class="phase">integration-test</span></td>
+      <td><span class="cmd">mvn integration-test</span></td>
+      <td><span class="badge b-purple">default</span></td>
+      <td>Deploys the package and runs integration tests against it</td>
+    </tr>
+    <tr>
+      <td><span class="phase">post-integration-test</span></td>
+      <td><span class="cmd">mvn post-integration-test</span></td>
+      <td><span class="badge b-purple">default</span></td>
+      <td>Tears down the integration test environment — stops servers</td>
+    </tr>
+    <tr>
+      <td><span class="phase">verify</span></td>
+      <td><span class="cmd">mvn verify</span></td>
+      <td><span class="badge b-purple">default</span></td>
+      <td>Runs checks to confirm the package is valid and meets quality criteria</td>
+    </tr>
+    <tr>
+      <td><span class="phase">install</span></td>
+      <td><span class="cmd">mvn install</span></td>
+      <td><span class="badge b-purple">default</span></td>
+      <td>Installs the package into the local repository for use as a dependency by other projects</td>
+    </tr>
+    <tr>
+      <td><span class="phase">deploy</span></td>
+      <td><span class="cmd">mvn deploy</span></td>
+      <td><span class="badge b-purple">default</span></td>
+      <td>Copies the final package to the remote repository for sharing with other teams or CI environments</td>
+    </tr>
+
+    <tr><td colspan="4" class="group-label">Site</td></tr>
+    <tr>
+      <td><span class="phase">pre-site</span></td>
+      <td><span class="cmd">mvn pre-site</span></td>
+      <td><span class="badge b-amber">site</span></td>
+      <td>Executes processes needed before site generation</td>
+    </tr>
+    <tr>
+      <td><span class="phase">site</span></td>
+      <td><span class="cmd">mvn site</span></td>
+      <td><span class="badge b-amber">site</span></td>
+      <td>Generates the project's documentation site — Javadoc, reports, test results</td>
+    </tr>
+    <tr>
+      <td><span class="phase">post-site</span></td>
+      <td><span class="cmd">mvn post-site</span></td>
+      <td><span class="badge b-amber">site</span></td>
+      <td>Executes processes needed to finalise site generation and prepare for deployment</td>
+    </tr>
+    <tr>
+      <td><span class="phase">site-deploy</span></td>
+      <td><span class="cmd">mvn site-deploy</span></td>
+      <td><span class="badge b-amber">site</span></td>
+      <td>Deploys the generated site to a web server — typically via SCP or FTP</td>
+    </tr>
+  </tbody>
+</table>

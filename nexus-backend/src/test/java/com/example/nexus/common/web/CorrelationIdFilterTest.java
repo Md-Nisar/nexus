@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import jakarta.servlet.ServletException;
 import java.io.IOException;
+
+import org.jspecify.annotations.NonNull;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 import org.springframework.mock.web.MockFilterChain;
@@ -60,7 +62,7 @@ class CorrelationIdFilterTest {
 
         filter.doFilter(request, response, new MockFilterChain() {
             @Override
-            public void doFilter(jakarta.servlet.ServletRequest req, jakarta.servlet.ServletResponse res)
+            public void doFilter(jakarta.servlet.@NonNull ServletRequest req, jakarta.servlet.@NonNull ServletResponse res)
                     throws IOException, ServletException {
                 seenInChain[0] = MDC.get(CorrelationIdFilter.MDC_KEY);
                 super.doFilter(req, res);

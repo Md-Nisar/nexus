@@ -1,0 +1,23 @@
+# Test-profile config for Spring context smoke tests (NexusBackendApplicationTests).
+# Real integration tests (*IT) use Testcontainers MySQL — see TESTING.md.
+spring:
+  datasource:
+    url: jdbc:h2:mem:nexus
+    username: sa
+    password: ""
+    driver-class-name: org.h2.Driver
+  jpa:
+    hibernate:
+      ddl-auto: create-drop
+  flyway:
+    # Migrations are MySQL-flavoured SQL; they only run against real MySQL
+    enabled: false
+
+# Dev-placeholder keys bypass SEC-T5 because active profile is "test".
+# Not real credentials — never use outside dev/test.
+nexus:
+  identity:
+    encryption:
+      password: ${NEXUS_ENC_PASSWORD_EXAMPLE:dev-not-a-secret-encryption-password}
+      salt: ${NEXUS_ENC_SALT_EXAMPLE:deadbeefdeadbeefdeadbeefdeadbeef}
+    hmac-key: ${NEXUS_HMAC_KEY_EXAMPLE:test-hmac-key-min-32-bytes-long-example-value}
