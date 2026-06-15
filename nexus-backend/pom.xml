@@ -82,6 +82,14 @@
         </dependency>
 
         <!-- Database migrations — Flyway owns the schema (see docs/adr/0003) -->
+        <!-- spring-boot-flyway: Spring Boot 4.0 modularised Flyway auto-configuration out of
+             spring-boot-autoconfigure; without this artifact FlywayAutoConfiguration is absent
+             from the auto-configuration registry and migrations are silently skipped. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-flyway</artifactId>
+        </dependency>
+
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-core</artifactId>
