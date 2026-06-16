@@ -21,13 +21,13 @@ import lombok.NoArgsConstructor;
 public class AuthEvent {
 
   @Id
-  @Column(name = "id", length = 16, nullable = false)
+  @Column(name = "id", columnDefinition = "BINARY(16)", nullable = false)
   private UUID id;
 
-  @Column(name = "user_id", length = 16)
+  @Column(name = "user_id", columnDefinition = "BINARY(16)")
   private UUID userId; // nullable — unknown-email attacks
 
-  @Column(name = "tenant_id", length = 16)
+  @Column(name = "tenant_id", columnDefinition = "BINARY(16)")
   private UUID tenantId; // nullable — pre-auth events
 
   @Column(name = "event_type", length = 64, nullable = false)

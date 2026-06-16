@@ -22,10 +22,10 @@ import lombok.NoArgsConstructor;
 public class AuthToken {
 
   @Id
-  @Column(name = "id", length = 16, nullable = false)
+  @Column(name = "id", columnDefinition = "BINARY(16)", nullable = false)
   private UUID id;
 
-  @Column(name = "user_id", length = 16, nullable = false)
+  @Column(name = "user_id", columnDefinition = "BINARY(16)", nullable = false)
   private UUID userId;
 
   @Enumerated(EnumType.STRING)

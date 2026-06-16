@@ -21,16 +21,16 @@ import lombok.NoArgsConstructor;
 public class RefreshToken {
 
   @Id
-  @Column(name = "id", length = 16, nullable = false)
+  @Column(name = "id", columnDefinition = "BINARY(16)", nullable = false)
   private UUID id;
 
-  @Column(name = "user_id", length = 16, nullable = false)
+  @Column(name = "user_id", columnDefinition = "BINARY(16)", nullable = false)
   private UUID userId; // raw UUID, no @ManyToOne — avoids lazy-load traps
 
   @Column(name = "token_hash", length = 64, nullable = false)
   private String tokenHash; // SHA-256 hex
 
-  @Column(name = "family_id", length = 16, nullable = false)
+  @Column(name = "family_id", columnDefinition = "BINARY(16)", nullable = false)
   private UUID familyId;
 
   @Column(name = "expires_at", nullable = false)

@@ -20,10 +20,10 @@ import lombok.NoArgsConstructor;
 public class User {
 
   @Id
-  @Column(name = "id", length = 16, nullable = false)
+  @Column(name = "id", columnDefinition = "BINARY(16)", nullable = false)
   private UUID id;
 
-  @Column(name = "tenant_id", length = 16, nullable = false)
+  @Column(name = "tenant_id", columnDefinition = "BINARY(16)", nullable = false)
   private UUID tenantId;
 
   @Column(name = "email_cipher", nullable = false)
