@@ -91,15 +91,20 @@ CREATE INDEX idx_auth_events_event_type_created_at ON auth_events (event_type, c
 
 -- ---------------------------------------------------------------------------
 -- Append-only enforcement on auth_events (NFR-009, AC-5).
--- Single-statement SIGNAL triggers — no BEGIN/END, no DELIMITER.
--- flyway-mysql parses CREATE TRIGGER boundaries natively; DELIMITER is a CLI construct only.
+-- BEGIN/END blocks required so flyway-mysql recognises the trigger boundary
+-- before the body semicolon — single-statement form without BEGIN/END causes
+-- HY000 on MySQL 8.4 via JDBC. DELIMITER is a CLI construct only.
 -- ---------------------------------------------------------------------------
 CREATE TRIGGER trg_auth_events_no_update
     BEFORE UPDATE ON auth_events
     FOR EACH ROW
+BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'auth_events is append-only';
+END;
 
 CREATE TRIGGER trg_auth_events_no_delete
     BEFORE DELETE ON auth_events
     FOR EACH ROW
+BEGIN
     SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'auth_events is append-only';
+END;
