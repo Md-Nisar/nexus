@@ -1,4 +1,4 @@
-# Test-profile config for Spring context smoke tests (NexusBackendApplicationTests).
+# Smoke-profile config for Spring context smoke tests (NexusBackendApplicationTests).
 # Real integration tests (*IT) use Testcontainers MySQL — see TESTING.md.
 spring:
   datasource:
@@ -13,8 +13,8 @@ spring:
     # Migrations are MySQL-flavoured SQL; they only run against real MySQL
     enabled: false
 
-# Dev-placeholder keys bypass SEC-T5 because active profile is "test".
-# Not real credentials — never use outside dev/test.
+# Dev-placeholder keys bypass SEC-T5 because active profile is "smoke".
+# Not real credentials — never use outside dev/smoke.
 nexus:
   identity:
     encryption:

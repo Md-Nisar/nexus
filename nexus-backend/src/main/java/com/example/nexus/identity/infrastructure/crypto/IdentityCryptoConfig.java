@@ -41,16 +41,16 @@ public final class IdentityCryptoConfig {
       @Value("${nexus.identity.encryption.salt}") String encryptionSalt,
       @Value("${nexus.identity.hmac-key}") String hmacKey,
       Environment environment) {
-    boolean devOrTest =
+    boolean devOrSmoke =
         Arrays.stream(environment.getActiveProfiles())
-            .anyMatch(p -> p.equals(Profiles.DEV) || p.equals(Profiles.TEST));
-    validatePassword(encryptionPassword, devOrTest);
-    validateSalt(encryptionSalt, devOrTest);
-    this.hmacKeyBytes = validateAndGetHmacKey(hmacKey, devOrTest);
+            .anyMatch(p -> p.equals(Profiles.DEV) || p.equals(Profiles.SMOKE));
+    validatePassword(encryptionPassword, devOrSmoke);
+    validateSalt(encryptionSalt, devOrSmoke);
+    this.hmacKeyBytes = validateAndGetHmacKey(hmacKey, devOrSmoke);
     // Encryptors.text() → AES-CBC (no AEAD). delux() → HexEncodingTextEncryptor(stronger())
     // → AES-256-GCM with random IV per call, required by SEC-T1/SEC-T8.
     this.textEncryptor = Encryptors.delux(encryptionPassword, encryptionSalt);
-    log.info(
+    log.debug(
         "Identity crypto configured: encryptor=AES-256-GCM hmacKeyLength={}bytes",
         this.hmacKeyBytes.length);
   }
@@ -65,7 +65,7 @@ public final class IdentityCryptoConfig {
     return hmacKeyBytes.clone();
   }
 
-  private void validatePassword(String encPasswd, boolean devOrTest) {
+  private void validatePassword(String encPasswd, boolean devOrSmoke) {
     if (encPasswd == null || encPasswd.isBlank()) {
       throw new IllegalStateException("nexus.identity.encryption.password must not be blank");
     }
@@ -73,14 +73,14 @@ public final class IdentityCryptoConfig {
       throw new IllegalStateException(
           "nexus.identity.encryption.password must be at least 16 characters");
     }
-    if (!devOrTest && DEV_PASSWORD_PLACEHOLDER.equals(encPasswd)) {
+    if (!devOrSmoke && DEV_PASSWORD_PLACEHOLDER.equals(encPasswd)) {
       throw new IllegalStateException(
           "nexus.identity.encryption.password:"
-              + " dev placeholder key must not be used outside dev/test profile");
+              + " dev placeholder key must not be used outside dev/smoke profile");
     }
   }
 
-  private void validateSalt(String salt, boolean devOrTest) {
+  private void validateSalt(String salt, boolean devOrSmoke) {
     if (salt == null || salt.isBlank()) {
       throw new IllegalStateException("nexus.identity.encryption.salt must not be blank");
     }
@@ -92,14 +92,14 @@ public final class IdentityCryptoConfig {
       throw new IllegalStateException(
           "nexus.identity.encryption.salt must be valid lowercase hex");
     }
-    if (!devOrTest && DEV_SALT_PLACEHOLDER.equals(salt)) {
+    if (!devOrSmoke && DEV_SALT_PLACEHOLDER.equals(salt)) {
       throw new IllegalStateException(
           "nexus.identity.encryption.salt:"
-              + " dev placeholder salt must not be used outside dev/test profile");
+              + " dev placeholder salt must not be used outside dev/smoke profile");
     }
   }
 
-  private byte[] validateAndGetHmacKey(String hmacKey, boolean devOrTest) {
+  private byte[] validateAndGetHmacKey(String hmacKey, boolean devOrSmoke) {
     if (hmacKey == null || hmacKey.isBlank()) {
       throw new IllegalStateException("nexus.identity.hmac-key must not be blank");
     }
@@ -107,10 +107,10 @@ public final class IdentityCryptoConfig {
     if (keyBytes.length < 32) {
       throw new IllegalStateException("nexus.identity.hmac-key must be at least 32 bytes");
     }
-    if (!devOrTest && DEV_HMAC_PLACEHOLDER.equals(hmacKey)) {
+    if (!devOrSmoke && DEV_HMAC_PLACEHOLDER.equals(hmacKey)) {
       throw new IllegalStateException(
           "nexus.identity.hmac-key:"
-              + " dev placeholder key must not be used outside dev/test profile");
+              + " dev placeholder key must not be used outside dev/smoke profile");
     }
     return keyBytes;
   }

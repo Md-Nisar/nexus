@@ -9,12 +9,16 @@ package com.example.nexus.common;
  * <ul>
  *   <li>{@link #DEV} — local development: SQL logging, debug log level, placeholder crypto keys.
  *       Active by default (see {@code application.yml → spring.profiles.active}).
- *   <li>{@link #TEST} — H2 in-memory smoke test: Flyway disabled, {@code ddl-auto=create-drop}.
- *       Active only for {@code NexusBackendApplicationTests} via {@code @ActiveProfiles}.
+ *   <li>{@link #SMOKE} — H2 in-memory context smoke test: Flyway disabled, {@code
+ *       ddl-auto=create-drop}. Active only for {@code NexusBackendApplicationTests} via {@code
+ *       @ActiveProfiles}. Named "smoke" rather than "test" to avoid confusion with integration
+ *       tests ({@code *IT}) which do not use a named profile.
  * </ul>
  *
  * <p>Integration tests ({@code *IT}) do not use a named profile — they activate Testcontainers
  * MySQL and override properties via {@code TestcontainersConfiguration}.
+ *
+ * @see MavenProfiles for build-time Maven profile constants
  */
 public final class Profiles {
 
@@ -22,10 +26,11 @@ public final class Profiles {
   public static final String DEV = "dev";
 
   /**
-   * H2 in-memory smoke-test profile. Flyway disabled, Hibernate {@code create-drop}, placeholder
-   * crypto keys. Never use in shared, staging, or production environments.
+   * H2 in-memory context smoke-test profile. Flyway disabled, Hibernate {@code create-drop},
+   * placeholder crypto keys. Named "smoke" to distinguish from integration tests ({@code *IT}).
+   * Never use in shared, staging, or production environments.
    */
-  public static final String TEST = "test";
+  public static final String SMOKE = "smoke";
 
   private Profiles() {}
 }

@@ -11,7 +11,7 @@ import org.testcontainers.utility.MountableFile;
  * Shared Testcontainers setup for integration tests (*IT). {@code @ServiceConnection} wires the
  * container's JDBC URL and credentials into the Spring context automatically. The
  * {@link DynamicPropertyRegistrar} bean overrides Flyway and ddl-auto so no profile-specific file
- * (e.g. {@code application-test.yml}) can silently disable migrations in the IT context.
+ * (e.g. {@code application-smoke.yml}) can silently disable migrations in the IT context.
  */
 @TestConfiguration(proxyBeanMethods = false)
 public class TestcontainersConfiguration {
@@ -35,7 +35,7 @@ public class TestcontainersConfiguration {
     @Bean
     DynamicPropertyRegistrar itProperties() {
         return registry -> {
-            // Pin Flyway + ddl-auto regardless of which profile files load (e.g. application-test.yml
+            // Pin Flyway + ddl-auto regardless of which profile files load (e.g. application-smoke.yml
             // sets flyway.enabled=false for the H2 smoke test; we must not inherit that here).
             registry.add("spring.flyway.enabled", () -> "true");
             registry.add("spring.jpa.hibernate.ddl-auto", () -> "validate");

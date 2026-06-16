@@ -82,9 +82,9 @@
         </dependency>
 
         <!-- Database migrations — Flyway owns the schema (see docs/adr/0003) -->
-        <!-- spring-boot-flyway: Spring Boot 4.0 modularised Flyway auto-configuration out of
+        <!-- spring-boot-flyway: Spring Boot 4.0 modularized Flyway autoconfiguration out of
              spring-boot-autoconfigure; without this artifact FlywayAutoConfiguration is absent
-             from the auto-configuration registry and migrations are silently skipped. -->
+             from the autoconfiguration registry and migrations are silently skipped. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-flyway</artifactId>
@@ -451,6 +451,7 @@
                         <version>${dependency-check.version}</version>
                         <configuration>
                             <failBuildOnCVSS>7</failBuildOnCVSS>
+                            <!--suppress UnresolvedMavenProperty -->
                             <nvdApiKey>${env.NVD_API_KEY}</nvdApiKey>
                         </configuration>
                         <executions>

@@ -6,8 +6,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 
 @SpringBootTest
-@ActiveProfiles(Profiles.TEST)
-class NexusBackendApplicationTests {
+@ActiveProfiles(Profiles.SMOKE)
+class NexusSmokeTest {
 
     @Test
     void contextLoads() {

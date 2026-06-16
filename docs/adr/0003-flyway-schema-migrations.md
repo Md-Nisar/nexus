@@ -17,7 +17,7 @@ The backend used `spring.jpa.hibernate.ddl-auto=update`: Hibernate diffed entiti
 - `spring.jpa.hibernate.ddl-auto=validate` in every profile that runs Flyway: startup fails loudly if entities and schema disagree, which catches forgotten migrations at the first boot rather than at the first query.
 - Non-additive changes (rename, drop, type change) require an expand→contract two-step deploy plan, reviewed in the design phase.
 - Integration tests (`*IT`) run the real migrations against Testcontainers MySQL, so every migration is executed in CI before it touches a shared environment.
-- The H2 `test` profile disables Flyway (migrations are MySQL-flavoured SQL); it exists only for the no-Docker context smoke test.
+- The H2 `smoke` profile disables Flyway (migrations are MySQL-flavoured SQL); it exists only for the no-Docker context smoke test.
 
 ## Alternatives considered
 

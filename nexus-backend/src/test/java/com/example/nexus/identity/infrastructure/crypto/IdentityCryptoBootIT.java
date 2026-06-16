@@ -72,8 +72,8 @@ class IdentityCryptoBootIT {
   }
 
   @Test
-  void should_failFast_when_devKeyUsedInNonDevTestProfile() {
-    // The dev password placeholder must be rejected when the active profile is neither "dev" nor "test"
+  void should_failFast_when_devKeyUsedInNonDevSmokeProfile() {
+    // The dev password placeholder must be rejected when the active profile is neither "dev" nor "smoke"
     runner
         .withPropertyValues(
             "nexus.identity.encryption.password=" + DEV_PASSWORD_PLACEHOLDER,

@@ -14,7 +14,7 @@ spring:
       enabled: true
 
   datasource:
-    url: ${DB_URL:jdbc:mysql://localhost:3306/nexus?useSSL=false&serverTimezone=UTC}
+    url: ${DB_URL:jdbc:mysql://localhost:3306/nexus?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC}
     username: ${DB_USERNAME:root}
     password: ${DB_PASSWORD:root}
 
