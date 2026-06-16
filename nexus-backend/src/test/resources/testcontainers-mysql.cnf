@@ -1,0 +1,5 @@
+[mysqld]
+# MySQL 8.4 enables binary logging by default and removed SUPER privilege.
+# log_bin_trust_function_creators lets non-SUPER users create triggers/functions
+# when binary logging is on. Required for the SIGNAL triggers in V2 migration.
+log_bin_trust_function_creators=1

@@ -14,7 +14,7 @@ spring:
       enabled: true
 
   datasource:
-    url: ${DB_URL:jdbc:mysql://localhost:3306/nexus?useSSL=false&serverTimezone=UTC}
+    url: ${DB_URL:jdbc:mysql://localhost:3306/nexus?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC}
     username: ${DB_USERNAME:root}
     password: ${DB_PASSWORD:root}
 
@@ -53,4 +53,13 @@ springdoc:
     path: /v3/api-docs
   swagger-ui:
     path: /swagger-ui.html
+
+# Identity context crypto material — REQUIRED in every Flyway-enabled environment.
+# Missing key → fast-fail startup (IdentityCryptoConfig). Source from Vault/env vars in prod.
+nexus:
+  identity:
+    encryption:
+      password: ${NEXUS_IDENTITY_ENCRYPTION_PASSWORD}  # AES-256-GCM master password (>=16 chars)
+      salt: ${NEXUS_IDENTITY_ENCRYPTION_SALT}          # hex-encoded KDF salt (>=32 hex chars)
+    hmac-key: ${NEXUS_IDENTITY_HMAC_KEY}               # HMAC-SHA256 key for email blind index (>=32 bytes)
 

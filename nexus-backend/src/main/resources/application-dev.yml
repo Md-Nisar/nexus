@@ -9,3 +9,12 @@ spring:
 logging:
   level:
     com.example.nexus: DEBUG
+
+# DEV ONLY — non-secret placeholder keys for local development without a vault.
+# MUST NOT be used in shared, staging, or production environments.
+nexus:
+  identity:
+    encryption:
+      password: dev-not-a-secret-encryption-password
+      salt: deadbeefdeadbeefdeadbeefdeadbeef
+    hmac-key: dev-not-a-secret-hmac-key-min-32-bytes-long
