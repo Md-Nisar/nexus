@@ -1,5 +1,6 @@
 package com.example.nexus.identity.infrastructure.crypto;
 
+import com.example.nexus.common.Profiles;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import org.slf4j.Logger;
@@ -42,7 +43,7 @@ public final class IdentityCryptoConfig {
       Environment environment) {
     boolean devOrTest =
         Arrays.stream(environment.getActiveProfiles())
-            .anyMatch(p -> p.equals("dev") || p.equals("test"));
+            .anyMatch(p -> p.equals(Profiles.DEV) || p.equals(Profiles.TEST));
     validatePassword(encryptionPassword, devOrTest);
     validateSalt(encryptionSalt, devOrTest);
     this.hmacKeyBytes = validateAndGetHmacKey(hmacKey, devOrTest);

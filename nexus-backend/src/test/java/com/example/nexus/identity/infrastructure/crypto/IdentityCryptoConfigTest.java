@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.example.nexus.common.Profiles;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.env.Environment;
 import org.springframework.security.crypto.encrypt.TextEncryptor;
@@ -26,7 +27,7 @@ class IdentityCryptoConfigTest {
 
   private Environment devEnv() {
     Environment env = mock(Environment.class);
-    when(env.getActiveProfiles()).thenReturn(new String[] {"dev"});
+    when(env.getActiveProfiles()).thenReturn(new String[] {Profiles.DEV});
     return env;
   }
 
