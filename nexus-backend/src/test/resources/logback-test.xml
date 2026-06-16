@@ -1,0 +1,12 @@
+<configuration>
+  <!-- Inherit Spring Boot's default console format so all other loggers behave normally. -->
+  <include resource="org/springframework/boot/logging/logback/base.xml"/>
+
+  <!--
+    GlobalExceptionHandlerTest deliberately calls handleUnexpected() with a fake exception to
+    verify the 500 response doesn't leak internal details. The ERROR log + stack trace is correct
+    production behaviour but misleading noise in test output. Suppress it here; the test asserts
+    on the return value, not the log.
+  -->
+  <logger name="com.example.nexus.common.web.GlobalExceptionHandler" level="OFF"/>
+</configuration>
