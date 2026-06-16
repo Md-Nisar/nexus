@@ -114,10 +114,11 @@ class EmailCipherEncryptionIT {
     // Clear the JPA first-level cache so the next find reads from DB, not identity map
     em.clear();
 
-    // GCM AEAD verification must fail on the tampered value — never return null/plaintext
+    // GCM AEAD verification must fail on the tampered value — never return null/plaintext.
+    // Spring wraps AttributeConverter failures in JpaSystemException; check the root cause.
     assertThatThrownBy(
             () -> userRepository.findByTenantIdAndEmailHmac(tenantId, hmac).orElseThrow())
-        .isInstanceOf(EncryptionException.class);
+        .hasRootCauseInstanceOf(EncryptionException.class);
   }
 
   // UUID → 16-byte big-endian array (matches UuidV7Converter.convertToDatabaseColumn)
