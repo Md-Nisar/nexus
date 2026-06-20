@@ -2,15 +2,20 @@ package com.example.nexus.common.web;
 
 import com.example.nexus.common.domain.ConflictException;
 import com.example.nexus.common.domain.DomainException;
+import com.example.nexus.common.domain.FieldValidationException;
+import com.example.nexus.common.domain.RateLimitException;
 import com.example.nexus.common.domain.ResourceNotFoundException;
+import com.example.nexus.common.domain.TokenExpiredException;
 import jakarta.validation.ConstraintViolationException;
 import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -40,9 +45,29 @@ public class GlobalExceptionHandler {
     return problem(HttpStatus.CONFLICT, e.code(), e.getMessage());
   }
 
+  @ExceptionHandler(FieldValidationException.class)
+  ProblemDetail handleFieldValidation(FieldValidationException e) {
+    ProblemDetail problem = problem(HttpStatus.BAD_REQUEST, e.code(), e.getMessage());
+    problem.setProperty("details", List.of(Map.of("field", e.field(), "message", e.getMessage())));
+    return problem;
+  }
+
+  @ExceptionHandler(TokenExpiredException.class)
+  ProblemDetail handleTokenExpired(TokenExpiredException e) {
+    return problem(HttpStatus.GONE, e.code(), e.getMessage());
+  }
+
+  @ExceptionHandler(RateLimitException.class)
+  ResponseEntity<ProblemDetail> handleRateLimit(RateLimitException e) {
+    ProblemDetail problem = problem(HttpStatus.TOO_MANY_REQUESTS, e.code(), e.getMessage());
+    HttpHeaders headers = new HttpHeaders();
+    headers.set(HttpHeaders.RETRY_AFTER, String.valueOf(e.retryAfterSeconds()));
+    return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).headers(headers).body(problem);
+  }
+
   @ExceptionHandler(DomainException.class)
   ProblemDetail handleDomain(DomainException e) {
-    return problem(HttpStatus.UNPROCESSABLE_ENTITY, e.code(), e.getMessage());
+    return problem(HttpStatus.UNPROCESSABLE_CONTENT, e.code(), e.getMessage());
   }
 
   @ExceptionHandler(MethodArgumentNotValidException.class)

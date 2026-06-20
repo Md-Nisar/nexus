@@ -61,4 +61,15 @@ public class AuthToken {
     this.tokenHash = tokenHash;
     this.expiresAt = expiresAt;
   }
+
+  /** Convenience factory for email-verification tokens. */
+  public static AuthToken forVerification(
+      UUID id, UUID userId, String tokenHash, Instant expiresAt) {
+    return new AuthToken(id, userId, AuthTokenType.VERIFICATION, tokenHash, expiresAt);
+  }
+
+  /** Marks this token as consumed at the given instant (called by {@code JpaAuthTokenAdapter}). */
+  public void consume(Instant consumedAt) {
+    this.consumedAt = consumedAt;
+  }
 }

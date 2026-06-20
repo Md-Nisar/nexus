@@ -34,7 +34,7 @@ class EmailCipherEncryptionIT {
     String email = "secret@example.com";
     String hmac = blindIndexService.blindIndex(email);
 
-    User user = new User(uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac);
+    User user = new User(uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac, "pw-hash", null);
     userRepository.saveAndFlush(user);
 
     // Raw column value must NOT contain the plaintext email
@@ -57,7 +57,7 @@ class EmailCipherEncryptionIT {
     String email = "transparent@example.com";
     String hmac = blindIndexService.blindIndex(email);
 
-    User saved = new User(uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac);
+    User saved = new User(uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac, "pw-hash", null);
     userRepository.saveAndFlush(saved);
 
     // Clear JPA first-level cache so we re-read from DB
@@ -75,8 +75,8 @@ class EmailCipherEncryptionIT {
     String email = "nonce@example.com";
     String hmac = blindIndexService.blindIndex(email);
 
-    userRepository.saveAndFlush(new User(uuidGenerator.newId(), t1, new EmailCipher(email), hmac));
-    userRepository.saveAndFlush(new User(uuidGenerator.newId(), t2, new EmailCipher(email), hmac));
+    userRepository.saveAndFlush(new User(uuidGenerator.newId(), t1, new EmailCipher(email), hmac, "pw-hash", null));
+    userRepository.saveAndFlush(new User(uuidGenerator.newId(), t2, new EmailCipher(email), hmac, "pw-hash", null));
 
     String cipher1 =
         jdbc.queryForObject(
@@ -101,7 +101,7 @@ class EmailCipherEncryptionIT {
     String email = "tamper@example.com";
     String hmac = blindIndexService.blindIndex(email);
 
-    User saved = new User(uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac);
+    User saved = new User(uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac, "pw-hash", null);
     userRepository.saveAndFlush(saved);
 
     // Corrupt the stored ciphertext via raw JDBC — bypasses AttributeEncryptor (SEC-T8)

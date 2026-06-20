@@ -30,7 +30,7 @@ class IdentitySchemaMigrationIT {
 
   @Test
   void should_createExpectedColumns_when_migrationsApplied() {
-    // users table key columns
+    // users table key columns (V2 + V3)
     List<String> userColumns =
         jdbc.queryForList(
             "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
@@ -52,7 +52,8 @@ class IdentitySchemaMigrationIT {
             "consent_accepted_at",
             "version",
             "created_at",
-            "updated_at");
+            "updated_at",
+            "password_hash"); // V3
 
     // auth_events must NOT have updated_at
     List<String> eventColumns =
@@ -66,28 +67,49 @@ class IdentitySchemaMigrationIT {
 
   @Test
   void should_createExpectedIndexes_when_migrationsApplied() {
-    List<String> indexes =
+    List<String> usersIndexes =
         jdbc.queryForList(
             "SELECT INDEX_NAME FROM information_schema.STATISTICS "
                 + "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' "
                 + "GROUP BY INDEX_NAME",
             String.class);
 
-    assertThat(indexes)
+    assertThat(usersIndexes)
         .contains("PRIMARY", "uq_users_tenant_id_email_hmac", "idx_users_tenant_id_status");
+
+    // V3: throttle index on auth_tokens
+    List<String> tokenIndexes =
+        jdbc.queryForList(
+            "SELECT INDEX_NAME FROM information_schema.STATISTICS "
+                + "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'auth_tokens' "
+                + "GROUP BY INDEX_NAME",
+            String.class);
+
+    assertThat(tokenIndexes).contains("idx_auth_tokens_user_id_type_created_at");
   }
 
   @Test
-  void should_haveFlyway_v2_checksum_stable_when_migrationReapplied() {
-    // Flyway records checksum in flyway_schema_history — it must not change between runs.
-    // This test simply asserts V2 exists and was applied successfully (not failed).
-    // success is BIT(1) in MySQL; CAST to UNSIGNED yields Integer 1 for true.
-    List<Integer> states =
-        jdbc.queryForList(
-            "SELECT CAST(success AS UNSIGNED) FROM flyway_schema_history WHERE version = '2'",
-            Integer.class);
+  void should_havePasswordHashColumn_notNull_when_v3MigrationApplied() {
+    String isNullable =
+        jdbc.queryForObject(
+            "SELECT IS_NULLABLE FROM information_schema.COLUMNS "
+                + "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' "
+                + "AND COLUMN_NAME = 'password_hash'",
+            String.class);
 
-    assertThat(states).hasSize(1);
-    assertThat(states).contains(1);
+    assertThat(isNullable).isEqualTo("NO");
+  }
+
+  @Test
+  void should_haveFlyway_migrationsApplied_successfully() {
+    // Asserts V2 and V3 are both recorded as successful in flyway_schema_history.
+    // success is BIT(1) in MySQL; CAST to UNSIGNED yields Integer 1 for true.
+    List<String> versions =
+        jdbc.queryForList(
+            "SELECT version FROM flyway_schema_history "
+                + "WHERE CAST(success AS UNSIGNED) = 1 ORDER BY installed_rank",
+            String.class);
+
+    assertThat(versions).contains("2", "3");
   }
 }

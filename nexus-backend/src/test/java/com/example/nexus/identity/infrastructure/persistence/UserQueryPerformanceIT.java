@@ -44,7 +44,7 @@ class UserQueryPerformanceIT {
 
     // Insert the lookup-target row via JPA (proper encryption, real HMAC)
     userRepository.saveAndFlush(
-        new User(uuidGenerator.newId(), tenantId, new EmailCipher(lookupEmail), lookupHmac));
+        new User(uuidGenerator.newId(), tenantId, new EmailCipher(lookupEmail), lookupHmac, "pw-hash", null));
 
     // Bulk-insert filler rows via JDBC with unique HMACs — bypasses AttributeEncryptor
     String fillSql =

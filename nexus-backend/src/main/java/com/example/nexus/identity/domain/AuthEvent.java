@@ -56,4 +56,22 @@ public class AuthEvent {
     this.eventType = eventType;
     this.outcome = outcome;
   }
+
+  /** Sets the owning user; returns {@code this} for chaining at construction time. */
+  public AuthEvent withUserId(UUID userId) {
+    this.userId = userId;
+    return this;
+  }
+
+  /** Sets the client IP address; returns {@code this} for chaining. */
+  public AuthEvent withIpAddress(String ipAddress) {
+    this.ipAddress = ipAddress;
+    return this;
+  }
+
+  /** Sets the JSON metadata blob; returns {@code this} for chaining. */
+  public AuthEvent withMetadata(String metadata) {
+    this.metadata = metadata;
+    return this;
+  }
 }

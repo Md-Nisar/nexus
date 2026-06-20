@@ -1,0 +1,84 @@
+:host {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: var(--nx-space-6);
+  background-color: var(--nx-color-canvas);
+}
+
+.verif {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--nx-space-3);
+  text-align: center;
+  width: 100%;
+  max-width: 400px;
+  padding: var(--nx-space-8);
+  background-color: var(--nx-color-surface);
+  border: 1px solid var(--nx-color-outline);
+  border-radius: var(--nx-radius-lg);
+
+  &__spinner-icon {
+    font-size: 48px;
+    width: 48px;
+    height: 48px;
+    color: var(--nx-color-primary);
+    animation: spin 1s linear infinite;
+  }
+
+  &__icon {
+    font-size: 48px;
+    width: 48px;
+    height: 48px;
+
+    &--success {
+      color: var(--nx-color-success);
+    }
+
+    &--error {
+      color: var(--nx-color-error);
+    }
+  }
+
+  &__heading {
+    margin: 0;
+    font-size: var(--nx-text-2xl);
+    font-weight: var(--nx-weight-semibold);
+    color: var(--nx-color-on-surface);
+    letter-spacing: var(--nx-tracking-card-title);
+  }
+
+  &__message {
+    margin: 0;
+    font-size: var(--nx-text-base);
+    color: var(--nx-color-on-surface-muted);
+    max-width: 320px;
+  }
+
+  &__action {
+    margin-top: var(--nx-space-2);
+    padding: 0 var(--nx-space-6);
+    height: 40px;
+    display: inline-flex;
+    align-items: center;
+    border-radius: var(--nx-radius-md);
+    background: var(--nx-color-primary);
+    color: var(--nx-color-on-primary);
+    text-decoration: none;
+    font-size: var(--nx-text-base);
+    font-weight: var(--nx-weight-medium);
+    transition: background-color var(--nx-duration-base) var(--nx-easing-standard);
+
+    &:hover {
+      background-color: var(--nx-color-primary-hover);
+    }
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

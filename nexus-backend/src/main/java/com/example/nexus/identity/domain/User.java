@@ -32,6 +32,9 @@ public class User {
   @Column(name = "email_hmac", length = 64, nullable = false, updatable = false)
   private String emailHmac; // no setter — immutable after insert (SEC-T9)
 
+  @Column(name = "password_hash", length = 255, nullable = false)
+  private String passwordHash;
+
   @Enumerated(EnumType.STRING)
   @Column(name = "status", length = 20, nullable = false)
   private UserStatus status;
@@ -65,13 +68,35 @@ public class User {
    * Creates a user in {@link UserStatus#PENDING} status with zero token version and failed-attempt
    * count; all timestamp fields are set by the database.
    */
-  public User(UUID id, UUID tenantId, EmailCipher emailCipher, String emailHmac) {
+  public User(
+      UUID id,
+      UUID tenantId,
+      EmailCipher emailCipher,
+      String emailHmac,
+      String passwordHash,
+      Instant consentAcceptedAt) {
     this.id = id;
     this.tenantId = tenantId;
     this.emailCipher = emailCipher;
     this.emailHmac = emailHmac;
+    this.passwordHash = passwordHash;
+    this.consentAcceptedAt = consentAcceptedAt;
     this.status = UserStatus.PENDING;
     this.tokenVersion = 0;
     this.failedAttemptCount = 0;
+  }
+
+  /**
+   * Transitions this user from {@link UserStatus#PENDING} to {@link UserStatus#ACTIVE}.
+   * Throws {@link IllegalStateException} if called on a user that is not PENDING — this
+   * is an internal invariant violation, not a user-facing error.
+   */
+  public void verify(Instant verifiedAt) {
+    if (this.status != UserStatus.PENDING) {
+      throw new IllegalStateException(
+          "Cannot verify user in status " + this.status + "; expected PENDING");
+    }
+    this.status = UserStatus.ACTIVE;
+    this.emailVerifiedAt = verifiedAt;
   }
 }

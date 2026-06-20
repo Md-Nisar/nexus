@@ -34,6 +34,13 @@ services:
       mysql:
         condition: service_healthy
 
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    container_name: nexus-mailhog
+    ports:
+      - "1025:1025"   # SMTP — configured in application-dev.yml
+      - "8025:8025"   # Web UI — http://localhost:8025 to inspect sent emails
+
   frontend:
     profiles: ["full"]
     build: ./nexus-frontend

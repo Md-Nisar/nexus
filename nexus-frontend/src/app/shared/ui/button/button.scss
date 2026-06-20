@@ -1,5 +1,15 @@
 :host {
   display: inline-flex;
+
+  &.nx-btn-host--full-width {
+    display: flex;
+    width: 100%;
+
+    .nx-btn {
+      width: 100%;
+      justify-content: center;
+    }
+  }
 }
 
 .nx-btn {
@@ -86,6 +96,15 @@
 
     &:hover:not(:disabled) {
       background-color: var(--nx-color-surface-variant);
+    }
+  }
+
+  &--inverse {
+    background-color: var(--nx-color-inverse-canvas);
+    color: var(--nx-color-inverse-on);
+
+    &:hover:not(:disabled) {
+      background-color: var(--nx-color-inverse-surface);
     }
   }
 }

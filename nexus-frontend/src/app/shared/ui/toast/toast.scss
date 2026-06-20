@@ -13,7 +13,9 @@
     background-color: var(--nx-color-surface-2) !important;
     color: var(--nx-color-on-surface) !important;
     border-left: 4px solid transparent;
-    box-shadow: 0 2px 8px 0 rgba(0, 0, 0, 0.4);
+    box-shadow:
+      var(--nx-shadow-lg),
+      0 2px 8px 0 rgba(0, 0, 0, 0.3);
   }
 
   .mat-mdc-snack-bar-label {

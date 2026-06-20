@@ -30,21 +30,32 @@ html {
   @include mat.all-component-themes($nexus-theme);
 }
 
-// ── Bridge Material system vars to --nx-* tokens ──────────────────────────
-// Overrides ensure shared/ui components always use the Linear palette.
+// ── Bridge: sync accent/semantic nx tokens from Material's computed palette ─
+// Only sync tokens that don't vary between light and dark — surface/on-surface
+// and outline tokens are defined per-mode in _tokens.scss and must NOT be
+// overwritten here (a plain html rule comes after the @media light override).
 html {
   --nx-color-primary: #{mat.get-theme-color($nexus-theme, primary)};
   --nx-color-on-primary: #{mat.get-theme-color($nexus-theme, on-primary)};
   --nx-color-error: #{mat.get-theme-color($nexus-theme, error)};
   --nx-color-on-error: #{mat.get-theme-color($nexus-theme, on-error)};
-  --nx-color-surface: #{mat.get-theme-color($nexus-theme, surface)};
-  --nx-color-on-surface: #{mat.get-theme-color($nexus-theme, on-surface)};
-  --nx-color-outline: #{mat.get-theme-color($nexus-theme, outline)};
-  --nx-color-outline-variant: #{mat.get-theme-color($nexus-theme, outline-variant)};
+}
+
+// ── Align Material sys tokens to --nx-* so components adapt to light/dark ──
+// mat.all-component-themes() generates fixed dark values; we re-point them
+// to our tokens, which _tokens.scss resolves correctly in both modes.
+html {
+  --mat-sys-surface: var(--nx-color-surface);
+  --mat-sys-on-surface: var(--nx-color-on-surface);
+  --mat-sys-on-surface-variant: var(--nx-color-on-surface-muted);
+  --mat-sys-surface-variant: var(--nx-color-surface-variant);
+  --mat-sys-outline: var(--nx-color-outline);
+  --mat-sys-outline-variant: var(--nx-color-outline-variant);
+  --mat-app-background-color: var(--nx-color-canvas);
+  --mat-app-text-color: var(--nx-color-on-surface);
 }
 
 // ── Override Material component vars with Linear hairline radius ──────────
-// Linear uses 8px on buttons/inputs, 12px on cards — not Material's defaults.
 html {
   --mdc-filled-button-container-shape: var(--nx-radius-md);
   --mdc-outlined-button-container-shape: var(--nx-radius-md);
@@ -55,8 +66,38 @@ html {
   --mdc-dialog-container-shape: var(--nx-radius-lg);
   --mat-card-container-shape: var(--nx-radius-lg);
   --mdc-snackbar-container-shape: var(--nx-radius-md);
+}
 
-  // Surface colours — Material overlays its own bg tokens; align them.
-  --mat-app-background-color: var(--nx-color-canvas);
-  --mat-app-text-color: var(--nx-color-on-surface);
+// ── Outlined text field — explicit text/outline colours via --nx-* ─────────
+// Needed because MDC components read their own MDC tokens, not --mat-sys-*.
+html {
+  --mdc-outlined-text-field-input-text-color: var(--nx-color-on-surface);
+  --mdc-outlined-text-field-label-text-color: var(--nx-color-on-surface-faint);
+  --mdc-outlined-text-field-focus-label-text-color: var(--nx-color-primary);
+  --mdc-outlined-text-field-hover-label-text-color: var(--nx-color-on-surface-muted);
+  --mdc-outlined-text-field-outline-color: var(--nx-color-outline);
+  --mdc-outlined-text-field-hover-outline-color: var(--nx-color-outline-strong);
+  --mdc-outlined-text-field-focus-outline-color: var(--nx-color-primary);
+  --mdc-outlined-text-field-caret-color: var(--nx-color-primary);
+  --mdc-outlined-text-field-disabled-input-text-color: var(--nx-color-on-surface-dim);
+  --mdc-outlined-text-field-error-label-text-color: var(--nx-color-error);
+  --mdc-outlined-text-field-error-outline-color: var(--nx-color-error);
+  --mdc-outlined-text-field-error-focus-outline-color: var(--nx-color-error);
+  --mdc-outlined-text-field-error-hover-outline-color: var(--nx-color-error);
+
+  // mat-error / mat-hint text
+  --mat-form-field-subscript-text-color: var(--nx-color-on-surface-faint);
+  --mat-form-field-error-text-color: var(--nx-color-error);
+
+  // mat-checkbox — override MDC's amber/orange unselected icon from dark theme
+  --mat-checkbox-label-text-color: var(--nx-color-on-surface-muted);
+  --mdc-checkbox-unselected-icon-color: var(--nx-color-outline-strong);
+  --mdc-checkbox-unselected-hover-icon-color: var(--nx-color-on-surface-muted);
+  --mdc-checkbox-unselected-focus-icon-color: var(--nx-color-on-surface-muted);
+  --mdc-checkbox-unselected-pressed-icon-color: var(--nx-color-on-surface-muted);
+  --mdc-checkbox-selected-icon-color: var(--nx-color-primary);
+  --mdc-checkbox-selected-hover-icon-color: var(--nx-color-primary-hover);
+  --mdc-checkbox-selected-focus-icon-color: var(--nx-color-primary);
+  --mdc-checkbox-selected-pressed-icon-color: var(--nx-color-primary);
+  --mdc-checkbox-selected-checkmark-color: var(--nx-color-on-primary);
 }

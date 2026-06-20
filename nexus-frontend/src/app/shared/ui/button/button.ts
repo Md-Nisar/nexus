@@ -5,16 +5,20 @@ import { MatIconModule } from '@angular/material/icon';
 // contract lives in button.scss against --nx-* tokens. MatIconModule is the only
 // Material dependency, used for leading/trailing/loading glyphs.
 
-export type ButtonVariant = 'primary' | 'secondary' | 'tertiary' | 'danger' | 'ghost';
+export type ButtonVariant = 'primary' | 'secondary' | 'tertiary' | 'danger' | 'ghost' | 'inverse';
 export type ButtonSize = 'sm' | 'md' | 'lg';
 
 @Component({
   selector: 'nx-button',
   standalone: true,
   imports: [MatIconModule],
+  host: {
+    '[class.nx-btn-host--full-width]': 'fullWidth()',
+  },
   template: `
     <button
       [class]="buttonClass()"
+      [type]="type()"
       [disabled]="disabled()"
       [attr.aria-busy]="loading() ? true : null"
       [attr.aria-label]="ariaLabel() || null"
@@ -39,8 +43,10 @@ export type ButtonSize = 'sm' | 'md' | 'lg';
 export class NxButton {
   readonly variant = input<ButtonVariant>('primary');
   readonly size = input<ButtonSize>('md');
+  readonly type = input<'button' | 'submit' | 'reset'>('button');
   readonly disabled = input(false);
   readonly loading = input(false);
+  readonly fullWidth = input(false);
   readonly leadingIcon = input<string>('');
   readonly trailingIcon = input<string>('');
   readonly ariaLabel = input<string>('');

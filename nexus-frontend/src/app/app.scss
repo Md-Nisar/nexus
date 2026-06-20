@@ -1,0 +1,33 @@
+.app-theme-toggle {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--nx-color-outline);
+  border-radius: var(--nx-radius-md);
+  background: var(--nx-color-surface-2);
+  color: var(--nx-color-on-surface-faint);
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    color 0.15s,
+    border-color 0.15s;
+
+  &:hover {
+    background: var(--nx-color-surface-3);
+    color: var(--nx-color-on-surface);
+    border-color: var(--nx-color-outline-strong);
+  }
+
+  .material-icons {
+    font-size: 18px;
+    line-height: 1;
+    user-select: none;
+  }
+}

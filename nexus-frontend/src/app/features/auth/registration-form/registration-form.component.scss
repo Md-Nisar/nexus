@@ -1,0 +1,94 @@
+:host {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: var(--nx-space-6);
+  background-color: var(--nx-color-canvas);
+}
+
+.reg-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nx-space-5);
+  width: 100%;
+  max-width: 400px;
+  padding: var(--nx-space-8);
+  background-color: var(--nx-color-surface);
+  border: 1px solid var(--nx-color-outline);
+  border-radius: var(--nx-radius-lg);
+
+  &__heading {
+    margin: 0 0 var(--nx-space-1);
+    font-size: var(--nx-text-2xl);
+    font-weight: var(--nx-weight-semibold);
+    color: var(--nx-color-on-surface);
+    letter-spacing: var(--nx-tracking-card-title);
+  }
+
+  &__password-field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--nx-space-2);
+  }
+
+  &__consent {
+    display: flex;
+    flex-direction: column;
+    gap: var(--nx-space-1);
+  }
+
+  &__consent-check {
+    font-size: var(--nx-text-base);
+    color: var(--nx-color-on-surface-muted);
+  }
+
+  &__field-error {
+    margin: 0;
+    font-size: var(--nx-text-xs);
+    color: var(--nx-color-error);
+  }
+
+  &__error-banner {
+    padding: var(--nx-space-3) var(--nx-space-4);
+    border-radius: var(--nx-radius-sm);
+    background: var(--nx-color-error-surface);
+    color: var(--nx-color-error);
+    font-size: var(--nx-text-base);
+  }
+}
+
+.reg-form__success {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--nx-space-3);
+  text-align: center;
+  width: 100%;
+  max-width: 400px;
+  padding: var(--nx-space-8);
+  background-color: var(--nx-color-surface);
+  border: 1px solid var(--nx-color-outline);
+  border-radius: var(--nx-radius-lg);
+}
+
+.reg-form__success-icon {
+  font-size: 48px;
+  width: 48px;
+  height: 48px;
+  color: var(--nx-color-success);
+}
+
+.reg-form__success-heading {
+  margin: 0;
+  font-size: var(--nx-text-xl);
+  font-weight: var(--nx-weight-medium);
+  color: var(--nx-color-on-surface);
+}
+
+.reg-form__success-body {
+  margin: 0;
+  font-size: var(--nx-text-base);
+  color: var(--nx-color-on-surface-muted);
+  max-width: 320px;
+}

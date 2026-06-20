@@ -1,3 +1,6 @@
+export { NxBadge } from './badge/badge';
+export type { BadgeVariant } from './badge/badge';
+
 export { NxButton } from './button/button';
 export type { ButtonVariant, ButtonSize } from './button/button';
 
@@ -10,7 +13,7 @@ export { NxSelect } from './select/select';
 export type { SelectOption } from './select/select';
 
 export { NxTable } from './table/table';
-export type { TableColumn } from './table/table';
+export type { TableColumn, CellType } from './table/table';
 
 export { NxDialog, NxDialogShell } from './dialog/dialog';
 export type { DialogData } from './dialog/dialog';
