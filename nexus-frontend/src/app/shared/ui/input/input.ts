@@ -32,6 +32,7 @@ import { MatIconModule } from '@angular/material/icon';
       }
       <input
         matInput
+        [id]="inputId()"
         [type]="type()"
         [placeholder]="placeholder()"
         [disabled]="isDisabled()"
@@ -57,6 +58,7 @@ import { MatIconModule } from '@angular/material/icon';
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class NxInput implements ControlValueAccessor {
+  readonly inputId = input<string>('');
   readonly label = input<string>('');
   readonly placeholder = input<string>('');
   readonly type = input<string>('text');

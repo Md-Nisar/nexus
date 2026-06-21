@@ -1,0 +1,27 @@
+package com.example.nexus.identity.application.event;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.util.UUID;
+import org.junit.jupiter.api.Test;
+
+class DomainEventToStringTest {
+
+  @Test
+  void verificationEmailEvent_toString_masksEmailAndRedactsToken() {
+    var event = new VerificationEmailEvent("alice@example.com", "super-secret-raw-token", UUID.fromString("00000000-0000-0000-0000-000000000001"));
+    String result = event.toString();
+    assertThat(result).contains("a***@example.com");
+    assertThat(result).contains("<redacted>");
+    assertThat(result).doesNotContain("super-secret-raw-token");
+    assertThat(result).doesNotContain("alice@example.com");
+  }
+
+  @Test
+  void accountExistsEmailEvent_toString_masksEmail() {
+    var event = new AccountExistsEmailEvent("bob@example.com");
+    String result = event.toString();
+    assertThat(result).contains("b***@example.com");
+    assertThat(result).doesNotContain("bob@example.com");
+  }
+}

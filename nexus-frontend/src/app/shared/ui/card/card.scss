@@ -7,16 +7,19 @@
   overflow: hidden;
 
   &--flat {
+    background-color: var(--nx-color-surface);
     box-shadow: none;
     border: 1px solid var(--nx-color-outline-variant);
   }
 
   &--raised {
+    background-color: var(--nx-color-surface-2);
     box-shadow: var(--nx-shadow-sm);
-    border: none;
+    border: 1px solid var(--nx-color-outline-variant);
   }
 
   &--outlined {
+    background-color: var(--nx-color-surface);
     box-shadow: none;
     border: 1px solid var(--nx-color-outline);
   }

@@ -162,3 +162,56 @@
     --nx-shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.07), 0 8px 10px -6px rgb(0 0 0 / 0.07);
   }
 }
+
+// ── Manual theme overrides — data-theme attribute wins over OS preference ───
+// html[data-theme="..."] specificity (0,1,1) > @media :root (0,1,0),
+// so setting the attribute always wins regardless of system preference.
+html[data-theme='light'] {
+  --nx-color-canvas: #ffffff;
+  --nx-color-surface: #f5f6f6;
+  --nx-color-surface-2: #f6f7f7;
+  --nx-color-surface-3: #ebebec;
+  --nx-color-surface-variant: #f6f7f7;
+
+  --nx-color-outline: #e4e5e7;
+  --nx-color-outline-variant: #d1d2d5;
+  --nx-color-outline-strong: #b8babe;
+
+  --nx-color-on-surface: #111113;
+  --nx-color-on-surface-muted: #3b3d40;
+  --nx-color-on-surface-faint: #6f7178;
+  --nx-color-on-surface-dim: #9b9da2;
+
+  --nx-color-primary-surface: rgba(94, 106, 210, 0.08);
+
+  --nx-shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.06);
+  --nx-shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.08), 0 1px 2px -1px rgb(0 0 0 / 0.08);
+  --nx-shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.07), 0 2px 4px -2px rgb(0 0 0 / 0.07);
+  --nx-shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.07), 0 4px 6px -4px rgb(0 0 0 / 0.07);
+  --nx-shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.07), 0 8px 10px -6px rgb(0 0 0 / 0.07);
+}
+
+html[data-theme='dark'] {
+  --nx-color-canvas: #010102;
+  --nx-color-surface: #0f1011;
+  --nx-color-surface-2: #141516;
+  --nx-color-surface-3: #18191a;
+  --nx-color-surface-variant: #141516;
+
+  --nx-color-outline: #23252a;
+  --nx-color-outline-variant: #34343a;
+  --nx-color-outline-strong: #3e3e44;
+
+  --nx-color-on-surface: #f7f8f8;
+  --nx-color-on-surface-muted: #d0d6e0;
+  --nx-color-on-surface-faint: #8a8f98;
+  --nx-color-on-surface-dim: #62666d;
+
+  --nx-color-primary-surface: rgba(94, 106, 210, 0.12);
+
+  --nx-shadow-xs: none;
+  --nx-shadow-sm: none;
+  --nx-shadow-md: none;
+  --nx-shadow-lg: none;
+  --nx-shadow-xl: none;
+}

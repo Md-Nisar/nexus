@@ -27,6 +27,9 @@
         <testcontainers.version>1.21.3</testcontainers.version>
         <uuid-creator.version>6.1.1</uuid-creator.version>
 
+        <!-- Empty by default; the windows-docker profile appends -Ddocker.host=tcp://localhost:2375 -->
+        <failsafe.docker.argLine></failsafe.docker.argLine>
+
         <jacoco.version>0.8.13</jacoco.version>
         <checkstyle.plugin.version>3.6.0</checkstyle.plugin.version>
         <maven-jxr-plugin.version>3.6.0</maven-jxr-plugin.version>
@@ -72,6 +75,11 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-mail</artifactId>
         </dependency>
 
         <!-- Exposes /actuator/prometheus for metrics scraping -->
@@ -123,6 +131,14 @@
         <dependency>
             <groupId>org.springframework.security</groupId>
             <artifactId>spring-security-crypto</artifactId>
+        </dependency>
+
+        <!-- Argon2id password hashing — Argon2PasswordEncoder delegates to Bouncy Castle.
+             Distinct from ADR-0006 (email encryption uses JDK SunJCE); this covers passwords only. -->
+        <dependency>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcprov-jdk18on</artifactId>
+            <version>1.81</version>
         </dependency>
 
         <!-- UUIDv7 time-ordered primary keys — MIT, pinned, no BC transitive dep (see ADR-0005) -->
@@ -217,6 +233,21 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
+
+                <configuration>
+                    <!--
+                        failsafe.docker.argLine is empty by default.
+                        The windows-docker profile sets it to -Ddocker.host=tcp://localhost:2375
+                        so that Testcontainers can connect on Windows where named pipes return
+                        HTTP 400 for API versions below v1.40.
+                    -->
+                    <argLine>${failsafe.docker.argLine}</argLine>
+                    <!--
+                        Exclude @Tag("perf") tests from the default verify run.
+                        Run them explicitly with: ./mvnw failsafe:integration-test -Dgroups=perf
+                    -->
+                    <excludedGroups>perf</excludedGroups>
+                </configuration>
 
                 <executions>
                     <execution>
@@ -438,6 +469,24 @@
                     </plugin>
                 </plugins>
             </build>
+        </profile>
+
+        <!--
+            Auto-activated on Windows: Docker Desktop named pipes return HTTP 400 to docker-java's
+            versioned API probes (v1.39 and below). TCP on :2375 works, but the Failsafe forked JVM
+            does not inherit env vars / properties from profile plugin config reliably. Instead, set
+            a Maven property here and reference it in the main Failsafe <argLine> above — this path
+            is guaranteed to reach the forked JVM.
+            Requires: Docker Desktop → Settings → General → "Expose daemon on tcp://localhost:2375".
+        -->
+        <profile>
+            <id>windows-docker</id>
+            <activation>
+                <os><family>windows</family></os>
+            </activation>
+            <properties>
+                <failsafe.docker.argLine>-Ddocker.host=tcp://localhost:2375</failsafe.docker.argLine>
+            </properties>
         </profile>
 
         <!-- CVE scan of dependencies: mvn verify -Psecurity (slow — NVD download; use NVD_API_KEY in CI) -->

@@ -5,6 +5,16 @@ spring:
     properties:
       hibernate:
         format_sql: false
+  mail:
+    host: localhost   # MailHog — docker compose up -d
+    port: 1025        # MailHog SMTP port
+    properties:
+      mail:
+        smtp:
+          auth: false
+          starttls:
+            enable: false   # MailHog does not support STARTTLS; override SEC-4 base setting for dev
+            required: false
 
 logging:
   level:
@@ -18,3 +28,13 @@ nexus:
       password: dev-not-a-secret-encryption-password
       salt: deadbeefdeadbeefdeadbeefdeadbeef
     hmac-key: dev-not-a-secret-hmac-key-min-32-bytes-long
+    default-tenant-id: "00000000-0000-7000-8000-000000000001"
+    argon2:
+      # Reduced params for fast local iteration. NEVER use in staging or prod.
+      memory-kb: 4096
+      iterations: 1
+      parallelism: 1
+
+feature:
+  nexus-us002-auth-registration:
+    enabled: true

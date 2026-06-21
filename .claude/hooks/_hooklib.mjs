@@ -59,6 +59,14 @@ export function run(cmd, args, cwd) {
   return res.status ?? 1;
 }
 
+/**
+ * Synchronous sleep — uses Atomics.wait on a dummy SharedArrayBuffer so Node does not spin.
+ * Safe on the main thread in Node.js (unlike browsers, Node permits Atomics.wait everywhere).
+ */
+export function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /** List working-tree changed file paths (porcelain), excluding deletions. */
 export function changedFiles() {
   const res = spawnSync('git', ['status', '--porcelain'], { encoding: 'utf8' });

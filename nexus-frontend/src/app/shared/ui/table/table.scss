@@ -46,4 +46,10 @@
     color: var(--nx-color-on-surface-muted);
     font-size: var(--nx-text-base);
   }
+
+  &__mono {
+    font-family: var(--nx-font-family-mono);
+    font-size: var(--nx-text-sm);
+    color: var(--nx-color-primary);
+  }
 }

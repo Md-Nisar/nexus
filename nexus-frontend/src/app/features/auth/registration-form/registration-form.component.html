@@ -1,0 +1,72 @@
+@if (state().kind === 'success') {
+  <div class="reg-form__success" data-testid="reg-success" role="status">
+    <mat-icon aria-hidden="true" class="reg-form__success-icon">check_circle</mat-icon>
+    <h2 class="reg-form__success-heading">Check your inbox</h2>
+    <p class="reg-form__success-body">
+      We've sent a verification link to your email address. Please click the link to activate your
+      account.
+    </p>
+  </div>
+} @else {
+  <form class="reg-form" [formGroup]="form" (ngSubmit)="submit()" novalidate>
+    <h2 class="reg-form__heading">Create your account</h2>
+
+    @if (state().kind === 'error' && !hasFieldErrors()) {
+      <div class="reg-form__error-banner" role="alert" data-testid="reg-error-banner">
+        {{ errorState().message }}
+      </div>
+    }
+
+    <!-- Email -->
+    <nx-input
+      inputId="reg-email"
+      formControlName="email"
+      label="Email address"
+      type="email"
+      autocomplete="email"
+      [error]="emailError()"
+    />
+
+    <!-- Password -->
+    <div class="reg-form__password-field">
+      <nx-input
+        inputId="reg-password"
+        formControlName="password"
+        label="Password"
+        type="password"
+        autocomplete="new-password"
+        [error]="passwordError()"
+      />
+      <app-password-strength-meter [password]="passwordValue()" />
+    </div>
+
+    <!-- Consent -->
+    <div class="reg-form__consent">
+      <mat-checkbox
+        class="reg-form__consent-check"
+        formControlName="consentAccepted"
+        aria-describedby="reg-consent-error"
+      >
+        I agree to the terms and conditions
+      </mat-checkbox>
+      @if (consentError()) {
+        <p id="reg-consent-error" class="reg-form__field-error" role="alert">
+          {{ consentError() }}
+        </p>
+      }
+    </div>
+
+    <!-- Submit -->
+    <nx-button
+      type="submit"
+      variant="primary"
+      size="lg"
+      [fullWidth]="true"
+      [loading]="state().kind === 'loading'"
+      [disabled]="form.invalid || state().kind === 'loading'"
+      data-testid="reg-submit"
+    >
+      Create account
+    </nx-button>
+  </form>
+}

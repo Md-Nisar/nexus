@@ -3,18 +3,23 @@ import { MatTableModule } from '@angular/material/table';
 import { MatSortModule, Sort } from '@angular/material/sort';
 import { MatPaginatorModule, PageEvent } from '@angular/material/paginator';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { NxBadge, BadgeVariant } from '../badge/badge';
+
+export type CellType = 'text' | 'badge' | 'mono';
 
 export interface TableColumn {
   readonly key: string;
   readonly header: string;
   readonly sortable?: boolean;
   readonly width?: string;
+  readonly type?: CellType;
+  readonly badgeVariant?: (value: unknown) => BadgeVariant;
 }
 
 @Component({
   selector: 'nx-table',
   standalone: true,
-  imports: [MatTableModule, MatSortModule, MatPaginatorModule, MatProgressBarModule],
+  imports: [MatTableModule, MatSortModule, MatPaginatorModule, MatProgressBarModule, NxBadge],
   template: `
     <div class="nx-table-wrapper" data-testid="nx-table">
       @if (loading()) {
@@ -38,7 +43,23 @@ export interface TableColumn {
             >
               {{ col.header }}
             </th>
-            <td mat-cell *matCellDef="let row">{{ row[col.key] }}</td>
+            <td mat-cell *matCellDef="let row">
+              @switch (col.type) {
+                @case ('badge') {
+                  <nx-badge
+                    [variant]="col.badgeVariant ? col.badgeVariant(row[col.key]) : 'neutral'"
+                  >
+                    {{ row[col.key] }}
+                  </nx-badge>
+                }
+                @case ('mono') {
+                  <span class="nx-table__mono">{{ row[col.key] }}</span>
+                }
+                @default {
+                  {{ row[col.key] }}
+                }
+              }
+            </td>
           </ng-container>
         }
         <tr mat-header-row *matHeaderRowDef="columnKeys()"></tr>

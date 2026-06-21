@@ -1,0 +1,417 @@
+<div class="ds-layout">
+  <!-- ── Sidebar nav ──────────────────────────────────────────────────────── -->
+  <nav class="ds-nav" aria-label="Design system sections">
+    <p class="ds-nav__eyebrow">Nexus Design System</p>
+    <ul class="ds-nav__list">
+      <li><a class="ds-nav__link" href="#colors">Colors</a></li>
+      <li><a class="ds-nav__link" href="#typography">Typography</a></li>
+      <li><a class="ds-nav__link" href="#buttons">Buttons</a></li>
+      <li><a class="ds-nav__link" href="#badges">Badges</a></li>
+      <li><a class="ds-nav__link" href="#inputs">Inputs</a></li>
+      <li><a class="ds-nav__link" href="#select">Select</a></li>
+      <li><a class="ds-nav__link" href="#cards">Cards</a></li>
+      <li><a class="ds-nav__link" href="#table">Table</a></li>
+      <li><a class="ds-nav__link" href="#empty">Empty State</a></li>
+      <li><a class="ds-nav__link" href="#error">Error State</a></li>
+      <li><a class="ds-nav__link" href="#toast">Toast</a></li>
+    </ul>
+  </nav>
+
+  <!-- ── Main content ─────────────────────────────────────────────────────── -->
+  <main class="ds-main">
+    <header class="ds-header">
+      <div class="ds-header__top">
+        <h1 class="ds-header__title">Design System</h1>
+        <nx-button
+          variant="ghost"
+          size="sm"
+          [leadingIcon]="themeIcon()"
+          [ariaLabel]="themeLabel()"
+          (clicked)="themeService.toggle()"
+          >{{ themeService.theme() === 'dark' ? 'Light mode' : 'Dark mode' }}</nx-button
+        >
+      </div>
+      <p class="ds-header__subtitle">
+        Linear aesthetic · Angular Material 3 · <code>--nx-*</code> tokens · Live components — what
+        you see here is exactly what ships.
+      </p>
+    </header>
+
+    <!-- ── Colors ─────────────────────────────────────────────────────────── -->
+    <section id="colors" class="ds-section">
+      <h2 class="ds-section__heading">Colors</h2>
+      @for (group of colorSwatches; track group.group) {
+        <p class="ds-section__label">{{ group.group }}</p>
+        <div class="ds-swatches">
+          @for (token of group.tokens; track token.name) {
+            <div class="ds-swatch">
+              <div class="ds-swatch__color" [style.background]="'var(' + token.var + ')'"></div>
+              <div class="ds-swatch__name" [class.ds-swatch__name--dark]="token.dark">
+                {{ token.name }}
+              </div>
+            </div>
+          }
+        </div>
+      }
+    </section>
+
+    <!-- ── Typography ─────────────────────────────────────────────────────── -->
+    <section id="typography" class="ds-section">
+      <h2 class="ds-section__heading">Typography</h2>
+      <div class="ds-type-scale">
+        @for (row of typeScale; track row.token) {
+          <div class="ds-type-row">
+            <span class="ds-type-row__label">{{ row.label }}</span>
+            <span class="ds-type-row__sample" [style.font-size]="'var(' + row.token + ')'">
+              {{ row.sample }}
+            </span>
+          </div>
+        }
+      </div>
+    </section>
+
+    <!-- ── Buttons ────────────────────────────────────────────────────────── -->
+    <section id="buttons" class="ds-section">
+      <h2 class="ds-section__heading">Buttons — nx-button</h2>
+
+      <p class="ds-section__label">Variants</p>
+      <div class="ds-demo">
+        <div class="ds-row">
+          <nx-button variant="primary">Primary</nx-button>
+          <nx-button variant="secondary">Secondary</nx-button>
+          <nx-button variant="tertiary">Tertiary</nx-button>
+          <nx-button variant="danger">Danger</nx-button>
+          <nx-button variant="ghost">Ghost</nx-button>
+          <nx-button variant="inverse">Inverse</nx-button>
+        </div>
+      </div>
+
+      <p class="ds-section__label">Sizes</p>
+      <div class="ds-demo">
+        <div class="ds-row" style="align-items: center">
+          <nx-button variant="primary" size="sm">Small</nx-button>
+          <nx-button variant="primary" size="md">Medium</nx-button>
+          <nx-button variant="primary" size="lg">Large</nx-button>
+        </div>
+      </div>
+
+      <p class="ds-section__label">States</p>
+      <div class="ds-demo">
+        <div class="ds-row">
+          <nx-button variant="primary" [loading]="true">Loading</nx-button>
+          <nx-button variant="primary" [disabled]="true">Disabled</nx-button>
+          <nx-button variant="secondary" [disabled]="true">Disabled</nx-button>
+        </div>
+      </div>
+
+      <p class="ds-section__label">With icons</p>
+      <div class="ds-demo">
+        <div class="ds-row">
+          <nx-button variant="primary" leadingIcon="add">New issue</nx-button>
+          <nx-button variant="secondary" leadingIcon="filter_list">Filter</nx-button>
+          <nx-button variant="ghost" leadingIcon="settings" ariaLabel="Settings"></nx-button>
+          <nx-button variant="danger" leadingIcon="delete">Delete</nx-button>
+        </div>
+      </div>
+
+      <p class="ds-section__label">Full width</p>
+      <div class="ds-demo" style="max-width: 400px">
+        <nx-button variant="primary" size="lg" [fullWidth]="true">Create account</nx-button>
+      </div>
+    </section>
+
+    <!-- ── Badges ────────────────────────────────────────────────────────── -->
+    <section id="badges" class="ds-section">
+      <h2 class="ds-section__heading">Badges — nx-badge</h2>
+
+      <p class="ds-section__label">Variants</p>
+      <div class="ds-demo">
+        <div class="ds-row">
+          <nx-badge variant="success">Done</nx-badge>
+          <nx-badge variant="primary">In Review</nx-badge>
+          <nx-badge variant="warning">In Progress</nx-badge>
+          <nx-badge variant="error">Urgent</nx-badge>
+          <nx-badge variant="neutral">Backlog</nx-badge>
+        </div>
+      </div>
+
+      <p class="ds-section__label">In context — status + priority combinations</p>
+      <div class="ds-demo">
+        <div class="ds-row">
+          <span
+            style="
+              display: flex;
+              align-items: center;
+              gap: var(--nx-space-2);
+              font-size: var(--nx-text-base);
+              color: var(--nx-color-on-surface-muted);
+            "
+          >
+            NXS-041 ·
+            <nx-badge variant="success">Done</nx-badge>
+            <nx-badge variant="error">Urgent</nx-badge>
+          </span>
+          <span
+            style="
+              display: flex;
+              align-items: center;
+              gap: var(--nx-space-2);
+              font-size: var(--nx-text-base);
+              color: var(--nx-color-on-surface-muted);
+            "
+          >
+            NXS-042 ·
+            <nx-badge variant="warning">In Progress</nx-badge>
+            <nx-badge variant="warning">High</nx-badge>
+          </span>
+          <span
+            style="
+              display: flex;
+              align-items: center;
+              gap: var(--nx-space-2);
+              font-size: var(--nx-text-base);
+              color: var(--nx-color-on-surface-muted);
+            "
+          >
+            NXS-043 ·
+            <nx-badge variant="neutral">Backlog</nx-badge>
+            <nx-badge variant="neutral">Low</nx-badge>
+          </span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Inputs ─────────────────────────────────────────────────────────── -->
+    <section id="inputs" class="ds-section">
+      <h2 class="ds-section__heading">Inputs — nx-input</h2>
+
+      <div class="ds-form-grid">
+        <div>
+          <p class="ds-section__label">Default</p>
+          <div class="ds-demo">
+            <nx-input [formControl]="titleControl" label="Issue title" placeholder="Add a title…" />
+          </div>
+        </div>
+
+        <div>
+          <p class="ds-section__label">With value + hint</p>
+          <div class="ds-demo">
+            <nx-input
+              [formControl]="emailControl"
+              label="Email"
+              type="email"
+              placeholder="you@company.com"
+              hint="Used for notifications only."
+            />
+          </div>
+        </div>
+
+        <div>
+          <p class="ds-section__label">Error state</p>
+          <div class="ds-demo">
+            <nx-input
+              [formControl]="errorControl"
+              label="Identifier"
+              error="Invalid issue identifier format."
+            />
+          </div>
+        </div>
+
+        <div>
+          <p class="ds-section__label">Disabled</p>
+          <div class="ds-demo">
+            <nx-input [formControl]="disabledControl" label="Read-only field" />
+          </div>
+        </div>
+
+        <div>
+          <p class="ds-section__label">With prefix icon</p>
+          <div class="ds-demo">
+            <nx-input
+              [formControl]="titleControl"
+              label="Search"
+              placeholder="Search issues…"
+              prefixIcon="search"
+            />
+          </div>
+        </div>
+
+        <div>
+          <p class="ds-section__label">Password</p>
+          <div class="ds-demo">
+            <nx-input
+              label="Password"
+              type="password"
+              placeholder="Min. 12 characters"
+              autocomplete="new-password"
+            />
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Select ─────────────────────────────────────────────────────────── -->
+    <section id="select" class="ds-section">
+      <h2 class="ds-section__heading">Select — nx-select</h2>
+
+      <div class="ds-form-grid">
+        <div>
+          <p class="ds-section__label">Default</p>
+          <div class="ds-demo">
+            <nx-select [formControl]="selectControl" label="Priority" [options]="priorityOptions" />
+          </div>
+        </div>
+
+        <div>
+          <p class="ds-section__label">With hint</p>
+          <div class="ds-demo">
+            <nx-select
+              label="Status"
+              [options]="statusOptions"
+              hint="Cancelled issues are excluded from metrics."
+            />
+          </div>
+        </div>
+
+        <div>
+          <p class="ds-section__label">Error state</p>
+          <div class="ds-demo">
+            <nx-select label="Assignee" [options]="[]" error="Please assign at least one member." />
+          </div>
+        </div>
+
+        <div>
+          <p class="ds-section__label">Multi-select</p>
+          <div class="ds-demo">
+            <nx-select
+              [formControl]="selectControl"
+              label="Labels"
+              [options]="statusOptions"
+              [multiple]="true"
+            />
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Cards ──────────────────────────────────────────────────────────── -->
+    <section id="cards" class="ds-section">
+      <h2 class="ds-section__heading">Cards — nx-card</h2>
+
+      <div class="ds-row">
+        <nx-card
+          elevation="outlined"
+          title="Outlined"
+          subtitle="elevation='outlined'"
+          style="width: 240px"
+        >
+          Hairline border, no shadow. Default surface background.
+          <nx-button slot="actions" variant="secondary" size="sm">Action</nx-button>
+        </nx-card>
+
+        <nx-card
+          elevation="raised"
+          title="Raised"
+          subtitle="elevation='raised'"
+          style="width: 240px"
+        >
+          Subtle shadow in light mode; surface lift in dark mode.
+          <nx-button slot="actions" variant="secondary" size="sm">Action</nx-button>
+        </nx-card>
+
+        <nx-card elevation="flat" title="Flat" subtitle="elevation='flat'" style="width: 240px">
+          No shadow, no border. Relies on background contrast for depth.
+          <nx-button slot="actions" variant="secondary" size="sm">Action</nx-button>
+        </nx-card>
+      </div>
+    </section>
+
+    <!-- ── Table ──────────────────────────────────────────────────────────── -->
+    <section id="table" class="ds-section">
+      <h2 class="ds-section__heading">Table — nx-table</h2>
+      <nx-table
+        [columns]="tableColumns"
+        [rows]="tableRows"
+        [clickable]="true"
+        style="
+          display: block;
+          background: var(--nx-color-surface);
+          border: 1px solid var(--nx-color-outline);
+          border-radius: var(--nx-radius-lg);
+          overflow: hidden;
+        "
+      />
+    </section>
+
+    <!-- ── Empty State ────────────────────────────────────────────────────── -->
+    <section id="empty" class="ds-section">
+      <h2 class="ds-section__heading">Empty State — nx-empty-state</h2>
+
+      <div class="ds-row">
+        <div class="ds-demo ds-demo--centered" style="flex: 1; min-width: 280px">
+          <nx-empty-state
+            icon="inbox"
+            title="No issues yet"
+            description="Create your first issue to get started tracking work."
+          >
+            <nx-button variant="primary" leadingIcon="add">New issue</nx-button>
+          </nx-empty-state>
+        </div>
+
+        <div class="ds-demo ds-demo--centered" style="flex: 1; min-width: 280px">
+          <nx-empty-state
+            icon="search_off"
+            title="No results"
+            description="Try adjusting your filters or search terms."
+          >
+            <nx-button variant="secondary">Clear filters</nx-button>
+          </nx-empty-state>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Error State ────────────────────────────────────────────────────── -->
+    <section id="error" class="ds-section">
+      <h2 class="ds-section__heading">Error State — nx-error-state</h2>
+
+      <div class="ds-row">
+        <div class="ds-demo ds-demo--centered" style="flex: 1; min-width: 280px">
+          <nx-error-state
+            title="Failed to load issues"
+            message="The server returned an unexpected error. Please try again."
+            [showRetry]="true"
+            (retry)="retryAction()"
+          />
+        </div>
+
+        <div class="ds-demo ds-demo--centered" style="flex: 1; min-width: 280px">
+          <nx-error-state
+            title="Access denied"
+            message="You don't have permission to view this workspace."
+            [showRetry]="false"
+          >
+            <nx-button variant="secondary" size="sm">Contact admin</nx-button>
+          </nx-error-state>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Toast ──────────────────────────────────────────────────────────── -->
+    <section id="toast" class="ds-section">
+      <h2 class="ds-section__heading">Toast — NxToast service</h2>
+      <p class="ds-section__description">
+        <code>NxToast</code> is an injectable service. Click to trigger each variant.
+      </p>
+      <div class="ds-demo">
+        <div class="ds-row">
+          <nx-button variant="primary" (clicked)="showToast('success')"> Success toast </nx-button>
+          <nx-button variant="secondary" (clicked)="showToast('info')"> Info toast </nx-button>
+          <nx-button variant="secondary" (clicked)="showToast('warning')">
+            Warning toast
+          </nx-button>
+          <nx-button variant="danger" (clicked)="showToast('error')"> Error toast </nx-button>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>

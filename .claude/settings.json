@@ -2,38 +2,10 @@
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
     "allow": [
-      "Bash(./mvnw test:*)",
-      "Bash(./mvnw clean:*)",
-      "Bash(./mvnw verify:*)",
-      "Bash(./mvnw spring-boot:run)",
-      "Bash(./mvnw dependency:*)",
-      "Bash(./mvnw checkstyle:*)",
-      "Bash(mvnw.cmd:*)",
-      "Bash(npm test:*)",
-      "Bash(npm run:*)",
-      "Bash(npm ci)",
-      "Bash(npm install:*)",
-      "Bash(npx prettier:*)",
-      "Bash(npx playwright:*)",
-      "Bash(node .claude/hooks/:*)",
-      "Bash(git status:*)",
-      "Bash(git diff:*)",
-      "Bash(git log:*)",
-      "Bash(git branch:*)",
-      "Bash(git add:*)",
-      "Bash(git commit:*)",
-      "Bash(git stash:*)",
+      "Bash(*)",
       "Read(**)",
-      "Edit(nexus-backend/**)",
-      "Edit(nexus-frontend/**)",
-      "Edit(docs/**)",
-      "Edit(.claude/**)",
-      "Edit(.github/**)",
-      "Write(nexus-backend/**)",
-      "Write(nexus-frontend/**)",
-      "Write(docs/**)",
-      "Write(.claude/**)",
-      "Write(.github/**)"
+      "Edit(**)",
+      "Write(**)"
     ],
     "deny": [
       "Bash(git push:*)",
@@ -56,49 +28,7 @@
       "Write(./**/application-prod.*)"
     ]
   },
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node C:/entomo/AI/nexus/.claude/hooks/block-prod-commands.mjs"
-          }
-        ]
-      },
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node C:/entomo/AI/nexus/.claude/hooks/secret-scan.mjs"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node C:/entomo/AI/nexus/.claude/hooks/format.mjs"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node C:/entomo/AI/nexus/.claude/hooks/run-tests.mjs"
-          }
-        ]
-      }
-    ]
-  },
+  "hooks": {},
   "env": {
     "JAVA_TOOL_OPTIONS": "-Dfile.encoding=UTF-8",
     "MAVEN_OPTS": "-Xmx2g"

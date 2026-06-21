@@ -12,6 +12,11 @@ spring:
   flyway:
     # Migrations are MySQL-flavoured SQL; they only run against real MySQL
     enabled: false
+  mail:
+    # "disabled" activates LoggingMailSenderAdapter (no SMTP connection attempted).
+    # JavaMailSenderAutoConfiguration still creates a JavaMailSender bean (non-empty host),
+    # but it is unused since SmtpMailSenderAdapter is suppressed via @ConditionalOnMissingBean.
+    host: disabled
 
 # Dev-placeholder keys bypass SEC-T5 because active profile is "smoke".
 # Not real credentials — never use outside dev/smoke.
@@ -21,3 +26,12 @@ nexus:
       password: ${NEXUS_ENC_PASSWORD_EXAMPLE:dev-not-a-secret-encryption-password}
       salt: ${NEXUS_ENC_SALT_EXAMPLE:deadbeefdeadbeefdeadbeefdeadbeef}
     hmac-key: ${NEXUS_HMAC_KEY_EXAMPLE:test-hmac-key-min-32-bytes-long-example-value}
+    default-tenant-id: "00000000-0000-7000-8000-000000000001"
+    argon2:
+      memory-kb: 4096
+      iterations: 1
+      parallelism: 1
+
+feature:
+  nexus-us002-auth-registration:
+    enabled: false

@@ -29,6 +29,18 @@ spring:
     enabled: true
     locations: classpath:db/migration
 
+  mail:
+    host: ${MAIL_HOST:}          # Required in staging/prod; dev overrides via application-dev.yml
+    port: ${MAIL_PORT:587}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          starttls:
+            enable: true         # SEC-4: enforce STARTTLS so plaintext SMTP cannot be used
+            required: true       # SEC-4: reject connections that do not negotiate STARTTLS
+
 server:
   port: ${SERVER_PORT:1000}
   shutdown: graceful
@@ -62,4 +74,19 @@ nexus:
       password: ${NEXUS_IDENTITY_ENCRYPTION_PASSWORD}  # AES-256-GCM master password (>=16 chars)
       salt: ${NEXUS_IDENTITY_ENCRYPTION_SALT}          # hex-encoded KDF salt (>=32 hex chars)
     hmac-key: ${NEXUS_IDENTITY_HMAC_KEY}               # HMAC-SHA256 key for email blind index (>=32 bytes)
+    # UUID of the default tenant injected into use-cases. Must be set in all non-smoke envs.
+    default-tenant-id: ${NEXUS_IDENTITY_DEFAULT_TENANT_ID}
+    argon2:
+      # OWASP 2023 minimums (prod defaults). Override via env vars for speed in lower envs.
+      memory-kb: ${NEXUS_ARGON2_MEMORY_KB:19456}
+      iterations: ${NEXUS_ARGON2_ITERATIONS:2}
+      parallelism: ${NEXUS_ARGON2_PARALLELISM:1}
+  mail:
+    from-address: ${NEXUS_MAIL_FROM_ADDRESS:noreply@nexus.example.com}
+  frontend:
+    base-url: ${NEXUS_FRONTEND_BASE_URL:http://localhost:2000}
+
+feature:
+  nexus-us002-auth-registration:
+    enabled: ${FEATURE_AUTH_REGISTRATION_ENABLED:false}  # Defaults off; enable per-env
 

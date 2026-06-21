@@ -1,8 +1,13 @@
 package com.example.nexus;
 
+import com.example.nexus.common.web.LogMaskingUtil;
+import com.example.nexus.identity.application.port.out.MailSenderPort;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
 import org.springframework.test.context.DynamicPropertyRegistrar;
 import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.utility.MountableFile;
@@ -48,6 +53,42 @@ public class TestcontainersConfiguration {
             registry.add(
                 "nexus.identity.hmac-key",
                 () -> "test-not-a-secret-hmac-key-min-32-bytes!!");
+            // US-002: default tenant, fast Argon2 params, stub mail, feature flag on for ITs
+            registry.add(
+                "nexus.identity.default-tenant-id",
+                () -> "00000000-0000-7000-8000-000000000001");
+            registry.add("nexus.identity.argon2.memory-kb",   () -> "4096");
+            registry.add("nexus.identity.argon2.iterations",  () -> "1");
+            registry.add("nexus.identity.argon2.parallelism", () -> "1");
+            // Use loopback IP (not "disabled") to avoid Windows DNS resolution blocking.
+            // Connection to 127.0.0.1:1025 is refused immediately when MailHog is not running.
+            registry.add("spring.mail.host",                  () -> "127.0.0.1");
+            registry.add("spring.mail.properties.mail.smtp.connectiontimeout", () -> "500");
+            registry.add("spring.mail.properties.mail.smtp.timeout",           () -> "500");
+            registry.add("nexus.mail.from-address",           () -> "test@nexus.test");
+            registry.add("nexus.frontend.base-url",           () -> "http://localhost:2000");
+            registry.add(
+                "feature.nexus-us002-auth-registration.enabled",
+                () -> "true");
+        };
+    }
+
+    // @ConditionalOnProperty on LoggingMailSenderAdapter is evaluated before DynamicPropertyRegistrar
+    // runs, so it never activates in IT contexts. @Primary here wins over SmtpMailSenderAdapter.
+    @Bean
+    @Primary
+    MailSenderPort stubMailSenderPort() {
+        Logger log = LoggerFactory.getLogger("TestMailStub");
+        return new MailSenderPort() {
+            @Override
+            public void sendVerificationEmail(String toEmail, String rawToken) {
+                log.info("[MAIL-STUB] Verification email → {}", LogMaskingUtil.maskEmail(toEmail));
+            }
+
+            @Override
+            public void sendAccountExistsEmail(String toEmail) {
+                log.info("[MAIL-STUB] AccountExists email → {}", LogMaskingUtil.maskEmail(toEmail));
+            }
         };
     }
 }

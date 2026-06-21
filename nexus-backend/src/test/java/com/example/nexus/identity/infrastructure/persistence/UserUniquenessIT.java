@@ -32,7 +32,7 @@ class UserUniquenessIT {
     String email = "alice@example.com";
     String hmac = blindIndexService.blindIndex(email);
 
-    User user = new User(uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac);
+    User user = new User(uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac, "pw-hash", null);
     User saved = userRepository.save(user);
     userRepository.flush();
 
@@ -47,10 +47,10 @@ class UserUniquenessIT {
     String email = "bob@example.com";
     String hmac = blindIndexService.blindIndex(email);
 
-    User first = new User(uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac);
+    User first = new User(uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac, "pw-hash", null);
     userRepository.saveAndFlush(first);
 
-    User duplicate = new User(uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac);
+    User duplicate = new User(uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac, "pw-hash", null);
 
     assertThatThrownBy(() -> userRepository.saveAndFlush(duplicate))
         .isInstanceOf(DataIntegrityViolationException.class);
@@ -63,8 +63,8 @@ class UserUniquenessIT {
     String email = "carol@example.com";
     String hmac = blindIndexService.blindIndex(email);
 
-    User u1 = new User(uuidGenerator.newId(), tenant1, new EmailCipher(email), hmac);
-    User u2 = new User(uuidGenerator.newId(), tenant2, new EmailCipher(email), hmac);
+    User u1 = new User(uuidGenerator.newId(), tenant1, new EmailCipher(email), hmac, "pw-hash", null);
+    User u2 = new User(uuidGenerator.newId(), tenant2, new EmailCipher(email), hmac, "pw-hash", null);
 
     userRepository.saveAndFlush(u1);
     userRepository.saveAndFlush(u2); // must not throw
@@ -79,7 +79,7 @@ class UserUniquenessIT {
     String storedEmail = "dave@example.com";
     String hmac = blindIndexService.blindIndex(storedEmail);
 
-    User user = new User(uuidGenerator.newId(), tenantId, new EmailCipher(storedEmail), hmac);
+    User user = new User(uuidGenerator.newId(), tenantId, new EmailCipher(storedEmail), hmac, "pw-hash", null);
     userRepository.saveAndFlush(user);
 
     // Lookup with differently-cased email must produce the same HMAC and find the user

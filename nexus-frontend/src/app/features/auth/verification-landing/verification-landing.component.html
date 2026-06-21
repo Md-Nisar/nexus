@@ -1,0 +1,30 @@
+@switch (state().kind) {
+  @case ('loading') {
+    <div class="verif verif--verifying" data-testid="verif-verifying" role="status">
+      <mat-icon class="verif__spinner-icon" aria-hidden="true">sync</mat-icon>
+      <p class="verif__message">Verifying your email address…</p>
+    </div>
+  }
+
+  @case ('success') {
+    <div class="verif verif--success" data-testid="verif-success" role="status">
+      <mat-icon class="verif__icon verif__icon--success" aria-hidden="true">check_circle</mat-icon>
+      <h2 class="verif__heading">Email verified!</h2>
+      <p class="verif__message">Your account is active. You can now log in.</p>
+      <a class="verif__action" routerLink="/auth/login">Go to login</a>
+    </div>
+  }
+
+  @case ('error') {
+    <div class="verif verif--error" data-testid="verif-error" role="alert">
+      <mat-icon class="verif__icon verif__icon--error" aria-hidden="true">error_outline</mat-icon>
+      <h2 class="verif__heading">Verification failed</h2>
+      <p class="verif__message">{{ errorDetail()?.message }}</p>
+      @if (errorDetail()?.code === 'AUTH_VRF_002') {
+        <a class="verif__action" routerLink="/auth/resend-verification" data-testid="verif-resend">
+          Resend verification email
+        </a>
+      }
+    </div>
+  }
+}
