@@ -111,7 +111,7 @@ class LoginControllerTest {
         .andExpect(header().string(HttpHeaders.SET_COOKIE, containsString("Max-Age=0")))
         .andExpect(header().string(HttpHeaders.SET_COOKIE, containsString("refresh_token=")));
 
-    // No authenticated user in MockMvc → userId is null; LogoutUseCase still called
-    verify(logoutUseCase).execute(isNull(), any());
+    // No authenticated user in MockMvc → userId is null; no cookie → rawRefreshToken is null
+    verify(logoutUseCase).execute(isNull(), isNull(), any());
   }
 }

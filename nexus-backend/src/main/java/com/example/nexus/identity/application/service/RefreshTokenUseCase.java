@@ -91,8 +91,15 @@ public class RefreshTokenUseCase {
   public LoginResult execute(String tokenCookieValue, String clientIp) {
     Instant now = clock.instant();
 
-    // Step 1: Hash the incoming cookie value
-    String hash = tokenHasher.hash(tokenCookieValue);
+    // Step 1: Hash the incoming cookie value — IllegalArgumentException means the attacker-
+    // controlled value is not valid hex; treat identically to unknown-token (uniform 401, T-2.3).
+    String hash;
+    try {
+      hash = tokenHasher.hash(tokenCookieValue);
+    } catch (IllegalArgumentException e) {
+      secureEventService.recordEvent(failureEvent(null, clientIp, "TOKEN_REFRESH_FAILURE"));
+      throw new AuthenticationException(AUTH_004, MSG_INVALID);
+    }
 
     // Step 2: Look up by hash — unknown token is a theft signal
     Optional<RefreshToken> tokenOpt = refreshTokenPort.findByTokenHash(hash);

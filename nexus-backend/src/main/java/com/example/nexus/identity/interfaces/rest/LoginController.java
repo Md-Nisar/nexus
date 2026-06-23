@@ -98,12 +98,14 @@ public class LoginController {
   }
 
   @PostMapping("/logout")
-  ResponseEntity<Void> logout(HttpServletRequest request) {
+  ResponseEntity<Void> logout(
+      @CookieValue(value = "refresh_token", required = false) String cookieValue,
+      HttpServletRequest request) {
     Authentication auth = SecurityContextHolder.getContext().getAuthentication();
     UUID userId = (auth != null && auth.isAuthenticated()
         && !(auth instanceof AnonymousAuthenticationToken)
         && auth.getPrincipal() instanceof String s) ? UUID.fromString(s) : null;
-    logoutUseCase.execute(userId, request.getRemoteAddr());
+    logoutUseCase.execute(userId, cookieValue, request.getRemoteAddr());
     ResponseCookie clear = buildRefreshCookie("", 0);
     return ResponseEntity.noContent().header(HttpHeaders.SET_COOKIE, clear.toString()).build();
   }

@@ -208,6 +208,20 @@ class RefreshTokenUseCaseTest {
     verify(jwtPort, never()).issue(any());
   }
 
+  @Test
+  void execute_malformedCookieValue_returns401_not500() {
+    // Attacker sends a cookie that is not valid hex — HexFormat.parseHex throws IAE.
+    // The use case must catch it and return AUTH_004 (not propagate as 500).
+    String malformed = "not-valid-hex!!";
+    when(tokenHasher.hash(malformed)).thenThrow(new IllegalArgumentException("bad hex"));
+
+    assertThatThrownBy(() -> useCase.execute(malformed, CLIENT_IP))
+        .isInstanceOf(AuthenticationException.class)
+        .hasFieldOrPropertyWithValue("code", "AUTH_004");
+
+    verify(secureEventService).recordEvent(argThat(e -> "TOKEN_REFRESH_FAILURE".equals(e.getEventType())));
+  }
+
   // --- helpers ---
 
   private RefreshToken validToken(UUID userId, UUID familyId) {

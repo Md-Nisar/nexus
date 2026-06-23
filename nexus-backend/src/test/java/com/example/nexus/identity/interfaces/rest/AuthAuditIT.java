@@ -224,6 +224,32 @@ class AuthAuditIT {
   }
 
   /**
+   * Token-less logout (no Bearer token, only refresh cookie) must still revoke server-side
+   * refresh tokens — T-7.1 gap: expired/missing access token is the suspected-theft scenario.
+   */
+  @Test
+  void tokenless_logout_revokes_server_side_refresh_tokens() {
+    String email = "audit-tl-" + UUID.randomUUID() + "@example.com";
+    createActiveUser(email);
+
+    var loginResp = doLoginPost(email, STRONG_PASS);
+    assertThat(loginResp.getStatusCode().value()).isEqualTo(200);
+    String setCookie = loginResp.getHeaders().getFirst(HttpHeaders.SET_COOKIE);
+    assertThat(setCookie).isNotNull();
+    String refreshToken = extractCookieValue(setCookie);
+
+    // Logout with only the refresh cookie — no Bearer access token
+    var logoutResp = doLogoutPostWithCookie(refreshToken);
+    assertThat(logoutResp.getStatusCode().value()).as("token-less logout should return 204").isEqualTo(204);
+
+    // Attempt to refresh after token-less logout — must be 401 (tokens revoked server-side)
+    var refreshResp = doRefreshPost(refreshToken);
+    assertThat(refreshResp.getStatusCode().value())
+        .as("refresh after token-less logout must return 401 — server-side tokens were revoked")
+        .isEqualTo(401);
+  }
+
+  /**
    * The raw refresh token value must never appear in any log message (SEC T-I4).
    */
   @Test
@@ -292,6 +318,17 @@ class AuthAuditIT {
   private ResponseEntity<Map> doLogoutPost(String accessToken) {
     HttpHeaders headers = new HttpHeaders();
     headers.add(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken);
+    return restTemplate.exchange(
+        "http://localhost:" + port + "/api/v1/auth/logout",
+        HttpMethod.POST,
+        new HttpEntity<>(null, headers),
+        Map.class);
+  }
+
+  @SuppressWarnings("rawtypes")
+  private ResponseEntity<Map> doLogoutPostWithCookie(String cookieValue) {
+    HttpHeaders headers = new HttpHeaders();
+    headers.add(HttpHeaders.COOKIE, "refresh_token=" + cookieValue);
     return restTemplate.exchange(
         "http://localhost:" + port + "/api/v1/auth/logout",
         HttpMethod.POST,
