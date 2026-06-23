@@ -11,6 +11,7 @@ const TEST_SESSION: AuthSession = {
   accessToken: 'test-access-token',
   tokenType: 'Bearer',
   expiresIn: 3600,
+  expiresAt: Date.now() + 3600 * 1000,
   user: {
     userId: 'user-123',
     tenantId: 'tenant-456',

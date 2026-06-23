@@ -8,7 +8,10 @@ export class AuthStore {
   private readonly _session = signal<AuthSession | null>(null);
 
   readonly session = this._session.asReadonly();
-  readonly isAuthenticated = computed(() => this._session() !== null);
+  readonly isAuthenticated = computed(() => {
+    const s = this._session();
+    return s !== null && Date.now() < s.expiresAt;
+  });
   readonly currentUser = computed(() => this._session()?.user ?? null);
   readonly accessToken = computed(() => this._session()?.accessToken ?? null);
 

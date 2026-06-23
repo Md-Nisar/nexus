@@ -102,7 +102,10 @@ export class LoginFormComponent {
     this.errorMessage.set(null);
     const { email, password } = this.form.getRawValue();
     this.authService.login(email, password).subscribe({
-      next: () => this.router.navigate(['/dashboard']),
+      next: () => {
+        this.loading.set(false);
+        this.router.navigate(['/dashboard']);
+      },
       error: (err: AppError) => {
         this.loading.set(false);
         switch (err.code) {

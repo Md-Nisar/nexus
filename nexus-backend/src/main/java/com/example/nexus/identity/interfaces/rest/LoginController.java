@@ -2,6 +2,7 @@ package com.example.nexus.identity.interfaces.rest;
 
 import com.example.nexus.common.domain.AuthenticationException;
 import com.example.nexus.common.domain.RequestContext;
+import com.example.nexus.common.web.CorrelationIdFilter;
 import com.example.nexus.identity.application.service.LoginUseCase;
 import com.example.nexus.identity.application.service.LogoutUseCase;
 import com.example.nexus.identity.application.service.RefreshTokenUseCase;
@@ -108,7 +109,7 @@ public class LoginController {
   }
 
   private RequestContext requestContext(HttpServletRequest req) {
-    return new RequestContext(req.getRemoteAddr(), MDC.get("traceId"));
+    return new RequestContext(req.getRemoteAddr(), MDC.get(CorrelationIdFilter.MDC_KEY));
   }
 
   private ResponseCookie buildRefreshCookie(String raw, long maxAge) {

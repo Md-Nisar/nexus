@@ -6,6 +6,7 @@ import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * JPA-backed {@link RefreshTokenPort}.
@@ -35,11 +36,13 @@ public class JpaRefreshTokenAdapter implements RefreshTokenPort {
   }
 
   @Override
+  @Transactional
   public void revokeFamily(UUID familyId, Instant revokedAt) {
     repo.revokeByFamilyId(familyId, revokedAt);
   }
 
   @Override
+  @Transactional
   public void revokeByUserId(UUID userId, Instant revokedAt) {
     repo.revokeByUserId(userId, revokedAt);
   }

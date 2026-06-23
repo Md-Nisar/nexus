@@ -3,6 +3,7 @@ package com.example.nexus.identity.infrastructure.security;
 import com.example.nexus.common.domain.AuthenticationException;
 import com.example.nexus.identity.application.port.out.JwtPort;
 import com.example.nexus.identity.domain.AccessTokenResult;
+import com.example.nexus.identity.domain.AuthConstants;
 import com.example.nexus.identity.domain.JwtClaims;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UserStatus;
@@ -76,7 +77,7 @@ public class JwtRs256Service implements JwtPort {
     try {
       Jws<Claims> jws = Jwts.parser()
           .verifyWith(keyPair.getPublic())
-          .clockSkewSeconds(30)
+          .clockSkewSeconds(AuthConstants.AUTH_CLOCK_SKEW_SECONDS)
           .build()
           .parseSignedClaims(rawJwt);
 

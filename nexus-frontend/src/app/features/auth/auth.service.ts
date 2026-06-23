@@ -45,31 +45,35 @@ export class AuthService {
   }
 
   login(email: string, password: string): Observable<AuthSession> {
-    return this.http.post<LoginApiResponse>(`${this.base}/login`, { email, password }).pipe(
-      switchMap((loginResp) =>
-        this.fetchMe(loginResp.accessToken, loginResp.tokenType).pipe(
-          map((me) => this.buildSession(loginResp, me)),
+    return this.http
+      .post<LoginApiResponse>(`${this.base}/login`, { email, password }, { withCredentials: true })
+      .pipe(
+        switchMap((loginResp) =>
+          this.fetchMe(loginResp.accessToken, loginResp.tokenType).pipe(
+            map((me) => this.buildSession(loginResp, me)),
+          ),
         ),
-      ),
-      tap((session) => this.authStore.setSession(session)),
-    );
+        tap((session) => this.authStore.setSession(session)),
+      );
   }
 
   logout(): Observable<void> {
     return this.http
-      .post<void>(`${this.base}/logout`, null)
+      .post<void>(`${this.base}/logout`, null, { withCredentials: true })
       .pipe(finalize(() => this.authStore.clearSession()));
   }
 
   refresh(): Observable<AuthSession> {
-    return this.http.post<LoginApiResponse>(`${this.base}/refresh`, null).pipe(
-      switchMap((loginResp) =>
-        this.fetchMe(loginResp.accessToken, loginResp.tokenType).pipe(
-          map((me) => this.buildSession(loginResp, me)),
+    return this.http
+      .post<LoginApiResponse>(`${this.base}/refresh`, null, { withCredentials: true })
+      .pipe(
+        switchMap((loginResp) =>
+          this.fetchMe(loginResp.accessToken, loginResp.tokenType).pipe(
+            map((me) => this.buildSession(loginResp, me)),
+          ),
         ),
-      ),
-      tap((session) => this.authStore.setSession(session)),
-    );
+        tap((session) => this.authStore.setSession(session)),
+      );
   }
 
   private fetchMe(token: string, tokenType: string): Observable<MeApiResponse> {
@@ -83,6 +87,7 @@ export class AuthService {
       accessToken: login.accessToken,
       tokenType: login.tokenType,
       expiresIn: login.expiresIn,
+      expiresAt: Date.now() + login.expiresIn * 1000,
       user: {
         userId: me.userId,
         tenantId: me.tenantId,

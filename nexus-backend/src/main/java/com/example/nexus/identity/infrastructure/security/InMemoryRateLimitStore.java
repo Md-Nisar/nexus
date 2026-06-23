@@ -74,6 +74,7 @@ public class InMemoryRateLimitStore implements RateLimitStore {
     Instant now = clock.instant();
     Instant windowStart = now.minusSeconds(windowSeconds);
     boolean[] rejected = {false};
+    long[] retryAfter = {windowSeconds};
 
     store.compute(key, (k, deque) -> {
       if (deque == null) {
@@ -82,6 +83,11 @@ public class InMemoryRateLimitStore implements RateLimitStore {
       deque.removeIf(t -> t.isBefore(windowStart)); // prune expired entries
       if (deque.size() >= maxAttempts) {
         rejected[0] = true;
+        // Retry-After = time until the oldest tracked request expires (not the full window).
+        Instant oldest = deque.peekFirst();
+        if (oldest != null) {
+          retryAfter[0] = Math.max(1, oldest.getEpochSecond() + windowSeconds - now.getEpochSecond());
+        }
       } else {
         deque.addLast(now);
       }
@@ -89,7 +95,7 @@ public class InMemoryRateLimitStore implements RateLimitStore {
     });
 
     return rejected[0]
-        ? RateLimitResult.reject(windowSeconds)
+        ? RateLimitResult.reject(retryAfter[0])
         : RateLimitResult.permit();
   }
 

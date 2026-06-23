@@ -149,10 +149,12 @@ describe('AuthService — login/logout/refresh', () => {
     tokenVersion: 1,
   };
 
-  const EXPECTED_SESSION: AuthSession = {
+  // expiresAt is stamped by buildSession via Date.now() — use a numeric matcher.
+  const EXPECTED_SESSION = {
     accessToken: 'access-token-xyz',
     tokenType: 'Bearer',
     expiresIn: 3600,
+    expiresAt: expect.any(Number) as number,
     user: {
       userId: 'user-1',
       tenantId: 'tenant-1',
@@ -160,7 +162,7 @@ describe('AuthService — login/logout/refresh', () => {
       roles: ['USER'],
       tokenVersion: 1,
     },
-  };
+  } satisfies AuthSession;
 
   beforeEach(() => {
     mockAuthStore = {
