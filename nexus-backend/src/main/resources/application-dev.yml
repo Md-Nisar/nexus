@@ -38,3 +38,5 @@ nexus:
 feature:
   nexus-us002-auth-registration:
     enabled: true
+  nexus-us003-auth-login:
+    enabled: true

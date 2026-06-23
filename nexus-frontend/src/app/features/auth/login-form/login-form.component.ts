@@ -1,0 +1,185 @@
+import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
+import { toSignal } from '@angular/core/rxjs-interop';
+import { Router, RouterLink } from '@angular/router';
+import { NxButton, NxInput } from '../../../shared/ui';
+import { AuthService } from '../auth.service';
+import { AppError } from '../../../shared/types/app-error';
+
+@Component({
+  selector: 'nx-login-form',
+  standalone: true,
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  imports: [ReactiveFormsModule, RouterLink, NxInput, NxButton],
+  template: `
+    <div class="login-form-container">
+      <form class="login-form" [formGroup]="form" (ngSubmit)="submit()" novalidate>
+        <h2 class="login-form__heading">Sign in to Nexus</h2>
+
+        @if (errorMessage()) {
+          <div class="login-form__error-banner" role="alert" data-testid="login-error">
+            {{ errorMessage() }}
+          </div>
+        }
+
+        <nx-input
+          inputId="login-email"
+          formControlName="email"
+          label="Email address"
+          type="email"
+          autocomplete="email"
+          [error]="emailError()"
+        />
+
+        <nx-input
+          inputId="login-password"
+          formControlName="password"
+          [type]="showPassword() ? 'text' : 'password'"
+          label="Password"
+          autocomplete="current-password"
+          [suffixIcon]="showPassword() ? 'visibility_off' : 'visibility'"
+          [error]="passwordError()"
+          (suffixIconClick)="showPassword.update((v) => !v)"
+        />
+
+        <nx-button
+          type="submit"
+          variant="primary"
+          size="lg"
+          [fullWidth]="true"
+          [loading]="loading()"
+          [disabled]="form.invalid || loading()"
+          data-testid="login-submit"
+        >
+          Sign in
+        </nx-button>
+
+        <p class="login-form__register-link">
+          No account? <a routerLink="/auth/register">Create one</a>
+        </p>
+      </form>
+    </div>
+  `,
+  styles: `
+    :host {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: calc(100vh - 52px);
+      padding: var(--nx-space-6);
+      background-color: var(--nx-color-canvas);
+    }
+
+    .login-form {
+      display: flex;
+      flex-direction: column;
+      gap: var(--nx-space-5);
+      width: 100%;
+      max-width: 400px;
+      padding: var(--nx-space-8);
+      background-color: var(--nx-color-surface);
+      border: 1px solid var(--nx-color-outline);
+      border-radius: var(--nx-radius-lg);
+
+      &__heading {
+        margin: 0 0 var(--nx-space-1);
+        font-size: var(--nx-text-2xl);
+        font-weight: var(--nx-weight-semibold);
+        color: var(--nx-color-on-surface);
+        letter-spacing: var(--nx-tracking-card-title);
+      }
+
+      &__error-banner {
+        padding: var(--nx-space-3) var(--nx-space-4);
+        border-radius: var(--nx-radius-sm);
+        background: var(--nx-color-error-surface);
+        color: var(--nx-color-error);
+        font-size: var(--nx-text-base);
+      }
+
+      &__register-link {
+        margin: 0;
+        font-size: var(--nx-text-sm);
+        color: var(--nx-color-on-surface-faint);
+        text-align: center;
+
+        a {
+          color: var(--nx-color-primary);
+          text-decoration: none;
+
+          &:hover {
+            color: var(--nx-color-primary-hover);
+            text-decoration: underline;
+          }
+        }
+      }
+    }
+  `,
+})
+export class LoginFormComponent {
+  private readonly authService = inject(AuthService);
+  private readonly router = inject(Router);
+
+  readonly loading = signal(false);
+  readonly errorMessage = signal<string | null>(null);
+  readonly showPassword = signal(false);
+
+  readonly form = new FormGroup({
+    email: new FormControl('', {
+      validators: [Validators.required, Validators.email, Validators.maxLength(254)],
+      nonNullable: true,
+    }),
+    password: new FormControl('', {
+      validators: [Validators.required, Validators.maxLength(256)],
+      nonNullable: true,
+    }),
+  });
+
+  private readonly formStatus = toSignal(this.form.statusChanges, {
+    initialValue: this.form.status,
+  });
+
+  readonly emailError = computed(() => {
+    this.formStatus();
+    const ctrl = this.form.controls.email;
+    if (!ctrl.touched || ctrl.valid) return '';
+    if (ctrl.errors?.['required']) return 'Email is required.';
+    return 'Enter a valid email address.';
+  });
+
+  readonly passwordError = computed(() => {
+    this.formStatus();
+    const ctrl = this.form.controls.password;
+    if (!ctrl.touched || ctrl.valid) return '';
+    return 'Password is required.';
+  });
+
+  submit(): void {
+    if (this.form.invalid || this.loading()) return;
+    this.loading.set(true);
+    this.errorMessage.set(null);
+    const { email, password } = this.form.getRawValue();
+    this.authService.login(email, password).subscribe({
+      next: () => {
+        this.loading.set(false);
+        this.router.navigate(['/dashboard']);
+      },
+      error: (err: AppError) => {
+        this.loading.set(false);
+        switch (err.code) {
+          case 'AUTH_001':
+            this.errorMessage.set('Invalid email or password.');
+            break;
+          case 'AUTH_002':
+            this.errorMessage.set('Please verify your email before logging in.');
+            break;
+          case 'RATE_001':
+            this.errorMessage.set('Too many attempts. Please try again later.');
+            break;
+          default:
+            this.errorMessage.set('An unexpected error occurred. Please try again.');
+        }
+      },
+    });
+  }
+}

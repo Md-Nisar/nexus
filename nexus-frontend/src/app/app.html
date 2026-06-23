@@ -1,12 +1,14 @@
-<h2>Hi, Welcome!</h2>
+<header class="app-header">
+  <a class="app-header__wordmark" routerLink="/" aria-label="Nexus home">Nexus</a>
+
+  <button
+    class="app-header__theme-toggle"
+    [attr.aria-label]="themeLabel()"
+    (click)="themeService.toggle()"
+    title="Toggle theme"
+  >
+    <span class="material-icons">{{ themeIcon() }}</span>
+  </button>
+</header>
 
 <router-outlet />
-
-<button
-  class="app-theme-toggle"
-  [attr.aria-label]="themeLabel()"
-  (click)="themeService.toggle()"
-  title="Toggle theme"
->
-  <span class="material-icons">{{ themeIcon() }}</span>
-</button>

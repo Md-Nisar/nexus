@@ -1,33 +1,55 @@
-.app-theme-toggle {
-  position: fixed;
-  top: 16px;
-  right: 16px;
-  z-index: 1000;
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: var(--nx-z-sticky);
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  padding: 0;
-  border: 1px solid var(--nx-color-outline);
-  border-radius: var(--nx-radius-md);
-  background: var(--nx-color-surface-2);
-  color: var(--nx-color-on-surface-faint);
-  cursor: pointer;
-  transition:
-    background 0.15s,
-    color 0.15s,
-    border-color 0.15s;
+  justify-content: space-between;
+  height: 52px;
+  padding: 0 var(--nx-space-6);
+  background-color: var(--nx-color-canvas);
+  border-bottom: 1px solid var(--nx-color-outline);
 
-  &:hover {
-    background: var(--nx-color-surface-3);
-    color: var(--nx-color-on-surface);
-    border-color: var(--nx-color-outline-strong);
+  &__wordmark {
+    font-family: var(--nx-font-family);
+    font-size: var(--nx-text-md);
+    font-weight: var(--nx-weight-semibold);
+    letter-spacing: var(--nx-tracking-subhead);
+    color: var(--nx-color-primary);
+    text-decoration: none;
+
+    &:hover {
+      color: var(--nx-color-primary-hover);
+    }
   }
 
-  .material-icons {
-    font-size: 18px;
-    line-height: 1;
-    user-select: none;
+  &__theme-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border: 1px solid var(--nx-color-outline);
+    border-radius: var(--nx-radius-md);
+    background: var(--nx-color-surface-2);
+    color: var(--nx-color-on-surface-faint);
+    cursor: pointer;
+    transition:
+      background var(--nx-duration-base) var(--nx-easing-standard),
+      color var(--nx-duration-base) var(--nx-easing-standard),
+      border-color var(--nx-duration-base) var(--nx-easing-standard);
+
+    &:hover {
+      background: var(--nx-color-surface-3);
+      color: var(--nx-color-on-surface);
+      border-color: var(--nx-color-outline-strong);
+    }
+
+    .material-icons {
+      font-size: 18px;
+      line-height: 1;
+      user-select: none;
+    }
   }
 }

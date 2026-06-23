@@ -36,6 +36,7 @@
         <spotbugs.plugin.version>4.9.4.1</spotbugs.plugin.version>
         <pmd.plugin.version>3.27.0</pmd.plugin.version>
         <dependency-check.version>12.1.0</dependency-check.version>
+        <jjwt.version>0.12.6</jjwt.version>
     </properties>
 
     <dependencyManagement>
@@ -146,6 +147,25 @@
             <groupId>com.github.f4b6a3</groupId>
             <artifactId>uuid-creator</artifactId>
             <version>${uuid-creator.version}</version>
+        </dependency>
+
+        <!-- JWT signing and verification — RS256 via JJWT (see ADR-0007) -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>${jjwt.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
         </dependency>
 
         <!-- Testing -->

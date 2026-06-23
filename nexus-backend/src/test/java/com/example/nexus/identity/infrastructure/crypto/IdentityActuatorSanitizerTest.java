@@ -104,4 +104,37 @@ class IdentityActuatorSanitizerTest {
 
     assertThat(result.getValue()).isEqualTo("dbpass");
   }
+
+  @Test
+  void should_sanitize_when_keyIsJwtPrivateKeyPem() {
+    SanitizableData result =
+        sanitizer.apply(dataFor("nexus.jwt.private-key-pem", "-----BEGIN PRIVATE KEY-----"));
+
+    assertThat(result.getValue()).isEqualTo(SanitizableData.SANITIZED_VALUE);
+  }
+
+  @Test
+  void should_sanitize_when_keyIsJwtPrivateKeyEnvVar() {
+    SanitizableData result =
+        sanitizer.apply(dataFor("NEXUS_JWT_PRIVATE_KEY_PEM", "-----BEGIN PRIVATE KEY-----"));
+
+    assertThat(result.getValue()).isEqualTo(SanitizableData.SANITIZED_VALUE);
+  }
+
+  @Test
+  void should_notSanitize_when_keyIsJwtPublicKeyPem() {
+    // Public key is safe to expose — published via JWKS endpoint
+    SanitizableData result =
+        sanitizer.apply(dataFor("nexus.jwt.public-key-pem", "-----BEGIN PUBLIC KEY-----"));
+
+    assertThat(result.getValue()).isEqualTo("-----BEGIN PUBLIC KEY-----");
+  }
+
+  @Test
+  void should_notSanitize_when_keyIsJwtTtl() {
+    SanitizableData result =
+        sanitizer.apply(dataFor("nexus.jwt.access-token-ttl-seconds", "900"));
+
+    assertThat(result.getValue()).isEqualTo("900");
+  }
 }
