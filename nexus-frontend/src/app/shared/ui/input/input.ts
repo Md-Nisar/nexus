@@ -44,11 +44,9 @@ import { MatIconModule } from '@angular/material/icon';
         data-testid="nx-input"
       />
       @if (suffixIcon()) {
-        <mat-icon
-          matSuffix
-          style="cursor: pointer"
-          (click)="suffixIconClick.emit()"
-        >{{ suffixIcon() }}</mat-icon>
+        <mat-icon matSuffix style="cursor: pointer" (click)="suffixIconClick.emit()">{{
+          suffixIcon()
+        }}</mat-icon>
       }
       @if (hint()) {
         <mat-hint>{{ hint() }}</mat-hint>

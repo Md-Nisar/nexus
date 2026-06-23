@@ -25,10 +25,9 @@ describe('PasswordStrengthMeterComponent', () => {
       .nativeElement.getAttribute('aria-label') as string;
   }
 
-  function labelText(fixture: ReturnType<typeof setup>): string {
-    return fixture.debugElement
-      .query(By.css('.strength-meter__label'))
-      .nativeElement.textContent.trim();
+  function labelText(fixture: ReturnType<typeof setup>): string | null {
+    const el = fixture.debugElement.query(By.css('.strength-meter__label'));
+    return el ? el.nativeElement.textContent.trim() : null;
   }
 
   it('should report Very Weak for empty password (score 0)', () => {
@@ -45,8 +44,9 @@ describe('PasswordStrengthMeterComponent', () => {
     expect(ariaLabel(setup('Str0ng!Pass99'))).toContain('Very Strong');
   });
 
-  it('should show different label text between score 0 and score 4', () => {
-    expect(labelText(setup(''))).not.toBe(labelText(setup('Str0ng!Pass99')));
+  it('should hide label for empty password and show it for a strong password', () => {
+    expect(labelText(setup(''))).toBeNull();
+    expect(labelText(setup('Str0ng!Pass99'))).toBe('Very Strong');
   });
 
   it('should report Fair for password12Chars (score 2: length + uppercase criteria)', () => {

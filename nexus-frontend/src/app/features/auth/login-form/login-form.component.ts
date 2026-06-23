@@ -39,7 +39,7 @@ import { AppError } from '../../../shared/types/app-error';
           autocomplete="current-password"
           [suffixIcon]="showPassword() ? 'visibility_off' : 'visibility'"
           [error]="passwordError()"
-          (suffixIconClick)="showPassword.update(v => !v)"
+          (suffixIconClick)="showPassword.update((v) => !v)"
         />
 
         <nx-button

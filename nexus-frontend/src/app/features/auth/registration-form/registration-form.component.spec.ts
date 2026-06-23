@@ -1,6 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
+import { provideRouter } from '@angular/router';
 import { Subject, of, throwError } from 'rxjs';
 import { describe, it, expect, vi } from 'vitest';
 import { RegistrationFormComponent } from './registration-form.component';
@@ -15,7 +16,11 @@ function setup(register?: ReturnType<typeof vi.fn>) {
   const auth = makeAuth(register);
   TestBed.configureTestingModule({
     imports: [RegistrationFormComponent],
-    providers: [{ provide: AuthService, useValue: auth }, provideAnimationsAsync()],
+    providers: [
+      { provide: AuthService, useValue: auth },
+      provideAnimationsAsync(),
+      provideRouter([]),
+    ],
   });
   const fixture = TestBed.createComponent(RegistrationFormComponent);
   fixture.detectChanges();
