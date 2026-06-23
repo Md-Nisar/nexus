@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.example.nexus.common.domain.AccountNotVerifiedException;
+import com.example.nexus.common.domain.AuthenticationException;
 import com.example.nexus.common.domain.ConflictException;
 import com.example.nexus.common.domain.DomainException;
 import com.example.nexus.common.domain.FieldValidationException;
@@ -139,6 +141,28 @@ class GlobalExceptionHandlerTest {
         assertThat(problem).isNotNull();
         assertThat(problem.getProperties()).containsEntry("code", "AUTH_RES_001");
         assertThat(problem.getDetail()).isEqualTo("Too many requests. Try again later.");
+    }
+
+    @Test
+    void should_return401WithCode_when_authenticationFails() {
+        ResponseEntity<ProblemDetail> response = handler.handleAuthentication(
+                new AuthenticationException("AUTH_001", "Invalid email or password"));
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().getStatus()).isEqualTo(401);
+        assertThat(response.getBody().getProperties()).containsEntry("code", "AUTH_001");
+        assertThat(response.getBody().getDetail()).isEqualTo("Invalid email or password");
+    }
+
+    @Test
+    void should_return403WithCode_when_accountNotVerified() {
+        ProblemDetail problem = handler.handleAccountNotVerified(
+                new AccountNotVerifiedException("AUTH_002", "Account not verified."));
+
+        assertThat(problem.getStatus()).isEqualTo(403);
+        assertThat(problem.getProperties()).containsEntry("code", "AUTH_002");
+        assertThat(problem.getDetail()).isEqualTo("Account not verified.");
     }
 
     @Test

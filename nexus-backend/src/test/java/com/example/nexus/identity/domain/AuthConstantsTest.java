@@ -9,8 +9,13 @@ import org.junit.jupiter.api.Test;
 class AuthConstantsTest {
 
   @Test
-  void should_have7DaysRefreshTtl() {
-    assertThat(AuthConstants.AUTH_REFRESH_TOKEN_TTL_DAYS).isEqualTo(7);
+  void should_have14DaysRefreshTtl() {
+    assertThat(AuthConstants.AUTH_REFRESH_TOKEN_TTL_DAYS).isEqualTo(14);
+  }
+
+  @Test
+  void should_have900SecondsAccessTokenTtl() {
+    assertThat(AuthConstants.AUTH_ACCESS_TOKEN_TTL_SECONDS).isEqualTo(900);
   }
 
   @Test

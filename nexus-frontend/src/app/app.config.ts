@@ -6,12 +6,15 @@ import { provideAnimationsAsync } from '@angular/platform-browser/animations/asy
 import { routes } from './app.routes';
 import { correlationIdInterceptor } from './core/http/correlation-id.interceptor';
 import { apiErrorInterceptor } from './core/http/api-error.interceptor';
+import { authInterceptor } from './core/http/auth.interceptor';
 
 export const appConfig: ApplicationConfig = {
   providers: [
     provideBrowserGlobalErrorListeners(),
     provideRouter(routes, withComponentInputBinding()),
-    provideHttpClient(withInterceptors([correlationIdInterceptor, apiErrorInterceptor])),
+    provideHttpClient(
+      withInterceptors([correlationIdInterceptor, apiErrorInterceptor, authInterceptor]),
+    ),
     provideAnimationsAsync(),
   ],
 };

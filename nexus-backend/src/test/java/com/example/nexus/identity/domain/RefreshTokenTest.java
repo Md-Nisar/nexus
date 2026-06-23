@@ -38,4 +38,32 @@ class RefreshTokenTest {
     assertThat(token.getCreatedAt()).isNull();
     assertThat(token.getUpdatedAt()).isNull();
   }
+
+  @Test
+  void should_setRevokedAt_when_revokeCalled() {
+    RefreshToken token =
+        new RefreshToken(
+            UUID.randomUUID(), UUID.randomUUID(), "hash", UUID.randomUUID(),
+            Instant.now().plusSeconds(604800));
+    Instant revokedAt = Instant.now();
+
+    token.revoke(revokedAt);
+
+    assertThat(token.getRevokedAt()).isEqualTo(revokedAt);
+  }
+
+  @Test
+  void should_remainRevoked_when_revokeCalledTwice() {
+    RefreshToken token =
+        new RefreshToken(
+            UUID.randomUUID(), UUID.randomUUID(), "hash", UUID.randomUUID(),
+            Instant.now().plusSeconds(604800));
+    Instant first = Instant.now();
+    Instant second = first.plusSeconds(1);
+
+    token.revoke(first);
+    token.revoke(second);
+
+    assertThat(token.getRevokedAt()).isNotNull();
+  }
 }

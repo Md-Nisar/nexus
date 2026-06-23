@@ -19,6 +19,7 @@ import org.springframework.context.annotation.Configuration;
  *   <li>{@code nexus.identity.encryption.password} — AES-256-GCM master password
  *   <li>{@code nexus.identity.encryption.salt} — KDF salt (not matched by Boot defaults)
  *   <li>{@code nexus.identity.hmac-key} — HMAC-SHA256 blind-index key
+ *   <li>{@code nexus.jwt.private-key-pem} — RSA private key PEM (ADR-0007)
  * </ul>
  */
 @Configuration
@@ -39,10 +40,15 @@ public class IdentityActuatorSanitizer {
   private boolean isSensitive(String lowerKey) {
     boolean isIdentityProperty =
         lowerKey.startsWith("nexus.identity.") || lowerKey.startsWith("nexus_identity_");
-    return isIdentityProperty
+    boolean isIdentitySensitive = isIdentityProperty
         && (lowerKey.contains("password")
             || lowerKey.contains("salt")
             || lowerKey.contains("hmac")
             || lowerKey.contains("key"));
+
+    boolean isJwtProperty = lowerKey.startsWith("nexus.jwt.") || lowerKey.startsWith("nexus_jwt_");
+    boolean isJwtSensitive = isJwtProperty && lowerKey.contains("private");
+
+    return isIdentitySensitive || isJwtSensitive;
   }
 }

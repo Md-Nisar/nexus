@@ -1,5 +1,7 @@
 package com.example.nexus.common.web;
 
+import com.example.nexus.common.domain.AccountNotVerifiedException;
+import com.example.nexus.common.domain.AuthenticationException;
 import com.example.nexus.common.domain.ConflictException;
 import com.example.nexus.common.domain.DomainException;
 import com.example.nexus.common.domain.FieldValidationException;
@@ -63,6 +65,17 @@ public class GlobalExceptionHandler {
     HttpHeaders headers = new HttpHeaders();
     headers.set(HttpHeaders.RETRY_AFTER, String.valueOf(e.retryAfterSeconds()));
     return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).headers(headers).body(problem);
+  }
+
+  @ExceptionHandler(AuthenticationException.class)
+  ResponseEntity<ProblemDetail> handleAuthentication(AuthenticationException e) {
+    return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+        .body(problem(HttpStatus.UNAUTHORIZED, e.code(), e.getMessage()));
+  }
+
+  @ExceptionHandler(AccountNotVerifiedException.class)
+  ProblemDetail handleAccountNotVerified(AccountNotVerifiedException e) {
+    return problem(HttpStatus.FORBIDDEN, e.code(), e.getMessage());
   }
 
   @ExceptionHandler(DomainException.class)

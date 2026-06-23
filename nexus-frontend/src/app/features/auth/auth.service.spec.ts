@@ -1,11 +1,13 @@
 import { TestBed } from '@angular/core/testing';
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { AuthService } from './auth.service';
 import { APP_CONFIG } from '../../core/config/app-config';
 import { apiErrorInterceptor } from '../../core/http/api-error.interceptor';
 import { AppError } from '../../shared/types/app-error';
+import { AuthStore } from '../../core/auth/auth.store';
+import { AuthSession } from '../../shared/types/auth';
 
 const TEST_CONFIG = { production: false, apiBaseUrl: '/api', logLevel: 'debug' } as const;
 
@@ -117,5 +119,132 @@ describe('AuthService', () => {
         );
       expect(captured?.code).toBe('AUTH_RES_001');
     });
+  });
+});
+
+describe('AuthService — login/logout/refresh', () => {
+  let service: AuthService;
+  let controller: HttpTestingController;
+  let mockAuthStore: {
+    setSession: ReturnType<typeof vi.fn>;
+    clearSession: ReturnType<typeof vi.fn>;
+    accessToken: ReturnType<typeof vi.fn>;
+    isAuthenticated: ReturnType<typeof vi.fn>;
+    currentUser: ReturnType<typeof vi.fn>;
+    session: ReturnType<typeof vi.fn>;
+  };
+
+  const LOGIN_RESPONSE = {
+    accessToken: 'access-token-xyz',
+    tokenType: 'Bearer',
+    expiresIn: 3600,
+    userId: 'user-1',
+  };
+
+  const ME_RESPONSE = {
+    userId: 'user-1',
+    emailVerified: true,
+    tenantId: 'tenant-1',
+    roles: ['USER'],
+    tokenVersion: 1,
+  };
+
+  const EXPECTED_SESSION: AuthSession = {
+    accessToken: 'access-token-xyz',
+    tokenType: 'Bearer',
+    expiresIn: 3600,
+    user: {
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      emailVerified: true,
+      roles: ['USER'],
+      tokenVersion: 1,
+    },
+  };
+
+  beforeEach(() => {
+    mockAuthStore = {
+      setSession: vi.fn(),
+      clearSession: vi.fn(),
+      accessToken: vi.fn(() => null),
+      isAuthenticated: vi.fn(() => false),
+      currentUser: vi.fn(() => null),
+      session: vi.fn(() => null),
+    };
+
+    TestBed.configureTestingModule({
+      providers: [
+        provideHttpClient(withInterceptors([apiErrorInterceptor])),
+        provideHttpClientTesting(),
+        { provide: APP_CONFIG, useValue: TEST_CONFIG },
+        { provide: AuthStore, useValue: mockAuthStore },
+      ],
+    });
+
+    service = TestBed.inject(AuthService);
+    controller = TestBed.inject(HttpTestingController);
+  });
+
+  afterEach(() => controller.verify());
+
+  it('login() POSTs to /auth/login, then GETs /users/me, sets session in AuthStore, returns AuthSession', () => {
+    let result: AuthSession | undefined;
+    service.login('user@example.com', USER_PASS).subscribe({ next: (s) => (result = s) });
+
+    const loginReq = controller.expectOne('/api/v1/auth/login');
+    expect(loginReq.request.method).toBe('POST');
+    expect(loginReq.request.body).toEqual({ email: 'user@example.com', password: USER_PASS });
+    loginReq.flush(LOGIN_RESPONSE);
+
+    const meReq = controller.expectOne('/api/v1/users/me');
+    expect(meReq.request.method).toBe('GET');
+    expect(meReq.request.headers.get('Authorization')).toBe('Bearer access-token-xyz');
+    meReq.flush(ME_RESPONSE);
+
+    expect(result).toEqual(EXPECTED_SESSION);
+    expect(mockAuthStore.setSession).toHaveBeenCalledWith(EXPECTED_SESSION);
+  });
+
+  it('logout() POSTs to /auth/logout, clears session on success', () => {
+    let completed = false;
+    service.logout().subscribe({ complete: () => (completed = true) });
+
+    const req = controller.expectOne('/api/v1/auth/logout');
+    expect(req.request.method).toBe('POST');
+    req.flush(null);
+
+    expect(completed).toBe(true);
+    expect(mockAuthStore.clearSession).toHaveBeenCalled();
+  });
+
+  it('logout() clears session even if HTTP call fails', () => {
+    let errorCaptured = false;
+    service.logout().subscribe({ error: () => (errorCaptured = true) });
+
+    controller
+      .expectOne('/api/v1/auth/logout')
+      .flush(
+        { code: 'SERVER_ERROR', detail: 'Internal error.' },
+        { status: 500, statusText: 'Internal Server Error' },
+      );
+
+    expect(errorCaptured).toBe(true);
+    expect(mockAuthStore.clearSession).toHaveBeenCalled();
+  });
+
+  it('refresh() POSTs to /auth/refresh, then GETs /users/me, updates session', () => {
+    let result: AuthSession | undefined;
+    service.refresh().subscribe({ next: (s) => (result = s) });
+
+    const refreshReq = controller.expectOne('/api/v1/auth/refresh');
+    expect(refreshReq.request.method).toBe('POST');
+    refreshReq.flush(LOGIN_RESPONSE);
+
+    const meReq = controller.expectOne('/api/v1/users/me');
+    expect(meReq.request.headers.get('Authorization')).toBe('Bearer access-token-xyz');
+    meReq.flush(ME_RESPONSE);
+
+    expect(result).toEqual(EXPECTED_SESSION);
+    expect(mockAuthStore.setSession).toHaveBeenCalledWith(EXPECTED_SESSION);
   });
 });

@@ -50,6 +50,16 @@ public class RefreshToken {
   private Instant updatedAt;
 
   /**
+   * Marks this token as revoked. Follows the {@code User.verify()} pattern — intention-revealing
+   * domain method rather than a public setter. Calling multiple times updates {@code revokedAt}.
+   *
+   * @param revokedAt the instant at which the token was revoked
+   */
+  public void revoke(Instant revokedAt) {
+    this.revokedAt = revokedAt;
+  }
+
+  /**
    * Creates a refresh token with all required fields; {@code revokedAt} defaults to {@code null}.
    */
   public RefreshToken(UUID id, UUID userId, String tokenHash, UUID familyId, Instant expiresAt) {
