@@ -32,10 +32,12 @@
       <nx-input
         inputId="reg-password"
         formControlName="password"
+        [type]="showPassword() ? 'text' : 'password'"
         label="Password"
-        type="password"
         autocomplete="new-password"
+        [suffixIcon]="showPassword() ? 'visibility_off' : 'visibility'"
         [error]="passwordError()"
+        (suffixIconClick)="showPassword.update(v => !v)"
       />
       <app-password-strength-meter [password]="passwordValue()" />
     </div>
@@ -47,7 +49,7 @@
         formControlName="consentAccepted"
         aria-describedby="reg-consent-error"
       >
-        I agree to the terms and conditions
+        I agree to the <a routerLink="/legal/terms" class="reg-form__terms-link">terms and conditions</a>
       </mat-checkbox>
       @if (consentError()) {
         <p id="reg-consent-error" class="reg-form__field-error" role="alert">
@@ -68,5 +70,9 @@
     >
       Create account
     </nx-button>
+
+    <p class="reg-form__login-link">
+      Already have an account? <a routerLink="/auth/login">Sign in</a>
+    </p>
   </form>
 }

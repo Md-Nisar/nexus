@@ -35,9 +35,11 @@ function computeScore(pw: string): number {
           ></div>
         }
       </div>
-      <span class="strength-meter__label" [style.color]="password() ? barColor() : null">
-        {{ label() }}
-      </span>
+      @if (password()) {
+        <span class="strength-meter__label" [style.color]="barColor()">
+          {{ label() }}
+        </span>
+      }
     </div>
   `,
   styles: `

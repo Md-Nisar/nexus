@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { toSignal } from '@angular/core/rxjs-interop';
+import { RouterLink } from '@angular/router';
 import { MatIconModule } from '@angular/material/icon';
 import { AuthService } from '../auth.service';
 import { AppError } from '../../../shared/types/app-error';
@@ -14,6 +15,7 @@ import { NxInput, NxButton } from '../../../shared/ui';
   standalone: true,
   imports: [
     ReactiveFormsModule,
+    RouterLink,
     MatIconModule,
     MatCheckboxModule,
     PasswordStrengthMeterComponent,
@@ -43,6 +45,7 @@ export class RegistrationFormComponent {
   });
 
   protected readonly state = signal<ViewState<void>>(idle);
+  protected readonly showPassword = signal(false);
 
   private readonly formStatus = toSignal(this.form.statusChanges, {
     initialValue: this.form.status,

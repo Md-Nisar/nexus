@@ -56,6 +56,33 @@
     color: var(--nx-color-error);
     font-size: var(--nx-text-base);
   }
+
+  &__terms-link {
+    color: var(--nx-color-primary);
+    text-decoration: none;
+
+    &:hover {
+      color: var(--nx-color-primary-hover);
+      text-decoration: underline;
+    }
+  }
+
+  &__login-link {
+    margin: 0;
+    font-size: var(--nx-text-sm);
+    color: var(--nx-color-on-surface-faint);
+    text-align: center;
+
+    a {
+      color: var(--nx-color-primary);
+      text-decoration: none;
+
+      &:hover {
+        color: var(--nx-color-primary-hover);
+        text-decoration: underline;
+      }
+    }
+  }
 }
 
 .reg-form__success {
