@@ -46,4 +46,11 @@ describe('authGuard', () => {
     expect(result).not.toBe(true);
     expect(result instanceof UrlTree || typeof result === 'object').toBe(true);
   });
+
+  it('UrlTree redirect points to /auth/login (target verified)', () => {
+    // Ensure the guard redirects to the correct route, not just any UrlTree.
+    mockAuthStore.isAuthenticated.mockReturnValue(false);
+    const result = runGuard() as unknown as { _commands: string[] };
+    expect(result._commands).toEqual(['/auth/login']);
+  });
 });
