@@ -24,7 +24,15 @@ jobs:
           java-version: "25"
           distribution: "temurin"
           cache: maven
-
+          
+      - name: Cache OWASP Dependency-Check data
+        uses: actions/cache@v4 
+        with:
+          path: ~/.dependency-check
+          key: dependency-check-${{ runner.os }}-v1
+          restore-keys: |
+            dependency-check-${{ runner.os }}-
+               
       - name: Run Dependency-Check
         working-directory: nexus-backend
         env:
