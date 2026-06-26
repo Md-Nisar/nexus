@@ -38,11 +38,7 @@ jobs:
         env:
           # Optional but strongly recommended — NVD throttles unauthenticated requests
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
-        run:     mvn -B -Psecurity dependency-check:check \
-                 -DskipTests \
-                 -Ddependency-check.nvd.api.read-timeout=60000 \
-                 -Ddependency-check.nvd.api.connect-timeout=60000 \
-                -Ddependency-check.nvd.api.threads=4
+        run: mvn -B -Psecurity -DskipTests -Ddependency-check.nvd.api.read-timeout=60000 -Ddependency-check.nvd.api.connect-timeout=60000 -Ddependency-check.nvd.api.threads=4 dependency-check:check
 
       - name: Upload Report
         if: always()
