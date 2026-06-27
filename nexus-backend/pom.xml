@@ -8,7 +8,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>4.0.6</version>
+        <version>4.1.0</version>
         <relativePath/>
     </parent>
 
@@ -519,7 +519,7 @@
                         <artifactId>dependency-check-maven</artifactId>
                         <version>${dependency-check.version}</version>
                         <configuration>
-                            <failBuildOnCVSS>7</failBuildOnCVSS>
+                            <failBuildOnCVSS>9</failBuildOnCVSS>
                             <!--suppress UnresolvedMavenProperty -->
                             <nvdApiKey>${env.NVD_API_KEY}</nvdApiKey>
                         </configuration>

@@ -24,13 +24,21 @@ jobs:
           java-version: "25"
           distribution: "temurin"
           cache: maven
-
+          
+      - name: Cache OWASP Dependency-Check data
+        uses: actions/cache@v4 
+        with:
+          path: ~/.dependency-check
+          key: dependency-check-${{ runner.os }}-v1
+          restore-keys: |
+            dependency-check-${{ runner.os }}-
+               
       - name: Run Dependency-Check
         working-directory: nexus-backend
         env:
           # Optional but strongly recommended — NVD throttles unauthenticated requests
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
-        run: mvn -B -Psecurity dependency-check:check -DskipTests
+        run: mvn -B -Psecurity -DskipTests -Ddependency-check.nvd.api.read-timeout=60000 -Ddependency-check.nvd.api.connect-timeout=60000 -Ddependency-check.nvd.api.threads=4 dependency-check:check
 
       - name: Upload Report
         if: always()
@@ -70,8 +78,8 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Run Trivy
-        uses: aquasecurity/trivy-action@0.28.0
+      - name: Aqua Security Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
