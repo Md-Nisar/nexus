@@ -1,5 +1,5 @@
 import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
-import { form, required, email, maxLength, FormField } from '@angular/forms/signals';
+import { FormGroup, FormControl, Validators, ReactiveFormsModule } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { NxButton, NxInput } from '../../../shared/ui';
 import { AuthService } from '../auth.service';
@@ -9,10 +9,10 @@ import { AppError } from '../../../shared/types/app-error';
   selector: 'nx-login-form',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [FormField, RouterLink, NxInput, NxButton],
+  imports: [ReactiveFormsModule, RouterLink, NxInput, NxButton],
   template: `
     <div class="login-form-container">
-      <form class="login-form" (ngSubmit)="submit()" novalidate>
+      <form class="login-form" [formGroup]="loginForm" (ngSubmit)="submit()" novalidate>
         <h2 class="login-form__heading">Sign in to Nexus</h2>
 
         @if (errorMessage()) {
@@ -23,7 +23,7 @@ import { AppError } from '../../../shared/types/app-error';
 
         <nx-input
           inputId="login-email"
-          [formField]="loginForm.email"
+          formControlName="email"
           label="Email address"
           type="email"
           autocomplete="email"
@@ -32,7 +32,7 @@ import { AppError } from '../../../shared/types/app-error';
 
         <nx-input
           inputId="login-password"
-          [formField]="loginForm.password"
+          formControlName="password"
           [type]="showPassword() ? 'text' : 'password'"
           label="Password"
           autocomplete="current-password"
@@ -47,7 +47,7 @@ import { AppError } from '../../../shared/types/app-error';
           size="lg"
           [fullWidth]="true"
           [loading]="loading()"
-          [disabled]="loginForm().invalid() || loading()"
+          [disabled]="loginForm.invalid || loading()"
           data-testid="login-submit"
         >
           Sign in
@@ -123,45 +123,40 @@ export class LoginFormComponent {
   readonly errorMessage = signal<string | null>(null);
   readonly showPassword = signal(false);
 
-  readonly loginModel = signal({ email: '', password: '' });
-
-  readonly loginForm = form(this.loginModel, (schema) => {
-    required(schema.email, { message: 'Email is required.' });
-    email(schema.email, { message: 'Enter a valid email address.' });
-    maxLength(schema.email, 254, { message: 'Email is too long.' });
-
-    required(schema.password, { message: 'Password is required.' });
-    maxLength(schema.password, 256, { message: 'Password is too long.' });
+  readonly loginForm = new FormGroup({
+    email: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.required, Validators.email, Validators.maxLength(254)],
+    }),
+    password: new FormControl('', {
+      nonNullable: true,
+      validators: [Validators.required, Validators.maxLength(256)],
+    }),
   });
 
   readonly emailError = computed(() => {
-    const emailField = this.loginForm.email();
-    if (!emailField.touched() || emailField.valid()) return '';
-    const errors = emailField.errors();
-    const reqErr = errors.find((e) => e.kind === 'required');
-    if (reqErr) return reqErr.message ?? 'Email is required.';
-    const emailErr = errors.find((e) => e.kind === 'email');
-    if (emailErr) return emailErr.message ?? 'Enter a valid email address.';
+    const control = this.loginForm.controls.email;
+    if (!control.touched || control.valid) return '';
+    if (control.hasError('required')) return 'Email is required.';
+    if (control.hasError('email')) return 'Enter a valid email address.';
     return '';
   });
 
   readonly passwordError = computed(() => {
-    const passwordField = this.loginForm.password();
-    if (!passwordField.touched() || passwordField.valid()) return '';
-    const errors = passwordField.errors();
-    const reqErr = errors.find((e) => e.kind === 'required');
-    if (reqErr) return reqErr.message ?? 'Password is required.';
+    const control = this.loginForm.controls.password;
+    if (!control.touched || control.valid) return '';
+    if (control.hasError('required')) return 'Password is required.';
     return '';
   });
 
   submit(): void {
-    this.loginForm.email().markAsTouched();
-    this.loginForm.password().markAsTouched();
+    this.loginForm.controls.email.markAsTouched();
+    this.loginForm.controls.password.markAsTouched();
 
-    if (this.loginForm().invalid() || this.loading()) return;
+    if (this.loginForm.invalid || this.loading()) return;
     this.loading.set(true);
     this.errorMessage.set(null);
-    const { email, password } = this.loginModel();
+    const { email, password } = this.loginForm.getRawValue();
     this.authService.login(email, password).subscribe({
       next: () => {
         this.loading.set(false);
