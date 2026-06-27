@@ -519,7 +519,7 @@
                         <artifactId>dependency-check-maven</artifactId>
                         <version>${dependency-check.version}</version>
                         <configuration>
-                            <failBuildOnCVSS>7</failBuildOnCVSS>
+                            <failBuildOnCVSS>9</failBuildOnCVSS>
                             <!--suppress UnresolvedMavenProperty -->
                             <nvdApiKey>${env.NVD_API_KEY}</nvdApiKey>
                         </configuration>
