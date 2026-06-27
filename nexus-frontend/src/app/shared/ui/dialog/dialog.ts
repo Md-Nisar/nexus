@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, inject, Injectable, TemplateRef } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, Service, TemplateRef } from '@angular/core';
 import {
   MAT_DIALOG_DATA,
   MatDialog,
@@ -59,7 +59,7 @@ export class NxDialogShell {
   readonly data: DialogData = inject<DialogData>(MAT_DIALOG_DATA);
 }
 
-@Injectable({ providedIn: 'root' })
+@Service()
 export class NxDialog {
   private readonly matDialog = inject(MatDialog);
 

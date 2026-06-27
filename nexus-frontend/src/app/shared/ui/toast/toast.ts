@@ -1,4 +1,4 @@
-import { inject, Injectable } from '@angular/core';
+import { inject, Service } from '@angular/core';
 import { MatSnackBar, MatSnackBarConfig } from '@angular/material/snack-bar';
 
 export type ToastVariant = 'info' | 'success' | 'warning' | 'error';
@@ -10,7 +10,7 @@ export interface ToastOptions {
   readonly duration?: number;
 }
 
-@Injectable({ providedIn: 'root' })
+@Service()
 export class NxToast {
   private readonly snackBar = inject(MatSnackBar);
 

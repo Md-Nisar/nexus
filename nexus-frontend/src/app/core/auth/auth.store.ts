@@ -1,8 +1,8 @@
-import { computed, inject, Injectable, signal } from '@angular/core';
+import { computed, inject, Service, signal } from '@angular/core';
 import { LoggerService } from '../logging/logger.service';
 import { AuthSession } from '../../shared/types/auth';
 
-@Injectable({ providedIn: 'root' })
+@Service()
 export class AuthStore {
   private readonly logger = inject(LoggerService);
   private readonly _session = signal<AuthSession | null>(null);
