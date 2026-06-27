@@ -1,10 +1,10 @@
-import { Injectable, signal } from '@angular/core';
+import { Service, signal } from '@angular/core';
 
 export type Theme = 'dark' | 'light';
 
 const STORAGE_KEY = 'nx-theme';
 
-@Injectable({ providedIn: 'root' })
+@Service()
 export class ThemeService {
   private readonly _theme = signal<Theme>(this.initialTheme());
   readonly theme = this._theme.asReadonly();

@@ -1,4 +1,4 @@
-import { Injectable, inject } from '@angular/core';
+import { Service, inject } from '@angular/core';
 import { APP_CONFIG, LogLevel } from '../config/app-config';
 
 const LEVEL_ORDER: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
@@ -8,7 +8,7 @@ const LEVEL_ORDER: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, erro
  * is an ESLint error). The minimum level comes from APP_CONFIG, so production builds stay
  * quiet while development builds are verbose.
  */
-@Injectable({ providedIn: 'root' })
+@Service()
 export class LoggerService {
   private readonly minLevel = LEVEL_ORDER[inject(APP_CONFIG).logLevel];
 

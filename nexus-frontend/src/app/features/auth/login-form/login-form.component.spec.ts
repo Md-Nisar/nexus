@@ -32,8 +32,7 @@ function fillForm(
   password = 'pass123',
 ) {
   const comp = fixture.componentInstance;
-  comp.form.controls.email.setValue(email);
-  comp.form.controls.password.setValue(password);
+  comp.loginModel.set({ email, password });
   fixture.detectChanges();
 }
 

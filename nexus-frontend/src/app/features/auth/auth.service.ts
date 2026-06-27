@@ -1,4 +1,4 @@
-import { inject, Injectable } from '@angular/core';
+import { inject, Service } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { finalize, map, Observable, switchMap, tap } from 'rxjs';
 import { APP_CONFIG } from '../../core/config/app-config';
@@ -20,7 +20,7 @@ interface MeApiResponse {
   tokenVersion: number;
 }
 
-@Injectable({ providedIn: 'root' })
+@Service()
 export class AuthService {
   private readonly http = inject(HttpClient);
   private readonly config = inject(APP_CONFIG);
