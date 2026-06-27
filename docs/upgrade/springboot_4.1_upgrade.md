@@ -8,9 +8,9 @@ This document records the upgrade of the `nexus-backend` service to **Spring Boo
 
 * **Date:** June 28, 2026
 * **Changes:**
-  * Upgraded `spring-boot-starter-parent` from `4.0.6` to `4.1.0` in [pom.xml](file:///C:/entomo/AI/nexus/nexus-backend/pom.xml).
+  * Upgraded `spring-boot-starter-parent` from `4.0.6` to `4.1.0` in [pom.xml](nexus/nexus-backend/pom.xml).
   * Maintained Java version at `25`.
-  * Preserved existing Docker configuration in [Dockerfile](file:///C:/entomo/AI/nexus/nexus-backend/Dockerfile) (retains `eclipse-temurin:25-jdk` and `eclipse-temurin:25-jre`).
+  * Preserved existing Docker configuration in [Dockerfile](nexus/nexus-backend/Dockerfile) (retains `eclipse-temurin:25-jdk` and `eclipse-temurin:25-jre`).
 
 ---
 
