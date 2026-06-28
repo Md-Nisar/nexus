@@ -43,6 +43,7 @@ Full containerized stack: `docker compose --profile full up -d`.
 - [DEVELOPMENT_GUIDE.md](DEVELOPMENT_GUIDE.md) — setup, profiles, tooling, **the operating model**, gate enforcement
 - [TESTING.md](TESTING.md) — test strategy and coverage requirements
 - [SECURITY.md](SECURITY.md) — security baseline and roadmap
+- [docs/QUALITY_GATES.md](docs/QUALITY_GATES.md) — comprehensive overview of local, CI/CD, and scheduled quality & security gates
 - [CONTRIBUTING.md](CONTRIBUTING.md) — branching, commits, PRs
 - [docs/adr/](docs/adr/) — architecture decision records
 - [docs/coding-standards.md](docs/coding-standards.md) — naming, formatting, forbidden patterns
