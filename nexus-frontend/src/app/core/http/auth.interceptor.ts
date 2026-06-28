@@ -11,7 +11,7 @@ import { AuthSession } from '../../shared/types/auth';
 // subscriber does NOT trigger a second HTTP request, preventing theft-detection family revocation.
 let refreshInFlight: Observable<AuthSession> | null = null;
 
-const AUTH_PATHS = ['/api/v1/auth/login', '/api/v1/auth/refresh'];
+const AUTH_PATHS = ['/api/v1/auth/login', '/api/v1/auth/refresh', '/api/v1/auth/logout'];
 
 /** Proactively refresh when access token has less than this many ms remaining. */
 const PROACTIVE_REFRESH_THRESHOLD_MS = 120_000; // 2 min
