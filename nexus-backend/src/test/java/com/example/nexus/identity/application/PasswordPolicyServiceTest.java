@@ -15,14 +15,14 @@ class PasswordPolicyServiceTest {
   private final PasswordPolicyService service = new PasswordPolicyService(DENYLIST);
 
   @Test
-  void validate_throws_when_null() {
+  void validate_throws_AUTH_PWD_001_when_null() {
     assertThatThrownBy(() -> service.validate(null))
         .isInstanceOf(FieldValidationException.class)
         .hasFieldOrPropertyWithValue("code", "AUTH_PWD_001");
   }
 
   @Test
-  void validate_throws_when_11Chars() {
+  void validate_throws_AUTH_PWD_001_when_tooShort() {
     assertThatThrownBy(() -> service.validate("Ab1!Ab1!Ab1"))
         .isInstanceOf(FieldValidationException.class)
         .hasFieldOrPropertyWithValue("code", "AUTH_PWD_001");
@@ -34,10 +34,10 @@ class PasswordPolicyServiceTest {
   }
 
   @Test
-  void validate_throws_when_denylistEntry() {
+  void validate_throws_AUTH_PWD_002_when_commonPassword() {
     assertThatThrownBy(() -> service.validate(DENYLIST_ENTRY))
         .isInstanceOf(FieldValidationException.class)
-        .hasFieldOrPropertyWithValue("code", "AUTH_PWD_001");
+        .hasFieldOrPropertyWithValue("code", "AUTH_PWD_002");
   }
 
   @Test
@@ -52,7 +52,7 @@ class PasswordPolicyServiceTest {
   }
 
   @Test
-  void validate_throws_when_11UnicodeChars() {
+  void validate_throws_AUTH_PWD_001_when_11UnicodeChars() {
     // "ñ".length() == 1 (single UTF-16 code unit); 11 such chars → below minimum
     assertThatThrownBy(() -> service.validate("ñ".repeat(11)))
         .isInstanceOf(FieldValidationException.class)
@@ -62,5 +62,19 @@ class PasswordPolicyServiceTest {
   @Test
   void validate_passes_when_12UnicodeChars() {
     assertThatCode(() -> service.validate("ñ".repeat(12))).doesNotThrowAnyException();
+  }
+
+  @Test
+  void validate_throws_AUTH_PWD_001_when_emptyString() {
+    assertThatThrownBy(() -> service.validate(""))
+        .isInstanceOf(FieldValidationException.class)
+        .hasFieldOrPropertyWithValue("code", "AUTH_PWD_001");
+  }
+
+  @Test
+  void validate_passes_when_exactly1025Chars() {
+    // One character beyond 1024 — ensures there is no artificial upper-bound check
+    String longPassword = "aB1!".repeat(256) + "x"; // 1025 chars
+    assertThatCode(() -> service.validate(longPassword)).doesNotThrowAnyException();
   }
 }

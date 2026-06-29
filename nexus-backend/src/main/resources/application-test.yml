@@ -9,5 +9,8 @@ feature:
 nexus:
   security:
     rate-limit:
-      max-attempts: 3
-      window-seconds: 10
+      ip-max-attempts: 100       # high enough that the 5 lockout attempts aren't blocked by IP limit in ITs
+      ip-window-seconds: 60
+      user-max-attempts: 100     # same — lockout ITs drive account lockout via DB, not this filter
+      user-window-seconds: 900
+      refresh-max-attempts: 1000   # high so refresh-path ITs are not throttled

@@ -45,7 +45,7 @@ public class InMemoryRateLimitStore implements RateLimitStore {
 
   public InMemoryRateLimitStore(
       Clock clock,
-      @Value("${nexus.security.rate-limit.window-seconds}") int windowSeconds) {
+      @Value("${nexus.security.rate-limit.ip-window-seconds}") int windowSeconds) {
     this.clock = clock;
     this.evictionWindowSeconds = windowSeconds;
   }

@@ -27,9 +27,20 @@ import org.springframework.web.context.WebApplicationContext;
  * {@code storeSize()} method. Each test uses a unique IP prefix to avoid cross-test
  * pollution in the shared in-memory store.
  *
- * <p>application-test.yml sets max-attempts=3, window-seconds=10.
+ * <p>{@code @SpringBootTest(properties)} pins ip-max-attempts=3, ip-window-seconds=10,
+ * user-max-attempts=3, user-window-seconds=10 so rate-limit behaviour is observable in a
+ * handful of requests. The high values in application-test.yml are intentional for lockout ITs.
  */
-@SpringBootTest(webEnvironment = WebEnvironment.MOCK)
+@SpringBootTest(
+    webEnvironment = WebEnvironment.MOCK,
+    properties = {
+        // Override the high-throughput values from application-test.yml (designed for lockout ITs)
+        // with low thresholds so rate-limit behaviour is observable in a handful of requests.
+        "nexus.security.rate-limit.ip-max-attempts=3",
+        "nexus.security.rate-limit.ip-window-seconds=10",
+        "nexus.security.rate-limit.user-max-attempts=3",
+        "nexus.security.rate-limit.user-window-seconds=10"
+    })
 @Import(TestcontainersConfiguration.class)
 @ActiveProfiles("test")
 class RateLimitIT {

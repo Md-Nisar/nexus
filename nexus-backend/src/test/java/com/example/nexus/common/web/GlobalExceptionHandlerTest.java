@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.example.nexus.common.domain.AccountLockedException;
 import com.example.nexus.common.domain.AccountNotVerifiedException;
 import com.example.nexus.common.domain.AuthenticationException;
 import com.example.nexus.common.domain.ConflictException;
@@ -182,5 +183,36 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getHeaders().getFirst("Retry-After")).isEqualTo("3600");
         assertThat(response.getBody()).isNotNull();
         assertThat(response.getBody().getStatus()).isEqualTo(429);
+    }
+
+    @Test
+    void should_return423WithRetryAfterHeader_when_accountLocked() {
+        ResponseEntity<ProblemDetail> response = handler.handleAccountLocked(
+                new AccountLockedException("AUTH_LCK_001",
+                        "Account locked. Try again later or reset your password.", 873L));
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.LOCKED);
+        assertThat(response.getHeaders().getFirst("Retry-After")).isEqualTo("873");
+        ProblemDetail problem = response.getBody();
+        assertThat(problem).isNotNull();
+        assertThat(problem.getStatus()).isEqualTo(423);
+        assertThat(problem.getProperties()).containsEntry("code", "AUTH_LCK_001");
+        assertThat(problem.getProperties()).containsEntry("retryAfterSeconds", 873L);
+        assertThat(problem.getDetail())
+                .isEqualTo("Account locked. Try again later or reset your password.");
+    }
+
+    @Test
+    void should_return423WithZeroRetryAfter_when_accountLockedOnBoundary() {
+        // retryAfterSeconds = 0 when lockedUntil == now (lock expires at this exact instant)
+        ResponseEntity<ProblemDetail> response = handler.handleAccountLocked(
+                new AccountLockedException("AUTH_LCK_001",
+                        "Account locked. Try again later or reset your password.", 0L));
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.LOCKED);
+        assertThat(response.getHeaders().getFirst("Retry-After")).isEqualTo("0");
+        ProblemDetail problem = response.getBody();
+        assertThat(problem).isNotNull();
+        assertThat(problem.getProperties()).containsEntry("retryAfterSeconds", 0L);
     }
 }

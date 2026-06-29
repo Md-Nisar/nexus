@@ -30,7 +30,7 @@ class LoginRateLimitFilterTest {
   void setUp() {
     rateLimitStore = mock(RateLimitStore.class);
     emailBlindIndexService = mock(EmailBlindIndexService.class);
-    filter = new LoginRateLimitFilter(rateLimitStore, emailBlindIndexService, 5, 300);
+    filter = new LoginRateLimitFilter(rateLimitStore, emailBlindIndexService, 5, 60, 5, 900, 30);
   }
 
   @Test

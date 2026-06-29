@@ -36,4 +36,18 @@ public interface UserRegistrationPort {
    * @return the saved user (may differ from the input if the persistence layer sets defaults)
    */
   User save(User user);
+
+  /**
+   * Resets the failure counter and clears the lockout timestamp via a direct bulk UPDATE,
+   * intentionally bypassing the {@code @Version} optimistic-lock check.
+   *
+   * <p>Use this instead of {@link #save(User)} when the calling transaction runs in REQUIRES_NEW
+   * and the outer transaction may have already mutated the same entity row in its session.
+   * A bulk UPDATE leaves the {@code version} column unchanged, avoiding the
+   * {@code ObjectOptimisticLockingFailureException} that would result from a save-based approach
+   * (M-OL-1).
+   *
+   * @param userId the user whose counter and lockout timestamp should be cleared
+   */
+  void resetFailedAttemptsDirect(UUID userId);
 }

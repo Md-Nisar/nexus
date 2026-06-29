@@ -46,6 +46,8 @@ Full reference: **DEVELOPMENT_GUIDE.md → The Operating Model**. Front door: **
 ## Critical conventions (full list: ARCHITECTURE.md → Non-negotiables)
 
 - Backend package root is **`com.example.nexus.<context>`** with `domain / application / infrastructure / interfaces` layers; inner layers never import outer (ArchUnit-enforced). Constructor injection only; `@Transactional` on application services; never return JPA entities from controllers.
+- **Cross-context domain exceptions** (e.g. `AccountLockedException`) live in **`common.domain`**, not in the originating bounded context, so `GlobalExceptionHandler` in `common.web` can import them without violating layer rules.
+- **Writes that must survive outer TX rollback** (e.g. audit events, security counters) belong in `SecureEventService` methods annotated `@Transactional(propagation = REQUIRES_NEW)`. If that write touches an entity the outer session already mutated in memory, use a JPQL bulk `UPDATE` (bypassing `@Version`) instead of `findById + save` — see ADR 0009.
 - **Flyway owns the schema** (`ddl-auto=validate`, ADR 0003) — append-only `V<N>__*.sql` migrations.
 - Errors are **RFC 7807** problem documents with `code` + `traceId`; never leak internals.
 - Frontend: standalone + signals + modern control flow (`@if`/`@for`); no `any`; HTTP only via interceptors (components see `AppError`, never `HttpErrorResponse`); config via `APP_CONFIG`.

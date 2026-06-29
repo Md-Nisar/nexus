@@ -45,8 +45,10 @@ import org.springframework.web.client.RestTemplate;
         "nexus.identity.encryption.salt=cafebabecafebabecafebabecafebabe",
         "nexus.identity.hmac-key=test-not-a-secret-hmac-key-min-32-bytes!!",
         "nexus.identity.default-tenant-id=00000000-0000-7000-8000-000000000001",
-        "nexus.security.rate-limit.max-attempts=10000",
-        "nexus.security.rate-limit.window-seconds=300"
+        "nexus.security.rate-limit.ip-max-attempts=10000",
+        "nexus.security.rate-limit.ip-window-seconds=60",
+        "nexus.security.rate-limit.user-max-attempts=10000",
+        "nexus.security.rate-limit.user-window-seconds=900"
     })
 @Import(TestcontainersConfiguration.class)
 @ActiveProfiles("test")
@@ -274,6 +276,76 @@ class AuthAuditIT {
         .isFalse();
   }
 
+  // ── T-023: Lockout Audit Events ───────────────────────────────────────────
+
+  /**
+   * T-023a — After 5 consecutive failed login attempts exactly 5 {@code LOGIN_FAILURE} events
+   * and exactly 1 {@code ACCOUNT_LOCKED} event must be recorded.
+   *
+   * <p>Note: {@code LOGIN_FAILURE} events recorded at Step 5 of {@code LoginUseCase} intentionally
+   * omit {@code userId} as an anti-enumeration measure (cannot reveal whether the email exists).
+   * Time-bounding is used to isolate this test's events from those of other tests running in the
+   * same Testcontainers DB. The {@code ACCOUNT_LOCKED} event recorded by
+   * {@code SecureEventService.persistFailedAttempt} DOES carry the userId and is asserted by it.
+   */
+  @Test
+  void should_recordAccountLockedEvent_when_5FailedLoginAttempts() {
+    String email = "audit-lck-" + UUID.randomUUID() + "@example.com";
+    User user = createActiveUser(email);
+
+    Instant testStart = Instant.now().minusMillis(500);
+    for (int i = 0; i < 5; i++) {
+      doLoginPost(email, "WrongPassword_00!");
+    }
+
+    var allEvents = authEventRepository.findAll();
+
+    // LOGIN_FAILURE events at Step 5 have no userId (anti-enumeration) — count by time window
+    long loginFailures = allEvents.stream()
+        .filter(e -> "LOGIN_FAILURE".equals(e.getEventType())
+            && "FAILURE".equals(e.getOutcome())
+            && e.getCreatedAt() != null
+            && e.getCreatedAt().isAfter(testStart))
+        .count();
+    assertThat(loginFailures)
+        .as("at least 5 LOGIN_FAILURE events must have been recorded in this test's time window")
+        .isGreaterThanOrEqualTo(5L);
+
+    // ACCOUNT_LOCKED event is recorded by persistFailedAttempt and DOES carry userId
+    long accountLocked = allEvents.stream()
+        .filter(e -> "ACCOUNT_LOCKED".equals(e.getEventType())
+            && "FAILURE".equals(e.getOutcome())
+            && user.getId().equals(e.getUserId()))
+        .count();
+    assertThat(accountLocked)
+        .as("exactly 1 ACCOUNT_LOCKED event must be recorded for userId=%s", user.getId())
+        .isEqualTo(1L);
+  }
+
+  /**
+   * T-023b — A successful login on a user whose lock has expired triggers an
+   * {@code ACCOUNT_UNLOCKED / SUCCESS} event.
+   */
+  @Test
+  void should_recordAccountUnlockedEvent_when_loginSuccessAfterLockExpiry() {
+    String email = "audit-unl-" + UUID.randomUUID() + "@example.com";
+    User user = createLockedUserWithExpiredLock(email);
+
+    var resp = doLoginPost(email, STRONG_PASS);
+    assertThat(resp.getStatusCode().value())
+        .as("login after lock expiry must return 200")
+        .isEqualTo(200);
+
+    boolean unlockedEventFound = authEventRepository.findAll().stream()
+        .anyMatch(e -> "ACCOUNT_UNLOCKED".equals(e.getEventType())
+            && "SUCCESS".equals(e.getOutcome())
+            && user.getId().equals(e.getUserId()));
+    assertThat(unlockedEventFound)
+        .as("ACCOUNT_UNLOCKED/SUCCESS event must be recorded for userId=%s after lock expiry",
+            user.getId())
+        .isTrue();
+  }
+
   /**
    * Bearer-authenticated logout must revoke ALL refresh-token families for the user,
    * not just the family tied to the cookie presented at logout. This proves the
@@ -335,6 +407,23 @@ class AuthAuditIT {
     User user = new User(uuidGenerator.newId(), TENANT_ID, new EmailCipher(email), hmac, hash, null);
     user = userRegistrationPort.save(user);
     user.verify(Instant.now());
+    return userRegistrationPort.save(user);
+  }
+
+  /**
+   * Creates a LOCKED user whose lock has already expired (lockedUntil = 2 seconds in the past).
+   * Used for T-023b to simulate auto-expiry without sleeping.
+   */
+  private User createLockedUserWithExpiredLock(String email) {
+    String hmac = emailBlindIndexService.blindIndex(email);
+    String hash = passwordHasher.hash(STRONG_PASS);
+    User user = new User(uuidGenerator.newId(), TENANT_ID, new EmailCipher(email), hmac, hash, null);
+    user = userRegistrationPort.save(user);
+    user.verify(Instant.now());
+    for (int i = 0; i < 5; i++) {
+      user.recordFailedAttempt();
+    }
+    user.lockAccount(Instant.now().minusSeconds(2));
     return userRegistrationPort.save(user);
   }
 
