@@ -29,9 +29,12 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * Spring MVC processing occurs.
  *
  * <ul>
- *   <li>{@code POST /api/v1/auth/login} — 5 attempts per window per IP and per email HMAC.
- *       Body is read, parsed for email, then replayed to the downstream handler.
- *   <li>{@code POST /api/v1/auth/refresh} — 30 attempts per window per IP only (no body).
+ *   <li>{@code POST /api/v1/auth/login} — IP bucket: {@code ip-max-attempts} per
+ *       {@code ip-window-seconds}; user bucket: {@code user-max-attempts} per
+ *       {@code user-window-seconds} keyed by email HMAC. Body is read, parsed for email,
+ *       then replayed to the downstream handler.
+ *   <li>{@code POST /api/v1/auth/refresh} — {@code refresh-max-attempts} per
+ *       {@code ip-window-seconds} per IP only (no body).
  * </ul>
  *
  * <p>On a rate-limit breach, writes a 429 RFC 7807 problem document directly to the response
@@ -39,6 +42,14 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *
  * <p><strong>T-1.3:</strong> Client IP is obtained exclusively from
  * {@code request.getRemoteAddr()}. Never {@code X-Forwarded-For}.
+ *
+ * <p><strong>Deployment precondition (DF-1):</strong> The IP bucket key is derived exclusively
+ * from {@code request.getRemoteAddr()} — never {@code X-Forwarded-For}. This control is only
+ * effective when Nexus runs as a single instance with direct client TCP connections (no reverse
+ * proxy or load balancer). Behind a proxy, {@code getRemoteAddr()} returns the proxy IP and all
+ * users collapse into one bucket. DB-level account lockout ({@link
+ * com.example.nexus.identity.application.service.LoginUseCase}) remains globally authoritative
+ * regardless of deployment topology.
  */
 @Component
 public class LoginRateLimitFilter extends OncePerRequestFilter {
@@ -51,20 +62,27 @@ public class LoginRateLimitFilter extends OncePerRequestFilter {
 
   private final RateLimitStore rateLimitStore;
   private final EmailBlindIndexService emailBlindIndexService;
-  private final int maxAttempts;
-  private final int windowSeconds;
+  private final int ipMaxAttempts;
+  private final int ipWindowSeconds;
+  private final int userMaxAttempts;
+  private final int userWindowSeconds;
   private final int refreshMaxAttempts;
 
   public LoginRateLimitFilter(
       RateLimitStore rateLimitStore,
       EmailBlindIndexService emailBlindIndexService,
-      @Value("${nexus.security.rate-limit.max-attempts}") int maxAttempts,
-      @Value("${nexus.security.rate-limit.window-seconds}") int windowSeconds) {
+      @Value("${nexus.security.rate-limit.ip-max-attempts}") int ipMaxAttempts,
+      @Value("${nexus.security.rate-limit.ip-window-seconds}") int ipWindowSeconds,
+      @Value("${nexus.security.rate-limit.user-max-attempts}") int userMaxAttempts,
+      @Value("${nexus.security.rate-limit.user-window-seconds}") int userWindowSeconds,
+      @Value("${nexus.security.rate-limit.refresh-max-attempts}") int refreshMaxAttempts) {
     this.rateLimitStore = rateLimitStore;
     this.emailBlindIndexService = emailBlindIndexService;
-    this.maxAttempts = maxAttempts;
-    this.windowSeconds = windowSeconds;
-    this.refreshMaxAttempts = 30;
+    this.ipMaxAttempts = ipMaxAttempts;
+    this.ipWindowSeconds = ipWindowSeconds;
+    this.userMaxAttempts = userMaxAttempts;
+    this.userWindowSeconds = userWindowSeconds;
+    this.refreshMaxAttempts = refreshMaxAttempts;
   }
 
   @Override
@@ -110,9 +128,9 @@ public class LoginRateLimitFilter extends OncePerRequestFilter {
     }
     String emailHmac = extractEmailHmac(body);
 
-    RateLimitResult ipResult = rateLimitStore.tryConsume("IP:" + clientIp, windowSeconds, maxAttempts);
+    RateLimitResult ipResult = rateLimitStore.tryConsume("IP:" + clientIp, ipWindowSeconds, ipMaxAttempts);
     RateLimitResult userResult = emailHmac != null
-        ? rateLimitStore.tryConsume("USER:" + emailHmac, windowSeconds, maxAttempts)
+        ? rateLimitStore.tryConsume("USER:" + emailHmac, userWindowSeconds, userMaxAttempts)
         : RateLimitResult.permit();
 
     if (!ipResult.allowed() || !userResult.allowed()) {
@@ -128,7 +146,7 @@ public class LoginRateLimitFilter extends OncePerRequestFilter {
       HttpServletRequest request, HttpServletResponse response, FilterChain chain, String clientIp)
       throws ServletException, IOException {
     RateLimitResult ipResult = rateLimitStore.tryConsume(
-        "REFRESH_IP:" + clientIp, windowSeconds, refreshMaxAttempts);
+        "REFRESH_IP:" + clientIp, ipWindowSeconds, refreshMaxAttempts);
     if (!ipResult.allowed()) {
       writeTooManyRequests(response, ipResult.retryAfterSeconds());
       return;

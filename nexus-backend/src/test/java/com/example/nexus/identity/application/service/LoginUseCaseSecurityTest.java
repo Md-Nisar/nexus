@@ -12,6 +12,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.example.nexus.common.domain.AccountLockedException;
 import com.example.nexus.common.domain.AccountNotVerifiedException;
 import com.example.nexus.common.domain.AuthenticationException;
 import com.example.nexus.common.domain.RequestContext;
@@ -194,19 +195,23 @@ class LoginUseCaseSecurityTest {
   // -----------------------------------------------------------------------
 
   /**
-   * T-2.5: A LOCKED account with a correct password must be blocked with AUTH_001.
+   * T-2.5 / T-007: A LOCKED account with a correct password must be blocked with AUTH_LCK_001.
    * Token issuance must never occur for non-ACTIVE accounts.
    */
   @Test
-  void should_returnAuth001_when_accountLocked() {
+  void should_returnAuthLck001_when_accountLocked() {
+    // Lock is still active — unlockIfExpired returns false, lockedUntil is in the future
+    Instant lockedUntil = clock.instant().plusSeconds(900);
     User user = mockUser(UserStatus.LOCKED, "$argon2id$stored");
+    lenient().when(user.getLockedUntil()).thenReturn(lockedUntil);
+    lenient().when(user.unlockIfExpired(any())).thenReturn(false);
     when(userRegistrationPort.findByTenantAndEmailHmac(TENANT_ID, EMAIL_HMAC))
         .thenReturn(Optional.of(user));
     when(passwordVerifier.matches(RAW_PASSWORD, "$argon2id$stored")).thenReturn(true);
 
     assertThatThrownBy(() -> useCase.execute(TENANT_ID, EMAIL, RAW_PASSWORD, CTX))
-        .isInstanceOf(AuthenticationException.class)
-        .satisfies(e -> assertThat(((AuthenticationException) e).code()).isEqualTo("AUTH_001"));
+        .isInstanceOf(AccountLockedException.class)
+        .satisfies(e -> assertThat(((AccountLockedException) e).code()).isEqualTo("AUTH_LCK_001"));
 
     verify(jwtPort, never()).issue(any());
   }

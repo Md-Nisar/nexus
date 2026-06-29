@@ -29,6 +29,21 @@ class AuthConstantsTest {
   }
 
   @Test
+  void should_have5AsLockoutThreshold() {
+    assertThat(AuthConstants.LOCKOUT_THRESHOLD).isEqualTo(5);
+  }
+
+  @Test
+  void should_have900SecondsLockoutWindow() {
+    assertThat(AuthConstants.LOCKOUT_WINDOW_SECONDS).isEqualTo(900);
+  }
+
+  @Test
+  void should_have900SecondsLockoutDuration() {
+    assertThat(AuthConstants.LOCKOUT_DURATION_SECONDS).isEqualTo(900);
+  }
+
+  @Test
   void should_throwAssertionError_when_constructorInvoked() throws Exception {
     var ctor = AuthConstants.class.getDeclaredConstructor();
     ctor.setAccessible(true);

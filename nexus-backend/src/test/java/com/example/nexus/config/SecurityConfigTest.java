@@ -62,8 +62,11 @@ import org.springframework.web.context.WebApplicationContext;
         "nexus.mail.from-address=test@nexus.test",
         "nexus.frontend.base-url=http://localhost:2000",
         // High ceiling so no test request is throttled
-        "nexus.security.rate-limit.max-attempts=1000",
-        "nexus.security.rate-limit.window-seconds=300",
+        "nexus.security.rate-limit.ip-max-attempts=1000",
+        "nexus.security.rate-limit.ip-window-seconds=60",
+        "nexus.security.rate-limit.user-max-attempts=1000",
+        "nexus.security.rate-limit.user-window-seconds=900",
+        "nexus.security.rate-limit.refresh-max-attempts=1000",
         "feature.nexus-us002-auth-registration.enabled=true",
         "feature.nexus-us003-auth-login.enabled=true",
         // No SMTP server on localhost — disable mail health indicator to keep /actuator/health UP

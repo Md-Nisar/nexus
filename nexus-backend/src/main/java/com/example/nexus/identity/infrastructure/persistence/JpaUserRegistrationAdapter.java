@@ -29,4 +29,9 @@ public class JpaUserRegistrationAdapter implements UserRegistrationPort {
   public User save(User user) {
     return userRepository.save(user);
   }
+
+  @Override
+  public void resetFailedAttemptsDirect(UUID userId) {
+    userRepository.resetFailedAttemptsDirect(userId);
+  }
 }

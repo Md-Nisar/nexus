@@ -1,5 +1,6 @@
 package com.example.nexus.identity.application.service;
 
+import com.example.nexus.common.domain.AccountLockedException;
 import com.example.nexus.common.domain.AccountNotVerifiedException;
 import com.example.nexus.common.domain.AuthenticationException;
 import com.example.nexus.common.domain.RequestContext;
@@ -37,6 +38,8 @@ import org.springframework.transaction.annotation.Transactional;
  * <p><strong>Security invariants (must not be reordered):</strong>
  * <ol>
  *   <li>Argon2 ALWAYS runs regardless of whether the email exists (T-2.2 anti-enumeration).
+ *   <li>Argon2 (Step 2) runs BEFORE the lockout pre-check (Step 4) — a locked account must
+ *       take the same wall-clock time as a wrong-password attempt (T-LCK-5 timing oracle).
  *   <li>Status gate is an ALLOW-LIST — only {@code ACTIVE} proceeds; all other statuses block
  *       (T-2.5).
  *   <li>Rate-limit enforcement is delegated entirely to {@link
@@ -53,6 +56,7 @@ public class LoginUseCase {
 
   private static final String AUTH_001 = "AUTH_001";
   private static final String AUTH_002 = "AUTH_002";
+  private static final String AUTH_LCK_001 = "AUTH_LCK_001";
 
   private final EmailBlindIndexService emailBlindIndexService;
   private final UserRegistrationPort userRegistrationPort;
@@ -113,7 +117,8 @@ public class LoginUseCase {
    * @param rawPassword the plaintext password supplied by the user
    * @param ctx       per-request context (IP address, trace ID)
    * @return login result containing access token, refresh token, and expiry
-   * @throws AuthenticationException       if credentials are invalid or account is locked/disabled
+   * @throws AuthenticationException       if credentials are invalid or account is disabled
+   * @throws AccountLockedException        if the account is locked (AUTH_LCK_001 with retry-after)
    * @throws AccountNotVerifiedException   if the account is pending email verification (AUTH_002)
    */
   public LoginResult execute(UUID tenantId, String email, String rawPassword, RequestContext ctx) {
@@ -124,13 +129,40 @@ public class LoginUseCase {
     Optional<User> userOpt = userRegistrationPort.findByTenantAndEmailHmac(tenantId, emailHmac);
     boolean found = userOpt.isPresent();
 
-    // Step 2: Argon2 verify — ALWAYS RUNS regardless of found (T-2.2)
+    // Step 2: Argon2 verify — ALWAYS RUNS regardless of found (T-2.2).
+    // MUST precede Step 4 lock check so a locked account takes the same time as a bad password
+    // (T-LCK-5 timing oracle closure).
     boolean passwordMatch = found
         ? passwordVerifier.matches(rawPassword, userOpt.get().getPasswordHash())
         : passwordVerifier.matches(rawPassword, dummyHash);
 
-    // Step 3: Fail on unknown user OR wrong password — IDENTICAL code path for both
+    // Step 3: Auto-expiry check — evaluate in-memory only; committed on success path (Step 8b)
+    boolean justUnlocked = false;
+    User user = found ? userOpt.get() : null;
+    if (found) {
+      justUnlocked = user.unlockIfExpired(clock.instant());
+    }
+
+    // Step 4: Lockout pre-check — after Argon2 to preserve timing uniformity (T-LCK-5)
+    if (found && user.getStatus() == UserStatus.LOCKED) {
+      secureEventService.recordEvent(
+          new AuthEvent(uuidGenerator.newId(), "LOGIN_FAILURE", "FAILURE")
+              .withUserId(user.getId())
+              .withIpAddress(clientIp)
+              .withMetadata(ctx.toMetadataJson()));
+      long retryAfterSeconds = (user.getLockedUntil() != null)
+          ? Math.max(0, user.getLockedUntil().getEpochSecond() - clock.instant().getEpochSecond())
+          : 0L;
+      throw new AccountLockedException(AUTH_LCK_001,
+          "Account locked. Try again later or reset your password.", retryAfterSeconds);
+    }
+
+    // Step 5: Credential failure — unknown user OR wrong password (identical code path for both)
     if (!found || !passwordMatch) {
+      if (found) {
+        // Counter incremented only for real users — unknown emails never get a counter row
+        secureEventService.persistFailedAttempt(user.getId(), clock.instant());
+      }
       secureEventService.recordEvent(
           new AuthEvent(uuidGenerator.newId(), "LOGIN_FAILURE", "FAILURE")
               .withIpAddress(clientIp)
@@ -138,8 +170,8 @@ public class LoginUseCase {
       throw new AuthenticationException(AUTH_001, "Invalid email or password");
     }
 
-    // Step 4: Status gate — ACTIVE allowlist (T-2.5 — allowlist, not denylist)
-    User user = userOpt.get();
+    // Step 6: Status gate — ACTIVE allowlist (T-2.5 — allowlist, not denylist).
+    // LOCKED was already handled in Step 4; only PENDING and other statuses reach here.
     if (user.getStatus() == UserStatus.PENDING) {
       secureEventService.recordEvent(
           new AuthEvent(uuidGenerator.newId(), "LOGIN_PENDING_ACCOUNT", "FAILURE")
@@ -149,7 +181,7 @@ public class LoginUseCase {
       throw new AccountNotVerifiedException(AUTH_002, "Account not verified. Please check your email.");
     }
     if (user.getStatus() != UserStatus.ACTIVE) {
-      // LOCKED, DISABLED, or any future status — NEVER fall through to token issuance
+      // DISABLED or any future status — NEVER fall through to token issuance
       secureEventService.recordEvent(
           new AuthEvent(uuidGenerator.newId(), "LOGIN_FAILURE", "FAILURE")
               .withUserId(user.getId())
@@ -158,20 +190,30 @@ public class LoginUseCase {
       throw new AuthenticationException(AUTH_001, "Invalid email or password");
     }
 
-    // Step 5: Issue access JWT
+    // Step 7: Issue access JWT
     AccessTokenResult accessResult = jwtPort.issue(user);
 
-    // Step 6: Generate refresh token
+    // Step 8: Generate and persist refresh token
     String rawRefreshToken = tokenGenerator.generate();
     String tokenHash = tokenHasher.hash(rawRefreshToken);
     UUID familyId = uuidGenerator.newId();
     UUID tokenId = uuidGenerator.newId();
     Instant expiresAt = clock.instant().plus(AuthConstants.AUTH_REFRESH_TOKEN_TTL_DAYS, ChronoUnit.DAYS);
-
-    // Step 7: Persist refresh token
     refreshTokenPort.save(new RefreshToken(tokenId, user.getId(), tokenHash, familyId, expiresAt));
 
-    // Step 8: Record success and return — rawRefreshToken exits here ONLY, never logged
+    // Step 8b: Reset failure counter — only when state has actually changed to avoid spurious writes
+    if (user.getFailedAttemptCount() > 0 || justUnlocked) {
+      secureEventService.persistResetAttempts(user.getId());
+    }
+    if (justUnlocked) {
+      secureEventService.recordEvent(
+          new AuthEvent(uuidGenerator.newId(), "ACCOUNT_UNLOCKED", "SUCCESS")
+              .withUserId(user.getId())
+              .withIpAddress(clientIp)
+              .withMetadata(ctx.toMetadataJson()));
+    }
+
+    // Step 9: Record success and return — rawRefreshToken exits here ONLY, never logged
     secureEventService.recordEvent(
         new AuthEvent(uuidGenerator.newId(), "LOGIN_SUCCESS", "SUCCESS")
             .withUserId(user.getId())

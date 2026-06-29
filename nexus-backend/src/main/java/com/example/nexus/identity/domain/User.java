@@ -99,4 +99,51 @@ public class User {
     this.status = UserStatus.ACTIVE;
     this.emailVerifiedAt = verifiedAt;
   }
+
+  /** Increments the consecutive-failure counter and returns the new count. */
+  public int recordFailedAttempt() {
+    this.failedAttemptCount += 1;
+    return this.failedAttemptCount;
+  }
+
+  /**
+   * Transitions to {@link UserStatus#LOCKED} and sets the auto-expiry instant. Idempotent.
+   *
+   * <p>Lockout does NOT revoke active refresh-token families — this is a brute-force defense,
+   * not a compromise-response control (M-9 / DF-4). If session invalidation is needed in future,
+   * wire {@code SecureEventService.revokeFamily} at the call site.
+   */
+  public void lockAccount(Instant lockedUntil) {
+    this.status = UserStatus.LOCKED;
+    this.lockedUntil = lockedUntil;
+  }
+
+  /**
+   * Zeroes the failure counter and clears lockedUntil. Does NOT change status.
+   * Called on successful login to reset the brute-force counter.
+   */
+  public void resetFailedAttempts() {
+    this.failedAttemptCount = 0;
+    this.lockedUntil = null;
+  }
+
+  /**
+   * If status is {@link UserStatus#LOCKED} and {@code lockedUntil} is strictly before {@code now}
+   * ({@link Instant#isBefore}, not {@code !isAfter}), transitions to {@link UserStatus#ACTIVE},
+   * zeroes {@code failedAttemptCount}, clears {@code lockedUntil}, and returns {@code true}.
+   * Otherwise returns {@code false} with no state change.
+   *
+   * <p>Lockout does NOT revoke active refresh-token families — this is a brute-force defense,
+   * not a compromise-response control. If session invalidation is needed in future, wire
+   * {@code SecureEventService.revokeFamily} at the call site.
+   */
+  public boolean unlockIfExpired(Instant now) {
+    if (this.status == UserStatus.LOCKED && this.lockedUntil != null && this.lockedUntil.isBefore(now)) {
+      this.status = UserStatus.ACTIVE;
+      this.failedAttemptCount = 0;
+      this.lockedUntil = null;
+      return true;
+    }
+    return false;
+  }
 }

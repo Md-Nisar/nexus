@@ -1,5 +1,6 @@
 package com.example.nexus.common.web;
 
+import com.example.nexus.common.domain.AccountLockedException;
 import com.example.nexus.common.domain.AccountNotVerifiedException;
 import com.example.nexus.common.domain.AuthenticationException;
 import com.example.nexus.common.domain.ConflictException;
@@ -65,6 +66,15 @@ public class GlobalExceptionHandler {
     HttpHeaders headers = new HttpHeaders();
     headers.set(HttpHeaders.RETRY_AFTER, String.valueOf(e.retryAfterSeconds()));
     return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).headers(headers).body(problem);
+  }
+
+  @ExceptionHandler(AccountLockedException.class)
+  ResponseEntity<ProblemDetail> handleAccountLocked(AccountLockedException e) {
+    ProblemDetail problem = problem(HttpStatus.LOCKED, e.code(), e.getMessage());
+    problem.setProperty("retryAfterSeconds", e.retryAfterSeconds());
+    HttpHeaders headers = new HttpHeaders();
+    headers.set(HttpHeaders.RETRY_AFTER, String.valueOf(e.retryAfterSeconds()));
+    return ResponseEntity.status(HttpStatus.LOCKED).headers(headers).body(problem);
   }
 
   @ExceptionHandler(AuthenticationException.class)

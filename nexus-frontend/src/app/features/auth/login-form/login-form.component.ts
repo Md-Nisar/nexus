@@ -174,6 +174,9 @@ export class LoginFormComponent {
           case 'RATE_001':
             this.errorMessage.set('Too many attempts. Please try again later.');
             break;
+          case 'AUTH_LCK_001':
+            this.errorMessage.set('Too many attempts. Try again later or reset your password.');
+            break;
           default:
             this.errorMessage.set('An unexpected error occurred. Please try again.');
         }

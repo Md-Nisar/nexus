@@ -96,6 +96,26 @@ describe('LoginFormComponent', () => {
     expect(component.loading()).toBe(false);
   });
 
+  it('AUTH_LCK_001 error sets lockout message, resets loading, and does not navigate', () => {
+    const err: AppError = { code: 'AUTH_LCK_001', message: 'Account locked.' };
+    const loginFn = vi.fn(() => throwError(() => err));
+    const { fixture, component, navigateSpy } = setup(loginFn);
+    fillForm(fixture);
+    component.submit();
+    fixture.detectChanges();
+    expect(component.errorMessage()).toBe(
+      'Too many attempts. Try again later or reset your password.',
+    );
+    expect(component.loading()).toBe(false);
+    expect(navigateSpy).not.toHaveBeenCalled();
+    const banner = fixture.nativeElement.querySelector(
+      '[data-testid="login-error"]',
+    ) as HTMLElement;
+    expect(banner.textContent?.trim()).toBe(
+      'Too many attempts. Try again later or reset your password.',
+    );
+  });
+
   it('unknown error code sets generic message', () => {
     const err: AppError = { code: 'UNKNOWN', message: 'Something went wrong.' };
     const loginFn = vi.fn(() => throwError(() => err));
