@@ -433,6 +433,28 @@ describe('authInterceptor', () => {
 
   // ── Gap: third concurrent request joins existing in-flight ─────────────────
 
+  // ── Gap: /auth/logout 401 must not trigger refresh (T-5.4 session resurrection) ──
+
+  it('T5-4: does not issue POST /refresh when POST /logout returns 401', () => {
+    // Proactive branch must not fire: seed a far-future session (3600s > 120s threshold).
+    // Only the reactive-401 path can trigger refresh — and it must be suppressed for /logout.
+    mockAuthStore.session.mockReturnValue(TEST_SESSION);
+    mockAuthStore.accessToken.mockReturnValue('valid-token');
+    mockAuthService.refresh.mockReturnValue(
+      throwError(() => new Error('refresh must not fire on logout')),
+    );
+
+    let errorCaptured = false;
+    http.post('/api/v1/auth/logout', null).subscribe({ error: () => (errorCaptured = true) });
+
+    controller
+      .expectOne('/api/v1/auth/logout')
+      .flush(null, { status: 401, statusText: 'Unauthorized' });
+
+    expect(mockAuthService.refresh).not.toHaveBeenCalled();
+    expect(errorCaptured).toBe(true);
+  });
+
   it('T2-3: three concurrent proactive requests share exactly one refresh call', () => {
     const refreshSubject = new Subject<AuthSession>();
     mockAuthStore.session.mockReturnValue(nearExpirySession());

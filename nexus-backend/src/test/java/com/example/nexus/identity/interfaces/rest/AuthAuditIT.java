@@ -274,6 +274,59 @@ class AuthAuditIT {
         .isFalse();
   }
 
+  /**
+   * Bearer-authenticated logout must revoke ALL refresh-token families for the user,
+   * not just the family tied to the cookie presented at logout. This proves the
+   * revoke-by-user (not revoke-by-cookie) contract of {@code LogoutUseCase}.
+   */
+  @Test
+  void bearer_logout_revokes_tokens_across_multiple_families() {
+    String email = "audit-mf-" + UUID.randomUUID() + "@example.com";
+    User user = createActiveUser(email);
+
+    // Login #1 — family A
+    var loginResp1 = doLoginPost(email, STRONG_PASS);
+    assertThat(loginResp1.getStatusCode().value()).isEqualTo(200);
+    @SuppressWarnings("unchecked")
+    Map<String, Object> body1 = (Map<String, Object>) loginResp1.getBody();
+    assertThat(body1).isNotNull();
+    String accessToken = (String) body1.get("accessToken");
+    assertThat(accessToken).isNotBlank();
+    String refreshToken1 = extractCookieValue(loginResp1.getHeaders().getFirst(HttpHeaders.SET_COOKIE));
+    assertThat(refreshToken1).isNotBlank();
+
+    // Login #2 — family B (independent login creates a distinct refresh-token family)
+    var loginResp2 = doLoginPost(email, STRONG_PASS);
+    assertThat(loginResp2.getStatusCode().value()).isEqualTo(200);
+    String refreshToken2 = extractCookieValue(loginResp2.getHeaders().getFirst(HttpHeaders.SET_COOKIE));
+    assertThat(refreshToken2).isNotBlank();
+    assertThat(refreshToken2).isNotEqualTo(refreshToken1);
+
+    // Bearer-authenticated logout using the access token from login #1
+    var logoutResp = doLogoutPost(accessToken);
+    assertThat(logoutResp.getStatusCode().value()).as("logout must return 204").isEqualTo(204);
+
+    // Both families must be revoked — not just the one attached to the access token's user session
+    var refresh1Resp = doRefreshPost(refreshToken1);
+    assertThat(refresh1Resp.getStatusCode().value())
+        .as("family A refresh token must be 401 after logout")
+        .isEqualTo(401);
+
+    var refresh2Resp = doRefreshPost(refreshToken2);
+    assertThat(refresh2Resp.getStatusCode().value())
+        .as("family B refresh token must be 401 — logout is revoke-by-user, not revoke-by-cookie")
+        .isEqualTo(401);
+
+    // LOGOUT audit event recorded for this user
+    boolean eventFound = authEventRepository.findAll().stream()
+        .anyMatch(e -> "LOGOUT".equals(e.getEventType())
+            && "SUCCESS".equals(e.getOutcome())
+            && user.getId().equals(e.getUserId()));
+    assertThat(eventFound)
+        .as("LOGOUT/SUCCESS event must be recorded for userId=%s", user.getId())
+        .isTrue();
+  }
+
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   private User createActiveUser(String email) {
