@@ -68,6 +68,12 @@ public class AuthToken {
     return new AuthToken(id, userId, AuthTokenType.VERIFICATION, tokenHash, expiresAt);
   }
 
+  /** Convenience factory for password-reset tokens. */
+  public static AuthToken forReset(
+      UUID id, UUID userId, String tokenHash, Instant expiresAt) {
+    return new AuthToken(id, userId, AuthTokenType.RESET, tokenHash, expiresAt);
+  }
+
   /** Marks this token as consumed at the given instant (called by {@code JpaAuthTokenAdapter}). */
   public void consume(Instant consumedAt) {
     this.consumedAt = consumedAt;

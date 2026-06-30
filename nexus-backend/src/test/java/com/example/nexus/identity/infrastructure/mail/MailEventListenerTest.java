@@ -3,6 +3,7 @@ package com.example.nexus.identity.infrastructure.mail;
 import static org.mockito.Mockito.verify;
 
 import com.example.nexus.identity.application.event.AccountExistsEmailEvent;
+import com.example.nexus.identity.application.event.PasswordResetEmailEvent;
 import com.example.nexus.identity.application.event.VerificationEmailEvent;
 import com.example.nexus.identity.application.port.out.MailSenderPort;
 import java.util.UUID;
@@ -38,5 +39,15 @@ class MailEventListenerTest {
     listener.onAccountExists(event);
 
     verify(mailSenderPort).sendAccountExistsEmail("bob@example.com");
+  }
+
+  @Test
+  void onPasswordReset_delegatesRawTokenAndAddress_toPort() {
+    PasswordResetEmailEvent event =
+        new PasswordResetEmailEvent("carol@example.com", "rawresettoken", UUID.randomUUID());
+
+    listener.onPasswordReset(event);
+
+    verify(mailSenderPort).sendPasswordResetEmail("carol@example.com", "rawresettoken");
   }
 }

@@ -54,4 +54,20 @@ class SmtpMailSenderAdapterTest {
     assertThat(msg.getFrom()).isEqualTo(FROM);
     assertThat(msg.getSubject()).isEqualTo("You already have a Nexus account");
   }
+
+  @Test
+  void sendPasswordResetEmail_setsToFromSubjectAndResetUrlInBody() {
+    // Verifies the reset URL is constructed correctly from frontendBaseUrl + path + token (SEC-3).
+    String rawToken = "b".repeat(64);
+
+    adapter.sendPasswordResetEmail("carol@example.com", rawToken);
+
+    ArgumentCaptor<SimpleMailMessage> captor = ArgumentCaptor.forClass(SimpleMailMessage.class);
+    verify(javaMailSender).send(captor.capture());
+    SimpleMailMessage msg = captor.getValue();
+    assertThat(msg.getTo()).containsExactly("carol@example.com");
+    assertThat(msg.getFrom()).isEqualTo(FROM);
+    assertThat(msg.getSubject()).isEqualTo("Reset your Nexus password");
+    assertThat(msg.getText()).contains(BASE_URL + "/auth/reset-password?token=" + rawToken);
+  }
 }

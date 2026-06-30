@@ -2,6 +2,7 @@ package com.example.nexus.identity.infrastructure.mail;
 
 import com.example.nexus.common.domain.LogMaskingUtil;
 import com.example.nexus.identity.application.event.AccountExistsEmailEvent;
+import com.example.nexus.identity.application.event.PasswordResetEmailEvent;
 import com.example.nexus.identity.application.event.VerificationEmailEvent;
 import com.example.nexus.identity.application.port.out.MailSenderPort;
 import org.slf4j.Logger;
@@ -42,5 +43,12 @@ public class MailEventListener {
   public void onAccountExists(AccountExistsEmailEvent event) {
     log.debug("Dispatching account-exists email to {}", LogMaskingUtil.maskEmail(event.toEmail()));
     mailSenderPort.sendAccountExistsEmail(event.toEmail());
+  }
+
+  @Async
+  @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
+  public void onPasswordReset(PasswordResetEmailEvent event) {
+    log.debug("Dispatching password-reset email to {}", LogMaskingUtil.maskEmail(event.toEmail()));
+    mailSenderPort.sendPasswordResetEmail(event.toEmail(), event.rawToken());
   }
 }

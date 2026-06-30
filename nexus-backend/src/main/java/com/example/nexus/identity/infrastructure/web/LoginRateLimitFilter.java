@@ -56,6 +56,8 @@ public class LoginRateLimitFilter extends OncePerRequestFilter {
 
   private static final String LOGIN_PATH = "/api/v1/auth/login";
   private static final String REFRESH_PATH = "/api/v1/auth/refresh";
+  private static final String FORGOT_PATH = "/api/v1/auth/password/forgot";
+  private static final String RESET_PATH = "/api/v1/auth/password/reset";
 
   // Vanilla mapper — only reads top-level "email" string; no app-level customisations needed
   private static final ObjectMapper BODY_PARSER = new ObjectMapper();
@@ -67,6 +69,8 @@ public class LoginRateLimitFilter extends OncePerRequestFilter {
   private final int userMaxAttempts;
   private final int userWindowSeconds;
   private final int refreshMaxAttempts;
+  private final int forgotIpMaxAttempts;
+  private final int resetIpMaxAttempts;
 
   public LoginRateLimitFilter(
       RateLimitStore rateLimitStore,
@@ -75,7 +79,9 @@ public class LoginRateLimitFilter extends OncePerRequestFilter {
       @Value("${nexus.security.rate-limit.ip-window-seconds}") int ipWindowSeconds,
       @Value("${nexus.security.rate-limit.user-max-attempts}") int userMaxAttempts,
       @Value("${nexus.security.rate-limit.user-window-seconds}") int userWindowSeconds,
-      @Value("${nexus.security.rate-limit.refresh-max-attempts}") int refreshMaxAttempts) {
+      @Value("${nexus.security.rate-limit.refresh-max-attempts}") int refreshMaxAttempts,
+      @Value("${nexus.security.rate-limit.forgot-ip-max-attempts}") int forgotIpMaxAttempts,
+      @Value("${nexus.security.rate-limit.reset-ip-max-attempts}") int resetIpMaxAttempts) {
     this.rateLimitStore = rateLimitStore;
     this.emailBlindIndexService = emailBlindIndexService;
     this.ipMaxAttempts = ipMaxAttempts;
@@ -83,6 +89,8 @@ public class LoginRateLimitFilter extends OncePerRequestFilter {
     this.userMaxAttempts = userMaxAttempts;
     this.userWindowSeconds = userWindowSeconds;
     this.refreshMaxAttempts = refreshMaxAttempts;
+    this.forgotIpMaxAttempts = forgotIpMaxAttempts;
+    this.resetIpMaxAttempts = resetIpMaxAttempts;
   }
 
   @Override
@@ -91,7 +99,8 @@ public class LoginRateLimitFilter extends OncePerRequestFilter {
       return true;
     }
     String path = request.getRequestURI();
-    return !LOGIN_PATH.equals(path) && !REFRESH_PATH.equals(path);
+    return !LOGIN_PATH.equals(path) && !REFRESH_PATH.equals(path)
+        && !FORGOT_PATH.equals(path) && !RESET_PATH.equals(path);
   }
 
   @Override
@@ -104,6 +113,10 @@ public class LoginRateLimitFilter extends OncePerRequestFilter {
 
     if (LOGIN_PATH.equals(path)) {
       handleLogin(request, response, chain, clientIp);
+    } else if (FORGOT_PATH.equals(path)) {
+      handleForgot(request, response, chain, clientIp);
+    } else if (RESET_PATH.equals(path)) {
+      handleReset(request, response, chain, clientIp);
     } else {
       handleRefresh(request, response, chain, clientIp);
     }
@@ -140,6 +153,47 @@ public class LoginRateLimitFilter extends OncePerRequestFilter {
     }
     // Replay body so the controller's @RequestBody can still read it
     chain.doFilter(new ReplayableBodyRequest(request, body), response);
+  }
+
+  private void handleForgot(
+      HttpServletRequest request, HttpServletResponse response, FilterChain chain, String clientIp)
+      throws ServletException, IOException {
+    long declared = request.getContentLengthLong();
+    if (declared > MAX_LOGIN_BODY_BYTES) {
+      response.setStatus(413);
+      return;
+    }
+    byte[] body = request.getInputStream().readNBytes(MAX_LOGIN_BODY_BYTES + 1);
+    if (body.length > MAX_LOGIN_BODY_BYTES) {
+      response.setStatus(413);
+      return;
+    }
+    String emailHmac = extractEmailHmac(body);
+
+    RateLimitResult ipResult = rateLimitStore.tryConsume(
+        "FORGOT_IP:" + clientIp, ipWindowSeconds, forgotIpMaxAttempts);
+    RateLimitResult userResult = emailHmac != null
+        ? rateLimitStore.tryConsume("FORGOT_USER:" + emailHmac, userWindowSeconds, userMaxAttempts)
+        : RateLimitResult.permit();
+
+    if (!ipResult.allowed() || !userResult.allowed()) {
+      long retryAfter = Math.max(ipResult.retryAfterSeconds(), userResult.retryAfterSeconds());
+      writeTooManyRequests(response, retryAfter);
+      return;
+    }
+    chain.doFilter(new ReplayableBodyRequest(request, body), response);
+  }
+
+  private void handleReset(
+      HttpServletRequest request, HttpServletResponse response, FilterChain chain, String clientIp)
+      throws ServletException, IOException {
+    RateLimitResult ipResult = rateLimitStore.tryConsume(
+        "RESET_IP:" + clientIp, ipWindowSeconds, resetIpMaxAttempts);
+    if (!ipResult.allowed()) {
+      writeTooManyRequests(response, ipResult.retryAfterSeconds());
+      return;
+    }
+    chain.doFilter(request, response);
   }
 
   private void handleRefresh(

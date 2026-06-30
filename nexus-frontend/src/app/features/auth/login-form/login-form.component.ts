@@ -1,6 +1,13 @@
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  computed,
+  inject,
+  OnInit,
+  signal,
+} from '@angular/core';
 import { FormGroup, FormControl, Validators, ReactiveFormsModule } from '@angular/forms';
-import { Router, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { NxButton, NxInput } from '../../../shared/ui';
 import { AuthService } from '../auth.service';
 import { AppError } from '../../../shared/types/app-error';
@@ -14,6 +21,12 @@ import { AppError } from '../../../shared/types/app-error';
     <div class="login-form-container">
       <form class="login-form" [formGroup]="loginForm" (ngSubmit)="submit()" novalidate>
         <h2 class="login-form__heading">Sign in to Nexus</h2>
+
+        @if (passwordReset()) {
+          <div class="login-form__success-banner" role="status" data-testid="login-reset-success">
+            Password reset successfully. You can now sign in with your new password.
+          </div>
+        }
 
         @if (errorMessage()) {
           <div class="login-form__error-banner" role="alert" data-testid="login-error">
@@ -40,6 +53,12 @@ import { AppError } from '../../../shared/types/app-error';
           [error]="passwordError()"
           (suffixIconClick)="showPassword.update((v) => !v)"
         />
+
+        <div class="login-form__forgot-row">
+          <a routerLink="/auth/forgot-password" data-testid="forgot-password-link"
+            >Forgot password?</a
+          >
+        </div>
 
         <nx-button
           type="submit"
@@ -88,12 +107,37 @@ import { AppError } from '../../../shared/types/app-error';
         letter-spacing: var(--nx-tracking-card-title);
       }
 
+      &__success-banner {
+        padding: var(--nx-space-3) var(--nx-space-4);
+        border-radius: var(--nx-radius-sm);
+        background: var(--nx-color-success-surface);
+        color: var(--nx-color-success);
+        font-size: var(--nx-text-base);
+      }
+
       &__error-banner {
         padding: var(--nx-space-3) var(--nx-space-4);
         border-radius: var(--nx-radius-sm);
         background: var(--nx-color-error-surface);
         color: var(--nx-color-error);
         font-size: var(--nx-text-base);
+      }
+
+      &__forgot-row {
+        display: flex;
+        justify-content: flex-end;
+        margin-top: calc(-1 * var(--nx-space-2));
+
+        a {
+          font-size: var(--nx-text-sm);
+          color: var(--nx-color-primary);
+          text-decoration: none;
+
+          &:hover {
+            color: var(--nx-color-primary-hover);
+            text-decoration: underline;
+          }
+        }
       }
 
       &__register-link {
@@ -115,13 +159,19 @@ import { AppError } from '../../../shared/types/app-error';
     }
   `,
 })
-export class LoginFormComponent {
+export class LoginFormComponent implements OnInit {
   private readonly authService = inject(AuthService);
   private readonly router = inject(Router);
+  private readonly route = inject(ActivatedRoute);
 
   readonly loading = signal(false);
   readonly errorMessage = signal<string | null>(null);
   readonly showPassword = signal(false);
+  readonly passwordReset = signal(false);
+
+  ngOnInit(): void {
+    this.passwordReset.set(this.route.snapshot.queryParamMap.get('reset') === 'true');
+  }
 
   readonly loginForm = new FormGroup({
     email: new FormControl('', {

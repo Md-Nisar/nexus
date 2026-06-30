@@ -336,6 +336,58 @@ class UserTest {
     assertThat(result).isFalse();
   }
 
+  // --- applyPasswordReset ---
+
+  @Test
+  void should_updateHashAndIncrementTokenVersion_when_applyPasswordResetCalledOnActiveUser() {
+    User user = activeUser();
+    int initialVersion = user.getTokenVersion();
+
+    user.applyPasswordReset("new-argon2id-hash");
+
+    assertThat(user.getPasswordHash()).isEqualTo("new-argon2id-hash");
+    assertThat(user.getTokenVersion()).isEqualTo(initialVersion + 1);
+    assertThat(user.getStatus()).isEqualTo(UserStatus.ACTIVE);
+    assertThat(user.getFailedAttemptCount()).isZero();
+    assertThat(user.getLockedUntil()).isNull();
+  }
+
+  @Test
+  void should_transitionToActiveAndResetLockout_when_applyPasswordResetCalledOnLockedUser() {
+    User user = activeUser();
+    user.recordFailedAttempt();
+    user.recordFailedAttempt();
+    user.lockAccount(Instant.now().plusSeconds(900));
+
+    user.applyPasswordReset("new-hash");
+
+    assertThat(user.getStatus()).isEqualTo(UserStatus.ACTIVE);
+    assertThat(user.getFailedAttemptCount()).isZero();
+    assertThat(user.getLockedUntil()).isNull();
+  }
+
+  @Test
+  void should_transitionToActive_when_applyPasswordResetCalledOnPendingUser() {
+    User user = new User(
+        UUID.randomUUID(), UUID.randomUUID(),
+        new EmailCipher("user@example.com"), "hmac", "old-hash", Instant.now());
+
+    user.applyPasswordReset("new-hash");
+
+    assertThat(user.getStatus()).isEqualTo(UserStatus.ACTIVE);
+  }
+
+  @Test
+  void should_incrementTokenVersionFromAnyStartingValue_when_applyPasswordResetCalledMultipleTimes() {
+    User user = activeUser();
+
+    user.applyPasswordReset("hash1");
+    user.applyPasswordReset("hash2");
+
+    assertThat(user.getTokenVersion()).isEqualTo(2);
+    assertThat(user.getPasswordHash()).isEqualTo("hash2");
+  }
+
   // --- helpers ---
 
   private User activeUser() {

@@ -24,6 +24,7 @@ public class SmtpMailSenderAdapter implements MailSenderPort {
   private static final Logger log = LoggerFactory.getLogger(SmtpMailSenderAdapter.class);
   private static final String VERIFY_SUBJECT = "Verify your Nexus email address";
   private static final String EXISTS_SUBJECT = "You already have a Nexus account";
+  private static final String RESET_SUBJECT = "Reset your Nexus password";
 
   private final JavaMailSender mailSender;
   private final String fromAddress;
@@ -61,5 +62,19 @@ public class SmtpMailSenderAdapter implements MailSenderPort {
         + "If you forgot your password, please use the password-reset flow.");
     mailSender.send(msg);
     log.debug("Account-exists email sent to {}", LogMaskingUtil.maskEmail(toEmail));
+  }
+
+  @Override
+  public void sendPasswordResetEmail(String toEmail, String rawToken) {
+    String url = frontendBaseUrl + "/auth/reset-password?token=" + rawToken;
+    SimpleMailMessage msg = new SimpleMailMessage();
+    msg.setFrom(fromAddress);
+    msg.setTo(toEmail);
+    msg.setSubject(RESET_SUBJECT);
+    msg.setText("Click the link below to reset your Nexus password:\n\n"
+        + url + "\n\nThis link expires in 1 hour. If you did not request a reset, "
+        + "you can safely ignore this email.");
+    mailSender.send(msg);
+    log.debug("Password-reset email sent to {}", LogMaskingUtil.maskEmail(toEmail));
   }
 }

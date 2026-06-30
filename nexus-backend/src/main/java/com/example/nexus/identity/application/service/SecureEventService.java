@@ -103,6 +103,17 @@ public class SecureEventService {
   }
 
   /**
+   * Revokes all active refresh-token families for the given user in an independent transaction.
+   *
+   * <p>REQUIRES_NEW ensures the revocation is durable even if the caller's transaction rolls back.
+   * Called by {@code ResetPasswordUseCase} after a successful password reset (AC-3).
+   */
+  @Transactional(propagation = Propagation.REQUIRES_NEW)
+  public void revokeAllUserSessions(UUID userId, Instant revokedAt) {
+    refreshTokenPort.revokeByUserId(userId, revokedAt);
+  }
+
+  /**
    * Resets the failure counter and clears the lockout timestamp for the given user.
    *
    * <p>Uses a direct bulk UPDATE (bypassing the {@code @Version} optimistic-lock check) so this

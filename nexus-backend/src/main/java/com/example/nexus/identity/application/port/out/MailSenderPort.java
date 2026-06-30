@@ -23,4 +23,12 @@ public interface MailSenderPort {
    * @param toEmail recipient's plaintext email address
    */
   void sendAccountExistsEmail(String toEmail);
+
+  /**
+   * Sends a password-reset link to the given address.
+   *
+   * @param toEmail  recipient's plaintext email address
+   * @param rawToken 64-char hex reset token (must never appear in any log statement — SEC-3)
+   */
+  void sendPasswordResetEmail(String toEmail, String rawToken);
 }
