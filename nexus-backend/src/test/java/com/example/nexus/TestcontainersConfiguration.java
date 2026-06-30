@@ -89,6 +89,11 @@ public class TestcontainersConfiguration {
             public void sendAccountExistsEmail(String toEmail) {
                 log.info("[MAIL-STUB] AccountExists email → {}", LogMaskingUtil.maskEmail(toEmail));
             }
+
+            @Override
+            public void sendPasswordResetEmail(String toEmail, String rawToken) {
+                log.info("[MAIL-STUB] PasswordReset email → {}", LogMaskingUtil.maskEmail(toEmail));
+            }
         };
     }
 }

@@ -1,13 +1,16 @@
 import { TestBed } from '@angular/core/testing';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
-import { provideRouter, Router } from '@angular/router';
+import { ActivatedRoute, provideRouter, Router } from '@angular/router';
 import { NEVER, of, throwError } from 'rxjs';
 import { describe, it, expect, vi } from 'vitest';
 import { LoginFormComponent } from './login-form.component';
 import { AuthService } from '../auth.service';
 import { AppError } from '../../../shared/types/app-error';
 
-function setup(loginFn: ReturnType<typeof vi.fn> = vi.fn(() => of(undefined))) {
+function setup(
+  loginFn: ReturnType<typeof vi.fn> = vi.fn(() => of(undefined)),
+  queryParams: Record<string, string> = {},
+) {
   const mockAuthService = { login: loginFn };
 
   TestBed.configureTestingModule({
@@ -16,6 +19,10 @@ function setup(loginFn: ReturnType<typeof vi.fn> = vi.fn(() => of(undefined))) {
       { provide: AuthService, useValue: mockAuthService },
       provideAnimationsAsync(),
       provideRouter([]),
+      {
+        provide: ActivatedRoute,
+        useValue: { snapshot: { queryParamMap: { get: (k: string) => queryParams[k] ?? null } } },
+      },
     ],
   });
 
@@ -134,5 +141,24 @@ describe('LoginFormComponent', () => {
     component.submit();
     fixture.detectChanges();
     expect(navigateSpy).toHaveBeenCalledWith(['/dashboard']);
+  });
+
+  it('shows reset-success banner when ?reset=true query param is present', () => {
+    const { fixture, component } = setup(
+      vi.fn(() => of(undefined)),
+      { reset: 'true' },
+    );
+    component.ngOnInit();
+    fixture.detectChanges();
+    expect(component.passwordReset()).toBe(true);
+    const banner = fixture.nativeElement.querySelector('[data-testid="login-reset-success"]');
+    expect(banner).not.toBeNull();
+  });
+
+  it('does not show reset-success banner when ?reset param is absent', () => {
+    const { fixture } = setup();
+    fixture.detectChanges();
+    const banner = fixture.nativeElement.querySelector('[data-testid="login-reset-success"]');
+    expect(banner).toBeNull();
   });
 });

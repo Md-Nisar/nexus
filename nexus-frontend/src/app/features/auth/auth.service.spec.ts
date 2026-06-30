@@ -91,6 +91,78 @@ describe('AuthService', () => {
     });
   });
 
+  describe('forgotPassword', () => {
+    it('should POST to /api/v1/auth/password/forgot with email body and complete as void', () => {
+      let completed = false;
+      service.forgotPassword('user@example.com').subscribe({ complete: () => (completed = true) });
+
+      const req = controller.expectOne('/api/v1/auth/password/forgot');
+      expect(req.request.method).toBe('POST');
+      expect(req.request.body).toEqual({ email: 'user@example.com' });
+      req.flush(
+        { message: 'If an account with that email exists, a reset link has been sent.' },
+        { status: 202, statusText: 'Accepted' },
+      );
+      expect(completed).toBe(true);
+    });
+
+    it('should propagate AppError on 400 validation failure', () => {
+      let captured: AppError | undefined;
+      service.forgotPassword('bad').subscribe({ error: (e: AppError) => (captured = e) });
+
+      controller
+        .expectOne('/api/v1/auth/password/forgot')
+        .flush(
+          { code: 'VALIDATION_FAILED', detail: 'must be a valid email' },
+          { status: 400, statusText: 'Bad Request' },
+        );
+      expect(captured?.code).toBe('VALIDATION_FAILED');
+    });
+  });
+
+  describe('resetPassword', () => {
+    it('should POST to /api/v1/auth/password/reset with token and newPassword', () => {
+      let result: { message: string } | undefined;
+      service.resetPassword(VALID_TOKEN, USER_PASS).subscribe({ next: (r) => (result = r) });
+
+      const req = controller.expectOne('/api/v1/auth/password/reset');
+      expect(req.request.method).toBe('POST');
+      expect(req.request.body).toEqual({ token: VALID_TOKEN, newPassword: USER_PASS });
+      req.flush({ message: 'Password reset successfully. Please sign in.' });
+      expect(result?.message).toContain('Password reset');
+    });
+
+    it('should propagate AppError on 410 token-expired response', () => {
+      let captured: AppError | undefined;
+      service
+        .resetPassword(VALID_TOKEN, USER_PASS)
+        .subscribe({ error: (e: AppError) => (captured = e) });
+
+      controller
+        .expectOne('/api/v1/auth/password/reset')
+        .flush(
+          { code: 'AUTH_RST_002', detail: 'This reset link has expired.' },
+          { status: 410, statusText: 'Gone' },
+        );
+      expect(captured?.code).toBe('AUTH_RST_002');
+    });
+
+    it('should propagate AppError on 400 same-password response', () => {
+      let captured: AppError | undefined;
+      service
+        .resetPassword(VALID_TOKEN, USER_PASS)
+        .subscribe({ error: (e: AppError) => (captured = e) });
+
+      controller
+        .expectOne('/api/v1/auth/password/reset')
+        .flush(
+          { code: 'AUTH_RST_003', detail: 'New password must differ.' },
+          { status: 400, statusText: 'Bad Request' },
+        );
+      expect(captured?.code).toBe('AUTH_RST_003');
+    });
+  });
+
   describe('resendVerification', () => {
     it('should POST to /api/v1/auth/resend-verification with correct body', () => {
       let completed = false;

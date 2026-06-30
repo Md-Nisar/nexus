@@ -52,6 +52,7 @@ Full reference: **DEVELOPMENT_GUIDE.md → The Operating Model**. Front door: **
 - Errors are **RFC 7807** problem documents with `code` + `traceId`; never leak internals.
 - Frontend: standalone + signals + modern control flow (`@if`/`@for`); no `any`; HTTP only via interceptors (components see `AppError`, never `HttpErrorResponse`); config via `APP_CONFIG`.
 - Integration tests (`*IT`) use **Testcontainers MySQL**, never H2; H2 serves only the no-Docker context smoke test (TESTING.md).
+- **Anti-enumeration endpoints** (e.g. `/forgot`, `/resend-verification`) must return the same HTTP status and body regardless of account existence. The not-found path must perform a dummy CPU-equivalent operation (e.g. `tokenGenerator.generate()`) to partially equalise timing; document any residual DB round-trip delta in an inline comment. See `ForgotPasswordUseCase` for the canonical pattern.
 
 ## Enforcement (gates fail automatically — DEVELOPMENT_GUIDE.md → How gates are enforced)
 

@@ -57,6 +57,17 @@ export class AuthService {
       );
   }
 
+  forgotPassword(email: string): Observable<void> {
+    return this.http.post(`${this.base}/password/forgot`, { email }).pipe(map(() => undefined));
+  }
+
+  resetPassword(token: string, newPassword: string): Observable<{ message: string }> {
+    return this.http.post<{ message: string }>(`${this.base}/password/reset`, {
+      token,
+      newPassword,
+    });
+  }
+
   logout(): Observable<void> {
     return this.http
       .post<void>(`${this.base}/logout`, null, { withCredentials: true })

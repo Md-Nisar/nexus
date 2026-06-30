@@ -216,6 +216,17 @@ class SecureEventServiceTest {
   }
 
   // ---------------------------------------------------------------------------
+  // revokeAllUserSessions
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void should_delegateToRevokeByUserId_when_revokeAllUserSessionsCalled() {
+    service.revokeAllUserSessions(USER_ID, NOW);
+
+    verify(refreshTokenPort).revokeByUserId(USER_ID, NOW);
+  }
+
+  // ---------------------------------------------------------------------------
   // T-018: M-7 ACCOUNT_LOCKED rate signal — mass-lockout campaign detection (T-LCK-3)
   // ---------------------------------------------------------------------------
 

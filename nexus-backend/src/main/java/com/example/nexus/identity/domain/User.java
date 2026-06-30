@@ -26,8 +26,15 @@ public class User {
   @Column(name = "tenant_id", columnDefinition = "BINARY(16)", nullable = false)
   private UUID tenantId;
 
+  /**
+   * Encrypted email address. {@link com.example.nexus.identity.infrastructure.persistence.AttributeEncryptor}
+   * decrypts the column value <em>before</em> wrapping it in this record, so {@code emailCipher.value()}
+   * always returns the plaintext address. This invariant must not be broken by future refactors of
+   * {@code AttributeEncryptor} — if lazy decryption is ever introduced, add an explicit
+   * {@code PlaintextEmail} port or accessor to make the contract type-safe.
+   */
   @Column(name = "email_cipher", nullable = false)
-  private EmailCipher emailCipher; // AttributeEncryptor auto-applies (no @Convert needed)
+  private EmailCipher emailCipher;
 
   @Column(name = "email_hmac", length = 64, nullable = false, updatable = false)
   private String emailHmac; // no setter — immutable after insert (SEC-T9)
@@ -123,6 +130,21 @@ public class User {
    * Called on successful login to reset the brute-force counter.
    */
   public void resetFailedAttempts() {
+    this.failedAttemptCount = 0;
+    this.lockedUntil = null;
+  }
+
+  /**
+   * Applies a completed password reset: updates the password hash, increments
+   * {@code tokenVersion} (so future JWTs carry a new version; outstanding tokens remain valid
+   * for up to their 15-min TTL — accepted residual, Gate 1 decision), transitions any status
+   * to {@link UserStatus#ACTIVE} (AC-4: unlocks LOCKED accounts), and resets lockout state.
+   * Session revocation is the caller's responsibility.
+   */
+  public void applyPasswordReset(String newPasswordHash) {
+    this.passwordHash = newPasswordHash;
+    this.tokenVersion += 1;
+    this.status = UserStatus.ACTIVE;
     this.failedAttemptCount = 0;
     this.lockedUntil = null;
   }

@@ -7,6 +7,31 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ## [Unreleased]
 
+### Added — US-007 (Self-service password reset via email)
+
+**Backend**
+- `POST /api/v1/auth/password/forgot` — accepts an email address and, if the account is registered, sends a single-use reset link (256-bit token, 1-hour TTL). Always returns 202 regardless of account existence (anti-enumeration, AC-1).
+- `POST /api/v1/auth/password/reset` — validates the reset token, enforces password policy, updates the credential, and revokes all existing sessions (AC-2 through AC-6).
+- `ForgotPasswordUseCase` — throttle: 3 reset emails per account per hour; `PASSWORD_RESET_REQUESTED` / `PASSWORD_RESET_THROTTLED` audit events in `REQUIRES_NEW` sub-transaction.
+- `ResetPasswordUseCase` — SHA-256 token hash lookup; optimistic-lock single-use enforcement (`markConsumed + flush`); Argon2 password hashing via `PasswordHasherPort`; `revokeAllUserSessions` (REQUIRES_NEW); `PASSWORD_RESET_FAILED` / `PASSWORD_CHANGED` audit events; session-revocation failure is swallowed with a WARN log.
+- `TokenGenerator` — 32-byte `SecureRandom` → 64-char hex (256-bit entropy).
+- `PasswordResetEmailEvent` — `toString()` redacts raw token and masks email address (SEC-3 compliance).
+- `MailEventListener.onPasswordReset` — `@Async @TransactionalEventListener(AFTER_COMMIT)` prevents phantom emails on rollback.
+- `LoginRateLimitFilter` — extended to cover `/password/forgot` (per-IP `FORGOT_IP:` + per-email-HMAC `FORGOT_USER:` buckets) and `/password/reset` (per-IP `RESET_IP:` bucket). New config: `nexus.security.rate-limit.forgot-ip-max-attempts` (default 10), `reset-ip-max-attempts` (default 20).
+- `User.applyPasswordReset()` — password hash update + `tokenVersion++` + ACTIVE transition + lockout reset.
+- `SecureEventService.revokeAllUserSessions()` — REQUIRES_NEW sub-transaction; revokes all `REFRESH`-type tokens for a user.
+- No new Flyway migration: index `idx_auth_tokens_user_id_type_created_at` on `auth_tokens(user_id, type, created_at)` was already created in V3 for `ResendVerificationUseCase`; it doubles as the reset throttle query index.
+- ADR 0010: password-reset token delivery as URL query parameter.
+- 369 backend tests (0 failures).
+
+**Frontend**
+- `ForgotPasswordComponent` (`/auth/forgot-password`) — email form; confirmation text is identical regardless of whether the account exists (anti-enumeration).
+- `ResetPasswordComponent` (`/auth/reset-password?token=<hex>`) — reads token from query parameter, strips it from URL via `replaceUrl:true` on init (Referer-leak mitigation); `Validators.maxLength(256)` to match backend DTO; error handling for all 4 documented error codes.
+- `LoginFormComponent` — "Forgot password?" link; success banner when redirected with `?reset=true`.
+- `AuthService.forgotPassword()` — `Observable<void>` (anti-enumeration: no response body consumed).
+- `AuthService.resetPassword()` — `Observable<{message: string}>`.
+- Frontend test suite: 87.46% statement, 82.09% branch coverage.
+
 ### Added — US-006 (Brute-force lockout & password policy split)
 
 **Backend**

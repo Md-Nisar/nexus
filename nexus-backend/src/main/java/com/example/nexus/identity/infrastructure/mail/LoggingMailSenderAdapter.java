@@ -30,4 +30,10 @@ public class LoggingMailSenderAdapter implements MailSenderPort {
   public void sendAccountExistsEmail(String toEmail) {
     log.info("[MAIL-STUB] Account-exists email → {}", LogMaskingUtil.maskEmail(toEmail));
   }
+
+  @Override
+  public void sendPasswordResetEmail(String toEmail, String rawToken) {
+    log.info("[MAIL-STUB] Password-reset email → {} [reset link suppressed]",
+        LogMaskingUtil.maskEmail(toEmail));
+  }
 }

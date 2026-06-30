@@ -30,7 +30,7 @@ class LoginRateLimitFilterTest {
   void setUp() {
     rateLimitStore = mock(RateLimitStore.class);
     emailBlindIndexService = mock(EmailBlindIndexService.class);
-    filter = new LoginRateLimitFilter(rateLimitStore, emailBlindIndexService, 5, 60, 5, 900, 30);
+    filter = new LoginRateLimitFilter(rateLimitStore, emailBlindIndexService, 5, 60, 5, 900, 30, 10, 20);
   }
 
   @Test
@@ -124,6 +124,115 @@ class LoginRateLimitFilterTest {
     verify(chain, never()).doFilter(
         any(jakarta.servlet.ServletRequest.class),
         any(jakarta.servlet.ServletResponse.class));
+  }
+
+  @Test
+  void shouldNotFilter_returnsFalse_forPostOnForgotPath() {
+    MockHttpServletRequest req = new MockHttpServletRequest("POST", "/api/v1/auth/password/forgot");
+    assertThat(filter.shouldNotFilter(req)).isFalse();
+  }
+
+  @Test
+  void shouldNotFilter_returnsFalse_forPostOnResetPath() {
+    MockHttpServletRequest req = new MockHttpServletRequest("POST", "/api/v1/auth/password/reset");
+    assertThat(filter.shouldNotFilter(req)).isFalse();
+  }
+
+  @Test
+  void doFilterInternal_forgotPath_ipRateLimited_writes429() throws Exception {
+    byte[] body = "{\"email\":\"user@example.com\"}".getBytes(StandardCharsets.UTF_8);
+    MockHttpServletRequest req = new MockHttpServletRequest("POST", "/api/v1/auth/password/forgot");
+    req.setContent(body);
+    req.setRemoteAddr("10.0.0.10");
+    MockHttpServletResponse res = new MockHttpServletResponse();
+    FilterChain chain = mock(FilterChain.class);
+
+    when(emailBlindIndexService.blindIndex("user@example.com")).thenReturn("hmac-forgot");
+    when(rateLimitStore.tryConsume(startsWith("FORGOT_IP:"), anyInt(), anyInt()))
+        .thenReturn(RateLimitResult.reject(60));
+    when(rateLimitStore.tryConsume(startsWith("FORGOT_USER:"), anyInt(), anyInt()))
+        .thenReturn(RateLimitResult.permit());
+
+    filter.doFilterInternal(req, res, chain);
+
+    assertThat(res.getStatus()).isEqualTo(429);
+    assertThat(res.getHeader("Retry-After")).isEqualTo("60");
+    verify(chain, never()).doFilter(any(), any());
+  }
+
+  @Test
+  void doFilterInternal_forgotPath_emailRateLimited_writes429() throws Exception {
+    byte[] body = "{\"email\":\"victim@example.com\"}".getBytes(StandardCharsets.UTF_8);
+    MockHttpServletRequest req = new MockHttpServletRequest("POST", "/api/v1/auth/password/forgot");
+    req.setContent(body);
+    req.setRemoteAddr("10.0.0.11");
+    MockHttpServletResponse res = new MockHttpServletResponse();
+    FilterChain chain = mock(FilterChain.class);
+
+    when(emailBlindIndexService.blindIndex("victim@example.com")).thenReturn("hmac-victim");
+    when(rateLimitStore.tryConsume(startsWith("FORGOT_IP:"), anyInt(), anyInt()))
+        .thenReturn(RateLimitResult.permit());
+    when(rateLimitStore.tryConsume(startsWith("FORGOT_USER:"), anyInt(), anyInt()))
+        .thenReturn(RateLimitResult.reject(900));
+
+    filter.doFilterInternal(req, res, chain);
+
+    assertThat(res.getStatus()).isEqualTo(429);
+    verify(chain, never()).doFilter(any(), any());
+  }
+
+  @Test
+  void doFilterInternal_forgotPath_notRateLimited_passesThroughWithBody() throws Exception {
+    byte[] body = "{\"email\":\"user@example.com\"}".getBytes(StandardCharsets.UTF_8);
+    MockHttpServletRequest req = new MockHttpServletRequest("POST", "/api/v1/auth/password/forgot");
+    req.setContent(body);
+    req.setRemoteAddr("10.0.0.12");
+    MockHttpServletResponse res = new MockHttpServletResponse();
+    FilterChain chain = mock(FilterChain.class);
+
+    when(emailBlindIndexService.blindIndex("user@example.com")).thenReturn("hmac-ok");
+    when(rateLimitStore.tryConsume(startsWith("FORGOT_IP:"), anyInt(), anyInt()))
+        .thenReturn(RateLimitResult.permit());
+    when(rateLimitStore.tryConsume(startsWith("FORGOT_USER:"), anyInt(), anyInt()))
+        .thenReturn(RateLimitResult.permit());
+
+    filter.doFilterInternal(req, res, chain);
+
+    verify(chain).doFilter(any(jakarta.servlet.ServletRequest.class), any(jakarta.servlet.ServletResponse.class));
+    assertThat(res.getStatus()).isNotEqualTo(429);
+  }
+
+  @Test
+  void doFilterInternal_resetPath_ipRateLimited_writes429() throws Exception {
+    MockHttpServletRequest req = new MockHttpServletRequest("POST", "/api/v1/auth/password/reset");
+    req.setRemoteAddr("10.0.0.20");
+    MockHttpServletResponse res = new MockHttpServletResponse();
+    FilterChain chain = mock(FilterChain.class);
+
+    when(rateLimitStore.tryConsume(startsWith("RESET_IP:"), anyInt(), anyInt()))
+        .thenReturn(RateLimitResult.reject(60));
+
+    filter.doFilterInternal(req, res, chain);
+
+    assertThat(res.getStatus()).isEqualTo(429);
+    assertThat(res.getHeader("Retry-After")).isEqualTo("60");
+    verify(chain, never()).doFilter(any(), any());
+  }
+
+  @Test
+  void doFilterInternal_resetPath_notRateLimited_passesThrough() throws Exception {
+    MockHttpServletRequest req = new MockHttpServletRequest("POST", "/api/v1/auth/password/reset");
+    req.setRemoteAddr("10.0.0.21");
+    MockHttpServletResponse res = new MockHttpServletResponse();
+    FilterChain chain = mock(FilterChain.class);
+
+    when(rateLimitStore.tryConsume(startsWith("RESET_IP:"), anyInt(), anyInt()))
+        .thenReturn(RateLimitResult.permit());
+
+    filter.doFilterInternal(req, res, chain);
+
+    verify(chain).doFilter(any(), any());
+    assertThat(res.getStatus()).isNotEqualTo(429);
   }
 
   @Test

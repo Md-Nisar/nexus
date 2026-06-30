@@ -24,4 +24,20 @@ class DomainEventToStringTest {
     assertThat(result).contains("b***@example.com");
     assertThat(result).doesNotContain("bob@example.com");
   }
+
+  @Test
+  void passwordResetEmailEvent_toString_masksEmailAndRedactsToken() {
+    // SEC-3: raw token must never appear in log output; email must be masked.
+    var event = new PasswordResetEmailEvent(
+        "carol@example.com",
+        "super-secret-reset-token",
+        UUID.fromString("00000000-0000-0000-0000-000000000002"));
+
+    String result = event.toString();
+
+    assertThat(result).contains("<redacted>");
+    assertThat(result).contains("c***@example.com");
+    assertThat(result).doesNotContain("super-secret-reset-token");
+    assertThat(result).doesNotContain("carol@example.com");
+  }
 }

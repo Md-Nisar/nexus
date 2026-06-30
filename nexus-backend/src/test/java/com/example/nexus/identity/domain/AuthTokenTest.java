@@ -66,4 +66,20 @@ class AuthTokenTest {
     assertThat(token.getExpiresAt()).isEqualTo(expiresAt);
     assertThat(token.getConsumedAt()).isNull();
   }
+
+  @Test
+  void should_setResetType_when_forResetFactoryCalled() {
+    UUID id = UUID.randomUUID();
+    UUID userId = UUID.randomUUID();
+    Instant expiresAt = Instant.now().plusSeconds(3600);
+
+    AuthToken token = AuthToken.forReset(id, userId, "sha256resethash", expiresAt);
+
+    assertThat(token.getId()).isEqualTo(id);
+    assertThat(token.getUserId()).isEqualTo(userId);
+    assertThat(token.getType()).isEqualTo(AuthTokenType.RESET);
+    assertThat(token.getTokenHash()).isEqualTo("sha256resethash");
+    assertThat(token.getExpiresAt()).isEqualTo(expiresAt);
+    assertThat(token.getConsumedAt()).isNull();
+  }
 }
