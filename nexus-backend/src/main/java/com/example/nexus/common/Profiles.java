@@ -8,7 +8,9 @@ package com.example.nexus.common;
  *
  * <ul>
  *   <li>{@link #DEV} — local development: SQL logging, debug log level, placeholder crypto keys.
- *       Active by default (see {@code application.yml → spring.profiles.active}).
+ *       Not active by default; applied to local {@code spring-boot:run} via the
+ *       spring-boot-maven-plugin config in {@code pom.xml}. Deployments must set
+ *       {@code SPRING_PROFILES_ACTIVE} explicitly, so an unconfigured run fails closed.
  *   <li>{@link #SMOKE} — H2 in-memory context smoke test: Flyway disabled, {@code
  *       ddl-auto=create-drop}. Active only for {@code NexusBackendApplicationTests} via {@code
  *       @ActiveProfiles}. Named "smoke" rather than "test" to avoid confusion with integration

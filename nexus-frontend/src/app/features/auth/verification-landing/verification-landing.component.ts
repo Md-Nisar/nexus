@@ -6,7 +6,7 @@ import {
   inject,
   signal,
 } from '@angular/core';
-import { ActivatedRoute, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { MatIconModule } from '@angular/material/icon';
 import { AuthService } from '../auth.service';
@@ -23,7 +23,9 @@ import { ViewState, failure, loading, success } from '../../../shared/types/view
 })
 export class VerificationLandingComponent implements OnInit {
   private readonly authService = inject(AuthService);
-  private readonly queryParams = toSignal(inject(ActivatedRoute).queryParams, {
+  private readonly route = inject(ActivatedRoute);
+  private readonly router = inject(Router);
+  private readonly queryParams = toSignal(this.route.queryParams, {
     initialValue: {} as Record<string, string>,
   });
 
@@ -36,6 +38,9 @@ export class VerificationLandingComponent implements OnInit {
 
   ngOnInit(): void {
     const token = this.queryParams()['token'];
+    // Strip the token from the URL to prevent Referer leakage and browser-history exposure,
+    // matching the same hardening applied to the password-reset link.
+    this.router.navigate([], { relativeTo: this.route, queryParams: {}, replaceUrl: true });
     if (!token) {
       this.state.set(
         failure<void>({

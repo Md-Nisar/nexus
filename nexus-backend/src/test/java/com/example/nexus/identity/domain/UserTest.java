@@ -338,12 +338,14 @@ class UserTest {
 
   // --- applyPasswordReset ---
 
+  private static final Instant RESET_AT = Instant.parse("2026-06-30T12:00:00Z");
+
   @Test
   void should_updateHashAndIncrementTokenVersion_when_applyPasswordResetCalledOnActiveUser() {
     User user = activeUser();
     int initialVersion = user.getTokenVersion();
 
-    user.applyPasswordReset("new-argon2id-hash");
+    user.applyPasswordReset("new-argon2id-hash", RESET_AT);
 
     assertThat(user.getPasswordHash()).isEqualTo("new-argon2id-hash");
     assertThat(user.getTokenVersion()).isEqualTo(initialVersion + 1);
@@ -359,7 +361,7 @@ class UserTest {
     user.recordFailedAttempt();
     user.lockAccount(Instant.now().plusSeconds(900));
 
-    user.applyPasswordReset("new-hash");
+    user.applyPasswordReset("new-hash", RESET_AT);
 
     assertThat(user.getStatus()).isEqualTo(UserStatus.ACTIVE);
     assertThat(user.getFailedAttemptCount()).isZero();
@@ -367,25 +369,63 @@ class UserTest {
   }
 
   @Test
-  void should_transitionToActive_when_applyPasswordResetCalledOnPendingUser() {
+  void should_transitionToActiveAndStampVerifiedAt_when_applyPasswordResetCalledOnPendingUser() {
     User user = new User(
         UUID.randomUUID(), UUID.randomUUID(),
         new EmailCipher("user@example.com"), "hmac", "old-hash", Instant.now());
 
-    user.applyPasswordReset("new-hash");
+    user.applyPasswordReset("new-hash", RESET_AT);
 
     assertThat(user.getStatus()).isEqualTo(UserStatus.ACTIVE);
+    // Completing a reset proves mailbox control, so a never-verified account is verified here —
+    // ACTIVE must never coexist with a null emailVerifiedAt.
+    assertThat(user.getEmailVerifiedAt()).isEqualTo(RESET_AT);
+  }
+
+  @Test
+  void should_preserveOriginalVerifiedAt_when_applyPasswordResetCalledOnAlreadyVerifiedUser() {
+    Instant originalVerifiedAt = Instant.parse("2026-01-01T00:00:00Z");
+    User user =
+        new User(
+            UUID.randomUUID(), UUID.randomUUID(),
+            new EmailCipher("user@example.com"), "hmac", "old-hash", Instant.now());
+    user.verify(originalVerifiedAt);
+
+    user.applyPasswordReset("new-hash", RESET_AT);
+
+    // An already-verified account keeps its original verification instant; reset does not restamp.
+    assertThat(user.getEmailVerifiedAt()).isEqualTo(originalVerifiedAt);
+  }
+
+  @Test
+  void should_throwIllegalState_when_applyPasswordResetCalledOnDisabledUser() throws Exception {
+    User user = activeUser();
+    forceStatus(user, UserStatus.DISABLED);
+
+    assertThatThrownBy(() -> user.applyPasswordReset("new-hash", RESET_AT))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("DISABLED");
+    // A terminal (deactivated) account must not be silently reactivated by a self-service reset.
+    assertThat(user.getStatus()).isEqualTo(UserStatus.DISABLED);
+    assertThat(user.getPasswordHash()).isEqualTo("pw-hash");
   }
 
   @Test
   void should_incrementTokenVersionFromAnyStartingValue_when_applyPasswordResetCalledMultipleTimes() {
     User user = activeUser();
 
-    user.applyPasswordReset("hash1");
-    user.applyPasswordReset("hash2");
+    user.applyPasswordReset("hash1", RESET_AT);
+    user.applyPasswordReset("hash2", RESET_AT);
 
     assertThat(user.getTokenVersion()).isEqualTo(2);
     assertThat(user.getPasswordHash()).isEqualTo("hash2");
+  }
+
+  /** DISABLED has no domain mutator yet; set it reflectively to exercise the terminal-state guard. */
+  private static void forceStatus(User user, UserStatus status) throws Exception {
+    java.lang.reflect.Field field = User.class.getDeclaredField("status");
+    field.setAccessible(true);
+    field.set(user, status);
   }
 
   // --- helpers ---

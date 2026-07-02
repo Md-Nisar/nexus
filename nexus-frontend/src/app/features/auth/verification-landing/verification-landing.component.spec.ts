@@ -23,6 +23,7 @@ const GENERIC_ERROR: AppError = {
 
 function setup(token: string | undefined, verifyFn = vi.fn(() => of(undefined as void))) {
   const queryParams = token !== undefined ? { token } : {};
+  const routerNavigateSpy = vi.fn().mockResolvedValue(true);
   TestBed.configureTestingModule({
     imports: [VerificationLandingComponent],
     providers: [
@@ -34,7 +35,12 @@ function setup(token: string | undefined, verifyFn = vi.fn(() => of(undefined as
     ],
   });
   const fixture = TestBed.createComponent(VerificationLandingComponent);
-  return { fixture, verifyFn };
+  // The mocked ActivatedRoute above has no `snapshot`, which the real Router needs to resolve
+  // `relativeTo` — patch navigate directly, same pattern as ResetPasswordComponent's spec.
+  (
+    fixture.componentInstance as unknown as { router: { navigate: typeof routerNavigateSpy } }
+  ).router.navigate = routerNavigateSpy;
+  return { fixture, verifyFn, routerNavigateSpy };
 }
 
 describe('VerificationLandingComponent', () => {
@@ -101,5 +107,23 @@ describe('VerificationLandingComponent', () => {
     fixture.detectChanges();
     expect(verifyFn).toHaveBeenCalledWith(VALID_TOKEN);
     expect(verifyFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('should strip the token from the URL on init to prevent Referer/history leakage', () => {
+    const { fixture, routerNavigateSpy } = setup(VALID_TOKEN);
+    fixture.detectChanges();
+    expect(routerNavigateSpy).toHaveBeenCalledWith(
+      [],
+      expect.objectContaining({ queryParams: {}, replaceUrl: true }),
+    );
+  });
+
+  it('should strip the URL even when no token is present', () => {
+    const { fixture, routerNavigateSpy } = setup(undefined);
+    fixture.detectChanges();
+    expect(routerNavigateSpy).toHaveBeenCalledWith(
+      [],
+      expect.objectContaining({ queryParams: {}, replaceUrl: true }),
+    );
   });
 });

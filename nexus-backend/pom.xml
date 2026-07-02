@@ -225,6 +225,12 @@
                 <artifactId>spring-boot-maven-plugin</artifactId>
 
                 <configuration>
+                    <!-- Local `mvnw spring-boot:run` activates dev here rather than baking a
+                         default into application.yml, so the packaged jar has no implicit profile
+                         and a real deployment that forgets SPRING_PROFILES_ACTIVE fails closed. -->
+                    <profiles>
+                        <profile>dev</profile>
+                    </profiles>
                     <excludes>
                         <exclude>
                             <groupId>org.projectlombok</groupId>

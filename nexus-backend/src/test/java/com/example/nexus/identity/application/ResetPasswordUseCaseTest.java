@@ -80,6 +80,19 @@ class ResetPasswordUseCaseTest {
     return u;
   }
 
+  /** DISABLED has no domain mutator yet; set it reflectively to drive the terminal-state guard. */
+  private User disabledUser(UUID userId) {
+    User u = activeUser(userId);
+    try {
+      java.lang.reflect.Field field = User.class.getDeclaredField("status");
+      field.setAccessible(true);
+      field.set(u, UserStatus.DISABLED);
+    } catch (ReflectiveOperationException e) {
+      throw new IllegalStateException(e);
+    }
+    return u;
+  }
+
   @Test
   void execute_tokenNotFound_throws410() {
     when(tokenHasher.hash(RAW_TOKEN)).thenReturn(TOKEN_HASH);
@@ -178,6 +191,29 @@ class ResetPasswordUseCaseTest {
     assertThatThrownBy(() -> useCase.execute(RAW_TOKEN, NEW_PASSWORD, CTX))
         .isInstanceOf(FieldValidationException.class)
         .hasFieldOrPropertyWithValue("code", "AUTH_RST_003");
+  }
+
+  @Test
+  void execute_disabledAccount_throws410AndDoesNotReactivate() {
+    UUID userId = UUID.randomUUID();
+    AuthToken token = validToken(userId);
+    User user = disabledUser(userId);
+    when(authTokenPort.findByTokenHash(TOKEN_HASH)).thenReturn(Optional.of(token));
+    when(userRegistrationPort.findById(userId)).thenReturn(Optional.of(user));
+
+    // A deactivated account must not be reactivated by a self-service reset; it looks like an
+    // invalid/expired token (generic 410) and no password change or token consumption happens.
+    assertThatThrownBy(() -> useCase.execute(RAW_TOKEN, NEW_PASSWORD, CTX))
+        .isInstanceOf(TokenExpiredException.class);
+
+    assertThat(user.getStatus()).isEqualTo(UserStatus.DISABLED);
+    verify(userRegistrationPort, never()).save(any());
+    verify(authTokenPort, never()).markConsumed(any(), any());
+    verify(secureEventService, never()).revokeAllUserSessions(any(), any());
+
+    ArgumentCaptor<AuthEvent> eventCaptor = ArgumentCaptor.forClass(AuthEvent.class);
+    verify(secureEventService).recordEvent(eventCaptor.capture());
+    assertThat(eventCaptor.getValue().getEventType()).isEqualTo("PASSWORD_RESET_FAILED");
   }
 
   @Test
