@@ -7,6 +7,7 @@ import { AuthStore } from '../auth/auth.store';
 import { Router } from '@angular/router';
 import { AuthService } from '../../features/auth/auth.service';
 import { AuthSession } from '../../shared/types/auth';
+import { APP_CONFIG } from '../config/app-config';
 import { of, Subject, throwError } from 'rxjs';
 
 const TEST_SESSION: AuthSession = {
@@ -56,6 +57,13 @@ describe('authInterceptor', () => {
         { provide: AuthStore, useValue: mockAuthStore },
         { provide: Router, useValue: mockRouter },
         { provide: AuthService, useValue: mockAuthService },
+        // Explicit so the interceptor's origin/same-API check resolves consistently against the
+        // relative '/api/...' URLs used throughout this spec, regardless of which environment
+        // file the unit-test build happens to wire up.
+        {
+          provide: APP_CONFIG,
+          useValue: { production: false, apiBaseUrl: '/api', logLevel: 'debug' },
+        },
       ],
     });
 

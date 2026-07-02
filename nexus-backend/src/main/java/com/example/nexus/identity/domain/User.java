@@ -137,13 +137,33 @@ public class User {
   /**
    * Applies a completed password reset: updates the password hash, increments
    * {@code tokenVersion} (so future JWTs carry a new version; outstanding tokens remain valid
-   * for up to their 15-min TTL — accepted residual, Gate 1 decision), transitions any status
+   * for up to their 15-min TTL — accepted residual, Gate 1 decision), transitions the account
    * to {@link UserStatus#ACTIVE} (AC-4: unlocks LOCKED accounts), and resets lockout state.
    * Session revocation is the caller's responsibility.
+   *
+   * <p>A {@link UserStatus#DISABLED} account is terminal and must NOT be silently reactivated by
+   * a self-service reset (that would let a deactivated user un-ban themselves). Callers are
+   * expected to reject DISABLED accounts before reaching here; this guard is a defence-in-depth
+   * invariant for any future caller.
+   *
+   * <p>Completing a reset proves control of the account's mailbox (the token was delivered by
+   * email), so a never-verified {@link UserStatus#PENDING} account is treated as verified here:
+   * {@code emailVerifiedAt} is stamped when still null, keeping it consistent with the ACTIVE
+   * status this transition sets (previously ACTIVE could coexist with a null verification time).
+   *
+   * @param newPasswordHash the new Argon2id hash to store
+   * @param resetAt         the instant the reset completed; used to stamp {@code emailVerifiedAt}
+   *                        when the account had never been verified
    */
-  public void applyPasswordReset(String newPasswordHash) {
+  public void applyPasswordReset(String newPasswordHash, Instant resetAt) {
+    if (this.status == UserStatus.DISABLED) {
+      throw new IllegalStateException("Cannot reset password on a DISABLED account");
+    }
     this.passwordHash = newPasswordHash;
     this.tokenVersion += 1;
+    if (this.emailVerifiedAt == null) {
+      this.emailVerifiedAt = resetAt;
+    }
     this.status = UserStatus.ACTIVE;
     this.failedAttemptCount = 0;
     this.lockedUntil = null;

@@ -13,6 +13,7 @@ import com.example.nexus.identity.domain.AuthEventType;
 import com.example.nexus.identity.domain.AuthToken;
 import com.example.nexus.identity.domain.AuthTokenType;
 import com.example.nexus.identity.domain.User;
+import com.example.nexus.identity.domain.UserStatus;
 import com.example.nexus.identity.domain.UuidGenerator;
 import java.time.Clock;
 import java.time.Instant;
@@ -120,6 +121,13 @@ public class ResetPasswordUseCase {
         .orElseThrow(() -> new IllegalStateException(
             "User not found for valid reset token userId=" + token.getUserId()));
 
+    // A deactivated account is terminal: a self-service reset must never reactivate it. Respond
+    // with the same generic 410 as an invalid/expired token so DISABLED is not distinguishable.
+    if (user.getStatus() == UserStatus.DISABLED) {
+      recordFailure(user.getId(), ctx);
+      throw new TokenExpiredException(CODE_EXPIRED, MSG_EXPIRED);
+    }
+
     if (passwordVerifier.matches(newPassword, user.getPasswordHash())) {
       throw new FieldValidationException(CODE_SAME_PASSWORD, "password", MSG_SAME_PASSWORD);
     }
@@ -135,7 +143,7 @@ public class ResetPasswordUseCase {
 
     String newHash = passwordHasher.hash(newPassword);
 
-    user.applyPasswordReset(newHash);
+    user.applyPasswordReset(newHash, now);
     userRegistrationPort.save(user);
 
     try {

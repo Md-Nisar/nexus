@@ -4,9 +4,11 @@ spring:
   application:
     name: nexus-backend
 
-  # Default profile for local development; override with SPRING_PROFILES_ACTIVE
-  profiles:
-    active: dev
+  # No profile is active by default — deployments MUST set SPRING_PROFILES_ACTIVE explicitly
+  # (e.g. prod). Running with no profile omits application-dev.yml, so the dev placeholder crypto
+  # keys and the seeded E2E test user are absent and IdentityCryptoConfig fails fast unless real
+  # keys are supplied — i.e. a mis-configured deploy fails closed instead of silently running dev.
+  # Local development uses the dev profile via the spring-boot-maven-plugin run config (pom.xml).
 
   # Virtual threads: one-thread-per-request scalability without reactive complexity
   threads:

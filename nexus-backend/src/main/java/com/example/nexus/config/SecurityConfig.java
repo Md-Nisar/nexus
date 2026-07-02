@@ -134,8 +134,10 @@ public class SecurityConfig {
     cfg.setAllowedOrigins(List.of(frontendBaseUrl));
     cfg.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
     cfg.setAllowedHeaders(List.of("Content-Type", "Authorization", "X-Correlation-Id"));
-    // Expose Retry-After, correlation ID, and Set-Cookie (cross-origin refresh flow)
-    cfg.setExposedHeaders(List.of("Retry-After", "X-Correlation-Id", "Set-Cookie"));
+    // Expose only headers the browser JS legitimately reads. Set-Cookie is intentionally NOT
+    // exposed: the refresh cookie is HttpOnly (never script-readable) and the browser applies it
+    // automatically, so exposing it grants nothing while widening the CORS surface.
+    cfg.setExposedHeaders(List.of("Retry-After", "X-Correlation-Id"));
     cfg.setAllowCredentials(true);
     cfg.setMaxAge(3600L);
     UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
