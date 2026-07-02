@@ -23,6 +23,7 @@ import com.example.nexus.identity.domain.LoginResult;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
@@ -75,6 +76,37 @@ class LoginControllerTest {
 
     // raw refresh token must NOT appear in the response body
     assertThat(result.getResponse().getContentAsString()).doesNotContain(RAW_REFRESH);
+  }
+
+  @Test
+  void should_captureUserAgentHeader_when_loginRequestIncludesUserAgent() throws Exception {
+    when(loginUseCase.execute(eq(TENANT_ID), eq("user@example.com"), eq("secret"), any(RequestContext.class)))
+        .thenReturn(LOGIN_RESULT);
+
+    mockMvc.perform(post("/api/v1/auth/login")
+            .header("User-Agent", "Mozilla/5.0 TestAgent")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"email\":\"user@example.com\",\"password\":\"secret\"}"))
+        .andExpect(status().isOk());
+
+    ArgumentCaptor<RequestContext> captor = ArgumentCaptor.forClass(RequestContext.class);
+    verify(loginUseCase).execute(eq(TENANT_ID), eq("user@example.com"), eq("secret"), captor.capture());
+    assertThat(captor.getValue().userAgent()).isEqualTo("Mozilla/5.0 TestAgent");
+  }
+
+  @Test
+  void should_captureNullUserAgent_when_loginRequestOmitsUserAgentHeader() throws Exception {
+    when(loginUseCase.execute(eq(TENANT_ID), eq("user@example.com"), eq("secret"), any(RequestContext.class)))
+        .thenReturn(LOGIN_RESULT);
+
+    mockMvc.perform(post("/api/v1/auth/login")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content("{\"email\":\"user@example.com\",\"password\":\"secret\"}"))
+        .andExpect(status().isOk());
+
+    ArgumentCaptor<RequestContext> captor = ArgumentCaptor.forClass(RequestContext.class);
+    verify(loginUseCase).execute(eq(TENANT_ID), eq("user@example.com"), eq("secret"), captor.capture());
+    assertThat(captor.getValue().userAgent()).isNull();
   }
 
   @Test

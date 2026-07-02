@@ -96,9 +96,11 @@ class AuthAuditIT {
         .anyMatch(e -> "LOGIN_SUCCESS".equals(e.getEventType())
             && "SUCCESS".equals(e.getOutcome())
             && user.getId().equals(e.getUserId())
-            && e.getIpAddress() != null);
+            && e.getIpAddress() != null
+            && TENANT_ID.equals(e.getTenantId()));
     assertThat(eventFound)
-        .as("LOGIN_SUCCESS event must be recorded for userId=%s", user.getId())
+        .as("LOGIN_SUCCESS event must be recorded for userId=%s with tenantId=%s",
+            user.getId(), TENANT_ID)
         .isTrue();
   }
 
@@ -118,6 +120,13 @@ class AuthAuditIT {
             && "FAILURE".equals(e.getOutcome())
             && e.getIpAddress() != null);
     assertThat(eventFound).as("LOGIN_FAILURE event must be recorded on bad credentials").isTrue();
+
+    boolean tenantIsNull = authEventRepository.findAll().stream()
+        .filter(e -> "LOGIN_FAILURE".equals(e.getEventType()) && "FAILURE".equals(e.getOutcome()))
+        .anyMatch(e -> e.getTenantId() == null);
+    assertThat(tenantIsNull)
+        .as("unknown-email LOGIN_FAILURE must carry a NULL tenantId (anti-enumeration, T-I5)")
+        .isTrue();
   }
 
   /**
@@ -162,15 +171,17 @@ class AuthAuditIT {
     boolean eventFound = authEventRepository.findAll().stream()
         .anyMatch(e -> "TOKEN_REFRESH_SUCCESS".equals(e.getEventType())
             && "SUCCESS".equals(e.getOutcome())
-            && user.getId().equals(e.getUserId()));
+            && user.getId().equals(e.getUserId())
+            && TENANT_ID.equals(e.getTenantId()));
     assertThat(eventFound)
-        .as("TOKEN_REFRESH_SUCCESS event must be recorded for userId=%s", user.getId())
+        .as("TOKEN_REFRESH_SUCCESS event must be recorded for userId=%s with tenantId=%s",
+            user.getId(), TENANT_ID)
         .isTrue();
   }
 
   /**
    * Replaying an already-consumed refresh token triggers family revocation, recorded
-   * as a REFRESH_FAMILY_REVOKED / FAILURE audit event.
+   * as a TOKEN_REFRESH_REUSE / FAILURE audit event.
    */
   @Test
   void refresh_family_revoke_records_audit_event() {
@@ -191,12 +202,22 @@ class AuthAuditIT {
     assertThat(secondRefresh.getStatusCode().value()).isEqualTo(401);
 
     boolean eventFound = authEventRepository.findAll().stream()
-        .anyMatch(e -> "REFRESH_FAMILY_REVOKED".equals(e.getEventType())
+        .anyMatch(e -> "TOKEN_REFRESH_REUSE".equals(e.getEventType())
             && "FAILURE".equals(e.getOutcome())
             && user.getId().equals(e.getUserId()));
     assertThat(eventFound)
-        .as("REFRESH_FAMILY_REVOKED event must be recorded on token theft for userId=%s",
+        .as("TOKEN_REFRESH_REUSE event must be recorded on token theft for userId=%s",
             user.getId())
+        .isTrue();
+
+    boolean tenantIsNull = authEventRepository.findAll().stream()
+        .filter(e -> "TOKEN_REFRESH_REUSE".equals(e.getEventType())
+            && "FAILURE".equals(e.getOutcome())
+            && user.getId().equals(e.getUserId()))
+        .anyMatch(e -> e.getTenantId() == null);
+    assertThat(tenantIsNull)
+        .as("TOKEN_REFRESH_REUSE must carry a NULL tenantId — only token.getUserId() is known, "
+            + "no User is loaded on this branch")
         .isTrue();
   }
 
@@ -223,6 +244,15 @@ class AuthAuditIT {
     boolean eventFound = authEventRepository.findAll().stream()
         .anyMatch(e -> "LOGOUT".equals(e.getEventType()) && "SUCCESS".equals(e.getOutcome()));
     assertThat(eventFound).as("LOGOUT event must be recorded after successful logout").isTrue();
+
+    // T-08-06 scope boundary: LogoutUseCase stays NULL-tenant (T-08-07's decision to preserve —
+    // no lookup is added here). This assertion documents that this task did not pre-empt it.
+    boolean tenantIsNull = authEventRepository.findAll().stream()
+        .filter(e -> "LOGOUT".equals(e.getEventType()) && "SUCCESS".equals(e.getOutcome()))
+        .anyMatch(e -> e.getTenantId() == null);
+    assertThat(tenantIsNull)
+        .as("LOGOUT must stay tenantId=NULL — no lookup added by T-08-06 (T-08-07 scope)")
+        .isTrue();
   }
 
   /**
@@ -280,12 +310,12 @@ class AuthAuditIT {
 
   /**
    * T-023a — After 5 consecutive failed login attempts exactly 5 {@code LOGIN_FAILURE} events
-   * and exactly 1 {@code ACCOUNT_LOCKED} event must be recorded.
+   * and exactly 1 {@code LOCKOUT} event must be recorded.
    *
    * <p>Note: {@code LOGIN_FAILURE} events recorded at Step 5 of {@code LoginUseCase} intentionally
    * omit {@code userId} as an anti-enumeration measure (cannot reveal whether the email exists).
    * Time-bounding is used to isolate this test's events from those of other tests running in the
-   * same Testcontainers DB. The {@code ACCOUNT_LOCKED} event recorded by
+   * same Testcontainers DB. The {@code LOCKOUT} event recorded by
    * {@code SecureEventService.persistFailedAttempt} DOES carry the userId and is asserted by it.
    */
   @Test
@@ -311,15 +341,24 @@ class AuthAuditIT {
         .as("at least 5 LOGIN_FAILURE events must have been recorded in this test's time window")
         .isGreaterThanOrEqualTo(5L);
 
-    // ACCOUNT_LOCKED event is recorded by persistFailedAttempt and DOES carry userId
+    // LOCKOUT event is recorded by persistFailedAttempt and DOES carry userId
     long accountLocked = allEvents.stream()
-        .filter(e -> "ACCOUNT_LOCKED".equals(e.getEventType())
+        .filter(e -> "LOCKOUT".equals(e.getEventType())
             && "FAILURE".equals(e.getOutcome())
             && user.getId().equals(e.getUserId()))
         .count();
     assertThat(accountLocked)
-        .as("exactly 1 ACCOUNT_LOCKED event must be recorded for userId=%s", user.getId())
+        .as("exactly 1 LOCKOUT event must be recorded for userId=%s", user.getId())
         .isEqualTo(1L);
+
+    boolean lockoutTenantCorrect = allEvents.stream()
+        .anyMatch(e -> "LOCKOUT".equals(e.getEventType())
+            && "FAILURE".equals(e.getOutcome())
+            && user.getId().equals(e.getUserId())
+            && TENANT_ID.equals(e.getTenantId()));
+    assertThat(lockoutTenantCorrect)
+        .as("LOCKOUT event must carry tenantId=%s (sourced from user.getTenantId())", TENANT_ID)
+        .isTrue();
   }
 
   /**
@@ -399,6 +438,27 @@ class AuthAuditIT {
         .isTrue();
   }
 
+  /**
+   * Successful self-service registration records a REGISTER / SUCCESS audit event carrying
+   * tenantId — sourced from the controller's config-injected {@code defaultTenantId}, never
+   * from request-body data (T-08-06 / T-I5 / T-E4).
+   */
+  @Test
+  void register_success_records_audit_event_with_tenant() {
+    String email = "audit-reg-" + UUID.randomUUID() + "@example.com";
+
+    var resp = doRegisterPost(email, STRONG_PASS);
+    assertThat(resp.getStatusCode().value()).isEqualTo(201);
+
+    boolean eventFound = authEventRepository.findAll().stream()
+        .anyMatch(e -> "REGISTER".equals(e.getEventType())
+            && "SUCCESS".equals(e.getOutcome())
+            && TENANT_ID.equals(e.getTenantId()));
+    assertThat(eventFound)
+        .as("REGISTER event must carry tenantId=%s for email=%s", TENANT_ID, email)
+        .isTrue();
+  }
+
   // ── Helpers ───────────────────────────────────────────────────────────────
 
   private User createActiveUser(String email) {
@@ -442,6 +502,18 @@ class AuthAuditIT {
         "http://localhost:" + port + "/api/v1/auth/login",
         HttpMethod.POST,
         new HttpEntity<>(Map.of("email", email, "password", password), headers),
+        Map.class);
+  }
+
+  @SuppressWarnings("rawtypes")
+  private ResponseEntity<Map> doRegisterPost(String email, String password) {
+    HttpHeaders headers = new HttpHeaders();
+    headers.setContentType(MediaType.APPLICATION_JSON);
+    return restTemplate.exchange(
+        "http://localhost:" + port + "/api/v1/auth/register",
+        HttpMethod.POST,
+        new HttpEntity<>(
+            Map.of("email", email, "password", password, "consentAccepted", true), headers),
         Map.class);
   }
 

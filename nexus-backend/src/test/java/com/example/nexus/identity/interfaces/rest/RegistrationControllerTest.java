@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.identity.application.RegisterUserUseCase;
@@ -18,6 +19,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -52,6 +54,32 @@ class RegistrationControllerTest {
     verify(registerUseCase).register(
         eq(DEFAULT_TENANT), eq("user@example.com"), eq("pass"), any(RequestContext.class));
     assertThat(response.message()).isNotBlank();
+  }
+
+  @Test
+  void should_captureUserAgentHeader_when_registerRequestIncludesUserAgent() {
+    when(httpRequest.getHeader("User-Agent")).thenReturn("Mozilla/5.0 TestAgent");
+    var request = new RegisterRequest("user@example.com", "pass", true);
+
+    controller.register(request, httpRequest);
+
+    ArgumentCaptor<RequestContext> captor = ArgumentCaptor.forClass(RequestContext.class);
+    verify(registerUseCase).register(
+        eq(DEFAULT_TENANT), eq("user@example.com"), eq("pass"), captor.capture());
+    assertThat(captor.getValue().userAgent()).isEqualTo("Mozilla/5.0 TestAgent");
+  }
+
+  @Test
+  void should_captureNullUserAgent_when_registerRequestOmitsUserAgentHeader() {
+    when(httpRequest.getHeader("User-Agent")).thenReturn(null);
+    var request = new RegisterRequest("user@example.com", "pass", true);
+
+    controller.register(request, httpRequest);
+
+    ArgumentCaptor<RequestContext> captor = ArgumentCaptor.forClass(RequestContext.class);
+    verify(registerUseCase).register(
+        eq(DEFAULT_TENANT), eq("user@example.com"), eq("pass"), captor.capture());
+    assertThat(captor.getValue().userAgent()).isNull();
   }
 
   @Test

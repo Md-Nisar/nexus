@@ -214,7 +214,7 @@ At Phase 9 (documentation), confirm each item exists:
 
 - [ ] Metrics registered and emitting (verify in staging with `/actuator/prometheus`)
 - [ ] MDC fields set correctly on new code paths
-- [ ] Audit events fired for all security-relevant actions
+- [x] Audit events fired for all security-relevant actions — US-008: all 9 canonical `AuthEventType` values (incl. 4 renames) emitted across all 8 auth flows, with `user_agent`/`traceId` mirrored into `metadata` per the shape documented above; see `docs/features/US-008/monitoring.md`
 - [ ] Dashboard panel(s) added and linked
 - [ ] Alerts defined with thresholds and runbook links
 - [ ] Log queries documented in `monitoring.md`

@@ -43,7 +43,7 @@ class ForgotPasswordUseCaseTest {
   private static final String RAW_TOKEN = "a".repeat(64);
   private static final String TOKEN_HASH = "b".repeat(64);
   private static final Instant NOW = Instant.parse("2026-06-30T10:00:00Z");
-  private static final RequestContext CTX = new RequestContext("1.2.3.4", "trace-123");
+  private static final RequestContext CTX = new RequestContext("1.2.3.4", "trace-123", null);
 
   @Mock private UserRegistrationPort userRegistrationPort;
   @Mock private AuthTokenPort authTokenPort;
@@ -122,6 +122,24 @@ class ForgotPasswordUseCaseTest {
   }
 
   @Test
+  void should_setTenantId_when_resetRequested() {
+    when(userRegistrationPort.findByTenantAndEmailHmac(TENANT_ID, EMAIL_HMAC))
+        .thenReturn(Optional.of(user));
+    Instant sinceOneHour = NOW.minus(1, ChronoUnit.HOURS);
+    when(authTokenPort.countByUserIdAndTypeAndCreatedAtAfter(USER_ID, AuthTokenType.RESET, sinceOneHour))
+        .thenReturn(0);
+    when(authTokenPort.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+    ForgotPasswordUseCase uc = buildWithClock(NOW);
+    uc.execute(TENANT_ID, RAW_EMAIL, CTX);
+
+    ArgumentCaptor<AuthEvent> auditCaptor = ArgumentCaptor.forClass(AuthEvent.class);
+    verify(secureEventService).recordEvent(auditCaptor.capture());
+    org.assertj.core.api.Assertions.assertThat(auditCaptor.getValue().getTenantId())
+        .isEqualTo(TENANT_ID);
+  }
+
+  @Test
   void execute_thirdReset_stillSendsEmail() {
     when(userRegistrationPort.findByTenantAndEmailHmac(TENANT_ID, EMAIL_HMAC))
         .thenReturn(Optional.of(user));
@@ -177,6 +195,25 @@ class ForgotPasswordUseCaseTest {
     org.assertj.core.api.Assertions.assertThat(evt.getUserId()).isEqualTo(USER_ID);
     org.assertj.core.api.Assertions.assertThat(evt.getIpAddress())
         .isEqualTo(CTX.ipAddress());
+  }
+
+  @Test
+  void should_setTenantId_when_resetThrottled() {
+    when(userRegistrationPort.findByTenantAndEmailHmac(TENANT_ID, EMAIL_HMAC))
+        .thenReturn(Optional.of(user));
+    Instant sinceOneHour = NOW.minus(1, ChronoUnit.HOURS);
+    when(authTokenPort.countByUserIdAndTypeAndCreatedAtAfter(USER_ID, AuthTokenType.RESET, sinceOneHour))
+        .thenReturn(ForgotPasswordUseCase.MAX_RESETS_PER_HOUR);
+
+    ForgotPasswordUseCase uc = buildWithClock(NOW);
+    uc.execute(TENANT_ID, RAW_EMAIL, CTX);
+
+    ArgumentCaptor<AuthEvent> eventCaptor = ArgumentCaptor.forClass(AuthEvent.class);
+    verify(secureEventService).recordEvent(eventCaptor.capture());
+    org.assertj.core.api.Assertions.assertThat(eventCaptor.getValue().getEventType())
+        .isEqualTo("PASSWORD_RESET_THROTTLED");
+    org.assertj.core.api.Assertions.assertThat(eventCaptor.getValue().getTenantId())
+        .isEqualTo(TENANT_ID);
   }
 
   @Test

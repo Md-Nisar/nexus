@@ -9,6 +9,7 @@ import com.example.nexus.identity.application.port.out.UserRegistrationPort;
 import com.example.nexus.identity.domain.AccessTokenResult;
 import com.example.nexus.identity.domain.AuthConstants;
 import com.example.nexus.identity.domain.AuthEvent;
+import com.example.nexus.identity.domain.AuthEventType;
 import com.example.nexus.identity.domain.LoginResult;
 import com.example.nexus.identity.domain.RefreshToken;
 import com.example.nexus.identity.domain.User;
@@ -97,14 +98,14 @@ public class RefreshTokenUseCase {
     try {
       hash = tokenHasher.hash(tokenCookieValue);
     } catch (IllegalArgumentException e) {
-      secureEventService.recordEvent(failureEvent(null, clientIp, "TOKEN_REFRESH_FAILURE"));
+      secureEventService.recordEvent(failureEvent((UUID) null, clientIp, AuthEventType.TOKEN_REFRESH_FAILURE));
       throw new AuthenticationException(AUTH_004, MSG_INVALID);
     }
 
     // Step 2: Look up by hash — unknown token is a theft signal
     Optional<RefreshToken> tokenOpt = refreshTokenPort.findByTokenHash(hash);
     if (tokenOpt.isEmpty()) {
-      secureEventService.recordEvent(failureEvent(null, clientIp, "TOKEN_REFRESH_FAILURE"));
+      secureEventService.recordEvent(failureEvent((UUID) null, clientIp, AuthEventType.TOKEN_REFRESH_FAILURE));
       throw new AuthenticationException(AUTH_004, MSG_INVALID);
     }
     RefreshToken token = tokenOpt.get();
@@ -113,7 +114,7 @@ public class RefreshTokenUseCase {
     if (token.getRevokedAt() != null) {
       secureEventService.revokeFamily(token.getFamilyId(), now);
       secureEventService.recordEvent(
-          new AuthEvent(uuidGenerator.newId(), "REFRESH_FAMILY_REVOKED", "FAILURE")
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.TOKEN_REFRESH_REUSE, "FAILURE")
               .withUserId(token.getUserId())
               .withIpAddress(clientIp));
       throw new AuthenticationException(AUTH_004, MSG_INVALID);
@@ -121,7 +122,7 @@ public class RefreshTokenUseCase {
 
     // Step 4: Expiry check
     if (token.getExpiresAt().isBefore(now)) {
-      secureEventService.recordEvent(failureEvent(token.getUserId(), clientIp, "TOKEN_REFRESH_FAILURE"));
+      secureEventService.recordEvent(failureEvent(token.getUserId(), clientIp, AuthEventType.TOKEN_REFRESH_FAILURE));
       throw new AuthenticationException(AUTH_004, MSG_INVALID);
     }
 
@@ -131,7 +132,7 @@ public class RefreshTokenUseCase {
       refreshTokenPort.save(token);
     } catch (OptimisticLockingFailureException e) {
       // Concurrent rotation — another request already consumed this token
-      secureEventService.recordEvent(failureEvent(token.getUserId(), clientIp, "TOKEN_REFRESH_FAILURE"));
+      secureEventService.recordEvent(failureEvent(token.getUserId(), clientIp, AuthEventType.TOKEN_REFRESH_FAILURE));
       throw new AuthenticationException(AUTH_004, MSG_INVALID);
     }
 
@@ -141,7 +142,9 @@ public class RefreshTokenUseCase {
 
     // Step 7: Re-check status (may have changed since token was issued)
     if (user.getStatus() != UserStatus.ACTIVE) {
-      secureEventService.recordEvent(failureEvent(user.getId(), clientIp, "TOKEN_REFRESH_FAILURE"));
+      // Unlike the pre-load failure branches above, `user` is already loaded here, so the
+      // tenant is resolvable — use the User-aware overload (T-08-06 per-flow tenant table).
+      secureEventService.recordEvent(failureEvent(user, clientIp, AuthEventType.TOKEN_REFRESH_FAILURE));
       throw new AuthenticationException(AUTH_004, MSG_INVALID);
     }
 
@@ -160,8 +163,9 @@ public class RefreshTokenUseCase {
 
     // Step 10: Record success — newRaw exits here ONLY, never logged
     secureEventService.recordEvent(
-        new AuthEvent(uuidGenerator.newId(), "TOKEN_REFRESH_SUCCESS", "SUCCESS")
+        new AuthEvent(uuidGenerator.newId(), AuthEventType.TOKEN_REFRESH_SUCCESS, "SUCCESS")
             .withUserId(user.getId())
+            .withTenantId(user.getTenantId())
             .withIpAddress(clientIp));
 
     log.debug("TOKEN_REFRESH_SUCCESS userId={}", user.getId());
@@ -169,9 +173,22 @@ public class RefreshTokenUseCase {
         user.getId().toString(), newRaw);
   }
 
-  private AuthEvent failureEvent(UUID userId, String clientIp, String eventType) {
+  private AuthEvent failureEvent(UUID userId, String clientIp, AuthEventType eventType) {
     return new AuthEvent(uuidGenerator.newId(), eventType, "FAILURE")
         .withUserId(userId)
+        .withIpAddress(clientIp);
+  }
+
+  /**
+   * Failure-event variant used only where a {@link User} is already loaded in scope (the Step-7
+   * post-load status re-check) — carries the tenant from the loaded entity, unlike the UUID-only
+   * overload used by the pre-load failure branches (invalid hash, unknown token, expired,
+   * optimistic-lock conflict), which stay tenant-NULL.
+   */
+  private AuthEvent failureEvent(User user, String clientIp, AuthEventType eventType) {
+    return new AuthEvent(uuidGenerator.newId(), eventType, "FAILURE")
+        .withUserId(user.getId())
+        .withTenantId(user.getTenantId())
         .withIpAddress(clientIp);
   }
 }

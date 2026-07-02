@@ -35,6 +35,7 @@ class SecureEventServiceTest {
   private SecureEventService service;
 
   private static final UUID USER_ID = UUID.fromString("00000000-0000-7000-8000-000000000042");
+  private static final UUID TENANT_ID = UUID.fromString("00000000-0000-7000-8000-000000000099");
   private static final Instant NOW = Instant.parse("2026-01-01T00:00:00Z");
 
   @BeforeEach
@@ -90,9 +91,24 @@ class SecureEventServiceTest {
     ArgumentCaptor<AuthEvent> captor = ArgumentCaptor.forClass(AuthEvent.class);
     verify(authEventPort).record(captor.capture());
     AuthEvent event = captor.getValue();
-    assertThat(event.getEventType()).isEqualTo("ACCOUNT_LOCKED");
+    assertThat(event.getEventType()).isEqualTo("LOCKOUT");
     assertThat(event.getOutcome()).isEqualTo("FAILURE");
     assertThat(event.getUserId()).isEqualTo(USER_ID);
+  }
+
+  @Test
+  void should_setTenantIdFromLoadedUser_when_lockoutRecorded() {
+    User user = mock(User.class);
+    when(userRegistrationPort.findById(USER_ID)).thenReturn(Optional.of(user));
+    when(user.recordFailedAttempt()).thenReturn(AuthConstants.LOCKOUT_THRESHOLD);
+    when(user.getTenantId()).thenReturn(TENANT_ID);
+    when(userRegistrationPort.save(user)).thenReturn(user);
+
+    service.persistFailedAttempt(USER_ID, NOW);
+
+    ArgumentCaptor<AuthEvent> captor = ArgumentCaptor.forClass(AuthEvent.class);
+    verify(authEventPort).record(captor.capture());
+    assertThat(captor.getValue().getTenantId()).isEqualTo(TENANT_ID);
   }
 
   @Test
@@ -126,6 +142,23 @@ class SecureEventServiceTest {
     assertThat(event.getEventType()).isEqualTo("ACCOUNT_LOCKED_WRITE_FAILED");
     assertThat(event.getOutcome()).isEqualTo("FAILURE");
     assertThat(event.getUserId()).isEqualTo(USER_ID);
+  }
+
+  @Test
+  void should_leaveTenantIdNull_when_accountLockedWriteFailedRecorded() {
+    User user = mock(User.class);
+    when(userRegistrationPort.findById(USER_ID)).thenReturn(Optional.of(user));
+    when(user.recordFailedAttempt()).thenReturn(1);
+    when(userRegistrationPort.save(user)).thenThrow(new RuntimeException("db error"));
+
+    service.persistFailedAttempt(USER_ID, NOW);
+
+    ArgumentCaptor<AuthEvent> captor = ArgumentCaptor.forClass(AuthEvent.class);
+    verify(authEventPort).record(captor.capture());
+    assertThat(captor.getValue().getEventType()).isEqualTo("ACCOUNT_LOCKED_WRITE_FAILED");
+    assertThat(captor.getValue().getTenantId())
+        .as("no reliable tenant source in the catch block — stays NULL, no second lookup")
+        .isNull();
   }
 
   @Test
@@ -181,7 +214,7 @@ class SecureEventServiceTest {
     verify(user).lockAccount(NOW.plusSeconds(AuthConstants.LOCKOUT_DURATION_SECONDS));
     ArgumentCaptor<AuthEvent> captor = ArgumentCaptor.forClass(AuthEvent.class);
     verify(authEventPort).record(captor.capture());
-    assertThat(captor.getValue().getEventType()).isEqualTo("ACCOUNT_LOCKED");
+    assertThat(captor.getValue().getEventType()).isEqualTo("LOCKOUT");
   }
 
   // ---------------------------------------------------------------------------
@@ -254,7 +287,7 @@ class SecureEventServiceTest {
     // ACCOUNT_LOCKED is the rate signal — monitoring counts this event type to detect campaigns
     ArgumentCaptor<AuthEvent> eventCaptor = ArgumentCaptor.forClass(AuthEvent.class);
     verify(authEventPort).record(eventCaptor.capture());
-    assertThat(eventCaptor.getValue().getEventType()).isEqualTo("ACCOUNT_LOCKED");
+    assertThat(eventCaptor.getValue().getEventType()).isEqualTo("LOCKOUT");
     assertThat(eventCaptor.getValue().getOutcome()).isEqualTo("FAILURE");
     assertThat(eventCaptor.getValue().getUserId()).isEqualTo(USER_ID);
   }

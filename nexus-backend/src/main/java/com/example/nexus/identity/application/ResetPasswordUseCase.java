@@ -9,6 +9,7 @@ import com.example.nexus.identity.application.port.out.PasswordVerifierPort;
 import com.example.nexus.identity.application.port.out.UserRegistrationPort;
 import com.example.nexus.identity.application.service.SecureEventService;
 import com.example.nexus.identity.domain.AuthEvent;
+import com.example.nexus.identity.domain.AuthEventType;
 import com.example.nexus.identity.domain.AuthToken;
 import com.example.nexus.identity.domain.AuthTokenType;
 import com.example.nexus.identity.domain.User;
@@ -144,8 +145,9 @@ public class ResetPasswordUseCase {
     }
 
     secureEventService.recordEvent(
-        new AuthEvent(uuidGenerator.newId(), "PASSWORD_CHANGED", "SUCCESS")
+        new AuthEvent(uuidGenerator.newId(), AuthEventType.PASSWORD_CHANGED, "SUCCESS")
             .withUserId(user.getId())
+            .withTenantId(user.getTenantId())
             .withIpAddress(ctx.ipAddress())
             .withMetadata(ctx.toMetadataJson()));
 
@@ -158,7 +160,7 @@ public class ResetPasswordUseCase {
     // Do not remove REQUIRES_NEW from SecureEventService.recordEvent without adding
     // noRollbackFor = TokenExpiredException.class to this method instead.
     secureEventService.recordEvent(
-        new AuthEvent(uuidGenerator.newId(), "PASSWORD_RESET_FAILED", "FAILURE")
+        new AuthEvent(uuidGenerator.newId(), AuthEventType.PASSWORD_RESET_FAILED, "FAILURE")
             .withUserId(userId)
             .withIpAddress(ctx.ipAddress())
             .withMetadata(ctx.toMetadataJson()));

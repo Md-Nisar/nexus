@@ -2,6 +2,13 @@ package com.example.nexus;
 
 import com.example.nexus.common.web.LogMaskingUtil;
 import com.example.nexus.identity.application.port.out.MailSenderPort;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.SQLException;
+import java.sql.Statement;
+import org.flywaydb.core.api.callback.Callback;
+import org.flywaydb.core.api.callback.Context;
+import org.flywaydb.core.api.callback.Event;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.test.context.TestConfiguration;
@@ -14,9 +21,14 @@ import org.testcontainers.utility.MountableFile;
 
 /**
  * Shared Testcontainers setup for integration tests (*IT). {@code @ServiceConnection} wires the
- * container's JDBC URL and credentials into the Spring context automatically. The
- * {@link DynamicPropertyRegistrar} bean overrides Flyway and ddl-auto so no profile-specific file
- * (e.g. {@code application-smoke.yml}) can silently disable migrations in the IT context.
+ * container's JDBC URL and credentials into the Spring context automatically — this stays the
+ * default application-user credential ({@code test}) that Flyway and every existing *IT use; it
+ * is deliberately NOT changed by the {@code nexus_app} provisioning added below (US-008
+ * T-08-10). Note that this default credential is NOT root and has no {@code GRANT OPTION} — see
+ * {@link #nexusAppGrantsCallback} for why the {@code nexus_app} grants need a separate root
+ * connection. The {@link DynamicPropertyRegistrar} bean overrides Flyway and ddl-auto so no
+ * profile-specific file (e.g. {@code application-smoke.yml}) can silently disable migrations in
+ * the IT context.
  */
 @TestConfiguration(proxyBeanMethods = false)
 public class TestcontainersConfiguration {
@@ -27,10 +39,107 @@ public class TestcontainersConfiguration {
         // testcontainers-mysql.cnf sets log_bin_trust_function_creators=1.
         // MySQL 8.4 enables binary logging by default and removed SUPER, so
         // trigger creation fails (error 1419) without this config override.
+        //
+        // nexus-app-grants.sql (CREATE USER only) is copied into
+        // /docker-entrypoint-initdb.d, MySQL's OWN first-boot init mechanism, which runs as
+        // root before any JDBC connection is accepted (US-008 T-08-10, ADR 0012). This is
+        // deliberately NOT MySQLContainer.withInitScript(...): that Testcontainers convenience
+        // method executes its script over JDBC using the container's configured application
+        // user ("test"), which lacks CREATE USER privilege and fails with
+        // "Access denied; you need (at least one of) the CREATE USER privilege(s)" —
+        // empirically confirmed when this was first tried. /docker-entrypoint-initdb.d runs as
+        // root, matching the mechanism already used on the docker-compose side
+        // (mysql/init/01-grants.sql). It intentionally does NOT grant table-scoped privileges
+        // here: empirically verified against mysql:8.4 that GRANT ... ON db.table fails with
+        // ERROR 1146 if the table does not exist yet, and the identity schema doesn't exist
+        // until Flyway runs. The table-scoped GRANTs are applied by the nexusAppGrantsCallback
+        // bean below, which fires on Flyway's AFTER_MIGRATE event.
+        //
+        // withDatabaseName("nexus") pins the schema name to match dev/prod (both use "nexus" —
+        // see docker-compose.yml MYSQL_DATABASE, ADR 0012 §1's grant SQL). Without this, the
+        // Testcontainers MySQL module defaults to a database named "test", and the
+        // nexusAppGrantsCallback's hardcoded "nexus.<table>" GRANT statements fail with
+        // ERROR 1146 "Table 'nexus.auth_events' doesn't exist" (empirically confirmed).
         return new MySQLContainer<>("mysql:8.4")
+            .withDatabaseName("nexus")
             .withCopyFileToContainer(
                 MountableFile.forClasspathResource("testcontainers-mysql.cnf"),
-                "/etc/mysql/conf.d/testcontainers.cnf");
+                "/etc/mysql/conf.d/testcontainers.cnf")
+            .withCopyFileToContainer(
+                MountableFile.forClasspathResource("nexus-app-grants.sql"),
+                "/docker-entrypoint-initdb.d/01-nexus-app-user.sql");
+    }
+
+    /**
+     * US-008 T-08-10 (ADR 0012 §2, §5 CI-provisioning requirement): grants {@code nexus_app} its
+     * scoped privileges once the identity schema exists. Registered as a Flyway {@link Callback}
+     * (auto-collected by Spring Boot's {@code FlywayAutoConfiguration}, which takes an {@code
+     * ObjectProvider<Callback>} — verified against {@code spring-boot-flyway} 4.1.0) rather than
+     * via the {@link DynamicPropertyRegistrar} above, because a DynamicPropertyRegistrar only
+     * registers properties — it has no hook to run SQL after migration — and, per this project's
+     * known Spring Boot 4 gotcha, runs after component scan, which is the wrong timing for a step
+     * that must happen strictly after Flyway completes. Flyway's {@code AFTER_MIGRATE} callback
+     * fires exactly once per migration run.
+     *
+     * <p><b>Does NOT reuse {@code context.getConnection()}.</b> That connection is credentialed
+     * as whatever {@code @ServiceConnection} wired for the container — Testcontainers'
+     * {@code MySQLContainer} default application user ({@code test}), NOT root — which lacks
+     * {@code GRANT OPTION} and fails the GRANT statements below with "GRANT command denied"
+     * (empirically confirmed when this was first tried). {@code GRANT ... TO 'nexus_app'@'%'}
+     * requires a principal that itself holds {@code GRANT OPTION}, so this callback opens a
+     * separate, short-lived JDBC connection specifically as {@code root} (empirically confirmed:
+     * Testcontainers' {@code MySQLContainer} sets {@code MYSQL_ROOT_PASSWORD} to the same
+     * password as the configured application user whenever that user is not itself
+     * {@code root}, and {@code root@'%'} — reachable over the container's exposed TCP port —
+     * holds {@code GRANT OPTION} on {@code *.*}). This is a one-shot bootstrap connection, opened
+     * and closed within this callback; it is not a second {@code DataSource} bean and does not
+     * change which credential the application itself, Flyway's own migration connection, or any
+     * other *IT connects as. This exists solely so the privilege-level *IT (T-08-11) can open a
+     * connection as {@code nexus_app} against a real schema.
+     */
+    @Bean
+    Callback nexusAppGrantsCallback(MySQLContainer<?> mysqlContainer) {
+        return new Callback() {
+            @Override
+            public boolean supports(Event event, Context context) {
+                return event == Event.AFTER_MIGRATE;
+            }
+
+            @Override
+            public boolean canHandleInTransaction(Event event, Context context) {
+                return false;
+            }
+
+            @Override
+            public void handle(Event event, Context context) {
+                try (Connection connection =
+                        DriverManager.getConnection(
+                            mysqlContainer.getJdbcUrl(), "root", mysqlContainer.getPassword());
+                    Statement statement = connection.createStatement()) {
+                    statement.execute(
+                        "GRANT INSERT, SELECT ON nexus.auth_events TO 'nexus_app'@'%'");
+                    statement.execute(
+                        "GRANT SELECT, INSERT, UPDATE, DELETE ON nexus.users TO 'nexus_app'@'%'");
+                    statement.execute(
+                        "GRANT SELECT, INSERT, UPDATE, DELETE ON nexus.refresh_tokens TO"
+                            + " 'nexus_app'@'%'");
+                    statement.execute(
+                        "GRANT SELECT, INSERT, UPDATE, DELETE ON nexus.auth_tokens TO"
+                            + " 'nexus_app'@'%'");
+                    statement.execute("FLUSH PRIVILEGES");
+                } catch (SQLException e) {
+                    throw new IllegalStateException(
+                        "US-008 T-08-10: failed to grant nexus_app privileges after Flyway"
+                            + " migration",
+                        e);
+                }
+            }
+
+            @Override
+            public String getCallbackName() {
+                return "nexusAppGrantsCallback";
+            }
+        };
     }
 
     // DynamicPropertyRegistrar (@Bean) is the Spring Framework 6.2+ / 7.x canonical way to

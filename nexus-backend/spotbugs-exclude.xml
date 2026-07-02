@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  US-008 T-08-12: AuthEventDbPrivilegeHealthIndicator constructor-injects the Spring-managed
+  singleton DataSource bean and stores it directly, per this project's constructor-injection-only
+  convention (CLAUDE.md). SpotBugs' EI_EXPOSE_REP2 flags storing an externally mutable reference,
+  but a DataSource is a connection factory (not a value object) with no sensible defensive copy,
+  and it is a Spring singleton never mutated after context startup: the standard, accepted
+  false-positive for this exact JDBC pattern. Scoped narrowly to this one class/field so no other
+  finding is silenced.
+-->
+<FindBugsFilter>
+    <Match>
+        <Class name="com.example.nexus.identity.infrastructure.audit.AuthEventDbPrivilegeHealthIndicator" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
+    <!--
+      US-008 T-08-14: LoggingAuditAlertAdapter constructor-injects the Spring-managed singleton
+      MeterRegistry bean (auto-configured by the actuator + micrometer-registry-prometheus
+      starters) and stores it directly, per this project's constructor-injection-only convention
+      (CLAUDE.md). Same rationale as the DataSource exclusion above: a MeterRegistry is a metrics
+      factory (not a value object) with no sensible defensive copy, and it is a Spring singleton
+      never mutated after context startup.
+    -->
+    <Match>
+        <Class name="com.example.nexus.identity.infrastructure.audit.LoggingAuditAlertAdapter" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
+    <!--
+      US-008 T-08-16: JpaAuthEventAdapter constructor-injects the Spring-managed singleton
+      AuthEventRetryBuffer bean and stores it directly, per this project's constructor-injection-only
+      convention (CLAUDE.md). Same rationale as the two exclusions above: AuthEventRetryBuffer is a
+      stateful infrastructure component (not a value object) with no sensible defensive copy, and it
+      is a Spring singleton — the adapter must share the exact same buffer instance the scheduled
+      drainer drains, so a copy would be actively wrong, not just unnecessary.
+    -->
+    <Match>
+        <Class name="com.example.nexus.identity.infrastructure.persistence.JpaAuthEventAdapter" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
+</FindBugsFilter>

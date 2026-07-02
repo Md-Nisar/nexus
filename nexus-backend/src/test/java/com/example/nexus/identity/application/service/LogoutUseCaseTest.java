@@ -9,12 +9,15 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.identity.application.TokenHasher;
 import com.example.nexus.identity.application.port.out.AuthEventPort;
 import com.example.nexus.identity.application.port.out.RefreshTokenPort;
 import com.example.nexus.identity.domain.AuthEvent;
 import com.example.nexus.identity.domain.RefreshToken;
 import com.example.nexus.identity.domain.UuidGenerator;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -36,6 +39,8 @@ class LogoutUseCaseTest {
   private static final Instant FIXED_INSTANT = Instant.parse("2026-06-29T10:00:00Z");
   private static final Clock FIXED_CLOCK = Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC);
   private static final String CLIENT_IP = "203.0.113.7";
+  private static final RequestContext CTX =
+      RequestContext.of(CLIENT_IP, "trace-abc-123", "Mozilla/5.0-test");
 
   @BeforeEach
   void setUp() {
@@ -54,7 +59,7 @@ class LogoutUseCaseTest {
   void bearer_path_revokes_by_userId_without_touching_cookie() {
     UUID userId = UUID.randomUUID();
 
-    useCase.execute(userId, null, CLIENT_IP);
+    useCase.execute(userId, null, CTX);
 
     verify(refreshTokenPort).revokeByUserId(userId, FIXED_INSTANT);
     verifyNoInteractions(tokenHasher);
@@ -65,7 +70,8 @@ class LogoutUseCaseTest {
     assertThat(event.getEventType()).isEqualTo("LOGOUT");
     assertThat(event.getOutcome()).isEqualTo("SUCCESS");
     assertThat(event.getUserId()).isEqualTo(userId);
-    assertThat(event.getIpAddress()).isEqualTo(CLIENT_IP);
+    assertThat(event.getIpAddress()).isEqualTo(CTX.ipAddress());
+    assertThat(event.getMetadata()).isEqualTo(CTX.toMetadataJson());
   }
 
   @Test
@@ -81,7 +87,7 @@ class LogoutUseCaseTest {
     when(tokenHasher.hash(rawToken)).thenReturn(tokenHash);
     when(refreshTokenPort.findByTokenHash(tokenHash)).thenReturn(Optional.of(storedToken));
 
-    useCase.execute(null, rawToken, CLIENT_IP);
+    useCase.execute(null, rawToken, CTX);
 
     verify(tokenHasher).hash(rawToken);
     verify(refreshTokenPort).findByTokenHash(tokenHash);
@@ -89,7 +95,10 @@ class LogoutUseCaseTest {
 
     ArgumentCaptor<AuthEvent> captor = ArgumentCaptor.forClass(AuthEvent.class);
     verify(authEventPort, times(1)).record(captor.capture());
-    assertThat(captor.getValue().getUserId()).isEqualTo(resolvedUserId);
+    AuthEvent event = captor.getValue();
+    assertThat(event.getUserId()).isEqualTo(resolvedUserId);
+    assertThat(event.getIpAddress()).isEqualTo(CTX.ipAddress());
+    assertThat(event.getMetadata()).isEqualTo(CTX.toMetadataJson());
   }
 
   @Test
@@ -97,7 +106,7 @@ class LogoutUseCaseTest {
     String rawToken = "not-hex";
     when(tokenHasher.hash(rawToken)).thenThrow(new IllegalArgumentException("bad hex"));
 
-    useCase.execute(null, rawToken, CLIENT_IP);
+    useCase.execute(null, rawToken, CTX);
 
     verify(refreshTokenPort, never()).revokeByUserId(any(), any());
 
@@ -107,6 +116,8 @@ class LogoutUseCaseTest {
     assertThat(event.getEventType()).isEqualTo("LOGOUT");
     assertThat(event.getOutcome()).isEqualTo("SUCCESS");
     assertThat(event.getUserId()).isNull();
+    assertThat(event.getIpAddress()).isEqualTo(CTX.ipAddress());
+    assertThat(event.getMetadata()).isEqualTo(CTX.toMetadataJson());
   }
 
   @Test
@@ -115,12 +126,43 @@ class LogoutUseCaseTest {
     when(tokenHasher.hash(rawToken)).thenReturn("HASH");
     when(refreshTokenPort.findByTokenHash("HASH")).thenReturn(Optional.empty());
 
-    useCase.execute(null, rawToken, CLIENT_IP);
+    useCase.execute(null, rawToken, CTX);
 
     verify(refreshTokenPort, never()).revokeByUserId(any(), any());
 
     ArgumentCaptor<AuthEvent> captor = ArgumentCaptor.forClass(AuthEvent.class);
     verify(authEventPort, times(1)).record(captor.capture());
-    assertThat(captor.getValue().getUserId()).isNull();
+    AuthEvent event = captor.getValue();
+    assertThat(event.getUserId()).isNull();
+    assertThat(event.getIpAddress()).isEqualTo(CTX.ipAddress());
+    assertThat(event.getMetadata()).isEqualTo(CTX.toMetadataJson());
+  }
+
+  @Test
+  void should_carryTraceIdAndUserAgent_when_requestContextHasThem() {
+    UUID userId = UUID.randomUUID();
+    RequestContext ctx = RequestContext.of(
+        "198.51.100.9", "trace-xyz-789", "curl/8.4.0 (test-agent)");
+
+    useCase.execute(userId, null, ctx);
+
+    ArgumentCaptor<AuthEvent> captor = ArgumentCaptor.forClass(AuthEvent.class);
+    verify(authEventPort, times(1)).record(captor.capture());
+    AuthEvent event = captor.getValue();
+
+    assertThat(event.getIpAddress()).isEqualTo("198.51.100.9");
+    String metadata = event.getMetadata();
+    assertThat(metadata).isNotNull();
+
+    // Parse-and-check per T-T1 discipline -- not a raw substring match.
+    JsonNode json;
+    try {
+      json = new ObjectMapper().readTree(metadata);
+    } catch (Exception e) {
+      throw new AssertionError("metadata must be valid JSON: " + metadata, e);
+    }
+    assertThat(json.get("traceId").asText()).isEqualTo("trace-xyz-789");
+    assertThat(json.get("userAgent").asText()).isEqualTo("curl/8.4.0 (test-agent)");
+    assertThat(json.get("ip").asText()).isEqualTo("198.51.100.9");
   }
 }

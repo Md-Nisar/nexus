@@ -8,6 +8,7 @@ import com.example.nexus.identity.application.port.out.AuthTokenPort;
 import com.example.nexus.identity.application.port.out.UserRegistrationPort;
 import com.example.nexus.identity.domain.AuthConstants;
 import com.example.nexus.identity.domain.AuthEvent;
+import com.example.nexus.identity.domain.AuthEventType;
 import com.example.nexus.identity.domain.AuthToken;
 import com.example.nexus.identity.domain.AuthTokenType;
 import com.example.nexus.identity.domain.UuidGenerator;
@@ -72,7 +73,7 @@ public class ResendVerificationUseCase {
     }
 
     UUID userId = user.getId();
-    enforceRateLimit(userId, ctx);
+    enforceRateLimit(tenantId, userId, ctx);
 
     String rawToken = tokenGenerator.generate();
     String tokenHash = tokenHasher.hash(rawToken);
@@ -83,19 +84,21 @@ public class ResendVerificationUseCase {
 
     eventPublisher.publishEvent(new VerificationEmailEvent(rawEmail, rawToken, userId));
     authEventPort.record(
-        new AuthEvent(uuidGenerator.newId(), "RESEND_REQUESTED", "SUCCESS")
+        new AuthEvent(uuidGenerator.newId(), AuthEventType.RESEND_REQUESTED, "SUCCESS")
             .withUserId(userId)
+            .withTenantId(tenantId)
             .withIpAddress(ctx.ipAddress())
             .withMetadata(ctx.toMetadataJson()));
   }
 
-  private void enforceRateLimit(UUID userId, RequestContext ctx) {
+  private void enforceRateLimit(UUID tenantId, UUID userId, RequestContext ctx) {
     Instant now = Instant.now();
     if (authTokenPort.countByUserIdAndTypeAndCreatedAtAfter(
         userId, AuthTokenType.VERIFICATION, now.minusSeconds(60)) >= 1) {
       authEventPort.record(
-          new AuthEvent(uuidGenerator.newId(), "RESEND_THROTTLED", "BLOCKED")
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.RESEND_THROTTLED, "BLOCKED")
               .withUserId(userId)
+              .withTenantId(tenantId)
               .withIpAddress(ctx.ipAddress())
               .withMetadata(ctx.toMetadataJson()));
       throw new RateLimitException(RATE_CODE, RATE_MSG, 60L);
@@ -103,8 +106,9 @@ public class ResendVerificationUseCase {
     if (authTokenPort.countByUserIdAndTypeAndCreatedAtAfter(
         userId, AuthTokenType.VERIFICATION, now.minusSeconds(86_400)) >= 5) {
       authEventPort.record(
-          new AuthEvent(uuidGenerator.newId(), "RESEND_THROTTLED", "BLOCKED")
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.RESEND_THROTTLED, "BLOCKED")
               .withUserId(userId)
+              .withTenantId(tenantId)
               .withIpAddress(ctx.ipAddress())
               .withMetadata(ctx.toMetadataJson()));
       throw new RateLimitException(RATE_CODE, RATE_MSG, 3_600L);

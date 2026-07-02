@@ -70,7 +70,7 @@ class LoginUseCaseSecurityTest {
   private static final String RAW_PASSWORD = "S3cur!tyT3st#";
   private static final String EMAIL_HMAC = "emailhmac";
   private static final String DUMMY_HASH = "$argon2id$dummy";
-  private static final RequestContext CTX = new RequestContext("203.0.113.5", "trace-1");
+  private static final RequestContext CTX = new RequestContext("203.0.113.5", "trace-1", null);
 
   @BeforeEach
   void setUp() {

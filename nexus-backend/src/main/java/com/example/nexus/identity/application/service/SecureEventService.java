@@ -5,6 +5,7 @@ import com.example.nexus.identity.application.port.out.RefreshTokenPort;
 import com.example.nexus.identity.application.port.out.UserRegistrationPort;
 import com.example.nexus.identity.domain.AuthConstants;
 import com.example.nexus.identity.domain.AuthEvent;
+import com.example.nexus.identity.domain.AuthEventType;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
 import java.time.Instant;
@@ -86,8 +87,9 @@ public class SecureEventService {
       if (count >= AuthConstants.LOCKOUT_THRESHOLD) {
         user.lockAccount(now.plusSeconds(AuthConstants.LOCKOUT_DURATION_SECONDS));
         authEventPort.record(
-            new AuthEvent(uuidGenerator.newId(), "ACCOUNT_LOCKED", "FAILURE")
-                .withUserId(userId));
+            new AuthEvent(uuidGenerator.newId(), AuthEventType.LOCKOUT, "FAILURE")
+                .withUserId(userId)
+                .withTenantId(user.getTenantId()));
         log.warn("ACCOUNT_LOCKED userId={}", userId);
       }
       userRegistrationPort.save(user);
@@ -97,7 +99,7 @@ public class SecureEventService {
     } catch (Exception e) {
       log.warn("ACCOUNT_LOCKED_WRITE_FAILED userId={}", userId, e);
       authEventPort.record(
-          new AuthEvent(uuidGenerator.newId(), "ACCOUNT_LOCKED_WRITE_FAILED", "FAILURE")
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.ACCOUNT_LOCKED_WRITE_FAILED, "FAILURE")
               .withUserId(userId));
     }
   }

@@ -90,6 +90,17 @@ class ResendVerificationUseCaseTest {
   }
 
   @Test
+  void should_setTenantId_when_resendRequested() {
+    when(authTokenPort.countByUserIdAndTypeAndCreatedAtAfter(
+        any(), eq(AuthTokenType.VERIFICATION), any(Instant.class))).thenReturn(0);
+
+    useCase.resend(TENANT_ID, RAW_EMAIL, RequestContext.UNKNOWN);
+
+    verify(authEventPort).record(argThat(e ->
+        "RESEND_REQUESTED".equals(e.getEventType()) && TENANT_ID.equals(e.getTenantId())));
+  }
+
+  @Test
   void resend_secondCallWithin60s_throwsRateLimitException_withRetryAfter60() {
     when(authTokenPort.countByUserIdAndTypeAndCreatedAtAfter(
         any(), eq(AuthTokenType.VERIFICATION), any(Instant.class))).thenReturn(1);
@@ -103,6 +114,18 @@ class ResendVerificationUseCaseTest {
     verify(eventPublisher, never()).publishEvent(any());
     verify(authEventPort).record(argThat(e -> "RESEND_THROTTLED".equals(e.getEventType())
         && "BLOCKED".equals(e.getOutcome())));
+  }
+
+  @Test
+  void should_setTenantId_when_resendThrottledWithin60s() {
+    when(authTokenPort.countByUserIdAndTypeAndCreatedAtAfter(
+        any(), eq(AuthTokenType.VERIFICATION), any(Instant.class))).thenReturn(1);
+
+    assertThatThrownBy(() -> useCase.resend(TENANT_ID, RAW_EMAIL, RequestContext.UNKNOWN))
+        .isInstanceOf(RateLimitException.class);
+
+    verify(authEventPort).record(argThat(e ->
+        "RESEND_THROTTLED".equals(e.getEventType()) && TENANT_ID.equals(e.getTenantId())));
   }
 
   @Test

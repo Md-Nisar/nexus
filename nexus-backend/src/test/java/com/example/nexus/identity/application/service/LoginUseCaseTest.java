@@ -56,7 +56,7 @@ class LoginUseCaseTest {
   private LoginUseCase useCase;
 
   private static final UUID TENANT_ID = UUID.fromString("00000000-0000-7000-8000-000000000001");
-  private static final RequestContext CTX = new RequestContext("192.168.1.1", "trace-001");
+  private static final RequestContext CTX = new RequestContext("192.168.1.1", "trace-001", null);
   private static final String EMAIL = "user@example.com";
   private static final String PASSWORD = "P@ssw0rd!!";
   private static final String EMAIL_HMAC = "deadbeef".repeat(8); // 64-char hex
@@ -110,6 +110,22 @@ class LoginUseCaseTest {
   }
 
   @Test
+  void should_setTenantId_when_loginSucceeds() {
+    User user = activeUser();
+    when(userRegistrationPort.findByTenantAndEmailHmac(TENANT_ID, EMAIL_HMAC))
+        .thenReturn(Optional.of(user));
+    when(passwordVerifier.matches(PASSWORD, user.getPasswordHash())).thenReturn(true);
+    when(jwtPort.issue(user)).thenReturn(new AccessTokenResult("jwt.tok", 900L, "jti-1"));
+
+    useCase.execute(TENANT_ID, EMAIL, PASSWORD, CTX);
+
+    ArgumentCaptor<AuthEvent> eventCaptor = ArgumentCaptor.forClass(AuthEvent.class);
+    verify(secureEventService, times(1)).recordEvent(eventCaptor.capture());
+    assertThat(eventCaptor.getValue().getEventType()).isEqualTo("LOGIN_SUCCESS");
+    assertThat(eventCaptor.getValue().getTenantId()).isEqualTo(TENANT_ID);
+  }
+
+  @Test
   void execute_wrongPassword_throws_AUTH_001() {
     User user = activeUser();
     when(userRegistrationPort.findByTenantAndEmailHmac(TENANT_ID, EMAIL_HMAC))
@@ -151,6 +167,22 @@ class LoginUseCaseTest {
     verify(refreshTokenPort, never()).save(any());
   }
 
+  @Test
+  void should_setTenantId_when_loginPendingAccount() {
+    User user = userWithStatus(UserStatus.PENDING);
+    when(userRegistrationPort.findByTenantAndEmailHmac(TENANT_ID, EMAIL_HMAC))
+        .thenReturn(Optional.of(user));
+    when(passwordVerifier.matches(PASSWORD, user.getPasswordHash())).thenReturn(true);
+
+    assertThatThrownBy(() -> useCase.execute(TENANT_ID, EMAIL, PASSWORD, CTX))
+        .isInstanceOf(AccountNotVerifiedException.class);
+
+    ArgumentCaptor<AuthEvent> eventCaptor = ArgumentCaptor.forClass(AuthEvent.class);
+    verify(secureEventService).recordEvent(eventCaptor.capture());
+    assertThat(eventCaptor.getValue().getEventType()).isEqualTo("LOGIN_PENDING_ACCOUNT");
+    assertThat(eventCaptor.getValue().getTenantId()).isEqualTo(TENANT_ID);
+  }
+
   // Updated: LOCKED accounts now throw AccountLockedException (AUTH_LCK_001), not AUTH_001
   @Test
   void execute_lockedUser_correctPassword_throws_AccountLockedException() {
@@ -178,6 +210,22 @@ class LoginUseCaseTest {
         .satisfies(e -> assertThat(((AuthenticationException) e).code()).isEqualTo("AUTH_001"));
 
     verify(refreshTokenPort, never()).save(any());
+  }
+
+  @Test
+  void should_setTenantId_when_loginFailsNonActiveStatus() {
+    User user = userWithStatus(UserStatus.DISABLED);
+    when(userRegistrationPort.findByTenantAndEmailHmac(TENANT_ID, EMAIL_HMAC))
+        .thenReturn(Optional.of(user));
+    when(passwordVerifier.matches(PASSWORD, user.getPasswordHash())).thenReturn(true);
+
+    assertThatThrownBy(() -> useCase.execute(TENANT_ID, EMAIL, PASSWORD, CTX))
+        .isInstanceOf(AuthenticationException.class);
+
+    ArgumentCaptor<AuthEvent> eventCaptor = ArgumentCaptor.forClass(AuthEvent.class);
+    verify(secureEventService).recordEvent(eventCaptor.capture());
+    assertThat(eventCaptor.getValue().getEventType()).isEqualTo("LOGIN_FAILURE");
+    assertThat(eventCaptor.getValue().getTenantId()).isEqualTo(TENANT_ID);
   }
 
   // -----------------------------------------------------------------------
@@ -220,6 +268,22 @@ class LoginUseCaseTest {
   }
 
   @Test
+  void should_setTenantId_when_loginFailsOnLockedAccount() {
+    Instant lockedUntil = clock.instant().plusSeconds(500);
+    User user = lockedUserWithExpiry(lockedUntil);
+    when(userRegistrationPort.findByTenantAndEmailHmac(TENANT_ID, EMAIL_HMAC))
+        .thenReturn(Optional.of(user));
+    when(passwordVerifier.matches(PASSWORD, user.getPasswordHash())).thenReturn(true);
+
+    assertThatThrownBy(() -> useCase.execute(TENANT_ID, EMAIL, PASSWORD, CTX))
+        .isInstanceOf(AccountLockedException.class);
+
+    ArgumentCaptor<AuthEvent> eventCaptor = ArgumentCaptor.forClass(AuthEvent.class);
+    verify(secureEventService).recordEvent(eventCaptor.capture());
+    assertThat(eventCaptor.getValue().getTenantId()).isEqualTo(TENANT_ID);
+  }
+
+  @Test
   void execute_wrongPassword_foundUser_callsPersistFailedAttempt() {
     User user = activeUser();
     when(userRegistrationPort.findByTenantAndEmailHmac(TENANT_ID, EMAIL_HMAC))
@@ -243,6 +307,22 @@ class LoginUseCaseTest {
         .satisfies(e -> assertThat(((AuthenticationException) e).code()).isEqualTo("AUTH_001"));
 
     verify(secureEventService, never()).persistFailedAttempt(any(), any());
+  }
+
+  @Test
+  void should_leaveTenantIdNull_when_unknownEmailLoginFails() {
+    when(userRegistrationPort.findByTenantAndEmailHmac(TENANT_ID, EMAIL_HMAC))
+        .thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> useCase.execute(TENANT_ID, EMAIL, PASSWORD, CTX))
+        .isInstanceOf(AuthenticationException.class);
+
+    ArgumentCaptor<AuthEvent> eventCaptor = ArgumentCaptor.forClass(AuthEvent.class);
+    verify(secureEventService).recordEvent(eventCaptor.capture());
+    assertThat(eventCaptor.getValue().getEventType()).isEqualTo("LOGIN_FAILURE");
+    assertThat(eventCaptor.getValue().getTenantId())
+        .as("unknown-email LOGIN_FAILURE must never carry a tenant (anti-enumeration)")
+        .isNull();
   }
 
   @Test
@@ -380,6 +460,34 @@ class LoginUseCaseTest {
         .orElseThrow(() -> new AssertionError("ACCOUNT_UNLOCKED event not recorded"));
     assertThat(unlockedEvent.getUserId()).isEqualTo(userId);
     assertThat(unlockedEvent.getOutcome()).isEqualTo("SUCCESS");
+  }
+
+  @Test
+  void should_setTenantId_when_accountUnlocked() {
+    User user = mock(User.class);
+    UUID userId = UUID.randomUUID();
+    when(user.getId()).thenReturn(userId);
+    when(user.getPasswordHash()).thenReturn("$argon2id$stored");
+    when(user.getTenantId()).thenReturn(TENANT_ID);
+    when(user.getTokenVersion()).thenReturn(0);
+    when(user.getStatus()).thenReturn(UserStatus.ACTIVE);
+    when(user.unlockIfExpired(any(Instant.class))).thenReturn(true);
+    when(user.getFailedAttemptCount()).thenReturn(0);
+
+    when(userRegistrationPort.findByTenantAndEmailHmac(TENANT_ID, EMAIL_HMAC))
+        .thenReturn(Optional.of(user));
+    when(passwordVerifier.matches(PASSWORD, "$argon2id$stored")).thenReturn(true);
+    when(jwtPort.issue(user)).thenReturn(new AccessTokenResult("jwt.tok", 900L, "jti-1"));
+
+    useCase.execute(TENANT_ID, EMAIL, PASSWORD, CTX);
+
+    ArgumentCaptor<AuthEvent> captor = ArgumentCaptor.forClass(AuthEvent.class);
+    verify(secureEventService, times(2)).recordEvent(captor.capture());
+    AuthEvent unlockedEvent = captor.getAllValues().stream()
+        .filter(e -> "ACCOUNT_UNLOCKED".equals(e.getEventType()))
+        .findFirst()
+        .orElseThrow(() -> new AssertionError("ACCOUNT_UNLOCKED event not recorded"));
+    assertThat(unlockedEvent.getTenantId()).isEqualTo(TENANT_ID);
   }
 
   // Argon2-always invariant (M-1 / T-015): Argon2 MUST run before the lock check

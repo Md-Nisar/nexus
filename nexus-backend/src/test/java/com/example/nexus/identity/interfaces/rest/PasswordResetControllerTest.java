@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -20,6 +21,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.MediaType;
@@ -60,6 +62,32 @@ class PasswordResetControllerTest {
     verify(forgotPasswordUseCase).execute(
         eq(DEFAULT_TENANT), eq("user@example.com"), any(RequestContext.class));
     assertThat(response.message()).isNotBlank();
+  }
+
+  @Test
+  void should_captureUserAgentHeader_when_forgotPasswordRequestIncludesUserAgent() {
+    when(httpRequest.getHeader("User-Agent")).thenReturn("Mozilla/5.0 TestAgent");
+    var request = new ForgotPasswordRequest("user@example.com");
+
+    controller.forgotPassword(request, httpRequest);
+
+    ArgumentCaptor<RequestContext> captor = ArgumentCaptor.forClass(RequestContext.class);
+    verify(forgotPasswordUseCase).execute(
+        eq(DEFAULT_TENANT), eq("user@example.com"), captor.capture());
+    assertThat(captor.getValue().userAgent()).isEqualTo("Mozilla/5.0 TestAgent");
+  }
+
+  @Test
+  void should_captureNullUserAgent_when_forgotPasswordRequestOmitsUserAgentHeader() {
+    when(httpRequest.getHeader("User-Agent")).thenReturn(null);
+    var request = new ForgotPasswordRequest("user@example.com");
+
+    controller.forgotPassword(request, httpRequest);
+
+    ArgumentCaptor<RequestContext> captor = ArgumentCaptor.forClass(RequestContext.class);
+    verify(forgotPasswordUseCase).execute(
+        eq(DEFAULT_TENANT), eq("user@example.com"), captor.capture());
+    assertThat(captor.getValue().userAgent()).isNull();
   }
 
   @Test

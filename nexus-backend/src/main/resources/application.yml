@@ -59,6 +59,18 @@ management:
       probes:
         enabled: true
       show-details: when-authorized
+      group:
+        # US-008 T-08-12 (ADR 0012 §5): authEventDbPrivilege is a non-fatal security-observability
+        # signal (detects DB-role drift away from the least-privilege nexus_app user, T-E2/T-T4),
+        # not an availability signal. Spring Boot's liveness/readiness groups only include
+        # livenessState/readinessState by default, so authEventDbPrivilege is already excluded —
+        # these two lines make that exclusion explicit rather than relying on the implicit
+        # default, so a future indicator addition to these groups doesn't silently sweep it in.
+        # A drift is still visible on the full /actuator/health response and logged at WARN.
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState
 
 springdoc:
   api-docs:
@@ -81,6 +93,27 @@ nexus:
       memory-kb: ${NEXUS_ARGON2_MEMORY_KB:19456}
       iterations: ${NEXUS_ARGON2_ITERATIONS:2}
       parallelism: ${NEXUS_ARGON2_PARALLELISM:1}
+    audit:
+      # US-008 T-08-15 (design §4.1, ADR 0011) — in-process two-lane bounded retry buffer for
+      # auth_events writes that fail their primary synchronous insert. Escape hatch: set enabled
+      # to false to revert to synchronous-swallow-and-WARN-only (pre-US-008 behaviour, no
+      # buffering, no scheduler). All defaults below are bound 1:1 to ADR 0011 §2 — do not change
+      # a value here without updating that document.
+      retry-buffer:
+        enabled: true
+        priority-capacity: 200     # LOCKOUT/TOKEN_REFRESH_REUSE/PASSWORD_CHANGED/ACCOUNT_LOCKED_WRITE_FAILED
+        standard-capacity: 800     # everything else, incl. LOGIN_FAILURE
+        drain-interval-ms: 10000   # @Scheduled(fixedDelay) — priority lane drained first each tick
+        max-attempts: 5
+        backoff-schedule: [1s, 5s, 30s, 2m, 10m]
+        priority:
+          depth-warn: 1            # any sustained priority-lane backlog is anomalous
+          depth-critical: 180      # 90% of priority-capacity
+          age-critical: 15m
+        standard:
+          depth-warn: 250          # 25% of standard-capacity
+          depth-critical: 720      # 90% of standard-capacity
+          age-critical: 15m
   jwt:
     private-key-pem: ${NEXUS_JWT_PRIVATE_KEY_PEM:}   # RSA-2048+ PKCS#8 PEM — required in prod; blank = ephemeral key in dev
     public-key-pem: ${NEXUS_JWT_PUBLIC_KEY_PEM:}     # RSA public key PEM — required in prod; derived from private key in dev

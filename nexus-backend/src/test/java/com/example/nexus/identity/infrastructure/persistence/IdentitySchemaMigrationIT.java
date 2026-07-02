@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.nexus.TestcontainersConfiguration;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -102,7 +103,7 @@ class IdentitySchemaMigrationIT {
 
   @Test
   void should_haveFlyway_migrationsApplied_successfully() {
-    // Asserts V2 and V3 are both recorded as successful in flyway_schema_history.
+    // Asserts V2, V3, and V4 are all recorded as successful in flyway_schema_history.
     // success is BIT(1) in MySQL; CAST to UNSIGNED yields Integer 1 for true.
     List<String> versions =
         jdbc.queryForList(
@@ -110,6 +111,21 @@ class IdentitySchemaMigrationIT {
                 + "WHERE CAST(success AS UNSIGNED) = 1 ORDER BY installed_rank",
             String.class);
 
-    assertThat(versions).contains("2", "3");
+    assertThat(versions).contains("2", "3", "4");
+  }
+
+  @Test
+  void should_haveUserAgentColumn_nullableVarchar512_when_v4MigrationApplied() {
+    // US-008 T-08-01: V4 adds auth_events.user_agent as a nullable VARCHAR(512).
+    Map<String, Object> column =
+        jdbc.queryForMap(
+            "SELECT IS_NULLABLE, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH "
+                + "FROM information_schema.COLUMNS "
+                + "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'auth_events' "
+                + "AND COLUMN_NAME = 'user_agent'");
+
+    assertThat(column.get("IS_NULLABLE")).isEqualTo("YES");
+    assertThat(column.get("DATA_TYPE")).isEqualTo("varchar");
+    assertThat(column.get("CHARACTER_MAXIMUM_LENGTH")).isEqualTo(512L);
   }
 }

@@ -6,6 +6,7 @@ import com.example.nexus.identity.application.port.out.AuthEventPort;
 import com.example.nexus.identity.application.port.out.AuthTokenPort;
 import com.example.nexus.identity.application.port.out.UserRegistrationPort;
 import com.example.nexus.identity.domain.AuthEvent;
+import com.example.nexus.identity.domain.AuthEventType;
 import com.example.nexus.identity.domain.AuthToken;
 import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.identity.domain.User;
@@ -57,7 +58,7 @@ public class VerifyEmailUseCase {
 
     Optional<AuthToken> tokenOpt = authTokenPort.findByTokenHash(tokenHash);
     if (tokenOpt.isEmpty()) {
-      authEventPort.record(failure(null, ctx));
+      authEventPort.record(failure((UUID) null, ctx));
       throw new TokenExpiredException(CODE, INVALID_LINK);
     }
     AuthToken token = tokenOpt.get();
@@ -88,24 +89,41 @@ public class VerifyEmailUseCase {
     try {
       user.verify(now);
     } catch (IllegalStateException e) {
-      authEventPort.record(failure(token.getUserId(), ctx));
+      // Unlike the pre-load failure branches above, `user` is already loaded here, so the
+      // tenant is resolvable — use the User-aware overload (T-08-06 per-flow tenant table).
+      authEventPort.record(failure(user, ctx));
       throw new TokenExpiredException(CODE, MSG);
     }
 
     userRegistrationPort.save(user);
-    authEventPort.record(success(token.getUserId(), ctx));
+    authEventPort.record(success(user, ctx));
   }
 
   private AuthEvent failure(UUID userId, RequestContext ctx) {
-    return new AuthEvent(uuidGenerator.newId(), "VERIFICATION_FAILED", "FAILURE")
+    return new AuthEvent(uuidGenerator.newId(), AuthEventType.VERIFICATION_FAILED, "FAILURE")
         .withUserId(userId)
         .withIpAddress(ctx.ipAddress())
         .withMetadata(ctx.toMetadataJson());
   }
 
-  private AuthEvent success(UUID userId, RequestContext ctx) {
-    return new AuthEvent(uuidGenerator.newId(), "VERIFICATION_SUCCESS", "SUCCESS")
-        .withUserId(userId)
+  /**
+   * VERIFICATION_FAILED variant used only where a {@link User} is already loaded in scope (the
+   * {@code user.verify()} IllegalStateException branch) — carries the tenant from the loaded
+   * entity, unlike the UUID-only overload used by the pre-load failure branches (token not
+   * found/expired/consumed, or user not found), which stay tenant-NULL.
+   */
+  private AuthEvent failure(User user, RequestContext ctx) {
+    return new AuthEvent(uuidGenerator.newId(), AuthEventType.VERIFICATION_FAILED, "FAILURE")
+        .withUserId(user.getId())
+        .withTenantId(user.getTenantId())
+        .withIpAddress(ctx.ipAddress())
+        .withMetadata(ctx.toMetadataJson());
+  }
+
+  private AuthEvent success(User user, RequestContext ctx) {
+    return new AuthEvent(uuidGenerator.newId(), AuthEventType.VERIFY, "SUCCESS")
+        .withUserId(user.getId())
+        .withTenantId(user.getTenantId())
         .withIpAddress(ctx.ipAddress())
         .withMetadata(ctx.toMetadataJson());
   }
