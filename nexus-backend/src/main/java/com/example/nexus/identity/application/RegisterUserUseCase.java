@@ -10,6 +10,7 @@ import com.example.nexus.identity.application.port.out.PasswordHasherPort;
 import com.example.nexus.identity.application.port.out.UserRegistrationPort;
 import com.example.nexus.identity.domain.AuthConstants;
 import com.example.nexus.identity.domain.AuthEvent;
+import com.example.nexus.identity.domain.AuthEventType;
 import com.example.nexus.identity.domain.AuthToken;
 import com.example.nexus.identity.domain.EmailCipher;
 import com.example.nexus.identity.domain.User;
@@ -29,6 +30,12 @@ import org.springframework.transaction.annotation.Transactional;
  * <p>The Argon2id hash is computed on every call — before the duplicate check — so both
  * paths take similar wall-clock time, making it harder for attackers to infer whether an
  * email address is already registered via response timing.
+ *
+ * <p>The {@code REGISTER}/{@code REGISTRATION_DUPLICATE_EMAIL} audit write stays in this
+ * same {@code @Transactional} boundary as the {@code users} INSERT — via {@link AuthEventPort}
+ * directly, never {@code SecureEventService}/REQUIRES_NEW — so a late rollback undoes both
+ * together, never leaving a {@code REGISTER} event for a user that doesn't exist (US-008 design
+ * §7.1, T-08-08, T-R2).
  */
 @Service
 @Transactional
@@ -85,8 +92,9 @@ public class RegisterUserUseCase {
           tenantId, LogMaskingUtil.maskEmail(rawEmail));
       eventPublisher.publishEvent(new AccountExistsEmailEvent(rawEmail));
       authEventPort.record(
-          new AuthEvent(uuidGenerator.newId(), "REGISTRATION_DUPLICATE_EMAIL", "BLOCKED")
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.REGISTRATION_DUPLICATE_EMAIL, "BLOCKED")
               .withUserId(existing.get().getId())
+              .withTenantId(tenantId)
               .withIpAddress(ctx.ipAddress())
               .withMetadata(ctx.toMetadataJson()));
       return;
@@ -109,8 +117,9 @@ public class RegisterUserUseCase {
 
     eventPublisher.publishEvent(new VerificationEmailEvent(rawEmail, rawToken, userId));
     authEventPort.record(
-        new AuthEvent(uuidGenerator.newId(), "REGISTRATION_SUCCESS", "SUCCESS")
+        new AuthEvent(uuidGenerator.newId(), AuthEventType.REGISTER, "SUCCESS")
             .withUserId(userId)
+            .withTenantId(tenantId)
             .withIpAddress(ctx.ipAddress())
             .withMetadata(ctx.toMetadataJson()));
   }

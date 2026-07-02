@@ -1,9 +1,11 @@
 package com.example.nexus.identity.application.service;
 
+import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.identity.application.TokenHasher;
 import com.example.nexus.identity.application.port.out.AuthEventPort;
 import com.example.nexus.identity.application.port.out.RefreshTokenPort;
 import com.example.nexus.identity.domain.AuthEvent;
+import com.example.nexus.identity.domain.AuthEventType;
 import com.example.nexus.identity.domain.RefreshToken;
 import com.example.nexus.identity.domain.UuidGenerator;
 import java.time.Clock;
@@ -51,11 +53,16 @@ public class LogoutUseCase {
    * user's access token has expired but the refresh cookie is still present). Malformed or
    * unknown cookies degrade gracefully to cookie-clear only.
    *
+   * <p>The LOGOUT event carries {@code ctx.ipAddress()} and {@code ctx.toMetadataJson()} (so it
+   * now carries {@code traceId} + {@code userAgent}, previously neither — US-008/T-08-07).
+   * {@code tenant_id} intentionally stays {@code NULL} here: no extra {@code User} lookup is
+   * added purely to populate it (US-008/T-08-06 Open Unknown #5 decision).
+   *
    * @param userId          authenticated user's UUID from the Bearer token, or {@code null}
    * @param rawRefreshToken raw refresh-token cookie value, or {@code null} if absent
-   * @param clientIp        request remote address (T-1.3: {@code getRemoteAddr()} only)
+   * @param ctx             per-request context (IP, traceId, User-Agent) for audit enrichment
    */
-  public void execute(UUID userId, String rawRefreshToken, String clientIp) {
+  public void execute(UUID userId, String rawRefreshToken, RequestContext ctx) {
     UUID resolvedUserId = userId;
 
     if (resolvedUserId == null && rawRefreshToken != null) {
@@ -77,8 +84,9 @@ public class LogoutUseCase {
       refreshTokenPort.revokeByUserId(resolvedUserId, clock.instant());
     }
     authEventPort.record(
-        new AuthEvent(uuidGenerator.newId(), "LOGOUT", "SUCCESS")
+        new AuthEvent(uuidGenerator.newId(), AuthEventType.LOGOUT, "SUCCESS")
             .withUserId(resolvedUserId)
-            .withIpAddress(clientIp));
+            .withIpAddress(ctx.ipAddress())
+            .withMetadata(ctx.toMetadataJson()));
   }
 }

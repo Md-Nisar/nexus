@@ -11,8 +11,13 @@ import com.example.nexus.identity.domain.AuthEvent;
 public interface AuthEventPort {
 
   /**
-   * Persists an auth event. Must never throw on persistence failure — implementations should log
-   * the error and continue, so that a failed audit write never blocks the primary flow.
+   * Persists an auth event. Must never throw or block on persistence failure — on failure,
+   * implementations enqueue the event for bounded, backed-off retry (US-008 T-08-16; see {@code
+   * com.example.nexus.identity.infrastructure.audit.AuthEventRetryBuffer}) so a transient
+   * audit-store outage does not lose the event outright. If retry buffering is disabled (the
+   * {@code nexus.identity.audit.retry-buffer.enabled} escape hatch), implementations fall back to
+   * logging the failure and continuing. In every case — success, buffered failure, or
+   * unbuffered failure — the call never throws and never blocks the primary flow.
    *
    * @param event the event to record
    */

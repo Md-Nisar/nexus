@@ -7,6 +7,7 @@ import com.example.nexus.identity.application.port.out.UserRegistrationPort;
 import com.example.nexus.identity.application.service.SecureEventService;
 import com.example.nexus.identity.domain.AuthConstants;
 import com.example.nexus.identity.domain.AuthEvent;
+import com.example.nexus.identity.domain.AuthEventType;
 import com.example.nexus.identity.domain.AuthToken;
 import com.example.nexus.identity.domain.AuthTokenType;
 import com.example.nexus.identity.domain.User;
@@ -103,8 +104,9 @@ public class ForgotPasswordUseCase {
     if (resetCount >= MAX_RESETS_PER_HOUR) {
       log.debug("PASSWORD_RESET_THROTTLED userId={}", user.getId());
       secureEventService.recordEvent(
-          new AuthEvent(uuidGenerator.newId(), "PASSWORD_RESET_THROTTLED", "FAILURE")
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.PASSWORD_RESET_THROTTLED, "FAILURE")
               .withUserId(user.getId())
+              .withTenantId(tenantId)
               .withIpAddress(ctx.ipAddress())
               .withMetadata(ctx.toMetadataJson()));
       return;
@@ -118,8 +120,9 @@ public class ForgotPasswordUseCase {
     // Audit event recorded in REQUIRES_NEW before publishEvent so it commits even if a
     // synchronous listener throws (publishEvent is synchronous and propagates exceptions).
     secureEventService.recordEvent(
-        new AuthEvent(uuidGenerator.newId(), "PASSWORD_RESET_REQUESTED", "SUCCESS")
+        new AuthEvent(uuidGenerator.newId(), AuthEventType.PASSWORD_RESET_REQUESTED, "SUCCESS")
             .withUserId(user.getId())
+            .withTenantId(tenantId)
             .withIpAddress(ctx.ipAddress())
             .withMetadata(ctx.toMetadataJson()));
 

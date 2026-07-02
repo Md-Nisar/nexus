@@ -105,13 +105,16 @@ public class LoginController {
     UUID userId = (auth != null && auth.isAuthenticated()
         && !(auth instanceof AnonymousAuthenticationToken)
         && auth.getPrincipal() instanceof String s) ? UUID.fromString(s) : null;
-    logoutUseCase.execute(userId, cookieValue, request.getRemoteAddr());
+    logoutUseCase.execute(userId, cookieValue, requestContext(request));
     ResponseCookie clear = buildRefreshCookie("", 0);
     return ResponseEntity.noContent().header(HttpHeaders.SET_COOKIE, clear.toString()).build();
   }
 
   private RequestContext requestContext(HttpServletRequest req) {
-    return new RequestContext(req.getRemoteAddr(), MDC.get(CorrelationIdFilter.MDC_KEY));
+    // user_agent is advisory forensic context only, never an authorization input -- captured
+    // verbatim; RequestContext.of(...) caps and escapes it before it reaches storage.
+    return RequestContext.of(
+        req.getRemoteAddr(), MDC.get(CorrelationIdFilter.MDC_KEY), req.getHeader("User-Agent"));
   }
 
   private ResponseCookie buildRefreshCookie(String raw, long maxAge) {

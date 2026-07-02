@@ -45,7 +45,7 @@ class ResetPasswordUseCaseTest {
   private static final String NEW_HASH = "argon2id-new-hash";
   private static final String OLD_HASH = "argon2id-old-hash";
   private static final Instant NOW = Instant.parse("2026-06-30T10:00:00Z");
-  private static final RequestContext CTX = new RequestContext("1.2.3.4", "trace-abc");
+  private static final RequestContext CTX = new RequestContext("1.2.3.4", "trace-abc", null);
 
   @Mock private AuthTokenPort authTokenPort;
   @Mock private UserRegistrationPort userRegistrationPort;
@@ -205,6 +205,25 @@ class ResetPasswordUseCaseTest {
   }
 
   @Test
+  void should_setTenantIdFromLoadedUser_when_passwordChanged() {
+    UUID userId = UUID.randomUUID();
+    AuthToken token = validToken(userId);
+    User user = activeUser(userId);
+    when(authTokenPort.findByTokenHash(TOKEN_HASH)).thenReturn(Optional.of(token));
+    when(userRegistrationPort.findById(userId)).thenReturn(Optional.of(user));
+    when(passwordVerifier.matches(NEW_PASSWORD, OLD_HASH)).thenReturn(false);
+    when(authTokenPort.markConsumed(any(), any())).thenReturn(token);
+    when(userRegistrationPort.save(any())).thenAnswer(inv -> inv.getArgument(0));
+
+    useCase.execute(RAW_TOKEN, NEW_PASSWORD, CTX);
+
+    ArgumentCaptor<AuthEvent> eventCaptor = ArgumentCaptor.forClass(AuthEvent.class);
+    verify(secureEventService).recordEvent(eventCaptor.capture());
+    assertThat(eventCaptor.getValue().getEventType()).isEqualTo("PASSWORD_CHANGED");
+    assertThat(eventCaptor.getValue().getTenantId()).isEqualTo(user.getTenantId());
+  }
+
+  @Test
   void execute_happyPath_passwordHashUpdatedAndStatusActive() {
     UUID userId = UUID.randomUUID();
     AuthToken token = validToken(userId);
@@ -238,6 +257,20 @@ class ResetPasswordUseCaseTest {
     verify(secureEventService).recordEvent(eventCaptor.capture());
     assertThat(eventCaptor.getValue().getEventType()).isEqualTo("PASSWORD_RESET_FAILED");
     assertThat(eventCaptor.getValue().getOutcome()).isEqualTo("FAILURE");
+  }
+
+  @Test
+  void should_leaveTenantIdNull_when_resetFailsPreUserLoad() {
+    // Token not found — no User is ever loaded, so no tenant source exists.
+    when(authTokenPort.findByTokenHash(TOKEN_HASH)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> useCase.execute(RAW_TOKEN, NEW_PASSWORD, CTX))
+        .isInstanceOf(TokenExpiredException.class);
+
+    ArgumentCaptor<AuthEvent> eventCaptor = ArgumentCaptor.forClass(AuthEvent.class);
+    verify(secureEventService).recordEvent(eventCaptor.capture());
+    assertThat(eventCaptor.getValue().getEventType()).isEqualTo("PASSWORD_RESET_FAILED");
+    assertThat(eventCaptor.getValue().getTenantId()).isNull();
   }
 
   @Test

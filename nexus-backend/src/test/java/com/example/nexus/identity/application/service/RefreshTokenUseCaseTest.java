@@ -106,6 +106,24 @@ class RefreshTokenUseCaseTest {
   }
 
   @Test
+  void should_setTenantIdFromLoadedUser_when_refreshSucceeds() {
+    UUID userId = UUID.randomUUID();
+    UUID familyId = UUID.randomUUID();
+    RefreshToken token = validToken(userId, familyId);
+    User user = activeUser(userId);
+
+    when(refreshTokenPort.findByTokenHash(STORED_HASH)).thenReturn(Optional.of(token));
+    when(userRegistrationPort.findById(userId)).thenReturn(Optional.of(user));
+    when(jwtPort.issue(user)).thenReturn(new AccessTokenResult("new.jwt.token", 900L, "jti-1"));
+
+    useCase.execute(COOKIE_VALUE, CLIENT_IP);
+
+    verify(secureEventService).recordEvent(argThat(event ->
+        "TOKEN_REFRESH_SUCCESS".equals(event.getEventType())
+        && user.getTenantId().equals(event.getTenantId())));
+  }
+
+  @Test
   void execute_unknownToken_records_failure_and_throws_AUTH_004() {
     when(refreshTokenPort.findByTokenHash(STORED_HASH)).thenReturn(Optional.empty());
 
@@ -115,6 +133,17 @@ class RefreshTokenUseCaseTest {
 
     verify(secureEventService).recordEvent(any());
     verify(secureEventService, never()).revokeFamily(any(), any());
+  }
+
+  @Test
+  void should_leaveTenantIdNull_when_refreshFailsUnknownToken() {
+    when(refreshTokenPort.findByTokenHash(STORED_HASH)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> useCase.execute(COOKIE_VALUE, CLIENT_IP))
+        .isInstanceOf(AuthenticationException.class);
+
+    verify(secureEventService).recordEvent(argThat(event ->
+        "TOKEN_REFRESH_FAILURE".equals(event.getEventType()) && event.getTenantId() == null));
   }
 
   @Test
@@ -133,9 +162,27 @@ class RefreshTokenUseCaseTest {
     // Theft detection: family MUST be revoked before throwing
     verify(secureEventService).revokeFamily(familyId, NOW);
     verify(secureEventService).recordEvent(argThat(event ->
-        "REFRESH_FAMILY_REVOKED".equals(event.getEventType())
+        "TOKEN_REFRESH_REUSE".equals(event.getEventType())
         && userId.equals(event.getUserId())));
     verify(jwtPort, never()).issue(any());
+  }
+
+  @Test
+  void should_leaveTenantIdNull_when_refreshReuseDetected() {
+    // Reuse detection only knows token.getUserId() — no User entity is loaded on this branch,
+    // so no tenant source exists (design §5: "only token.getUserId() known" stays NULL).
+    UUID userId = UUID.randomUUID();
+    UUID familyId = UUID.randomUUID();
+    RefreshToken revokedToken = validToken(userId, familyId);
+    revokedToken.revoke(NOW.minusSeconds(60));
+
+    when(refreshTokenPort.findByTokenHash(STORED_HASH)).thenReturn(Optional.of(revokedToken));
+
+    assertThatThrownBy(() -> useCase.execute(COOKIE_VALUE, CLIENT_IP))
+        .isInstanceOf(AuthenticationException.class);
+
+    verify(secureEventService).recordEvent(argThat(event ->
+        "TOKEN_REFRESH_REUSE".equals(event.getEventType()) && event.getTenantId() == null));
   }
 
   @Test
@@ -206,6 +253,25 @@ class RefreshTokenUseCaseTest {
         "TOKEN_REFRESH_FAILURE".equals(event.getEventType())
         && userId.equals(event.getUserId())));
     verify(jwtPort, never()).issue(any());
+  }
+
+  @Test
+  void should_setTenantIdFromLoadedUser_when_statusCheckFailsAfterUserLoaded() {
+    // Step 7 status re-check happens AFTER the Step-6 User load, so unlike the pre-load
+    // failure branches, this one has a reliable tenant source (design §5 refinement).
+    UUID userId = UUID.randomUUID();
+    RefreshToken token = validToken(userId, UUID.randomUUID());
+    User lockedUser = userWithStatus(userId, UserStatus.LOCKED);
+
+    when(refreshTokenPort.findByTokenHash(STORED_HASH)).thenReturn(Optional.of(token));
+    when(userRegistrationPort.findById(userId)).thenReturn(Optional.of(lockedUser));
+
+    assertThatThrownBy(() -> useCase.execute(COOKIE_VALUE, CLIENT_IP))
+        .isInstanceOf(AuthenticationException.class);
+
+    verify(secureEventService).recordEvent(argThat(event ->
+        "TOKEN_REFRESH_FAILURE".equals(event.getEventType())
+        && lockedUser.getTenantId().equals(event.getTenantId())));
   }
 
   @Test

@@ -1,7 +1,13 @@
 # Local development infrastructure.
 #
 #   docker compose up -d                  → MySQL only (run apps from your IDE)
-#   docker compose --profile full up -d   → full stack: MySQL + backend + frontend
+#   docker compose --profile full up -d   → full stack: MySQL + flyway-migrate + backend + frontend
+#
+# US-008 T-08-10 (ADR 0012): the app connects as the least-privilege `nexus_app` user, not
+# root. `nexus_app` has no DDL, so a separate one-shot `flyway-migrate` service applies Flyway
+# migrations (as root) and the `nexus_app` table-scoped GRANTs (also as root) before `backend`
+# ever starts. See mysql/init/01-grants.sql (CREATE USER, runs at MySQL first-boot) and
+# mysql/init/02-grants-post-schema.sql (GRANTs, run by flyway-migrate after migrations).
 services:
   mysql:
     image: mysql:8.4
@@ -13,11 +19,48 @@ services:
       - "3306:3306"
     volumes:
       - nexus-mysql-data:/var/lib/mysql
+      # Runs once, as root, only on a first-time (empty) data directory — creates the nexus_app
+      # user (CREATE USER only; no DDL-dependent GRANTs here, see 02-grants-post-schema.sql).
+      - ./mysql/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-root}"]
       interval: 10s
       timeout: 5s
       retries: 10
+
+  # One-shot: applies Flyway migrations as root, then grants nexus_app its scoped privileges.
+  # The grant step uses Flyway's native SQL-callback convention (a file literally named
+  # afterMigrate.sql in the -locations directory is auto-discovered and run once, immediately
+  # after migrate — no extra `mysql` CLI/image needed inside the flyway/flyway container, which
+  # does not bundle one). mysql/init/02-grants-post-schema.sql needs the tables Flyway just
+  # created (see that file's header comment for why it can't run at MySQL first-boot instead).
+  # Exits after success; `backend` waits for this to complete before starting, so it never races
+  # a not-yet-migrated schema or a not-yet-granted nexus_app user.
+  flyway-migrate:
+    profiles: ["full"]
+    image: flyway/flyway:11
+    container_name: nexus-flyway-migrate
+    # Explicit YAML list, NOT a folded (>) scalar: a folded block scalar mis-parses the "&"
+    # query-string separators in the JDBC URL (empirically confirmed — `docker compose config`
+    # silently truncated the command to just the -url arg when this was a folded string).
+    command:
+      - "-url=jdbc:mysql://mysql:3306/nexus?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC"
+      - "-user=root"
+      - "-password=${MYSQL_ROOT_PASSWORD:-root}"
+      - "-locations=filesystem:/flyway/sql,filesystem:/flyway/callbacks"
+      - "-connectRetries=10"
+      - "migrate"
+    volumes:
+      # Two separate mounts (NOT one file mounted inside the other's path): mounting a single
+      # file at a path under an already-read-only-mounted directory fails with "read-only file
+      # system" (Docker cannot create the mountpoint inside a read-only bind mount — empirically
+      # confirmed). Flyway supports multiple comma-separated -locations, so the callback lives
+      # in its own directory instead.
+      - ./nexus-backend/src/main/resources/db/migration:/flyway/sql:ro
+      - ./mysql/init/02-grants-post-schema.sql:/flyway/callbacks/afterMigrate.sql:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
 
   backend:
     profiles: ["full"]
@@ -26,13 +69,17 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: dev
       DB_URL: jdbc:mysql://mysql:3306/nexus?useSSL=false&serverTimezone=UTC
-      DB_USERNAME: root
-      DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      # US-008 T-08-10 (ADR 0012): runtime connects as nexus_app, NOT root. nexus_app has no
+      # DDL — migrations run separately, as root, in the flyway-migrate service above.
+      DB_USERNAME: nexus_app
+      DB_PASSWORD: ${NEXUS_APP_DB_PASSWORD:-nexus_app_dev_only}
     ports:
       - "1000:1000"
     depends_on:
       mysql:
         condition: service_healthy
+      flyway-migrate:
+        condition: service_completed_successfully
 
   mailhog:
     image: mailhog/mailhog:v1.0.1

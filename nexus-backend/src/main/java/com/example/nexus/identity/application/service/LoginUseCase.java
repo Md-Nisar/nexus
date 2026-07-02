@@ -15,6 +15,7 @@ import com.example.nexus.identity.application.port.out.UserRegistrationPort;
 import com.example.nexus.identity.domain.AccessTokenResult;
 import com.example.nexus.identity.domain.AuthConstants;
 import com.example.nexus.identity.domain.AuthEvent;
+import com.example.nexus.identity.domain.AuthEventType;
 import com.example.nexus.identity.domain.LoginResult;
 import com.example.nexus.identity.domain.RefreshToken;
 import com.example.nexus.identity.domain.User;
@@ -146,8 +147,9 @@ public class LoginUseCase {
     // Step 4: Lockout pre-check — after Argon2 to preserve timing uniformity (T-LCK-5)
     if (found && user.getStatus() == UserStatus.LOCKED) {
       secureEventService.recordEvent(
-          new AuthEvent(uuidGenerator.newId(), "LOGIN_FAILURE", "FAILURE")
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.LOGIN_FAILURE, "FAILURE")
               .withUserId(user.getId())
+              .withTenantId(tenantId)
               .withIpAddress(clientIp)
               .withMetadata(ctx.toMetadataJson()));
       long retryAfterSeconds = (user.getLockedUntil() != null)
@@ -164,7 +166,7 @@ public class LoginUseCase {
         secureEventService.persistFailedAttempt(user.getId(), clock.instant());
       }
       secureEventService.recordEvent(
-          new AuthEvent(uuidGenerator.newId(), "LOGIN_FAILURE", "FAILURE")
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.LOGIN_FAILURE, "FAILURE")
               .withIpAddress(clientIp)
               .withMetadata(ctx.toMetadataJson()));
       throw new AuthenticationException(AUTH_001, "Invalid email or password");
@@ -174,8 +176,9 @@ public class LoginUseCase {
     // LOCKED was already handled in Step 4; only PENDING and other statuses reach here.
     if (user.getStatus() == UserStatus.PENDING) {
       secureEventService.recordEvent(
-          new AuthEvent(uuidGenerator.newId(), "LOGIN_PENDING_ACCOUNT", "FAILURE")
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.LOGIN_PENDING_ACCOUNT, "FAILURE")
               .withUserId(user.getId())
+              .withTenantId(tenantId)
               .withIpAddress(clientIp)
               .withMetadata(ctx.toMetadataJson()));
       throw new AccountNotVerifiedException(AUTH_002, "Account not verified. Please check your email.");
@@ -183,8 +186,9 @@ public class LoginUseCase {
     if (user.getStatus() != UserStatus.ACTIVE) {
       // DISABLED or any future status — NEVER fall through to token issuance
       secureEventService.recordEvent(
-          new AuthEvent(uuidGenerator.newId(), "LOGIN_FAILURE", "FAILURE")
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.LOGIN_FAILURE, "FAILURE")
               .withUserId(user.getId())
+              .withTenantId(tenantId)
               .withIpAddress(clientIp)
               .withMetadata(ctx.toMetadataJson()));
       throw new AuthenticationException(AUTH_001, "Invalid email or password");
@@ -207,16 +211,18 @@ public class LoginUseCase {
     }
     if (justUnlocked) {
       secureEventService.recordEvent(
-          new AuthEvent(uuidGenerator.newId(), "ACCOUNT_UNLOCKED", "SUCCESS")
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.ACCOUNT_UNLOCKED, "SUCCESS")
               .withUserId(user.getId())
+              .withTenantId(tenantId)
               .withIpAddress(clientIp)
               .withMetadata(ctx.toMetadataJson()));
     }
 
     // Step 9: Record success and return — rawRefreshToken exits here ONLY, never logged
     secureEventService.recordEvent(
-        new AuthEvent(uuidGenerator.newId(), "LOGIN_SUCCESS", "SUCCESS")
+        new AuthEvent(uuidGenerator.newId(), AuthEventType.LOGIN_SUCCESS, "SUCCESS")
             .withUserId(user.getId())
+            .withTenantId(tenantId)
             .withIpAddress(clientIp)
             .withMetadata(ctx.toMetadataJson()));
 

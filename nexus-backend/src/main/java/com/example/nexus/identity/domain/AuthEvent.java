@@ -39,6 +39,9 @@ public class AuthEvent {
   @Column(name = "ip_address", length = 45)
   private String ipAddress;
 
+  @Column(name = "user_agent", length = 512)
+  private String userAgent; // nullable — attacker-controlled, capped at the RequestContext boundary
+
   @Column(name = "metadata", columnDefinition = "JSON")
   private String metadata; // stored as JSON string; no updated_at (append-only)
 
@@ -57,15 +60,43 @@ public class AuthEvent {
     this.outcome = outcome;
   }
 
+  /**
+   * Creates an auth event from the canonical {@link AuthEventType} taxonomy; delegates to the
+   * String constructor via {@link AuthEventType#wireName()} so the persisted {@code event_type}
+   * value is driven by the enum's wire name, not the Java constant name.
+   */
+  public AuthEvent(UUID id, AuthEventType eventType, String outcome) {
+    this(id, eventType.wireName(), outcome);
+  }
+
   /** Sets the owning user; returns {@code this} for chaining at construction time. */
   public AuthEvent withUserId(UUID userId) {
     this.userId = userId;
     return this;
   }
 
+  /**
+   * Sets the owning tenant; returns {@code this} for chaining at construction time.
+   *
+   * <p>Callers MUST source {@code tenantId} from the authenticated principal (a controller-
+   * injected config value already validated as the tenant, or {@code User#getTenantId()} on an
+   * already-loaded entity) — never from client-supplied request body/path data (SECURITY.md §3,
+   * T-I5/T-E4).
+   */
+  public AuthEvent withTenantId(UUID tenantId) {
+    this.tenantId = tenantId;
+    return this;
+  }
+
   /** Sets the client IP address; returns {@code this} for chaining. */
   public AuthEvent withIpAddress(String ipAddress) {
     this.ipAddress = ipAddress;
+    return this;
+  }
+
+  /** Sets the client User-Agent header; returns {@code this} for chaining. */
+  public AuthEvent withUserAgent(String userAgent) {
+    this.userAgent = userAgent;
     return this;
   }
 

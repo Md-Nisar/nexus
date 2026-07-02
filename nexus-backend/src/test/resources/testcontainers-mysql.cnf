@@ -3,3 +3,11 @@
 # log_bin_trust_function_creators lets non-SUPER users create triggers/functions
 # when binary logging is on. Required for the SIGNAL triggers in V2 migration.
 log_bin_trust_function_creators=1
+
+# US-008 T-08-20: default max_connections (151) is exhausted by AuthEventLoadIT's 100 RPS
+# sustained-login scenario once real per-request connection-hold-time under contention is
+# accounted for (each login holds up to 2 simultaneous connections -- the outer request
+# connection plus SecureEventService's REQUIRES_NEW audit write, ADR 0009). Raised generously;
+# this file is shared by every *IT via TestcontainersConfiguration, so a higher ceiling is a
+# safe, additive change that cannot break any *IT that worked under the lower default.
+max_connections=600

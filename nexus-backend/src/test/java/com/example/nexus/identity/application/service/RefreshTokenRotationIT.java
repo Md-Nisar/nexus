@@ -130,12 +130,12 @@ class RefreshTokenRotationIT {
         .extracting(e -> ((AuthenticationException) e).code())
         .isEqualTo("AUTH_004");
 
-    // Verify: REFRESH_FAMILY_REVOKED audit event was recorded for this user
+    // Verify: TOKEN_REFRESH_REUSE audit event was recorded for this user
     boolean familyRevokedEventExists = authEventRepository.findAll().stream()
-        .anyMatch(e -> "REFRESH_FAMILY_REVOKED".equals(e.getEventType())
+        .anyMatch(e -> "TOKEN_REFRESH_REUSE".equals(e.getEventType())
             && tt.user().getId().equals(e.getUserId()));
     assertThat(familyRevokedEventExists)
-        .as("REFRESH_FAMILY_REVOKED audit event must be recorded on token theft")
+        .as("TOKEN_REFRESH_REUSE audit event must be recorded on token theft")
         .isTrue();
 
     // The new token from the first rotation must also be revoked (family-wide)

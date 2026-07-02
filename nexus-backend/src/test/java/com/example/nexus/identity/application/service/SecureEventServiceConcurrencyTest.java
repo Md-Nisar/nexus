@@ -96,7 +96,7 @@ class SecureEventServiceConcurrencyTest {
     ArgumentCaptor<AuthEvent> captor = ArgumentCaptor.forClass(AuthEvent.class);
     verify(authEventPort, atLeastOnce()).record(captor.capture());
     assertThat(captor.getAllValues())
-        .anyMatch(e -> "ACCOUNT_LOCKED".equals(e.getEventType()));
+        .anyMatch(e -> "LOCKOUT".equals(e.getEventType()));
   }
 
   /**

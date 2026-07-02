@@ -108,6 +108,9 @@ public class RegistrationController {
   }
 
   private RequestContext requestContext(HttpServletRequest req) {
-    return new RequestContext(req.getRemoteAddr(), MDC.get("traceId"));
+    // user_agent is advisory forensic context only, never an authorization input -- captured
+    // verbatim; RequestContext.of(...) caps and escapes it before it reaches storage.
+    return RequestContext.of(
+        req.getRemoteAddr(), MDC.get("traceId"), req.getHeader("User-Agent"));
   }
 }

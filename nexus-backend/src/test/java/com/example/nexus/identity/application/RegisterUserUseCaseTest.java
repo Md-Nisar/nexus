@@ -87,7 +87,15 @@ class RegisterUserUseCaseTest {
     assertThat(captor.getValue().toEmail()).isEqualTo(RAW_EMAIL);
     assertThat(captor.getValue().rawToken()).isEqualTo(RAW_TOKEN);
 
-    verify(authEventPort).record(argThat(e -> "REGISTRATION_SUCCESS".equals(e.getEventType())));
+    verify(authEventPort).record(argThat(e -> "REGISTER".equals(e.getEventType())));
+  }
+
+  @Test
+  void should_setTenantId_when_registrationSucceeds() {
+    useCase.register(TENANT_ID, RAW_EMAIL, USER_PASS, RequestContext.UNKNOWN);
+
+    verify(authEventPort).record(argThat(e ->
+        "REGISTER".equals(e.getEventType()) && TENANT_ID.equals(e.getTenantId())));
   }
 
   @Test
@@ -116,6 +124,19 @@ class RegisterUserUseCaseTest {
     verify(authEventPort).record(
         argThat(e -> "REGISTRATION_DUPLICATE_EMAIL".equals(e.getEventType())
             && "BLOCKED".equals(e.getOutcome())));
+  }
+
+  @Test
+  void should_setTenantId_when_duplicateEmailRegistration() {
+    User existing = Mockito.mock(User.class);
+    when(userRegistrationPort.findByTenantAndEmailHmac(TENANT_ID, EMAIL_HMAC))
+        .thenReturn(Optional.of(existing));
+
+    useCase.register(TENANT_ID, RAW_EMAIL, USER_PASS, RequestContext.UNKNOWN);
+
+    verify(authEventPort).record(argThat(e ->
+        "REGISTRATION_DUPLICATE_EMAIL".equals(e.getEventType())
+            && TENANT_ID.equals(e.getTenantId())));
   }
 
   @Test
