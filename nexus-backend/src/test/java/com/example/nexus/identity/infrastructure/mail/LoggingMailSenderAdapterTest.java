@@ -4,9 +4,11 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 
 import org.junit.jupiter.api.Test;
 
+import com.example.nexus.common.observation.ExecutionObserver;
+
 class LoggingMailSenderAdapterTest {
 
-  private final LoggingMailSenderAdapter adapter = new LoggingMailSenderAdapter();
+  private final LoggingMailSenderAdapter adapter = new LoggingMailSenderAdapter(new ExecutionObserver(null));
 
   @Test
   void sendVerificationEmail_completesWithoutThrowing() {

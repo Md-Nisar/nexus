@@ -1,9 +1,7 @@
 package com.example.nexus.identity.infrastructure.mail;
 
-import com.example.nexus.common.domain.LogMaskingUtil;
+import com.example.nexus.common.observation.ExecutionObserver;
 import com.example.nexus.identity.application.port.out.MailSenderPort;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.mail.SimpleMailMessage;
@@ -21,7 +19,6 @@ import org.springframework.stereotype.Component;
 @ConditionalOnMissingBean(LoggingMailSenderAdapter.class)
 public class SmtpMailSenderAdapter implements MailSenderPort {
 
-  private static final Logger log = LoggerFactory.getLogger(SmtpMailSenderAdapter.class);
   private static final String VERIFY_SUBJECT = "Verify your Nexus email address";
   private static final String EXISTS_SUBJECT = "You already have a Nexus account";
   private static final String RESET_SUBJECT = "Reset your Nexus password";
@@ -29,14 +26,17 @@ public class SmtpMailSenderAdapter implements MailSenderPort {
   private final JavaMailSender mailSender;
   private final String fromAddress;
   private final String frontendBaseUrl;
+  private final ExecutionObserver executionObserver;
 
   public SmtpMailSenderAdapter(
       JavaMailSender mailSender,
       @Value("${nexus.mail.from-address}") String fromAddress,
-      @Value("${nexus.frontend.base-url}") String frontendBaseUrl) {
+      @Value("${nexus.frontend.base-url}") String frontendBaseUrl,
+      ExecutionObserver executionObserver) {
     this.mailSender = mailSender;
     this.fromAddress = fromAddress;
     this.frontendBaseUrl = frontendBaseUrl;
+    this.executionObserver = executionObserver;
   }
 
   @Override
@@ -48,8 +48,14 @@ public class SmtpMailSenderAdapter implements MailSenderPort {
     msg.setSubject(VERIFY_SUBJECT);
     msg.setText("Click the link below to verify your email address:\n\n"
         + url + "\n\nThis link expires in 24 hours.");
-    mailSender.send(msg);
-    log.debug("Verification email sent to {}", LogMaskingUtil.maskEmail(toEmail));
+    executionObserver.observe(
+        "integration_call",
+        "async",
+        "sendVerificationEmail",
+        true,
+        false, // Not terminal boundary (event listener handles errors)
+        () -> mailSender.send(msg)
+    );
   }
 
   @Override
@@ -60,8 +66,14 @@ public class SmtpMailSenderAdapter implements MailSenderPort {
     msg.setSubject(EXISTS_SUBJECT);
     msg.setText("A Nexus account already exists for this email address. "
         + "If you forgot your password, please use the password-reset flow.");
-    mailSender.send(msg);
-    log.debug("Account-exists email sent to {}", LogMaskingUtil.maskEmail(toEmail));
+    executionObserver.observe(
+        "integration_call",
+        "async",
+        "sendAccountExistsEmail",
+        true,
+        false,
+        () -> mailSender.send(msg)
+    );
   }
 
   @Override
@@ -74,7 +86,13 @@ public class SmtpMailSenderAdapter implements MailSenderPort {
     msg.setText("Click the link below to reset your Nexus password:\n\n"
         + url + "\n\nThis link expires in 1 hour. If you did not request a reset, "
         + "you can safely ignore this email.");
-    mailSender.send(msg);
-    log.debug("Password-reset email sent to {}", LogMaskingUtil.maskEmail(toEmail));
+    executionObserver.observe(
+        "integration_call",
+        "async",
+        "sendPasswordResetEmail",
+        true,
+        false,
+        () -> mailSender.send(msg)
+    );
   }
 }

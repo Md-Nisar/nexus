@@ -40,16 +40,19 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler(ResourceNotFoundException.class)
   ProblemDetail handleNotFound(ResourceNotFoundException e) {
+    logHandledException(e, "DEBUG", e.code());
     return problem(HttpStatus.NOT_FOUND, e.code(), e.getMessage());
   }
 
   @ExceptionHandler(ConflictException.class)
   ProblemDetail handleConflict(ConflictException e) {
+    logHandledException(e, "DEBUG", e.code());
     return problem(HttpStatus.CONFLICT, e.code(), e.getMessage());
   }
 
   @ExceptionHandler(FieldValidationException.class)
   ProblemDetail handleFieldValidation(FieldValidationException e) {
+    logHandledException(e, "DEBUG", e.code());
     ProblemDetail problem = problem(HttpStatus.BAD_REQUEST, e.code(), e.getMessage());
     problem.setProperty("details", List.of(Map.of("field", e.field(), "message", e.getMessage())));
     return problem;
@@ -57,11 +60,13 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler(TokenExpiredException.class)
   ProblemDetail handleTokenExpired(TokenExpiredException e) {
+    logHandledException(e, "DEBUG", e.code());
     return problem(HttpStatus.GONE, e.code(), e.getMessage());
   }
 
   @ExceptionHandler(RateLimitException.class)
   ResponseEntity<ProblemDetail> handleRateLimit(RateLimitException e) {
+    logHandledException(e, "WARN", e.code());
     ProblemDetail problem = problem(HttpStatus.TOO_MANY_REQUESTS, e.code(), e.getMessage());
     HttpHeaders headers = new HttpHeaders();
     headers.set(HttpHeaders.RETRY_AFTER, String.valueOf(e.retryAfterSeconds()));
@@ -70,6 +75,7 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler(AccountLockedException.class)
   ResponseEntity<ProblemDetail> handleAccountLocked(AccountLockedException e) {
+    logHandledException(e, "WARN", e.code());
     ProblemDetail problem = problem(HttpStatus.LOCKED, e.code(), e.getMessage());
     problem.setProperty("retryAfterSeconds", e.retryAfterSeconds());
     HttpHeaders headers = new HttpHeaders();
@@ -79,22 +85,26 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler(AuthenticationException.class)
   ResponseEntity<ProblemDetail> handleAuthentication(AuthenticationException e) {
+    logHandledException(e, "WARN", e.code());
     return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
         .body(problem(HttpStatus.UNAUTHORIZED, e.code(), e.getMessage()));
   }
 
   @ExceptionHandler(AccountNotVerifiedException.class)
   ProblemDetail handleAccountNotVerified(AccountNotVerifiedException e) {
+    logHandledException(e, "WARN", e.code());
     return problem(HttpStatus.FORBIDDEN, e.code(), e.getMessage());
   }
 
   @ExceptionHandler(DomainException.class)
   ProblemDetail handleDomain(DomainException e) {
+    logHandledException(e, "DEBUG", e.code());
     return problem(HttpStatus.UNPROCESSABLE_CONTENT, e.code(), e.getMessage());
   }
 
   @ExceptionHandler(MethodArgumentNotValidException.class)
   ProblemDetail handleBodyValidation(MethodArgumentNotValidException e) {
+    logHandledException(e, "DEBUG", "VALIDATION_FAILED");
     ProblemDetail problem =
         problem(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "Request validation failed.");
     problem.setProperty(
@@ -109,6 +119,7 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler(ConstraintViolationException.class)
   ProblemDetail handleParamValidation(ConstraintViolationException e) {
+    logHandledException(e, "DEBUG", "VALIDATION_FAILED");
     ProblemDetail problem =
         problem(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "Request validation failed.");
     List<Map<String, String>> details = e.getConstraintViolations().stream()
@@ -122,20 +133,53 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler(AccessDeniedException.class)
   ProblemDetail handleAccessDenied(AccessDeniedException e) {
+    logHandledException(e, "WARN", "ACCESS_DENIED");
     return problem(
         HttpStatus.FORBIDDEN, "ACCESS_DENIED", "You do not have access to this resource.");
   }
 
   @ExceptionHandler(NoResourceFoundException.class)
   ProblemDetail handleNoResource(NoResourceFoundException e) {
+    logHandledException(e, "DEBUG", "RESOURCE_NOT_FOUND");
     return problem(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", "Resource not found.");
   }
 
   @ExceptionHandler(Exception.class)
   ProblemDetail handleUnexpected(Exception e) {
-    log.error("unhandled exception traceId={}", MDC.get(CorrelationIdFilter.MDC_KEY), e);
+    String correlationId = MDC.get(CorrelationIdFilter.MDC_CORRELATION_ID_KEY);
+    log.atError()
+        .addKeyValue("event", "api_request")
+        .addKeyValue("correlationId", correlationId)
+        .addKeyValue("outcome", "FAILURE")
+        .addKeyValue("errorType", e.getClass().getSimpleName())
+        .addKeyValue("errorCode", "INTERNAL_ERROR")
+        .log("Unhandled exception traceId=" + correlationId, e);
     return problem(
         HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "An unexpected error occurred.");
+  }
+
+  private void logHandledException(Exception e, String level, String errorCode) {
+    String correlationId = MDC.get(CorrelationIdFilter.MDC_CORRELATION_ID_KEY);
+    String errorType = e.getClass().getSimpleName();
+    if ("WARN".equals(level)) {
+      log.atWarn()
+          .addKeyValue("event", "api_request")
+          .addKeyValue("correlationId", correlationId)
+          .addKeyValue("outcome", "FAILURE")
+          .addKeyValue("errorType", errorType)
+          .addKeyValue("errorCode", errorCode)
+          .log("Handled operational error: errorType={} errorCode={} correlationId={}",
+              errorType, errorCode, correlationId);
+    } else if ("DEBUG".equals(level)) {
+      log.atDebug()
+          .addKeyValue("event", "api_request")
+          .addKeyValue("correlationId", correlationId)
+          .addKeyValue("outcome", "FAILURE")
+          .addKeyValue("errorType", errorType)
+          .addKeyValue("errorCode", errorCode)
+          .log("Handled validation/domain error: errorType={} errorCode={} correlationId={}",
+              errorType, errorCode, correlationId);
+    }
   }
 
   private ProblemDetail problem(HttpStatus status, String code, String message) {

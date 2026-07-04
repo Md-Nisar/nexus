@@ -12,6 +12,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
 
+import com.example.nexus.common.observation.ExecutionObserver;
+
 @ExtendWith(MockitoExtension.class)
 class SmtpMailSenderAdapterTest {
 
@@ -25,7 +27,7 @@ class SmtpMailSenderAdapterTest {
 
   @BeforeEach
   void setUp() {
-    adapter = new SmtpMailSenderAdapter(javaMailSender, FROM, BASE_URL);
+    adapter = new SmtpMailSenderAdapter(javaMailSender, FROM, BASE_URL, new ExecutionObserver(null));
   }
 
   @Test

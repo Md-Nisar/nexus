@@ -1,9 +1,7 @@
 package com.example.nexus.identity.infrastructure.mail;
 
-import com.example.nexus.common.domain.LogMaskingUtil;
+import com.example.nexus.common.observation.ExecutionObserver;
 import com.example.nexus.identity.application.port.out.MailSenderPort;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
@@ -18,22 +16,54 @@ import org.springframework.stereotype.Component;
 @ConditionalOnProperty(name = "spring.mail.host", havingValue = "disabled")
 public class LoggingMailSenderAdapter implements MailSenderPort {
 
-  private static final Logger log = LoggerFactory.getLogger(LoggingMailSenderAdapter.class);
+  private final ExecutionObserver executionObserver;
+
+  public LoggingMailSenderAdapter(ExecutionObserver executionObserver) {
+    this.executionObserver = executionObserver;
+  }
 
   @Override
   public void sendVerificationEmail(String toEmail, String rawToken) {
-    log.info("[MAIL-STUB] Verification email → {} (token omitted)",
-        LogMaskingUtil.maskEmail(toEmail));
+    executionObserver.observe(
+        "integration_call",
+        "async",
+        "sendVerificationEmail",
+        true, // Log success at INFO for stubbed integration
+        false, // Not terminal boundary
+        () -> {
+          // No-op stub
+          return null;
+        }
+    );
   }
 
   @Override
   public void sendAccountExistsEmail(String toEmail) {
-    log.info("[MAIL-STUB] Account-exists email → {}", LogMaskingUtil.maskEmail(toEmail));
+    executionObserver.observe(
+        "integration_call",
+        "async",
+        "sendAccountExistsEmail",
+        true,
+        false,
+        () -> {
+          // No-op stub
+          return null;
+        }
+    );
   }
 
   @Override
   public void sendPasswordResetEmail(String toEmail, String rawToken) {
-    log.info("[MAIL-STUB] Password-reset email → {} [reset link suppressed]",
-        LogMaskingUtil.maskEmail(toEmail));
+    executionObserver.observe(
+        "integration_call",
+        "async",
+        "sendPasswordResetEmail",
+        true,
+        false,
+        () -> {
+          // No-op stub
+          return null;
+        }
+    );
   }
 }
