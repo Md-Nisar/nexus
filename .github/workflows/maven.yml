@@ -33,7 +33,7 @@ jobs:
 
       - name: Build, Test and Verify
         working-directory: nexus-backend
-        run: mvn -B clean verify
+        run: mvn -B clean verify -DSpring.profiles.active=dev
 
       - name: Upload Test Results
         if: always()
