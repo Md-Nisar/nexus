@@ -32,7 +32,13 @@ module.exports = defineConfig([
         },
       ],
       "@typescript-eslint/no-explicit-any": "error",
-      "no-console": ["error", { allow: ["warn", "error"] }],
+      "no-console": "error",
+    },
+  },
+  {
+    files: ["src/app/core/logging/logger.service.ts", "src/main.ts"],
+    rules: {
+      "no-console": "off",
     },
   },
   {

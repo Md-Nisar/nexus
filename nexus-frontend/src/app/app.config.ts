@@ -1,4 +1,4 @@
-import { ApplicationConfig, provideBrowserGlobalErrorListeners } from '@angular/core';
+import { ApplicationConfig, provideBrowserGlobalErrorListeners, ErrorHandler } from '@angular/core';
 import { provideHttpClient, withInterceptors, withXhr } from '@angular/common/http';
 import { provideRouter, withComponentInputBinding } from '@angular/router';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
@@ -7,6 +7,7 @@ import { routes } from './app.routes';
 import { correlationIdInterceptor } from './core/http/correlation-id.interceptor';
 import { apiErrorInterceptor } from './core/http/api-error.interceptor';
 import { authInterceptor } from './core/http/auth.interceptor';
+import { GlobalErrorHandler } from './core/errors/global-error-handler';
 
 /**
  * Application-wide dependency injection and feature configuration.
@@ -33,6 +34,12 @@ import { authInterceptor } from './core/http/auth.interceptor';
  */
 export const appConfig: ApplicationConfig = {
   providers: [
+    /**
+     * Centralized global error handler for unexpected runtime exceptions.
+     * Integrates uncaught failures with the structured LoggerService.
+     */
+    { provide: ErrorHandler, useClass: GlobalErrorHandler },
+
     /**
      * Global error listener (window.onerror handler).
      * Captures uncaught errors in the browser's global scope.
