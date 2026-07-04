@@ -73,7 +73,10 @@ public class LoginUseCase {
 
   private String dummyHash;
 
-  /** Constructs the use-case with its required collaborators. */
+  /**
+   * Constructs the login use-case with its required collaborators.
+   * The email blind-index service, password verifier, and JWT port are mandatory.
+   */
   public LoginUseCase(
       EmailBlindIndexService emailBlindIndexService,
       UserRegistrationPort userRegistrationPort,

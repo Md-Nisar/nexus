@@ -1,6 +1,10 @@
 @use 'styles/tokens';
 @use 'styles/material-theme';
 
+/* ─────────────────────────────────────────────────────────────────────────
+   GLOBAL STYLES — Base HTML/body, focus ring, scrollbar, text selection
+   ───────────────────────────────────────────────────────────────────────── */
+
 *,
 *::before,
 *::after {
@@ -18,17 +22,19 @@ body {
   background-color: var(--nx-color-canvas);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11'; // Inter optical features
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
 }
 
-// ── Focus ring — Linear's lavender focus at 50% opacity ───────────────────
+/* Focus ring — 2px primary outline at 50% opacity per Linear aesthetic */
 :focus-visible {
   outline: 2px solid var(--nx-color-primary-focus);
   outline-offset: 2px;
-  opacity: 1; // override; ring colour already carries the 50% impression
 }
 
-// ── Scrollbar ─────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────────
+   SCROLLBAR — Hairline 6px webkit scrollbar, minimal visual weight
+   ───────────────────────────────────────────────────────────────────────── */
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -41,19 +47,27 @@ body {
 ::-webkit-scrollbar-thumb {
   background: var(--nx-color-outline-variant);
   border-radius: var(--nx-radius-full);
+  transition: background var(--nx-duration-base) var(--nx-easing-standard);
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--nx-color-on-surface-faint);
 }
 
-// ── Selection ─────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────────────────────────────────
+   TEXT SELECTION — Primary surface highlight on selection
+   ───────────────────────────────────────────────────────────────────────── */
+
 ::selection {
   background-color: var(--nx-color-primary-surface);
   color: var(--nx-color-on-surface);
 }
 
-// ── CDK overlay global overrides (component stylesheets can't reach overlays) ──
+/* ─────────────────────────────────────────────────────────────────────────
+   CDK OVERLAY GLOBAL OVERRIDES
+   Component styles can't reach CDK overlays, so configure Material dialogs here.
+   ───────────────────────────────────────────────────────────────────────── */
+
 .nx-dialog-panel .mat-mdc-dialog-container {
   border-radius: var(--nx-radius-lg) !important;
 }

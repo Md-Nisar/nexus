@@ -31,6 +31,12 @@ public class MailEventListener {
     this.mailSenderPort = mailSenderPort;
   }
 
+  /**
+   * Listens for {@link VerificationEmailEvent} after the registration transaction commits
+   * and dispatches the verification email asynchronously.
+   *
+   * @param event the verification email event containing the email address and token
+   */
   @Async
   @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
   public void onVerificationEmail(VerificationEmailEvent event) {
@@ -38,6 +44,12 @@ public class MailEventListener {
     mailSenderPort.sendVerificationEmail(event.toEmail(), event.rawToken());
   }
 
+  /**
+   * Listens for {@link AccountExistsEmailEvent} after the registration transaction commits
+   * and dispatches a notification email to the existing account owner.
+   *
+   * @param event the account-exists email event containing the email address
+   */
   @Async
   @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
   public void onAccountExists(AccountExistsEmailEvent event) {
@@ -45,6 +57,12 @@ public class MailEventListener {
     mailSenderPort.sendAccountExistsEmail(event.toEmail());
   }
 
+  /**
+   * Listens for {@link PasswordResetEmailEvent} after the password-reset-request transaction commits
+   * and dispatches the reset link email asynchronously.
+   *
+   * @param event the password-reset email event containing the email address and reset token
+   */
   @Async
   @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
   public void onPasswordReset(PasswordResetEmailEvent event) {

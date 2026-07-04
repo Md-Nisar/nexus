@@ -7,6 +7,13 @@ import { LoginFormComponent } from './login-form.component';
 import { AuthService } from '../auth.service';
 import { AppError } from '../../../shared/types/app-error';
 
+/**
+ * Sets up a test fixture with mocked AuthService and optional query parameters.
+ *
+ * @param loginFn Mock implementation of AuthService.login()
+ * @param queryParams Query parameters to inject into ActivatedRoute
+ * @returns Test fixture, component instance, mock service, and router spy
+ */
 function setup(
   loginFn: ReturnType<typeof vi.fn> = vi.fn(() => of(undefined)),
   queryParams: Record<string, string> = {},
@@ -33,6 +40,13 @@ function setup(
   return { fixture, component: fixture.componentInstance, mockAuthService, navigateSpy };
 }
 
+/**
+ * Helper to fill the login form with email and password.
+ *
+ * @param fixture The component fixture
+ * @param email Email address (default: user@example.com)
+ * @param password Password (default: pass123)
+ */
 function fillForm(
   fixture: ReturnType<typeof setup>['fixture'],
   email = 'user@example.com',
@@ -43,6 +57,9 @@ function fillForm(
   fixture.detectChanges();
 }
 
+/**
+ * Tests for LoginFormComponent: form validation, submission, and error handling.
+ */
 describe('LoginFormComponent', () => {
   it('submit() calls authService.login() with form email and password', () => {
     const loginFn = vi.fn(() => of(undefined));

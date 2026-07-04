@@ -7,6 +7,12 @@ import { AuthSession } from '../../shared/types/auth';
 // eslint-disable-next-line @typescript-eslint/no-empty-function
 const mockLogger = { debug: () => {} };
 
+/**
+ * A valid session with non-expired access token.
+ *
+ * Used across all test cases to verify session storage, computed signal updates,
+ * and authentication status.
+ */
 const TEST_SESSION: AuthSession = {
   accessToken: 'test-access-token',
   tokenType: 'Bearer',
@@ -21,6 +27,13 @@ const TEST_SESSION: AuthSession = {
   },
 };
 
+/**
+ * AuthStore — reactive session management via Angular signals.
+ *
+ * Verifies that the store correctly manages session state through `setSession()` and
+ * `clearSession()`, and that computed signals (`isAuthenticated`, `currentUser`, `accessToken`)
+ * reflect the current session state.
+ */
 describe('AuthStore', () => {
   let store: AuthStore;
 

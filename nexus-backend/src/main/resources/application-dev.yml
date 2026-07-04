@@ -1,12 +1,18 @@
-# Local development overrides
+# Local development overrides — for use with spring-boot-maven-plugin run config in pom.xml
+
+# --- JPA/SQL Logging ---
+# Show SQL statements in logs for debugging
 spring:
   jpa:
     show-sql: true
     properties:
       hibernate:
         format_sql: false
+
+  # --- Mail Configuration (MailHog) ---
+  # DEV: MailHog local development SMTP server (configure via: docker compose up -d)
   mail:
-    host: localhost   # MailHog — docker compose up -d
+    host: localhost   # MailHog localhost SMTP
     port: 1025        # MailHog SMTP port
     properties:
       mail:
@@ -16,10 +22,13 @@ spring:
             enable: false   # MailHog does not support STARTTLS; override SEC-4 base setting for dev
             required: false
 
+# --- Application Logging ---
+# DEV: Debug logging for all application code
 logging:
   level:
     com.example.nexus: DEBUG
 
+# --- Identity Context (Dev Credentials) ---
 # DEV ONLY — non-secret placeholder keys for local development without a vault.
 # MUST NOT be used in shared, staging, or production environments.
 nexus:
@@ -30,11 +39,12 @@ nexus:
     hmac-key: dev-not-a-secret-hmac-key-min-32-bytes-long
     default-tenant-id: "00000000-0000-7000-8000-000000000001"
     argon2:
-      # Reduced params for fast local iteration. NEVER use in staging or prod.
+      # DEV: Reduced params for fast local iteration. NEVER use in staging or prod.
       memory-kb: 4096
       iterations: 1
       parallelism: 1
 
+# --- Feature Flags (Dev Enabled) ---
 feature:
   nexus-us002-auth-registration:
     enabled: true

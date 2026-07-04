@@ -49,8 +49,14 @@ public class PasswordResetController {
   }
 
   /**
-   * Accepts a password-reset request. Always returns 202 regardless of account existence
-   * (anti-enumeration, AC-1).
+   * Initiates a self-service password reset. Always returns 202 regardless of account existence
+   * (anti-enumeration, AC-1). A password-reset token is generated and sent via email only for
+   * accounts that exist and have not exceeded the hourly rate limit (AC-5).
+   *
+   * @param request     the forgot-password request containing the email address
+   * @param httpRequest the HTTP servlet request (used to extract client IP and trace ID)
+   * @return 202 Accepted with generic success message (identical for existing and non-existing accounts)
+   * @throws FieldValidationException if email format is invalid (400)
    */
   @PostMapping("/password/forgot")
   @ResponseStatus(HttpStatus.ACCEPTED)
@@ -69,7 +75,15 @@ public class PasswordResetController {
   }
 
   /**
-   * Redeems a password-reset token and sets a new password.
+   * Redeems a password-reset token and sets a new password. Transitions {@code LOCKED} accounts
+   * back to {@code ACTIVE} (AC-4) and revokes all existing refresh tokens to invalidate open sessions.
+   *
+   * @param request     the reset request containing the token and new password
+   * @param httpRequest the HTTP servlet request (used to extract client IP and trace ID)
+   * @return 200 OK with success message
+   * @throws TokenExpiredException    if the token is not found, expired, or already consumed (410)
+   * @throws FieldValidationException if the new password is too short or in the denylist (400)
+   * @throws FieldValidationException if the new password is identical to the current password (400)
    */
   @PostMapping("/password/reset")
   @Operation(summary = "Reset password using the one-time reset token")
@@ -86,6 +100,13 @@ public class PasswordResetController {
     return new ResetPasswordResponse("Password reset successfully. Please sign in.");
   }
 
+  /**
+   * Constructs a {@link RequestContext} from the HTTP request, extracting client IP, trace ID,
+   * and user-agent header for audit events and forensic tracking.
+   *
+   * @param req the HTTP servlet request
+   * @return request context with client IP, trace ID, and user-agent
+   */
   private RequestContext requestContext(HttpServletRequest req) {
     // user_agent is advisory forensic context only, never an authorization input -- captured
     // verbatim; RequestContext.of(...) caps and escapes it before it reaches storage.

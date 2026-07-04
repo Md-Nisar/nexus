@@ -1,3 +1,8 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   APP HEADER COMPONENT
+   Sticky navigation bar with wordmark and theme toggle.
+   ───────────────────────────────────────────────────────────────────────── */
+
 .app-header {
   position: sticky;
   top: 0;
@@ -10,6 +15,10 @@
   background-color: var(--nx-color-canvas);
   border-bottom: 1px solid var(--nx-color-outline);
 
+  /* ─────────────────────────────────────────────────────────────────────
+     WORDMARK — Brand logo link with hover state
+     ───────────────────────────────────────────────────────────────────── */
+
   &__wordmark {
     font-family: var(--nx-font-family);
     font-size: var(--nx-text-md);
@@ -17,11 +26,16 @@
     letter-spacing: var(--nx-tracking-subhead);
     color: var(--nx-color-primary);
     text-decoration: none;
+    transition: color var(--nx-duration-base) var(--nx-easing-standard);
 
     &:hover {
       color: var(--nx-color-primary-hover);
     }
   }
+
+  /* ─────────────────────────────────────────────────────────────────────
+     THEME TOGGLE — Icon button for light/dark mode switch
+     ───────────────────────────────────────────────────────────────────── */
 
   &__theme-toggle {
     display: flex;

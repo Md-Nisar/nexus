@@ -61,7 +61,16 @@ public class ResendVerificationUseCase {
     this.eventPublisher = eventPublisher;
   }
 
-  /** Sends a new verification email if the account is PENDING and within rate limits. */
+  /**
+   * Resends a verification email for a PENDING-status user, or silently succeeds for unknown
+   * or already-active accounts (anti-enumeration). Enforces rate limits: max 1 resend per 60s
+   * and max 5 resends per 24 hours per account.
+   *
+   * @param tenantId the owning tenant
+   * @param rawEmail the email address (will be normalized and blind-indexed)
+   * @param ctx      per-request context (IP, traceId) for audit events
+   * @throws RateLimitException if the account has exceeded per-minute or per-day resend limits (429)
+   */
   public void resend(UUID tenantId, String rawEmail, RequestContext ctx) {
     String emailHmac = emailBlindIndexService.blindIndex(rawEmail);
 
@@ -91,6 +100,15 @@ public class ResendVerificationUseCase {
             .withMetadata(ctx.toMetadataJson()));
   }
 
+  /**
+   * Enforces per-minute and per-day rate limits for verification email resends.
+   * Throws {@link RateLimitException} with appropriate retry-after if limits are exceeded.
+   *
+   * @param tenantId the owning tenant
+   * @param userId   the user attempting the resend
+   * @param ctx      per-request context for audit events
+   * @throws RateLimitException if per-minute limit (1 per 60s) or per-day limit (5 per 24h) is exceeded
+   */
   private void enforceRateLimit(UUID tenantId, UUID userId, RequestContext ctx) {
     Instant now = Instant.now();
     if (authTokenPort.countByUserIdAndTypeAndCreatedAtAfter(

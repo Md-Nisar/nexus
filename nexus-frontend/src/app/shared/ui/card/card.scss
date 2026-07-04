@@ -1,3 +1,9 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   CARD COMPONENT
+   Mat card wrapper with 3 surface elevation variants (flat, raised, outlined)
+   using surface ladder + hairline borders for depth.
+   ───────────────────────────────────────────────────────────────────────── */
+
 :host {
   display: block;
 }
@@ -6,36 +12,47 @@
   border-radius: var(--nx-radius-lg);
   overflow: hidden;
 
+  /* ─────────────────────────────────────────────────────────────────────
+     VARIANTS — flat | raised | outlined
+     Depth via surface lift (flat → surface | raised → surface-2) + border
+     ───────────────────────────────────────────────────────────────────── */
+
+  /* Flat — default card with hairline outline */
   &--flat {
     background-color: var(--nx-color-surface);
     box-shadow: none;
     border: 1px solid var(--nx-color-outline-variant);
   }
 
+  /* Raised — elevated surface-2 with subtle shadow (on light mode only) */
   &--raised {
     background-color: var(--nx-color-surface-2);
     box-shadow: var(--nx-shadow-sm);
     border: 1px solid var(--nx-color-outline-variant);
   }
 
+  /* Outlined — flat with stronger hairline border */
   &--outlined {
     background-color: var(--nx-color-surface);
     box-shadow: none;
     border: 1px solid var(--nx-color-outline);
   }
 
+  /* Content padding & text color */
   mat-card-content {
     padding: var(--nx-space-4);
     color: var(--nx-color-on-surface);
     font-size: var(--nx-text-base);
   }
 
+  /* Action footer padding */
   mat-card-actions {
     padding: var(--nx-space-3) var(--nx-space-4);
     min-height: 0;
   }
 }
 
+/* Header actions — flex-end layout for right-aligned actions */
 .nx-card__header-actions {
   flex: 1;
   display: flex;

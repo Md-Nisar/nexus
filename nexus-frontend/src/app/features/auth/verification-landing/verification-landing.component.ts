@@ -13,6 +13,22 @@ import { AuthService } from '../auth.service';
 import { AppError } from '../../../shared/types/app-error';
 import { ViewState, failure, loading, success } from '../../../shared/types/view-state';
 
+/**
+ * Email verification landing page (US-002).
+ *
+ * Consumes a one-time email verification token from the `?token=` query parameter
+ * and transitions the user's account from PENDING → ACTIVE. The token is extracted
+ * and immediately removed from the URL to prevent leakage via Referer headers and
+ * browser history.
+ *
+ * States:
+ * - `loading` — verification request in progress
+ * - `success` — email verified, account is ACTIVE
+ * - `error` — token invalid, expired, or consumed; if code is AUTH_VRF_002, shows resend link
+ *
+ * Security: Token is cleared from URL before any backend call (replaceUrl: true).
+ * Ref: docs/features/US-002/03-design.md § 10.11
+ */
 @Component({
   selector: 'app-verification-landing',
   standalone: true,
@@ -29,8 +45,10 @@ export class VerificationLandingComponent implements OnInit {
     initialValue: {} as Record<string, string>,
   });
 
+  /** Current verification state: loading, success, or error. */
   protected readonly state = signal<ViewState<void>>(loading);
 
+  /** Extracts error details from state for template binding; null if state is not error. */
   protected readonly errorDetail = computed(() => {
     const s = this.state();
     return s.kind === 'error' ? s.error : null;
@@ -38,9 +56,15 @@ export class VerificationLandingComponent implements OnInit {
 
   ngOnInit(): void {
     const token = this.queryParams()['token'];
-    // Strip the token from the URL to prevent Referer leakage and browser-history exposure,
-    // matching the same hardening applied to the password-reset link.
+
+    // SECURITY: Strip the token from the URL immediately to prevent:
+    // - Referer header leakage if user navigates away
+    // - Browser history exposure if user presses back
+    // - Proxy/CDN log exposure
+    // This must run BEFORE the backend call to minimize the exposure window.
+    // Matches the same hardening applied to password-reset links (US-007).
     this.router.navigate([], { relativeTo: this.route, queryParams: {}, replaceUrl: true });
+
     if (!token) {
       this.state.set(
         failure<void>({
@@ -51,6 +75,9 @@ export class VerificationLandingComponent implements OnInit {
       );
       return;
     }
+
+    // POST to /api/v1/auth/verify-email with the token.
+    // Backend: hashes the token, looks up in auth_tokens, marks consumed, transitions user PENDING → ACTIVE.
     this.authService.verifyEmail(token).subscribe({
       next: () => this.state.set(success(undefined)),
       error: (err: AppError) => this.state.set(failure<void>(err)),

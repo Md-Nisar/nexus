@@ -1,3 +1,8 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   VERIFICATION LANDING PAGE
+   Full-height centered card for email verification flow with loading, success, and error states.
+   ───────────────────────────────────────────────────────────────────────── */
+
 :host {
   display: flex;
   align-items: center;
@@ -6,6 +11,10 @@
   padding: var(--nx-space-6);
   background-color: var(--nx-color-canvas);
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   VERIFICATION CARD — Centered 400px container for all verification states
+   ───────────────────────────────────────────────────────────────────────── */
 
 .verif {
   display: flex;
@@ -19,6 +28,10 @@
   background-color: var(--nx-color-surface);
   border: 1px solid var(--nx-color-outline);
   border-radius: var(--nx-radius-lg);
+
+  /* ─────────────────────────────────────────────────────────────────────
+     ICON STATES — Spinner (loading), success, or error
+     ───────────────────────────────────────────────────────────────────── */
 
   &__spinner-icon {
     font-size: 48px;
@@ -42,6 +55,10 @@
     }
   }
 
+  /* ─────────────────────────────────────────────────────────────────────
+     TITLE & MESSAGE
+     ───────────────────────────────────────────────────────────────────── */
+
   &__heading {
     margin: 0;
     font-size: var(--nx-text-2xl);
@@ -55,7 +72,12 @@
     font-size: var(--nx-text-base);
     color: var(--nx-color-on-surface-muted);
     max-width: 320px;
+    line-height: var(--nx-leading-normal);
   }
+
+  /* ─────────────────────────────────────────────────────────────────────
+     ACTION — Primary CTA button (retry, back to login, etc.)
+     ───────────────────────────────────────────────────────────────────── */
 
   &__action {
     margin-top: var(--nx-space-2);
@@ -77,6 +99,7 @@
   }
 }
 
+/* Spinner rotation animation */
 @keyframes spin {
   to {
     transform: rotate(360deg);

@@ -1,3 +1,8 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   EMPTY STATE COMPONENT
+   Centered placeholder layout when no content (e.g., empty table, empty search results).
+   ───────────────────────────────────────────────────────────────────────── */
+
 :host {
   display: block;
 }
@@ -11,6 +16,7 @@
   padding: var(--nx-space-12) var(--nx-space-6);
   text-align: center;
 
+  /* Centered icon — faint outline color for de-emphasis */
   &__icon {
     font-size: 64px;
     width: 64px;
@@ -18,6 +24,7 @@
     color: var(--nx-color-outline);
   }
 
+  /* Title — primary text emphasis */
   &__title {
     font-size: var(--nx-text-lg);
     font-weight: var(--nx-weight-medium);
@@ -25,6 +32,7 @@
     margin: 0;
   }
 
+  /* Description — muted secondary text with max-width constraint */
   &__description {
     font-size: var(--nx-text-base);
     color: var(--nx-color-on-surface-muted);
@@ -33,6 +41,7 @@
     line-height: var(--nx-leading-normal);
   }
 
+  /* Action — optional CTA button spacing */
   &__action {
     margin-top: var(--nx-space-2);
   }

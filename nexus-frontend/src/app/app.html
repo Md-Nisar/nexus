@@ -1,6 +1,9 @@
+<!-- Application header: wordmark and theme toggle -->
 <header class="app-header">
+  <!-- Wordmark: links to home; aria-label for screen readers -->
   <a class="app-header__wordmark" routerLink="/" aria-label="Nexus home">Nexus</a>
 
+  <!-- Theme toggle button: triggers dark/light mode switch -->
   <button
     class="app-header__theme-toggle"
     [attr.aria-label]="themeLabel()"
@@ -11,4 +14,5 @@
   </button>
 </header>
 
+<!-- Feature content renders here via the router -->
 <router-outlet />

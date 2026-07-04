@@ -1,15 +1,26 @@
-// Global toast styles — applied via panelClass on MatSnackBar overlays.
-// Loaded in angular.json styles[] so the CDK overlay (outside component tree) picks them up.
+/* ─────────────────────────────────────────────────────────────────────────
+   TOAST / SNACKBAR COMPONENT
+   Global overlay styles applied via panelClass on MatSnackBar.
+   Loaded in angular.json styles[] so the CDK overlay (outside component tree) picks them up.
+   ───────────────────────────────────────────────────────────────────────── */
+
 .nx-toast {
+  /* ─────────────────────────────────────────────────────────────────────
+     CONTAINER — Constrained width and border radius
+     ───────────────────────────────────────────────────────────────────── */
+
   &.mat-mdc-snack-bar-container {
     border-radius: var(--nx-radius-sm);
     min-width: 320px;
     max-width: 480px;
   }
 
+  /* ─────────────────────────────────────────────────────────────────────
+     SURFACE — Dark elevated surface with subtle shadow
+     Left border indicator for semantic color coding
+     ───────────────────────────────────────────────────────────────────── */
+
   .mdc-snackbar__surface {
-    // Dark surface with light ink — matches the Linear dark-canvas aesthetic.
-    // NOT inverted (on-surface / surface swap was wrong in dark mode).
     background-color: var(--nx-color-surface-2) !important;
     color: var(--nx-color-on-surface) !important;
     border-left: 4px solid transparent;
@@ -18,6 +29,10 @@
       0 2px 8px 0 rgba(0, 0, 0, 0.3);
   }
 
+  /* ─────────────────────────────────────────────────────────────────────
+     TEXT & ACTION — Muted label, primary action link
+     ───────────────────────────────────────────────────────────────────── */
+
   .mat-mdc-snack-bar-label {
     color: var(--nx-color-on-surface-muted);
   }
@@ -25,6 +40,10 @@
   .mat-mdc-button.mat-mdc-snack-bar-action {
     color: var(--nx-color-primary);
   }
+
+  /* ─────────────────────────────────────────────────────────────────────
+     VARIANTS — Left border color indicates semantic meaning
+     ───────────────────────────────────────────────────────────────────── */
 
   &--success .mdc-snackbar__surface {
     border-left-color: var(--nx-color-success);

@@ -1,16 +1,27 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   TABLE COMPONENT
+   Data table with responsive horizontal scroll, striped rows, and optional clickability.
+   ───────────────────────────────────────────────────────────────────────── */
+
 :host {
   display: block;
 }
 
+/* Responsive scroll container — enables horizontal scroll on mobile/narrow viewports */
 .nx-table-wrapper {
   overflow-x: auto;
   border-radius: var(--nx-radius-sm);
   border: 1px solid var(--nx-color-outline-variant);
 }
 
+/* Base table styles */
 .nx-table {
   width: 100%;
   border-collapse: collapse;
+
+  /* ─────────────────────────────────────────────────────────────────────
+     HEADER CELLS — Sticky elevated surface with muted text
+     ───────────────────────────────────────────────────────────────────── */
 
   th.mat-mdc-header-cell {
     font-weight: var(--nx-weight-medium);
@@ -21,12 +32,20 @@
     white-space: nowrap;
   }
 
+  /* ─────────────────────────────────────────────────────────────────────
+     DATA CELLS — Hairline border separator between rows
+     ───────────────────────────────────────────────────────────────────── */
+
   td.mat-mdc-cell {
     font-size: var(--nx-text-base);
     color: var(--nx-color-on-surface);
     padding: var(--nx-space-3) var(--nx-space-4);
     border-bottom: 1px solid var(--nx-color-outline-variant);
   }
+
+  /* ─────────────────────────────────────────────────────────────────────
+     ROW STATES — Optional hover highlight for clickable rows
+     ───────────────────────────────────────────────────────────────────── */
 
   &__row {
     transition: background-color var(--nx-duration-fast) var(--nx-easing-standard);
@@ -40,12 +59,20 @@
     }
   }
 
+  /* ─────────────────────────────────────────────────────────────────────
+     EMPTY STATE — Centered placeholder when no rows
+     ───────────────────────────────────────────────────────────────────── */
+
   &__empty {
     text-align: center;
     padding: var(--nx-space-12) var(--nx-space-4);
     color: var(--nx-color-on-surface-muted);
     font-size: var(--nx-text-base);
   }
+
+  /* ─────────────────────────────────────────────────────────────────────
+     MONOSPACE TEXT — For IDs, codes, hashes
+     ───────────────────────────────────────────────────────────────────── */
 
   &__mono {
     font-family: var(--nx-font-family-mono);

@@ -1,24 +1,35 @@
 # Smoke-profile config for Spring context smoke tests (NexusBackendApplicationTests).
 # Real integration tests (*IT) use Testcontainers MySQL — see TESTING.md.
+
+# --- Database Configuration (H2 In-Memory) ---
+# SMOKE: Use in-memory H2 database for fast context load without Docker
 spring:
   datasource:
     url: jdbc:h2:mem:nexus
     username: sa
     password: ""
     driver-class-name: org.h2.Driver
+
+  # --- JPA/Hibernate (Schema Auto-Create) ---
+  # SMOKE: H2 creates schema on-the-fly; Flyway disabled for non-MySQL
   jpa:
     hibernate:
       ddl-auto: create-drop
+
+  # --- Database Migrations ---
+  # Migrations are MySQL-flavoured SQL; they only run against real MySQL
   flyway:
-    # Migrations are MySQL-flavoured SQL; they only run against real MySQL
     enabled: false
+
+  # --- Mail Configuration (Logging Only) ---
+  # SMOKE: "disabled" activates LoggingMailSenderAdapter (no SMTP connection attempted).
+  # JavaMailSenderAutoConfiguration still creates a JavaMailSender bean (non-empty host),
+  # but it is unused since SmtpMailSenderAdapter is suppressed via @ConditionalOnMissingBean.
   mail:
-    # "disabled" activates LoggingMailSenderAdapter (no SMTP connection attempted).
-    # JavaMailSenderAutoConfiguration still creates a JavaMailSender bean (non-empty host),
-    # but it is unused since SmtpMailSenderAdapter is suppressed via @ConditionalOnMissingBean.
     host: disabled
 
-# Dev-placeholder keys bypass SEC-T5 because active profile is "smoke".
+# --- Identity Context (Smoke Credentials) ---
+# SMOKE: Dev-placeholder keys bypass SEC-T5 because active profile is "smoke".
 # Not real credentials — never use outside dev/smoke.
 nexus:
   identity:
@@ -28,10 +39,12 @@ nexus:
     hmac-key: ${NEXUS_HMAC_KEY_EXAMPLE:test-hmac-key-min-32-bytes-long-example-value}
     default-tenant-id: "00000000-0000-7000-8000-000000000001"
     argon2:
+      # SMOKE: Fast params for smoke test speed
       memory-kb: 4096
       iterations: 1
       parallelism: 1
 
+# --- Feature Flags (Smoke Profile) ---
 feature:
   nexus-us002-auth-registration:
     enabled: false

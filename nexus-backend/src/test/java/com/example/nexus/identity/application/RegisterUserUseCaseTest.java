@@ -34,6 +34,19 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.context.ApplicationEventPublisher;
 
+/**
+ * Unit tests for {@link RegisterUserUseCase}: user account registration flow.
+ *
+ * <p>Test strategy:
+ * <ul>
+ *   <li>Happy path: creates pending user with verification token and publishes event
+ *   <li>Duplicate email: anti-enumeration via silent acknowledgment and password hashing
+ *   <li>Password validation: weak password throws exception; no port interactions
+ *   <li>Audit events: verifies tenant ID and outcome recording for all scenarios
+ * </ul>
+ *
+ * <p>Mocks: all ports and services; lenient strictness to allow test setup reuse.
+ */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
 class RegisterUserUseCaseTest {
@@ -74,6 +87,14 @@ class RegisterUserUseCaseTest {
     when(authTokenPort.save(any())).thenAnswer(inv -> inv.getArgument(0));
   }
 
+  /**
+   * Verifies happy path: new user registration creates a pending user record, saves a
+   * verification token, and publishes an email event with raw token for verification link.
+   *
+   * <p>Given: new email address and valid password
+   * When: register() called
+   * Then: user saved as PENDING; verification token created; email event published with token
+   */
   @Test
   void register_happyPath_savesUserAndTokenAndPublishesVerificationEvent() {
     useCase.register(TENANT_ID, RAW_EMAIL, USER_PASS, RequestContext.UNKNOWN);
@@ -90,6 +111,13 @@ class RegisterUserUseCaseTest {
     verify(authEventPort).record(argThat(e -> "REGISTER".equals(e.getEventType())));
   }
 
+  /**
+   * Verifies that REGISTER audit events carry the tenant ID for multi-tenancy support.
+   *
+   * <p>Given: successful registration
+   * When: audit event is recorded
+   * Then: event contains the correct tenant ID
+   */
   @Test
   void should_setTenantId_when_registrationSucceeds() {
     useCase.register(TENANT_ID, RAW_EMAIL, USER_PASS, RequestContext.UNKNOWN);
@@ -98,6 +126,13 @@ class RegisterUserUseCaseTest {
         "REGISTER".equals(e.getEventType()) && TENANT_ID.equals(e.getTenantId())));
   }
 
+  /**
+   * Verifies password is hashed exactly once during registration (no redundant computation).
+   *
+   * <p>Given: valid registration request
+   * When: register() processes password
+   * Then: password hashing is called exactly once
+   */
   @Test
   void register_happyPath_passwordHashedExactlyOnce() {
     useCase.register(TENANT_ID, RAW_EMAIL, USER_PASS, RequestContext.UNKNOWN);
@@ -105,6 +140,15 @@ class RegisterUserUseCaseTest {
     verify(passwordHasherPort, times(1)).hash(USER_PASS);
   }
 
+  /**
+   * Verifies anti-enumeration on duplicate email: use case returns normally, publishes an
+   * email notifying the user that the account exists (helpful), no new user/token created,
+   * and audit records the duplicate attempt as BLOCKED.
+   *
+   * <p>Given: email already registered to another user
+   * When: register() called with duplicate email
+   * Then: no new user/token saved; account-exists email sent; BLOCKED audit event recorded
+   */
   @Test
   void register_duplicateEmail_publishesAccountExistsEventAndDoesNotPersist() {
     User existing = Mockito.mock(User.class);
@@ -126,6 +170,13 @@ class RegisterUserUseCaseTest {
             && "BLOCKED".equals(e.getOutcome())));
   }
 
+  /**
+   * Verifies that REGISTRATION_DUPLICATE_EMAIL audit events carry the tenant ID (multi-tenancy).
+   *
+   * <p>Given: duplicate email within same tenant
+   * When: audit event is recorded
+   * Then: event contains the correct tenant ID
+   */
   @Test
   void should_setTenantId_when_duplicateEmailRegistration() {
     User existing = Mockito.mock(User.class);
@@ -139,6 +190,15 @@ class RegisterUserUseCaseTest {
             && TENANT_ID.equals(e.getTenantId())));
   }
 
+  /**
+   * Verifies anti-enumeration timing defense: password is still hashed on duplicate email
+   * attempts to equalize response time with successful registrations (prevents attackers
+   * from distinguishing known vs. unknown emails via timing).
+   *
+   * <p>Given: duplicate email
+   * When: register() called
+   * Then: password is still hashed despite duplicate (timing blinding)
+   */
   @Test
   void register_duplicateEmail_passwordHashedForAntiEnumeration() {
     User existing = Mockito.mock(User.class);
@@ -150,6 +210,14 @@ class RegisterUserUseCaseTest {
     verify(passwordHasherPort, times(1)).hash(USER_PASS);
   }
 
+  /**
+   * Verifies password validation gate: weak passwords are rejected immediately with
+   * FieldValidationException; no port interactions or persistence occur (fail-fast).
+   *
+   * <p>Given: password that fails policy validation
+   * When: register() called
+   * Then: FieldValidationException thrown; no port or service calls; clean exit
+   */
   @Test
   void register_weakPassword_throwsFieldValidationException_andNoPortInteraction() {
     Mockito.doThrow(new FieldValidationException("AUTH_PWD_001", "password", "Too weak"))

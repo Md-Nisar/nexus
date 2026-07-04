@@ -1,3 +1,9 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   DESIGN SYSTEM PREVIEW PAGE
+   Interactive reference guide for design tokens, components, and typography.
+   Two-column sticky nav + scrollable main content layout.
+   ───────────────────────────────────────────────────────────────────────── */
+
 :host {
   display: block;
   min-height: 100vh;
@@ -5,11 +11,21 @@
   font-family: var(--nx-font-family);
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+   LAYOUT — Two-column grid: 200px sidebar + 1fr main
+   Sidebar is sticky, main content scrolls independently
+   ───────────────────────────────────────────────────────────────────────── */
+
 .ds-layout {
   display: grid;
   grid-template-columns: 200px 1fr;
   min-height: 100vh;
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   SIDEBAR NAVIGATION
+   Sticky left nav with section labels and internal links
+   ───────────────────────────────────────────────────────────────────────── */
 
 .ds-nav {
   position: sticky;
@@ -19,6 +35,7 @@
   padding: var(--nx-space-8) var(--nx-space-4);
   border-right: 1px solid var(--nx-color-outline);
 
+  /* Section label — eyebrow typography */
   &__eyebrow {
     font-size: var(--nx-text-xs);
     font-weight: var(--nx-weight-medium);
@@ -28,6 +45,7 @@
     margin: 0 0 var(--nx-space-4);
   }
 
+  /* Navigation list */
   &__list {
     list-style: none;
     padding: 0;
@@ -37,6 +55,7 @@
     gap: 2px;
   }
 
+  /* Navigation link with hover background */
   &__link {
     display: block;
     padding: var(--nx-space-1) var(--nx-space-3);
@@ -55,10 +74,19 @@
   }
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+   MAIN CONTENT AREA
+   Scrollable with consistent max-width for readability
+   ───────────────────────────────────────────────────────────────────────── */
+
 .ds-main {
   padding: var(--nx-space-8) var(--nx-space-10) var(--nx-space-12);
   max-width: 960px;
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   PAGE HEADER — Title + subtitle with code samples
+   ───────────────────────────────────────────────────────────────────────── */
 
 .ds-header {
   margin-bottom: var(--nx-space-12);
@@ -75,7 +103,7 @@
   &__title {
     font-size: var(--nx-text-3xl);
     font-weight: var(--nx-weight-semibold);
-    letter-spacing: -0.6px;
+    letter-spacing: var(--nx-tracking-headline);
     color: var(--nx-color-on-surface);
     margin: 0;
   }
@@ -85,6 +113,7 @@
     color: var(--nx-color-on-surface-faint);
     margin: 0;
 
+    /* Inline code snippet — monospace with background tint */
     code {
       font-family: var(--nx-font-family-mono);
       font-size: var(--nx-text-sm);
@@ -97,10 +126,16 @@
   }
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+   SECTION — Grouping demos, tokens, or components
+   Scroll-margin for anchor link navigation
+   ───────────────────────────────────────────────────────────────────────── */
+
 .ds-section {
   margin-bottom: var(--nx-space-12);
   scroll-margin-top: var(--nx-space-8);
 
+  /* Section heading with eyebrow styling */
   &__heading {
     font-size: var(--nx-text-sm);
     font-weight: var(--nx-weight-medium);
@@ -112,6 +147,7 @@
     border-bottom: 1px solid var(--nx-color-outline);
   }
 
+  /* Subsection label — smaller eyebrow */
   &__label {
     font-size: var(--nx-text-xs);
     font-weight: var(--nx-weight-medium);
@@ -125,12 +161,19 @@
     }
   }
 
+  /* Section description text */
   &__description {
     font-size: var(--nx-text-base);
     color: var(--nx-color-on-surface-muted);
     margin: 0 0 var(--nx-space-5);
+    line-height: var(--nx-leading-normal);
   }
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   DEMO CONTAINER
+   Card-like container for component previews with optional center alignment
+   ───────────────────────────────────────────────────────────────────────── */
 
 .ds-demo {
   background-color: var(--nx-color-surface);
@@ -144,6 +187,11 @@
   }
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+   LAYOUT UTILITIES
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Flex row with wrap — for button/component galleries */
 .ds-row {
   display: flex;
   flex-wrap: wrap;
@@ -151,11 +199,17 @@
   align-items: flex-start;
 }
 
+/* Responsive grid — auto-fill columns at 260px min-width */
 .ds-form-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: var(--nx-space-5);
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+   COLOR SWATCHES
+   Grid of colored boxes with token names
+   ───────────────────────────────────────────────────────────────────────── */
 
 .ds-swatches {
   display: flex;
@@ -170,10 +224,12 @@
   width: 80px;
   border: 1px solid var(--nx-color-outline);
 
+  /* Color preview box */
   &__color {
     height: 44px;
   }
 
+  /* Token name label — truncated monospace */
   &__name {
     font-family: var(--nx-font-family-mono);
     font-size: 10px;
@@ -190,6 +246,11 @@
   }
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+   TYPE SCALE DISPLAY
+   Vertical stack of typography examples with variable samples
+   ───────────────────────────────────────────────────────────────────────── */
+
 .ds-type-scale {
   display: flex;
   flex-direction: column;
@@ -201,6 +262,7 @@
   align-items: baseline;
   gap: var(--nx-space-6);
 
+  /* Token name in monospace */
   &__label {
     font-family: var(--nx-font-family-mono);
     font-size: var(--nx-text-xs);
@@ -209,6 +271,7 @@
     flex-shrink: 0;
   }
 
+  /* Sample text in actual style */
   &__sample {
     color: var(--nx-color-on-surface);
     font-weight: var(--nx-weight-medium);

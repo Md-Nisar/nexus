@@ -12,6 +12,16 @@ import { NxButton, NxInput } from '../../../shared/ui';
 import { AuthService } from '../auth.service';
 import { AppError } from '../../../shared/types/app-error';
 
+/**
+ * Login form component for user authentication.
+ *
+ * Handles email and password input with client-side validation, displays
+ * authentication errors, and navigates to dashboard on success.
+ *
+ * Responds to error codes including AUTH_001 (invalid credentials),
+ * AUTH_002 (email not verified), RATE_001 (rate limit), and
+ * AUTH_LCK_001 (account locked).
+ */
 @Component({
   selector: 'nx-login-form',
   standalone: true,
@@ -164,15 +174,30 @@ export class LoginFormComponent implements OnInit {
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
 
+  /** Tracks whether an authentication request is in flight. */
   readonly loading = signal(false);
+
+  /** User-facing error message displayed in alert banner. */
   readonly errorMessage = signal<string | null>(null);
+
+  /** Controls password visibility toggle. */
   readonly showPassword = signal(false);
+
+  /** Indicates if user was redirected after a successful password reset. */
   readonly passwordReset = signal(false);
 
+  /**
+   * Checks URL for password reset success indicator.
+   */
   ngOnInit(): void {
     this.passwordReset.set(this.route.snapshot.queryParamMap.get('reset') === 'true');
   }
 
+  /**
+   * Reactive form with email and password controls.
+   * Email: required, valid RFC 5321 format, max 254 chars.
+   * Password: required, max 256 chars (backend enforces policy).
+   */
   readonly loginForm = new FormGroup({
     email: new FormControl('', {
       nonNullable: true,
@@ -184,6 +209,10 @@ export class LoginFormComponent implements OnInit {
     }),
   });
 
+  /**
+   * Computes error message for email field.
+   * Returns empty string if valid or untouched.
+   */
   readonly emailError = computed(() => {
     const control = this.loginForm.controls.email;
     if (!control.touched || control.valid) return '';
@@ -192,6 +221,10 @@ export class LoginFormComponent implements OnInit {
     return '';
   });
 
+  /**
+   * Computes error message for password field.
+   * Returns empty string if valid or untouched.
+   */
   readonly passwordError = computed(() => {
     const control = this.loginForm.controls.password;
     if (!control.touched || control.valid) return '';
@@ -199,6 +232,18 @@ export class LoginFormComponent implements OnInit {
     return '';
   });
 
+  /**
+   * Submits the login form.
+   *
+   * Marks fields as touched, validates form, and calls AuthService.login().
+   * On success, navigates to /dashboard. On error, displays error-code-specific messages:
+   * - AUTH_001: Invalid credentials
+   * - AUTH_002: Email not verified
+   * - RATE_001: Rate limited
+   * - AUTH_LCK_001: Account locked
+   *
+   * No-op if form invalid or request already in flight.
+   */
   submit(): void {
     this.loginForm.controls.email.markAsTouched();
     this.loginForm.controls.password.markAsTouched();

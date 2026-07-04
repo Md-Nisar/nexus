@@ -4,16 +4,44 @@ import { provideAnimationsAsync } from '@angular/platform-browser/animations/asy
 import { describe, it, expect } from 'vitest';
 import { NxTable, TableColumn } from './table';
 
+/**
+ * Test data: standard table columns and rows for baseline tests.
+ */
 const COLS: TableColumn[] = [
   { key: 'name', header: 'Name' },
   { key: 'email', header: 'Email' },
 ];
 
+/**
+ * Test data: sample rows matching the column structure.
+ */
 const ROWS = [
   { name: 'Alice', email: 'alice@example.com' },
   { name: 'Bob', email: 'bob@example.com' },
 ];
 
+/**
+ * Test suite for NxTable component.
+ *
+ * ## Coverage
+ * - Rendering: wrapper, headers, rows
+ * - Loading state: progress bar visibility
+ * - Pagination: controls visibility and structure
+ * - Sorting: header click behavior and event emission
+ * - Row interaction: clickable state and click emission
+ * - Cell types: text (default), badge, mono rendering
+ * - Empty state: fallback content and slot
+ * - Accessibility: ARIA labels and semantic structure
+ *
+ * ## Test Strategy
+ * - Unit tests focus on component interaction and event emission
+ * - Accessibility is verified via ARIA attributes and semantic elements
+ * - Material components (sort, paginator) are mocked; only interaction behavior tested
+ * - Cell rendering logic tested via @switch/@case coverage
+ *
+ * Note: Integration tests (with Material animations, user interactions) would be in
+ * `table.integration.spec.ts` using Playwright for end-to-end verification.
+ */
 describe('NxTable', () => {
   beforeEach(() => {
     TestBed.configureTestingModule({
