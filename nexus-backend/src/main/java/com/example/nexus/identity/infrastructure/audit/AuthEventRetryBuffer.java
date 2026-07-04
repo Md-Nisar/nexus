@@ -1,5 +1,6 @@
 package com.example.nexus.identity.infrastructure.audit;
 
+import com.example.nexus.common.observation.ExecutionObserver;
 import com.example.nexus.identity.application.port.out.AuditAlertPort;
 import com.example.nexus.identity.domain.AuditAlert;
 import com.example.nexus.identity.domain.AuditAlertType;
@@ -83,6 +84,7 @@ public class AuthEventRetryBuffer {
   private final AuditAlertPort alertPort;
   private final Clock clock;
   private final AuditRetryProperties properties;
+  private final ExecutionObserver executionObserver;
 
   private final Map<AuditLane, BlockingQueue<BufferedAuthEvent>> queues =
       new EnumMap<>(AuditLane.class);
@@ -99,11 +101,13 @@ public class AuthEventRetryBuffer {
       AuditAlertPort alertPort,
       MeterRegistry meterRegistry,
       Clock clock,
-      AuditRetryProperties properties) {
+      AuditRetryProperties properties,
+      ExecutionObserver executionObserver) {
     this.repository = repository;
     this.alertPort = alertPort;
     this.clock = clock;
     this.properties = properties;
+    this.executionObserver = executionObserver;
 
     queues.put(AuditLane.PRIORITY, new ArrayBlockingQueue<>(properties.priorityCapacity()));
     queues.put(AuditLane.STANDARD, new ArrayBlockingQueue<>(properties.standardCapacity()));
@@ -138,14 +142,22 @@ public class AuthEventRetryBuffer {
    */
   @Scheduled(fixedDelayString = "${nexus.identity.audit.retry-buffer.drain-interval-ms:10000}")
   public void drain() {
-    try {
-      drainLane(AuditLane.PRIORITY);
-      drainLane(AuditLane.STANDARD);
-    } catch (RuntimeException e) {
-      // Structural T-D4 guard: a bug in the drain loop itself (not a single item's save failure,
-      // which is already caught inside drainLane) must never kill the @Scheduled thread.
-      log.error("Unexpected exception in AuthEventRetryBuffer.drain() — scheduler continues", e);
-    }
+    DrainStats stats = new DrainStats();
+    executionObserver.observe(
+        "scheduled_job",
+        "schedule",
+        "AuthEventRetryBuffer.drain",
+        true, // Log success at INFO
+        true, // Terminal background boundary (logs stack trace on unexpected failures)
+        () -> {
+          drainLane(AuditLane.PRIORITY, stats);
+          drainLane(AuditLane.STANDARD, stats);
+          if (stats.processed > 0) {
+            log.info("AuthEventRetryBuffer.drain stats: processed={} success={} failure={}",
+                stats.processed, stats.success, stats.failure);
+          }
+        }
+    );
   }
 
   /**
@@ -188,7 +200,7 @@ public class AuthEventRetryBuffer {
     return false;
   }
 
-  private void drainLane(AuditLane lane) {
+  private void drainLane(AuditLane lane, DrainStats stats) {
     BlockingQueue<BufferedAuthEvent> queue = queues.get(lane);
     int due = queue.size();
     Instant now = clock.instant();
@@ -202,23 +214,34 @@ public class AuthEventRetryBuffer {
         requeueOrDrop(lane, queue, buffered); // not due yet this tick — put back, don't retry
         continue;
       }
-      attemptRetry(lane, queue, buffered, now);
+      stats.processed++;
+      attemptRetry(lane, queue, buffered, now, stats);
     }
   }
 
   private void attemptRetry(
       AuditLane lane, BlockingQueue<BufferedAuthEvent> queue, BufferedAuthEvent buffered,
-      Instant now) {
+      Instant now, DrainStats stats) {
     try {
       repository.save(buffered.event());
       retrySuccessCounters.get(lane).increment();
+      stats.success++;
     } catch (DataAccessException e) {
+      stats.failure++;
       handleRetryFailure(lane, queue, buffered, now, e);
     } catch (RuntimeException e) {
-      // A single item's unexpected failure must not abort the rest of the lane's drain pass.
+      stats.failure++;
+      // Not a terminal boundary for individual item, but we log the error here.
+      // Global/drain wrapper is the terminal boundary for the job itself.
       log.error("Unexpected exception retrying buffered audit event [lane={}]", lane, e);
       handleRetryFailure(lane, queue, buffered, now, e);
     }
+  }
+
+  private static class DrainStats {
+    int processed = 0;
+    int success = 0;
+    int failure = 0;
   }
 
   private void handleRetryFailure(

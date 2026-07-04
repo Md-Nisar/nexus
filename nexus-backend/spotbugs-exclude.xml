@@ -37,4 +37,22 @@
         <Class name="com.example.nexus.identity.infrastructure.persistence.JpaAuthEventAdapter" />
         <Bug pattern="EI_EXPOSE_REP2" />
     </Match>
+    <!--
+      ExecutionObserver constructor-injects the Spring-managed singleton MeterRegistry
+      bean and stores it directly. Same rationale as other exclusions: MeterRegistry is
+      a registry/factory, not a value object.
+    -->
+    <Match>
+        <Class name="com.example.nexus.common.observation.ExecutionObserver" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
+    <!--
+      AuthEventRetryBuffer constructor-injects the ExecutionObserver bean and stores it
+      directly. Same rationale: ExecutionObserver is a stateful infrastructure component,
+      not a value object.
+    -->
+    <Match>
+        <Class name="com.example.nexus.identity.infrastructure.audit.AuthEventRetryBuffer" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
 </FindBugsFilter>

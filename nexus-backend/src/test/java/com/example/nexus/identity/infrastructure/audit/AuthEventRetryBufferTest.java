@@ -1,5 +1,7 @@
 package com.example.nexus.identity.infrastructure.audit;
 
+import com.example.nexus.common.observation.ExecutionObserver;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
@@ -59,7 +61,7 @@ class AuthEventRetryBufferTest {
     meterRegistry = new SimpleMeterRegistry();
     clock = Clock.fixed(FIXED_NOW, ZoneOffset.UTC);
     properties = defaultProperties();
-    buffer = new AuthEventRetryBuffer(repository, alertPort, meterRegistry, clock, properties);
+    buffer = new AuthEventRetryBuffer(repository, alertPort, meterRegistry, clock, properties, new ExecutionObserver(meterRegistry));
   }
 
   // ---- routing + depth reflection ----------------------------------------------------------
@@ -113,9 +115,10 @@ class AuthEventRetryBufferTest {
   @Test
   void should_reportPositiveOldestAge_when_eventBufferedAndClockAdvances() {
     MutableClock mutableClock = new MutableClock(FIXED_NOW);
+    SimpleMeterRegistry localRegistry = new SimpleMeterRegistry();
     AuthEventRetryBuffer bufferWithMutableClock =
         new AuthEventRetryBuffer(
-            repository, alertPort, new SimpleMeterRegistry(), mutableClock, properties);
+            repository, alertPort, localRegistry, mutableClock, properties, new ExecutionObserver(localRegistry));
     bufferWithMutableClock.enqueue(standardEvent());
 
     mutableClock.advanceSeconds(42);
@@ -173,8 +176,9 @@ class AuthEventRetryBufferTest {
   @Test
   void should_returnFalse_when_standardLaneAtCapacity() {
     AuditRetryProperties small = smallCapacityProperties(2, 3);
+    SimpleMeterRegistry localRegistry = new SimpleMeterRegistry();
     AuthEventRetryBuffer smallBuffer =
-        new AuthEventRetryBuffer(repository, alertPort, new SimpleMeterRegistry(), clock, small);
+        new AuthEventRetryBuffer(repository, alertPort, localRegistry, clock, small, new ExecutionObserver(localRegistry));
 
     smallBuffer.enqueue(standardEvent());
     smallBuffer.enqueue(standardEvent());
@@ -190,7 +194,7 @@ class AuthEventRetryBufferTest {
     AuditRetryProperties small = smallCapacityProperties(2, 3);
     SimpleMeterRegistry localRegistry = new SimpleMeterRegistry();
     AuthEventRetryBuffer smallBuffer =
-        new AuthEventRetryBuffer(repository, alertPort, localRegistry, clock, small);
+        new AuthEventRetryBuffer(repository, alertPort, localRegistry, clock, small, new ExecutionObserver(localRegistry));
 
     smallBuffer.enqueue(priorityEvent());
     smallBuffer.enqueue(priorityEvent()); // fills the 2-capacity priority lane
@@ -209,8 +213,9 @@ class AuthEventRetryBufferTest {
   @Test
   void should_notReducePriorityLaneCapacity_when_standardLaneEnqueueRejected() {
     AuditRetryProperties small = smallCapacityProperties(2, 1);
+    SimpleMeterRegistry localRegistry = new SimpleMeterRegistry();
     AuthEventRetryBuffer smallBuffer =
-        new AuthEventRetryBuffer(repository, alertPort, new SimpleMeterRegistry(), clock, small);
+        new AuthEventRetryBuffer(repository, alertPort, localRegistry, clock, small, new ExecutionObserver(localRegistry));
 
     smallBuffer.enqueue(standardEvent());
     smallBuffer.enqueue(standardEvent()); // rejected — standard lane capacity 1
@@ -329,9 +334,10 @@ class AuthEventRetryBufferTest {
     AuditRetryProperties singleAttempt =
         new AuditRetryProperties(
             true, 200, 800, 10_000L, 1, List.of(Duration.ofSeconds(1)), null, null);
+    SimpleMeterRegistry localRegistry = new SimpleMeterRegistry();
     AuthEventRetryBuffer singleAttemptBuffer =
         new AuthEventRetryBuffer(
-            repository, alertPort, new SimpleMeterRegistry(), clock, singleAttempt);
+            repository, alertPort, localRegistry, clock, singleAttempt, new ExecutionObserver(localRegistry));
     singleAttemptBuffer.enqueue(standardEvent());
     when(repository.save(any(AuthEvent.class)))
         .thenThrow(new DataAccessResourceFailureException("db down"));

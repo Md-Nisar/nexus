@@ -25,7 +25,8 @@ import java.util.regex.Pattern;
 public class CorrelationIdFilter extends OncePerRequestFilter {
 
   public static final String CORRELATION_HEADER = "X-Correlation-Id";
-  public static final String MDC_KEY = "traceId";
+  public static final String MDC_CORRELATION_ID_KEY = "correlationId";
+  public static final String MDC_KEY = "traceId"; // Deprecated alias
 
   // Incoming header values are untrusted — restrict to a safe charset to prevent log injection
   private static final Pattern SAFE_ID = Pattern.compile("^[A-Za-z0-9._-]{1,64}$");
@@ -35,15 +36,17 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
       HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
       throws ServletException, IOException {
     String incoming = request.getHeader(CORRELATION_HEADER);
-    String traceId = (incoming != null && SAFE_ID.matcher(incoming).matches())
+    String correlationId = (incoming != null && SAFE_ID.matcher(incoming).matches())
         ? incoming
         : UUID.randomUUID().toString();
 
-    MDC.put(MDC_KEY, traceId);
-    response.setHeader(CORRELATION_HEADER, traceId);
+    MDC.put(MDC_CORRELATION_ID_KEY, correlationId);
+    MDC.put(MDC_KEY, correlationId);
+    response.setHeader(CORRELATION_HEADER, correlationId);
     try {
       filterChain.doFilter(request, response);
     } finally {
+      MDC.remove(MDC_CORRELATION_ID_KEY);
       MDC.remove(MDC_KEY);
     }
   }

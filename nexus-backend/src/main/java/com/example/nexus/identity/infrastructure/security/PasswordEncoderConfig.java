@@ -4,21 +4,16 @@ import com.example.nexus.identity.application.port.out.PasswordHasherPort;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.security.crypto.argon2.Argon2PasswordEncoder;
 
 /**
  * Wires the Argon2id password encoder and the {@link PasswordHasherPort} adapter bean.
- *
- * <p>{@link EnableAsync} is declared here (exactly once) to activate {@code @Async} processing
- * for {@code MailEventListener}'s {@code @TransactionalEventListener(AFTER_COMMIT)} methods.
  *
  * <p>Encoder parameters come from {@code nexus.identity.argon2.*} properties.
  * OWASP 2023 production minimums are the defaults in {@code application.yml}; lower values
  * in {@code application-dev.yml} keep local iteration fast.
  */
 @Configuration
-@EnableAsync
 public class PasswordEncoderConfig {
 
   /**

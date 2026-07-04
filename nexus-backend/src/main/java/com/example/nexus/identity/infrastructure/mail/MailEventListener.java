@@ -1,12 +1,10 @@
 package com.example.nexus.identity.infrastructure.mail;
 
-import com.example.nexus.common.domain.LogMaskingUtil;
+import com.example.nexus.common.observation.ExecutionObserver;
 import com.example.nexus.identity.application.event.AccountExistsEmailEvent;
 import com.example.nexus.identity.application.event.PasswordResetEmailEvent;
 import com.example.nexus.identity.application.event.VerificationEmailEvent;
 import com.example.nexus.identity.application.port.out.MailSenderPort;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionPhase;
@@ -23,12 +21,12 @@ import org.springframework.transaction.event.TransactionalEventListener;
 @Component
 public class MailEventListener {
 
-  private static final Logger log = LoggerFactory.getLogger(MailEventListener.class);
-
   private final MailSenderPort mailSenderPort;
+  private final ExecutionObserver executionObserver;
 
-  public MailEventListener(MailSenderPort mailSenderPort) {
+  public MailEventListener(MailSenderPort mailSenderPort, ExecutionObserver executionObserver) {
     this.mailSenderPort = mailSenderPort;
+    this.executionObserver = executionObserver;
   }
 
   /**
@@ -40,8 +38,14 @@ public class MailEventListener {
   @Async
   @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
   public void onVerificationEmail(VerificationEmailEvent event) {
-    log.debug("Dispatching verification email to {}", LogMaskingUtil.maskEmail(event.toEmail()));
-    mailSenderPort.sendVerificationEmail(event.toEmail(), event.rawToken());
+    executionObserver.observe(
+        "event_processing",
+        "async",
+        "onVerificationEmail",
+        true, // Log success at INFO
+        true, // Terminal async boundary
+        () -> mailSenderPort.sendVerificationEmail(event.toEmail(), event.rawToken())
+    );
   }
 
   /**
@@ -53,8 +57,14 @@ public class MailEventListener {
   @Async
   @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
   public void onAccountExists(AccountExistsEmailEvent event) {
-    log.debug("Dispatching account-exists email to {}", LogMaskingUtil.maskEmail(event.toEmail()));
-    mailSenderPort.sendAccountExistsEmail(event.toEmail());
+    executionObserver.observe(
+        "event_processing",
+        "async",
+        "onAccountExists",
+        true,
+        true,
+        () -> mailSenderPort.sendAccountExistsEmail(event.toEmail())
+    );
   }
 
   /**
@@ -66,7 +76,13 @@ public class MailEventListener {
   @Async
   @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
   public void onPasswordReset(PasswordResetEmailEvent event) {
-    log.debug("Dispatching password-reset email to {}", LogMaskingUtil.maskEmail(event.toEmail()));
-    mailSenderPort.sendPasswordResetEmail(event.toEmail(), event.rawToken());
+    executionObserver.observe(
+        "event_processing",
+        "async",
+        "onPasswordReset",
+        true,
+        true,
+        () -> mailSenderPort.sendPasswordResetEmail(event.toEmail(), event.rawToken())
+    );
   }
 }

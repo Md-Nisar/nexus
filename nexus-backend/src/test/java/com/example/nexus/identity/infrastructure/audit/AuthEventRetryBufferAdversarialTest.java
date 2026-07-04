@@ -523,7 +523,7 @@ class AuthEventRetryBufferAdversarialTest {
 
   private AuthEventRetryBuffer newBuffer(
       AuditRetryProperties props, Clock clock, SimpleMeterRegistry registry) {
-    return new AuthEventRetryBuffer(repository, alertPort, registry, clock, props);
+    return new AuthEventRetryBuffer(repository, alertPort, registry, clock, props, new com.example.nexus.common.observation.ExecutionObserver(registry));
   }
 
   private AuditRetryProperties capacityProperties(int priorityCapacity, int standardCapacity) {

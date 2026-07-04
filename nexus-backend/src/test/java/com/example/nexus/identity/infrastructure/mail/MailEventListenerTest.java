@@ -7,20 +7,22 @@ import com.example.nexus.identity.application.event.PasswordResetEmailEvent;
 import com.example.nexus.identity.application.event.VerificationEmailEvent;
 import com.example.nexus.identity.application.port.out.MailSenderPort;
 import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
 
-@ExtendWith(MockitoExtension.class)
 class MailEventListenerTest {
 
-  @Mock
   private MailSenderPort mailSenderPort;
-
-  @InjectMocks
   private MailEventListener listener;
+
+  @BeforeEach
+  void setUp() {
+    mailSenderPort = org.mockito.Mockito.mock(MailSenderPort.class);
+    listener = new MailEventListener(
+        mailSenderPort,
+        new com.example.nexus.common.observation.ExecutionObserver(null)
+    );
+  }
 
   @Test
   void onVerificationEmail_delegatesRawTokenAndAddress_toPort() {
