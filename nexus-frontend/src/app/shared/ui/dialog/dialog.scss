@@ -1,5 +1,14 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   DIALOG COMPONENT
+   Modal dialog layout with header, content (scrollable), and action footer.
+   ───────────────────────────────────────────────────────────────────────── */
+
 .nx-dialog {
   padding: var(--nx-space-2);
+
+  /* ─────────────────────────────────────────────────────────────────────
+     HEADER — Title + close button layout
+     ───────────────────────────────────────────────────────────────────── */
 
   &__header {
     display: flex;
@@ -15,19 +24,29 @@
     margin: 0;
   }
 
+  /* ─────────────────────────────────────────────────────────────────────
+     CONTENT — Scrollable up to 60vh, muted text color
+     ───────────────────────────────────────────────────────────────────── */
+
   &__content {
     padding: var(--nx-space-4);
     color: var(--nx-color-on-surface-muted);
     font-size: var(--nx-text-base);
     line-height: var(--nx-leading-normal);
     max-height: 60vh;
+    overflow-y: auto;
   }
+
+  /* ─────────────────────────────────────────────────────────────────────
+     ACTIONS — Button row (OK, Cancel, etc.)
+     ───────────────────────────────────────────────────────────────────── */
 
   &__actions {
     padding: var(--nx-space-3) var(--nx-space-4) var(--nx-space-4);
     gap: var(--nx-space-2);
   }
 
+  /* Danger confirm button — override styles for destructive action */
   &__confirm--danger {
     background-color: var(--nx-color-error) !important;
     color: var(--nx-color-on-error) !important;

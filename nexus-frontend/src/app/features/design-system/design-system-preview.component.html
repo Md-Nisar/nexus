@@ -1,7 +1,8 @@
 <div class="ds-layout">
-  <!-- ── Sidebar nav ──────────────────────────────────────────────────────── -->
+  <!-- Sidebar navigation: links to anchors within the main content for quick section jump -->
   <nav class="ds-nav" aria-label="Design system sections">
     <p class="ds-nav__eyebrow">Nexus Design System</p>
+    <!-- Navigation list: all section links organized in reading order -->
     <ul class="ds-nav__list">
       <li><a class="ds-nav__link" href="#colors">Colors</a></li>
       <li><a class="ds-nav__link" href="#typography">Typography</a></li>
@@ -17,11 +18,13 @@
     </ul>
   </nav>
 
-  <!-- ── Main content ─────────────────────────────────────────────────────── -->
+  <!-- Main content: all component previews and design tokens organized by section -->
   <main class="ds-main">
+    <!-- Page header: title, theme toggle, and description -->
     <header class="ds-header">
       <div class="ds-header__top">
         <h1 class="ds-header__title">Design System</h1>
+        <!-- Theme toggle: switches between light and dark mode; icon changes with theme -->
         <nx-button
           variant="ghost"
           size="sm"
@@ -37,15 +40,19 @@
       </p>
     </header>
 
-    <!-- ── Colors ─────────────────────────────────────────────────────────── -->
+    <!-- Colors section: token palette organized by group (surfaces, accents, semantics, text) -->
     <section id="colors" class="ds-section">
       <h2 class="ds-section__heading">Colors</h2>
+      <!-- Outer loop: iterate over color groups (surface, primary, success, etc.) -->
       @for (group of colorSwatches; track group.group) {
         <p class="ds-section__label">{{ group.group }}</p>
         <div class="ds-swatches">
+          <!-- Inner loop: render swatch card for each token in group -->
           @for (token of group.tokens; track token.name) {
             <div class="ds-swatch">
+              <!-- Color preview: background set from CSS custom property -->
               <div class="ds-swatch__color" [style.background]="'var(' + token.var + ')'"></div>
+              <!-- Token name label: optional dark text styling for light backgrounds -->
               <div class="ds-swatch__name" [class.ds-swatch__name--dark]="token.dark">
                 {{ token.name }}
               </div>
@@ -55,13 +62,16 @@
       }
     </section>
 
-    <!-- ── Typography ─────────────────────────────────────────────────────── -->
+    <!-- Typography section: type scale showing font sizes from headings to captions -->
     <section id="typography" class="ds-section">
       <h2 class="ds-section__heading">Typography</h2>
       <div class="ds-type-scale">
+        <!-- Loop: render each typographic scale level (3xl, 2xl, xl, lg, md, etc.) -->
         @for (row of typeScale; track row.token) {
           <div class="ds-type-row">
+            <!-- Label: descriptive name (e.g., "Headline", "Body") and token reference -->
             <span class="ds-type-row__label">{{ row.label }}</span>
+            <!-- Sample text: rendered at actual font size via CSS custom property -->
             <span class="ds-type-row__sample" [style.font-size]="'var(' + row.token + ')'">
               {{ row.sample }}
             </span>
@@ -70,10 +80,11 @@
       </div>
     </section>
 
-    <!-- ── Buttons ────────────────────────────────────────────────────────── -->
+    <!-- Buttons section: nx-button component with all variants, sizes, and states -->
     <section id="buttons" class="ds-section">
       <h2 class="ds-section__heading">Buttons — nx-button</h2>
 
+      <!-- Variants subsection: primary, secondary, tertiary, danger, ghost, inverse -->
       <p class="ds-section__label">Variants</p>
       <div class="ds-demo">
         <div class="ds-row">
@@ -120,10 +131,11 @@
       </div>
     </section>
 
-    <!-- ── Badges ────────────────────────────────────────────────────────── -->
+    <!-- Badges section: nx-badge component showing status and priority indicators -->
     <section id="badges" class="ds-section">
       <h2 class="ds-section__heading">Badges — nx-badge</h2>
 
+      <!-- Variants subsection: all badge types (success, primary, warning, error, neutral) -->
       <p class="ds-section__label">Variants</p>
       <div class="ds-demo">
         <div class="ds-row">
@@ -135,9 +147,11 @@
         </div>
       </div>
 
+      <!-- In-context subsection: badges used with issue identifiers (realistic usage pattern) -->
       <p class="ds-section__label">In context — status + priority combinations</p>
       <div class="ds-demo">
         <div class="ds-row">
+          <!-- Issue card: identifier followed by status badge and priority badge -->
           <span
             style="
               display: flex;
@@ -181,11 +195,13 @@
       </div>
     </section>
 
-    <!-- ── Inputs ─────────────────────────────────────────────────────────── -->
+    <!-- Inputs section: nx-input component with text, email, password, and icon variants -->
     <section id="inputs" class="ds-section">
       <h2 class="ds-section__heading">Inputs — nx-input</h2>
 
+      <!-- Form grid: 2-column layout showing different input states and configurations -->
       <div class="ds-form-grid">
+        <!-- Default state: empty text input with placeholder -->
         <div>
           <p class="ds-section__label">Default</p>
           <div class="ds-demo">
@@ -193,6 +209,7 @@
           </div>
         </div>
 
+        <!-- With hint: input with helper text below (gray, smaller font) -->
         <div>
           <p class="ds-section__label">With value + hint</p>
           <div class="ds-demo">
@@ -206,6 +223,7 @@
           </div>
         </div>
 
+        <!-- Error state: input with error message and red border/text -->
         <div>
           <p class="ds-section__label">Error state</p>
           <div class="ds-demo">
@@ -217,6 +235,7 @@
           </div>
         </div>
 
+        <!-- Disabled state: read-only input with reduced opacity -->
         <div>
           <p class="ds-section__label">Disabled</p>
           <div class="ds-demo">
@@ -224,6 +243,7 @@
           </div>
         </div>
 
+        <!-- With prefix icon: search icon inside input (interactive) -->
         <div>
           <p class="ds-section__label">With prefix icon</p>
           <div class="ds-demo">
@@ -236,6 +256,7 @@
           </div>
         </div>
 
+        <!-- Password type: typically with show/hide toggle (not shown in preview) -->
         <div>
           <p class="ds-section__label">Password</p>
           <div class="ds-demo">
@@ -250,11 +271,13 @@
       </div>
     </section>
 
-    <!-- ── Select ─────────────────────────────────────────────────────────── -->
+    <!-- Select section: nx-select component for single and multi-select dropdowns -->
     <section id="select" class="ds-section">
       <h2 class="ds-section__heading">Select — nx-select</h2>
 
+      <!-- Form grid: 2-column layout showing select variants and states -->
       <div class="ds-form-grid">
+        <!-- Default single-select: dropdown bound to form control -->
         <div>
           <p class="ds-section__label">Default</p>
           <div class="ds-demo">
@@ -262,6 +285,7 @@
           </div>
         </div>
 
+        <!-- With hint: helper text below the dropdown (e.g., explaining filtering behavior) -->
         <div>
           <p class="ds-section__label">With hint</p>
           <div class="ds-demo">
@@ -273,6 +297,7 @@
           </div>
         </div>
 
+        <!-- Error state: red border and error message; empty options to show error condition -->
         <div>
           <p class="ds-section__label">Error state</p>
           <div class="ds-demo">
@@ -280,6 +305,7 @@
           </div>
         </div>
 
+        <!-- Multi-select: checkbox-style selection of multiple options from dropdown -->
         <div>
           <p class="ds-section__label">Multi-select</p>
           <div class="ds-demo">
@@ -294,11 +320,13 @@
       </div>
     </section>
 
-    <!-- ── Cards ──────────────────────────────────────────────────────────── -->
+    <!-- Cards section: nx-card component showing different elevation styles -->
     <section id="cards" class="ds-section">
       <h2 class="ds-section__heading">Cards — nx-card</h2>
 
+      <!-- Card elevation variants: outline (border-only), raised (shadow), flat (minimal) -->
       <div class="ds-row">
+        <!-- Outlined card: hairline border for subtle separation without lift -->
         <nx-card
           elevation="outlined"
           title="Outlined"
@@ -309,6 +337,7 @@
           <nx-button slot="actions" variant="secondary" size="sm">Action</nx-button>
         </nx-card>
 
+        <!-- Raised card: shadow-based elevation for prominent content -->
         <nx-card
           elevation="raised"
           title="Raised"
@@ -319,6 +348,7 @@
           <nx-button slot="actions" variant="secondary" size="sm">Action</nx-button>
         </nx-card>
 
+        <!-- Flat card: no visual elevation; contrast alone provides separation -->
         <nx-card elevation="flat" title="Flat" subtitle="elevation='flat'" style="width: 240px">
           No shadow, no border. Relies on background contrast for depth.
           <nx-button slot="actions" variant="secondary" size="sm">Action</nx-button>
@@ -326,9 +356,10 @@
       </div>
     </section>
 
-    <!-- ── Table ──────────────────────────────────────────────────────────── -->
+    <!-- Table section: nx-table component for data display with clickable rows -->
     <section id="table" class="ds-section">
       <h2 class="ds-section__heading">Table — nx-table</h2>
+      <!-- Data table: renders columns and rows from component properties; clickable=true enables row selection -->
       <nx-table
         [columns]="tableColumns"
         [rows]="tableRows"
@@ -343,11 +374,13 @@
       />
     </section>
 
-    <!-- ── Empty State ────────────────────────────────────────────────────── -->
+    <!-- Empty state section: nx-empty-state component for zero-data and no-results conditions -->
     <section id="empty" class="ds-section">
       <h2 class="ds-section__heading">Empty State — nx-empty-state</h2>
 
+      <!-- Two variants: empty collection and filtered-out results; each with icon, title, description, and action -->
       <div class="ds-row">
+        <!-- Empty collection: no data exists yet; action creates first item -->
         <div class="ds-demo ds-demo--centered" style="flex: 1; min-width: 280px">
           <nx-empty-state
             icon="inbox"
@@ -358,6 +391,7 @@
           </nx-empty-state>
         </div>
 
+        <!-- No results: data exists but filters hide all items; action clears filters -->
         <div class="ds-demo ds-demo--centered" style="flex: 1; min-width: 280px">
           <nx-empty-state
             icon="search_off"
@@ -370,11 +404,13 @@
       </div>
     </section>
 
-    <!-- ── Error State ────────────────────────────────────────────────────── -->
+    <!-- Error state section: nx-error-state component for failure and permission denial scenarios -->
     <section id="error" class="ds-section">
       <h2 class="ds-section__heading">Error State — nx-error-state</h2>
 
+      <!-- Two variants: transient error with retry action, and permanent error (access denied) with custom action -->
       <div class="ds-row">
+        <!-- Transient error: server error that may resolve on retry; showRetry=true displays retry button -->
         <div class="ds-demo ds-demo--centered" style="flex: 1; min-width: 280px">
           <nx-error-state
             title="Failed to load issues"
@@ -384,6 +420,7 @@
           />
         </div>
 
+        <!-- Permanent error: permission denied; no retry; custom action (contact admin) provided -->
         <div class="ds-demo ds-demo--centered" style="flex: 1; min-width: 280px">
           <nx-error-state
             title="Access denied"
@@ -396,19 +433,25 @@
       </div>
     </section>
 
-    <!-- ── Toast ──────────────────────────────────────────────────────────── -->
+    <!-- Toast section: NxToast service for transient notifications (success, info, warning, error) -->
     <section id="toast" class="ds-section">
       <h2 class="ds-section__heading">Toast — NxToast service</h2>
       <p class="ds-section__description">
+        <!-- NxToast is an injectable service: buttons demonstrate each toast type via (clicked) handler -->
         <code>NxToast</code> is an injectable service. Click to trigger each variant.
       </p>
       <div class="ds-demo">
+        <!-- Button row: each button shows a different toast variant when clicked -->
         <div class="ds-row">
+          <!-- Success toast: positive feedback (e.g., "Item saved") -->
           <nx-button variant="primary" (clicked)="showToast('success')"> Success toast </nx-button>
+          <!-- Info toast: neutral information (e.g., "Session expires in 5 minutes") -->
           <nx-button variant="secondary" (clicked)="showToast('info')"> Info toast </nx-button>
+          <!-- Warning toast: caution or attention-needed message -->
           <nx-button variant="secondary" (clicked)="showToast('warning')">
             Warning toast
           </nx-button>
+          <!-- Error toast: error or failure feedback (e.g., "Failed to save") -->
           <nx-button variant="danger" (clicked)="showToast('error')"> Error toast </nx-button>
         </div>
       </div>

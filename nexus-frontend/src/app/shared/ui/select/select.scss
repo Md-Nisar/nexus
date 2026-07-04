@@ -1,3 +1,8 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   SELECT COMPONENT
+   Mat select wrapper with MDC shape token override for consistency with inputs.
+   ───────────────────────────────────────────────────────────────────────── */
+
 :host {
   display: block;
 }
@@ -5,5 +10,6 @@
 .nx-select {
   width: 100%;
 
+  /* Shape override — 6px radius for outlined variant */
   --mdc-outlined-text-field-container-shape: var(--nx-radius-sm);
 }

@@ -14,6 +14,9 @@ const TEST_CONFIG = { production: false, apiBaseUrl: '/api', logLevel: 'debug' }
 const VALID_TOKEN = 'a'.repeat(64);
 const USER_PASS = 'Passphrase99!'; // EXAMPLE — not a real credential
 
+/**
+ * Tests for registration, email verification, and password reset flows.
+ */
 describe('AuthService', () => {
   let service: AuthService;
   let controller: HttpTestingController;
@@ -194,6 +197,10 @@ describe('AuthService', () => {
   });
 });
 
+/**
+ * Tests for session lifecycle: login, logout, and token refresh.
+ * Verifies secure HTTP-only cookie handling and AuthStore synchronization.
+ */
 describe('AuthService — login/logout/refresh', () => {
   let service: AuthService;
   let controller: HttpTestingController;

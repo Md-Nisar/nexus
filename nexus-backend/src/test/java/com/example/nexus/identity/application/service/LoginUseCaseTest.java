@@ -39,6 +39,21 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+/**
+ * Unit tests for {@link LoginUseCase}: authentication and account status flow.
+ *
+ * <p>Test strategy:
+ * <ul>
+ *   <li>Happy path: correct credentials, active user → login success with token
+ *   <li>Anti-enumeration: unknown email still runs Argon2 to equalize timing
+ *   <li>Account status gates: PENDING (unverified) and LOCKED (brute-force) users rejected with specific codes
+ *   <li>Lockout mechanism: verifies lock check precedes credential validation; ACCOUNT_UNLOCKED event on recovery
+ *   <li>Audit events: tracks tenant ID on all outcomes (success, failure, pending, locked)
+ *   <li>Failure counting: persistent resets after successful login; no reset on fresh account
+ * </ul>
+ *
+ * <p>Mocks: all ports/services; fixed Clock for deterministic lock timing; Mockito strict=LENIENT.
+ */
 class LoginUseCaseTest {
 
   private EmailBlindIndexService emailBlindIndexService;

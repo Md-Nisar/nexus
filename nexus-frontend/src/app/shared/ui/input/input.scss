@@ -1,3 +1,8 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   INPUT COMPONENT
+   Mat form field wrapper with MDC token overrides for shape and icon padding.
+   ───────────────────────────────────────────────────────────────────────── */
+
 :host {
   display: block;
 }
@@ -5,10 +10,12 @@
 .nx-input {
   width: 100%;
 
+  /* Shape override — 6px radius for outlined and filled variants */
   --mdc-outlined-text-field-container-shape: var(--nx-radius-sm);
   --mdc-filled-text-field-container-shape: var(--nx-radius-sm) var(--nx-radius-sm) 0 0;
+}
 
-  &.mat-mdc-form-field-has-icon-prefix .mat-mdc-form-field-infix {
-    padding-inline-start: var(--nx-space-2);
-  }
+/* Icon prefix padding — reduce inset padding when icon is present */
+.nx-input.mat-mdc-form-field-has-icon-prefix .mat-mdc-form-field-infix {
+  padding-inline-start: var(--nx-space-2);
 }

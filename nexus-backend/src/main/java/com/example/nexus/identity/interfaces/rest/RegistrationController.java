@@ -58,7 +58,17 @@ public class RegistrationController {
     this.defaultTenantId = defaultTenantId;
   }
 
-  /** Registers a new user account or silently acknowledges a duplicate (anti-enumeration). */
+  /**
+   * Registers a new user account or silently acknowledges a duplicate (anti-enumeration).
+   * Returns identical 201 responses for both new registrations and duplicate attempts.
+   * A verification email is sent asynchronously only for new accounts.
+   *
+   * @param request    registration credentials (email, password)
+   * @param httpRequest the HTTP servlet request (used to extract client IP and trace ID)
+   * @return 201 Created with success message (identical for new and duplicate attempts)
+   * @throws FieldValidationException if password violates the configured policy (400)
+   * @throws FieldValidationException if email format is invalid (400)
+   */
   @PostMapping("/register")
   @ResponseStatus(HttpStatus.CREATED)
   @Operation(summary = "Register a new user account")
@@ -77,7 +87,16 @@ public class RegistrationController {
         "Registration successful. Please check your email to verify your account.");
   }
 
-  /** Verifies an email address using the one-time token sent during registration. */
+  /**
+   * Verifies an email address using the one-time token sent during registration.
+   * Transitions the user from PENDING to ACTIVE status, enabling login.
+   *
+   * @param request     the verification request containing the raw token
+   * @param httpRequest the HTTP servlet request (used to extract client IP and trace ID)
+   * @return 200 OK with success message
+   * @throws TokenExpiredException if the token is not found, has expired, or is already consumed (410)
+   * @throws TokenExpiredException if the user account is in an invalid state (410)
+   */
   @PostMapping("/verify-email")
   @Operation(summary = "Verify an email address using the one-time token")
   @ApiResponse(responseCode = "200", description = "Email verified successfully")
@@ -90,7 +109,15 @@ public class RegistrationController {
     return new VerifyEmailResponse("Email verified successfully. You can now log in.");
   }
 
-  /** Sends a new verification email; returns the same response regardless of account state. */
+  /**
+   * Sends a new verification email; returns the same response regardless of account state (anti-enumeration).
+   * Implements rate limiting via {@code ResendVerificationUseCase} to prevent mail bombing.
+   *
+   * @param request     the resend request containing the email address
+   * @param httpRequest the HTTP servlet request (used to extract client IP and trace ID)
+   * @return 200 OK with generic success message (identical for existing and non-existing accounts)
+   * @throws RateLimitException if too many resend requests have been made for this email/IP (429)
+   */
   @PostMapping("/resend-verification")
   @Operation(summary = "Request a new verification email")
   @ApiResponse(
@@ -107,6 +134,13 @@ public class RegistrationController {
         "If your account is pending verification, a new link has been sent.");
   }
 
+  /**
+   * Constructs a {@link RequestContext} from the HTTP request, extracting client IP, trace ID,
+   * and user-agent header for audit and rate-limit tracking.
+   *
+   * @param req the HTTP servlet request
+   * @return request context with client IP, trace ID, and user-agent
+   */
   private RequestContext requestContext(HttpServletRequest req) {
     // user_agent is advisory forensic context only, never an authorization input -- captured
     // verbatim; RequestContext.of(...) caps and escapes it before it reaches storage.

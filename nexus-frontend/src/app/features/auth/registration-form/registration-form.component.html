@@ -1,5 +1,7 @@
+<!-- Success state: confirmation after email submitted (state === 'success') -->
 @if (state().kind === 'success') {
   <div class="reg-form__success" data-testid="reg-success" role="status">
+    <!-- Decorative icon; status role announces the message to screen readers -->
     <mat-icon aria-hidden="true" class="reg-form__success-icon">check_circle</mat-icon>
     <h2 class="reg-form__success-heading">Check your inbox</h2>
     <p class="reg-form__success-body">
@@ -8,16 +10,19 @@
     </p>
   </div>
 } @else {
+  <!-- Form state: registration form with email, password, consent, and submit -->
   <form class="reg-form" [formGroup]="form" (ngSubmit)="submit()" novalidate>
     <h2 class="reg-form__heading">Create your account</h2>
 
+    <!-- Form-level error banner: shown only when submission fails and no field-level errors exist.
+         This prevents duplicate error messages when individual fields already show errors. -->
     @if (state().kind === 'error' && !hasFieldErrors()) {
       <div class="reg-form__error-banner" role="alert" data-testid="reg-error-banner">
         {{ errorState().message }}
       </div>
     }
 
-    <!-- Email -->
+    <!-- Email field: accepts email format; validation error shown via [error] binding -->
     <nx-input
       inputId="reg-email"
       formControlName="email"
@@ -27,7 +32,7 @@
       [error]="emailError()"
     />
 
-    <!-- Password -->
+    <!-- Password field with visibility toggle: strength meter displays inline -->
     <div class="reg-form__password-field">
       <nx-input
         inputId="reg-password"
@@ -39,10 +44,11 @@
         [error]="passwordError()"
         (suffixIconClick)="showPassword.update((v) => !v)"
       />
+      <!-- Strength meter: updates in real-time as user types -->
       <app-password-strength-meter [password]="passwordValue()" />
     </div>
 
-    <!-- Consent -->
+    <!-- Consent section: checkbox with conditional error message below -->
     <div class="reg-form__consent">
       <mat-checkbox
         class="reg-form__consent-check"
@@ -52,6 +58,7 @@
         I agree to the
         <a routerLink="/legal/terms" class="reg-form__terms-link">terms and conditions</a>
       </mat-checkbox>
+      <!-- Consent error: shown only if validation fails; aria-describedby links to checkbox -->
       @if (consentError()) {
         <p id="reg-consent-error" class="reg-form__field-error" role="alert">
           {{ consentError() }}
@@ -59,7 +66,7 @@
       }
     </div>
 
-    <!-- Submit -->
+    <!-- Submit button: disabled while form invalid or submission in progress -->
     <nx-button
       type="submit"
       variant="primary"
@@ -72,6 +79,7 @@
       Create account
     </nx-button>
 
+    <!-- Sign-in link: routes to login page for existing users -->
     <p class="reg-form__login-link">
       Already have an account? <a routerLink="/auth/login">Sign in</a>
     </p>

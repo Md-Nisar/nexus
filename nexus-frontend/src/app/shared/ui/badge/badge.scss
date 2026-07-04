@@ -1,3 +1,8 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   BADGE COMPONENT
+   Inline pill-shaped label with 5 semantic color variants (success, error, warning, neutral, primary).
+   ───────────────────────────────────────────────────────────────────────── */
+
 :host {
   display: inline-flex;
   align-items: center;
@@ -8,6 +13,10 @@
   font-weight: var(--nx-weight-medium);
   line-height: 1.6;
   white-space: nowrap;
+
+  /* ─────────────────────────────────────────────────────────────────────
+     VARIANTS — Tinted background + semantic text color
+     ───────────────────────────────────────────────────────────────────── */
 
   &.nx-badge--success {
     background: var(--nx-color-success-surface);

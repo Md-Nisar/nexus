@@ -2,6 +2,7 @@ package com.example.nexus.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.not;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
@@ -164,13 +165,17 @@ class SecurityConfigTest {
   // ── CORS (T-1.5) ──────────────────────────────────────────────────────────
 
   @Test
-  void cors_exposes_set_cookie() throws Exception {
+  void cors_does_not_expose_set_cookie() throws Exception {
+    // Set-Cookie is intentionally NOT exposed: the refresh-token cookie is HttpOnly, so
+    // JavaScript can never read it regardless of CORS exposure — exposing it would only
+    // add attack surface with no functional benefit.
     mvc.perform(options("/api/v1/auth/login")
             .header("Origin", "http://localhost:2000")
             .header("Access-Control-Request-Method", "POST")
             .header("Access-Control-Request-Headers", "Content-Type"))
         .andExpect(status().isOk())
-        .andExpect(header().string("Access-Control-Expose-Headers", containsString("Set-Cookie")));
+        .andExpect(
+            header().string("Access-Control-Expose-Headers", not(containsString("Set-Cookie"))));
   }
 
   @Test

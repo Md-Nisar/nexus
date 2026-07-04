@@ -17,6 +17,10 @@ public interface JpaUserRepository extends JpaRepository<User, UUID> {
    * <p>Served by the {@code uq_users_tenant_id_email_hmac} UNIQUE index. Callers must compute the
    * {@code emailHmac} argument via {@code EmailBlindIndexService.blindIndex()} using the same
    * normalization contract.
+   *
+   * @param tenantId  the tenant identifier
+   * @param emailHmac the HMAC-SHA256 blind index of the email address
+   * @return the matching user, or empty if not found
    */
   Optional<User> findByTenantIdAndEmailHmac(UUID tenantId, String emailHmac);
 
@@ -29,6 +33,9 @@ public interface JpaUserRepository extends JpaRepository<User, UUID> {
    * {@link User#unlockIfExpired}), a JPA save in REQUIRES_NEW would increment {@code version} to
    * V+1 and the outer session would then fail to flush at version V (M-OL-1). A JPQL bulk UPDATE
    * leaves {@code version} unchanged so the outer session can flush normally.
+   *
+   * @param userId the user whose failed attempts and lockout should be cleared
+   * @return the number of rows updated (0 or 1)
    */
   @Modifying(clearAutomatically = true)
   @Query("UPDATE User u SET u.failedAttemptCount = 0, u.lockedUntil = null WHERE u.id = :userId")

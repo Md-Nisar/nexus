@@ -1,29 +1,47 @@
-// Nexus design tokens — Linear aesthetic.
-// Source: docs/design/DESIGN.md (Linear.app analysis, getdesign.md).
-// All values are --nx-* CSS custom properties. Never use raw hex/px in components.
+/* ─────────────────────────────────────────────────────────────────────────
+   DESIGN TOKENS — Nexus / Linear aesthetic
+   Source: docs/design/DESIGN.md (Linear.app analysis)
+   Usage: All values are --nx-* CSS custom properties. Never use raw hex/px in components.
+   ───────────────────────────────────────────────────────────────────────── */
 
-// ── Dark canvas (default) ──────────────────────────────────────────────────
 :root {
-  // ── Surface ladder (depth via lift + hairline, not drop shadows) ──────────
-  --nx-color-canvas: #010102; // deepest shell / sidebar anchor
-  --nx-color-surface: #0f1011; // default card / panel
-  --nx-color-surface-2: #141516; // featured card, hovered
-  --nx-color-surface-3: #18191a; // sub-nav, dropdowns
-  --nx-color-surface-variant: #141516; // alias of surface-2, used by shared/ui
+  /* ─────────────────────────────────────────────────────────────────────
+     COLOR: SURFACE LADDER
+     Depth via lift + hairline borders, not drop shadows.
+     Staircase from canvas (deepest) → surface → surface-2 → surface-3 (lightest)
+     ───────────────────────────────────────────────────────────────────── */
 
-  // ── Borders / hairlines ───────────────────────────────────────────────────
+  --nx-color-canvas: #010102;
+  --nx-color-surface: #0f1011;
+  --nx-color-surface-2: #141516;
+  --nx-color-surface-3: #18191a;
+  --nx-color-surface-variant: #141516;
+
+  /* ─────────────────────────────────────────────────────────────────────
+     COLOR: BORDERS & HAIRLINES
+     Three-tier outline palette: default → variant → strong
+     ───────────────────────────────────────────────────────────────────── */
+
   --nx-color-outline: #23252a;
-  --nx-color-outline-variant: #34343a; // stronger hairline, focus rings
+  --nx-color-outline-variant: #34343a;
   --nx-color-outline-strong: #3e3e44;
 
-  // ── Brand accent — lavender-blue (scarce: brand mark, CTA, focus, links) ──
+  /* ─────────────────────────────────────────────────────────────────────
+     COLOR: PRIMARY BRAND
+     Lavender-blue (#5e6ad2) used sparingly: brand mark, CTAs, focus rings, links
+     ───────────────────────────────────────────────────────────────────── */
+
   --nx-color-primary: #5e6ad2;
   --nx-color-primary-hover: #828fff;
   --nx-color-primary-focus: #5e69d1;
   --nx-color-primary-surface: rgba(94, 106, 210, 0.12);
   --nx-color-on-primary: #ffffff;
 
-  // ── Semantic ──────────────────────────────────────────────────────────────
+  /* ─────────────────────────────────────────────────────────────────────
+     COLOR: SEMANTIC
+     Success, error, warning, info with 12% tinted surface backgrounds
+     ───────────────────────────────────────────────────────────────────── */
+
   --nx-color-success: #27a644;
   --nx-color-success-surface: rgba(39, 166, 68, 0.12);
   --nx-color-error: #e5484d;
@@ -33,27 +51,43 @@
   --nx-color-info: #5e6ad2;
   --nx-color-info-surface: rgba(94, 106, 210, 0.12);
 
-  // ── Ink / text scale ──────────────────────────────────────────────────────
-  --nx-color-on-surface: #f7f8f8; // ink — headlines + body
-  --nx-color-on-surface-muted: #d0d6e0; // ink-muted — secondary
-  --nx-color-on-surface-faint: #8a8f98; // ink-subtle — tertiary / deselected
-  --nx-color-on-surface-dim: #62666d; // ink-tertiary — disabled / footnotes
+  /* ─────────────────────────────────────────────────────────────────────
+     COLOR: INK / TEXT CONTRAST
+     Four-tier text scale: default → muted → faint → dim
+     ───────────────────────────────────────────────────────────────────── */
+
+  --nx-color-on-surface: #f7f8f8;
+  --nx-color-on-surface-muted: #d0d6e0;
+  --nx-color-on-surface-faint: #8a8f98;
+  --nx-color-on-surface-dim: #62666d;
   --nx-color-on-error: #ffffff;
 
-  // ── Inverse (white surfaces used for inverse CTAs) ────────────────────────
+  /* ─────────────────────────────────────────────────────────────────────
+     COLOR: INVERSE
+     White surfaces for inverse CTAs (e.g., dark button on dark surface)
+     ───────────────────────────────────────────────────────────────────── */
+
   --nx-color-inverse-canvas: #ffffff;
   --nx-color-inverse-surface: #f5f6f6;
   --nx-color-inverse-on: #000000;
 
-  // ── Elevation — surface lift only, no drop shadows ────────────────────────
-  // Use surface-2/3 background + hairline border for depth.
+  /* ─────────────────────────────────────────────────────────────────────
+     ELEVATION / SHADOW
+     Shadows disabled in dark mode (depth via surface ladder only).
+     Enabled in light mode for visual separation.
+     ───────────────────────────────────────────────────────────────────── */
+
   --nx-shadow-xs: none;
   --nx-shadow-sm: none;
   --nx-shadow-md: none;
   --nx-shadow-lg: none;
   --nx-shadow-xl: none;
 
-  // ── Spacing (4px base unit) ────────────────────────────────────────────────
+  /* ─────────────────────────────────────────────────────────────────────
+     SPACING
+     4px base unit: 1→24px in defined steps
+     ───────────────────────────────────────────────────────────────────── */
+
   --nx-space-1: 4px;
   --nx-space-2: 8px;
   --nx-space-3: 12px;
@@ -66,45 +100,71 @@
   --nx-space-16: 64px;
   --nx-space-24: 96px;
 
-  // ── Border radius ─────────────────────────────────────────────────────────
-  --nx-radius-xs: 4px; // chips, badges
-  --nx-radius-sm: 6px; // inline tags
-  --nx-radius-md: 8px; // buttons, inputs — Linear's CTA radius
-  --nx-radius-lg: 12px; // cards, panels
-  --nx-radius-xl: 16px; // screenshot panels
-  --nx-radius-2xl: 24px; // oversized banners (rare)
-  --nx-radius-full: 9999px; // avatars, pills, toggle tabs
+  /* ─────────────────────────────────────────────────────────────────────
+     BORDER RADIUS
+     xs→full ranging from chips to avatars/pills
+     ───────────────────────────────────────────────────────────────────── */
 
-  // ── Typography — Inter (closest free substitute for Linear's custom sans) ──
+  --nx-radius-xs: 4px;
+  --nx-radius-sm: 6px;
+  --nx-radius-md: 8px;
+  --nx-radius-lg: 12px;
+  --nx-radius-xl: 16px;
+  --nx-radius-2xl: 24px;
+  --nx-radius-full: 9999px;
+
+  /* ─────────────────────────────────────────────────────────────────────
+     TYPOGRAPHY
+     Inter (closest free substitute for Linear's custom sans-serif)
+     JetBrains Mono for monospace
+     ───────────────────────────────────────────────────────────────────── */
+
   --nx-font-family: 'Inter', -apple-system, system-ui, 'Segoe UI', Roboto, sans-serif;
   --nx-font-family-mono: 'JetBrains Mono', 'SF Mono', ui-monospace, monospace;
 
-  // Sizes
-  --nx-text-xs: 12px; // caption
-  --nx-text-sm: 13px; // eyebrow / mono
-  --nx-text-base: 14px; // body-sm / button labels
-  --nx-text-md: 16px; // body default
-  --nx-text-lg: 18px; // body-lg / lead
-  --nx-text-xl: 20px; // subhead
-  --nx-text-2xl: 22px; // card-title
-  --nx-text-3xl: 28px; // headline
-  --nx-text-4xl: 40px; // display-md
-  --nx-text-5xl: 56px; // display-lg
-  --nx-text-6xl: 80px; // display-xl hero
+  /* ─────────────────────────────────────────────────────────────────────
+     TYPE SCALE — SIZES
+     12px–80px ranging from caption to display-xl hero
+     ───────────────────────────────────────────────────────────────────── */
 
-  // Weights
+  --nx-text-xs: 12px;
+  --nx-text-sm: 13px;
+  --nx-text-base: 14px;
+  --nx-text-md: 16px;
+  --nx-text-lg: 18px;
+  --nx-text-xl: 20px;
+  --nx-text-2xl: 22px;
+  --nx-text-3xl: 28px;
+  --nx-text-4xl: 40px;
+  --nx-text-5xl: 56px;
+  --nx-text-6xl: 80px;
+
+  /* ─────────────────────────────────────────────────────────────────────
+     TYPE SCALE — WEIGHTS
+     400→700: regular, medium, semibold, bold
+     ───────────────────────────────────────────────────────────────────── */
+
   --nx-weight-regular: 400;
   --nx-weight-medium: 500;
-  --nx-weight-semibold: 600; // Linear display weight
+  --nx-weight-semibold: 600;
   --nx-weight-bold: 700;
 
-  // Line heights
+  /* ─────────────────────────────────────────────────────────────────────
+     TYPE SCALE — LINE HEIGHTS
+     1.05→1.75: tight, snug, normal, loose
+     ───────────────────────────────────────────────────────────────────── */
+
   --nx-leading-tight: 1.05;
   --nx-leading-snug: 1.2;
   --nx-leading-normal: 1.5;
   --nx-leading-loose: 1.75;
 
-  // Letter spacing — aggressively negative on large type (Linear's signature)
+  /* ─────────────────────────────────────────────────────────────────────
+     TYPE SCALE — LETTER SPACING
+     Aggressively negative on large type (Linear's signature typographic flavor)
+     Positive tracking on eyebrow labels
+     ───────────────────────────────────────────────────────────────────── */
+
   --nx-tracking-display-xl: -3px;
   --nx-tracking-display-lg: -1.8px;
   --nx-tracking-display-md: -1px;
@@ -115,9 +175,13 @@
   --nx-tracking-body: -0.05px;
   --nx-tracking-body-sm: 0;
   --nx-tracking-caption: 0;
-  --nx-tracking-eyebrow: 0.4px; // only positive — marks section taxonomy
+  --nx-tracking-eyebrow: 0.4px;
 
-  // ── Motion — slightly snappier than default Material ─────────────────────
+  /* ─────────────────────────────────────────────────────────────────────
+     MOTION
+     100ms–250ms durations with snappy easing curves
+     ───────────────────────────────────────────────────────────────────── */
+
   --nx-duration-fast: 100ms;
   --nx-duration-base: 150ms;
   --nx-duration-slow: 250ms;
@@ -125,7 +189,11 @@
   --nx-easing-decelerate: cubic-bezier(0, 0, 0, 1);
   --nx-easing-accelerate: cubic-bezier(0.3, 0, 1, 1);
 
-  // ── Z-index ───────────────────────────────────────────────────────────────
+  /* ─────────────────────────────────────────────────────────────────────
+     Z-INDEX
+     100→600: dropdown, sticky, overlay, modal, toast, tooltip
+     ───────────────────────────────────────────────────────────────────── */
+
   --nx-z-dropdown: 100;
   --nx-z-sticky: 200;
   --nx-z-overlay: 300;
@@ -134,27 +202,36 @@
   --nx-z-tooltip: 600;
 }
 
-// ── Light mode overrides ────────────────────────────────────────────────────
-// Linear's product ships both modes. Same lavender accent; surface ladder flips.
+/* ─────────────────────────────────────────────────────────────────────────
+   LIGHT MODE OVERRIDES
+   Applied via @media (prefers-color-scheme: light)
+   Inverts surface ladder, enables subtle shadows, lightens ink scale
+   ───────────────────────────────────────────────────────────────────────── */
+
 @media (prefers-color-scheme: light) {
   :root {
+    /* Surface ladder flips: white canvas → light grays */
     --nx-color-canvas: #ffffff;
     --nx-color-surface: #f5f6f6;
     --nx-color-surface-2: #f6f7f7;
     --nx-color-surface-3: #ebebec;
     --nx-color-surface-variant: #f6f7f7;
 
+    /* Outline lightens */
     --nx-color-outline: #e4e5e7;
     --nx-color-outline-variant: #d1d2d5;
     --nx-color-outline-strong: #b8babe;
 
+    /* Ink inverts: light text on white becomes dark text */
     --nx-color-on-surface: #111113;
     --nx-color-on-surface-muted: #3b3d40;
     --nx-color-on-surface-faint: #6f7178;
     --nx-color-on-surface-dim: #9b9da2;
 
+    /* Primary surface tint becomes 8% opacity for less prominence on light surfaces */
     --nx-color-primary-surface: rgba(94, 106, 210, 0.08);
 
+    /* Shadows enabled for depth: subtle 6% black opacity scales */
     --nx-shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.06);
     --nx-shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.08), 0 1px 2px -1px rgb(0 0 0 / 0.08);
     --nx-shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.07), 0 2px 4px -2px rgb(0 0 0 / 0.07);
@@ -163,9 +240,12 @@
   }
 }
 
-// ── Manual theme overrides — data-theme attribute wins over OS preference ───
-// html[data-theme="..."] specificity (0,1,1) > @media :root (0,1,0),
-// so setting the attribute always wins regardless of system preference.
+/* ─────────────────────────────────────────────────────────────────────────
+   MANUAL THEME ATTRIBUTE — data-theme="light" or data-theme="dark"
+   html[data-theme] specificity (0,1,1) > @media (0,1,0), so attribute wins
+   Allows manual theme override without OS preference
+   ───────────────────────────────────────────────────────────────────────── */
+
 html[data-theme='light'] {
   --nx-color-canvas: #ffffff;
   --nx-color-surface: #f5f6f6;

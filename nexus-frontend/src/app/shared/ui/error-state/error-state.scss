@@ -1,3 +1,8 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   ERROR STATE COMPONENT
+   Centered error layout with icon, message, and retry action.
+   ───────────────────────────────────────────────────────────────────────── */
+
 :host {
   display: block;
 }
@@ -11,6 +16,7 @@
   padding: var(--nx-space-12) var(--nx-space-6);
   text-align: center;
 
+  /* Error icon — semantic red color for emphasis */
   &__icon {
     font-size: 64px;
     width: 64px;
@@ -18,6 +24,7 @@
     color: var(--nx-color-error);
   }
 
+  /* Title — primary text emphasis */
   &__title {
     font-size: var(--nx-text-lg);
     font-weight: var(--nx-weight-medium);
@@ -25,6 +32,7 @@
     margin: 0;
   }
 
+  /* Message — muted secondary text with max-width constraint */
   &__message {
     font-size: var(--nx-text-base);
     color: var(--nx-color-on-surface-muted);
@@ -33,6 +41,7 @@
     line-height: var(--nx-leading-normal);
   }
 
+  /* Retry button — primary CTA for user recovery action */
   &__retry {
     background-color: var(--nx-color-primary);
     color: var(--nx-color-on-primary);

@@ -13,6 +13,13 @@ import { authGuard } from './auth.guard';
 import { AuthStore } from '../auth/auth.store';
 import { AuthService } from '../../features/auth/auth.service';
 
+/**
+ * authGuard — route protection with silent session restoration.
+ *
+ * Verifies that the guard grants access to authenticated users immediately,
+ * attempts silent refresh on cold start with a valid refresh token, and
+ * redirects to login when the user is unauthenticated and refresh fails.
+ */
 describe('authGuard', () => {
   let mockAuthStore: { isAuthenticated: ReturnType<typeof vi.fn> };
   let mockAuthService: { refresh: ReturnType<typeof vi.fn> };
@@ -20,6 +27,11 @@ describe('authGuard', () => {
   const dummyRoute = {} as ActivatedRouteSnapshot;
   const dummyState = {} as RouterStateSnapshot;
 
+  /**
+   * Executes the guard in the test injection context.
+   *
+   * @returns The guard result (true, UrlTree, or Observable).
+   */
   function runGuard(): MaybeAsync<GuardResult> {
     return TestBed.runInInjectionContext(() => authGuard(dummyRoute, dummyState));
   }

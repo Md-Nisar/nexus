@@ -1,5 +1,7 @@
 # Base configuration — shared by all profiles.
 # Environment-specific values use ${ENV_VAR:default} — never hardcode secrets here.
+
+# --- Spring Application ---
 spring:
   application:
     name: nexus-backend
@@ -10,16 +12,19 @@ spring:
   # keys are supplied — i.e. a mis-configured deploy fails closed instead of silently running dev.
   # Local development uses the dev profile via the spring-boot-maven-plugin run config (pom.xml).
 
-  # Virtual threads: one-thread-per-request scalability without reactive complexity
+  # --- Virtual Threads ---
+  # One-thread-per-request scalability without reactive complexity
   threads:
     virtual:
       enabled: true
 
+  # --- Database Configuration ---
   datasource:
     url: ${DB_URL:jdbc:mysql://localhost:3306/nexus?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC}
     username: ${DB_USERNAME:root}
     password: ${DB_PASSWORD:root}
 
+  # --- JPA/Hibernate ---
   jpa:
     # Flyway owns the schema (ADR 0003) — Hibernate only validates it
     hibernate:
@@ -27,10 +32,12 @@ spring:
     # Prevents lazy-loading from the view layer and connection hogging
     open-in-view: false
 
+  # --- Database Migrations ---
   flyway:
     enabled: true
     locations: classpath:db/migration
 
+  # --- Mail Configuration ---
   mail:
     host: ${MAIL_HOST:}          # Required in staging/prod; dev overrides via application-dev.yml
     port: ${MAIL_PORT:587}
@@ -43,6 +50,7 @@ spring:
             enable: true         # SEC-4: enforce STARTTLS so plaintext SMTP cannot be used
             required: true       # SEC-4: reject connections that do not negotiate STARTTLS
 
+# --- Server Configuration ---
 server:
   port: ${SERVER_PORT:1000}
   shutdown: graceful
@@ -51,6 +59,7 @@ server:
     include-stacktrace: never
     include-message: never
 
+# --- Management & Actuator ---
 management:
   endpoints:
     web:
@@ -74,33 +83,39 @@ management:
         readiness:
           include: readinessState
 
+# --- API Documentation ---
 springdoc:
   api-docs:
     path: /v3/api-docs
   swagger-ui:
     path: /swagger-ui.html
 
+# --- Identity Context & Cryptography ---
 # Identity context crypto material — REQUIRED in every Flyway-enabled environment.
 # Missing key → fast-fail startup (IdentityCryptoConfig). Source from Vault/env vars in prod.
 nexus:
   identity:
+    # --- Encryption ---
     encryption:
       password: ${NEXUS_IDENTITY_ENCRYPTION_PASSWORD}  # AES-256-GCM master password (>=16 chars)
       salt: ${NEXUS_IDENTITY_ENCRYPTION_SALT}          # hex-encoded KDF salt (>=32 hex chars)
-    hmac-key: ${NEXUS_IDENTITY_HMAC_KEY}               # HMAC-SHA256 key for email blind index (>=32 bytes)
+    # HMAC-SHA256 key for email blind index (>=32 bytes)
+    hmac-key: ${NEXUS_IDENTITY_HMAC_KEY}
     # UUID of the default tenant injected into use-cases. Must be set in all non-smoke envs.
     default-tenant-id: ${NEXUS_IDENTITY_DEFAULT_TENANT_ID}
+    # --- Password Hashing (Argon2) ---
+    # OWASP 2023 minimums (prod defaults). Override via env vars for speed in lower envs.
     argon2:
-      # OWASP 2023 minimums (prod defaults). Override via env vars for speed in lower envs.
       memory-kb: ${NEXUS_ARGON2_MEMORY_KB:19456}
       iterations: ${NEXUS_ARGON2_ITERATIONS:2}
       parallelism: ${NEXUS_ARGON2_PARALLELISM:1}
+    # --- Audit Event Buffering ---
+    # US-008 T-08-15 (design §4.1, ADR 0011) — in-process two-lane bounded retry buffer for
+    # auth_events writes that fail their primary synchronous insert. Escape hatch: set enabled
+    # to false to revert to synchronous-swallow-and-WARN-only (pre-US-008 behaviour, no
+    # buffering, no scheduler). All defaults below are bound 1:1 to ADR 0011 §2 — do not change
+    # a value here without updating that document.
     audit:
-      # US-008 T-08-15 (design §4.1, ADR 0011) — in-process two-lane bounded retry buffer for
-      # auth_events writes that fail their primary synchronous insert. Escape hatch: set enabled
-      # to false to revert to synchronous-swallow-and-WARN-only (pre-US-008 behaviour, no
-      # buffering, no scheduler). All defaults below are bound 1:1 to ADR 0011 §2 — do not change
-      # a value here without updating that document.
       retry-buffer:
         enabled: true
         priority-capacity: 200     # LOCKOUT/TOKEN_REFRESH_REUSE/PASSWORD_CHANGED/ACCOUNT_LOCKED_WRITE_FAILED
@@ -116,10 +131,12 @@ nexus:
           depth-warn: 250          # 25% of standard-capacity
           depth-critical: 720      # 90% of standard-capacity
           age-critical: 15m
+  # --- JWT Configuration ---
   jwt:
     private-key-pem: ${NEXUS_JWT_PRIVATE_KEY_PEM:}   # RSA-2048+ PKCS#8 PEM — required in prod; blank = ephemeral key in dev
     public-key-pem: ${NEXUS_JWT_PUBLIC_KEY_PEM:}     # RSA public key PEM — required in prod; derived from private key in dev
     access-token-ttl-seconds: 900
+  # --- Security: Rate Limiting ---
   security:
     rate-limit:
       store-type: memory    # memory | redis; redis requires nexus.redis.* config
@@ -130,11 +147,14 @@ nexus:
       refresh-max-attempts: 30   # POST /api/v1/auth/refresh
       forgot-ip-max-attempts: 10  # POST /api/v1/auth/password/forgot — per-IP per ip-window-seconds
       reset-ip-max-attempts: 20   # POST /api/v1/auth/password/reset  — per-IP per ip-window-seconds
+  # --- Mail Service ---
   mail:
     from-address: ${NEXUS_MAIL_FROM_ADDRESS:noreply@nexus.example.com}
+  # --- Frontend Integration ---
   frontend:
     base-url: ${NEXUS_FRONTEND_BASE_URL:http://localhost:2000}
 
+# --- Feature Flags ---
 feature:
   nexus-us002-auth-registration:
     enabled: ${FEATURE_AUTH_REGISTRATION_ENABLED:false}  # Defaults off; enable per-env

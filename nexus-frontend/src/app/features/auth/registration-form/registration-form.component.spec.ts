@@ -8,10 +8,22 @@ import { RegistrationFormComponent } from './registration-form.component';
 import { AuthService } from '../auth.service';
 import { AppError } from '../../../shared/types/app-error';
 
+/**
+ * Creates a mock AuthService with the specified register implementation.
+ *
+ * @param register Mock implementation of AuthService.register()
+ * @returns Mock AuthService object
+ */
 function makeAuth(register: ReturnType<typeof vi.fn> = vi.fn(() => of(undefined as void))) {
   return { register };
 }
 
+/**
+ * Sets up a test fixture with mocked AuthService.
+ *
+ * @param register Optional mock implementation of AuthService.register()
+ * @returns Test fixture, component instance, and mock service
+ */
 function setup(register?: ReturnType<typeof vi.fn>) {
   const auth = makeAuth(register);
   TestBed.configureTestingModule({
@@ -27,6 +39,14 @@ function setup(register?: ReturnType<typeof vi.fn>) {
   return { fixture, component: fixture.componentInstance, auth };
 }
 
+/**
+ * Helper to fill the registration form with email, password, and consent.
+ *
+ * @param fixture The component fixture
+ * @param email Email address (default: user@example.com)
+ * @param password Password (default: ValidPass1!)
+ * @param consent Whether to accept terms (default: true)
+ */
 function fillForm(
   fixture: ReturnType<typeof setup>['fixture'],
   email = 'user@example.com',
@@ -40,12 +60,22 @@ function fillForm(
   fixture.detectChanges();
 }
 
+/**
+ * Helper to locate the submit button element.
+ * Navigates through <nx-button> host to the underlying <button>.
+ *
+ * @param fixture The component fixture
+ * @returns The HTML submit button element
+ */
 function submitButton(fixture: ReturnType<typeof setup>['fixture']): HTMLButtonElement {
   // data-testid="reg-submit" is on the <nx-button> host; the actual <button> is one level inside.
   const host = fixture.debugElement.query(By.css('[data-testid="reg-submit"]'));
   return host.query(By.css('button')).nativeElement;
 }
 
+/**
+ * Tests for RegistrationFormComponent: form validation, field errors, and submission.
+ */
 describe('RegistrationFormComponent', () => {
   it('should disable submit when consentAccepted is false', () => {
     const { fixture } = setup();

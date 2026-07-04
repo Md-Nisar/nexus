@@ -19,6 +19,13 @@ public class AttributeEncryptor implements AttributeConverter<EmailCipher, Strin
     this.textEncryptor = textEncryptor;
   }
 
+  /**
+   * Encrypts an {@link EmailCipher} to a database-storable string using AES-256-GCM.
+   *
+   * @param emailCipher the domain value object containing plaintext email
+   * @return AES-256-GCM ciphertext for database storage, or {@code null} if input is {@code null}
+   * @throws EncryptionException if encryption fails
+   */
   @Override
   public String convertToDatabaseColumn(EmailCipher emailCipher) {
     if (emailCipher == null) {
@@ -31,6 +38,14 @@ public class AttributeEncryptor implements AttributeConverter<EmailCipher, Strin
     }
   }
 
+  /**
+   * Decrypts a database column to an {@link EmailCipher} domain value object.
+   * The decrypted plaintext is wrapped immediately; callers see plaintext via {@link EmailCipher#value()}.
+   *
+   * @param dbData the AES-256-GCM ciphertext from the database
+   * @return {@link EmailCipher} containing the plaintext email, or {@code null} if input is {@code null}
+   * @throws EncryptionException if decryption fails
+   */
   @Override
   public EmailCipher convertToEntityAttribute(String dbData) {
     if (dbData == null) {

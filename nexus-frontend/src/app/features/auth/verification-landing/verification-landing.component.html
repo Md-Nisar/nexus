@@ -1,25 +1,37 @@
+<!-- Email verification state machine (US-002) -->
 @switch (state().kind) {
+  <!-- Loading: verification request in progress -->
   @case ('loading') {
     <div class="verif verif--verifying" data-testid="verif-verifying" role="status">
+      <!-- Spinner icon: aria-hidden because the status message conveys the state to screen readers -->
       <mat-icon class="verif__spinner-icon" aria-hidden="true">sync</mat-icon>
       <p class="verif__message">Verifying your email address…</p>
     </div>
   }
 
+  <!-- Success: email verified, account transitioned PENDING → ACTIVE -->
   @case ('success') {
     <div class="verif verif--success" data-testid="verif-success" role="status">
+      <!-- Checkmark icon: decorative only, screen reader sees the heading -->
       <mat-icon class="verif__icon verif__icon--success" aria-hidden="true">check_circle</mat-icon>
       <h2 class="verif__heading">Email verified!</h2>
       <p class="verif__message">Your account is active. You can now log in.</p>
+      <!-- Link to login page: next step in the user journey -->
       <a class="verif__action" routerLink="/auth/login">Go to login</a>
     </div>
   }
 
+  <!-- Error: token invalid, expired, or already consumed -->
   @case ('error') {
     <div class="verif verif--error" data-testid="verif-error" role="alert">
+      <!-- Error icon: aria-hidden because the heading and message convey the error to screen readers -->
       <mat-icon class="verif__icon verif__icon--error" aria-hidden="true">error_outline</mat-icon>
       <h2 class="verif__heading">Verification failed</h2>
+      <!-- Error message from backend; all failure paths return AUTH_VRF_002 with a single message
+           to prevent leaking whether the token is invalid, expired, or already consumed (anti-enumeration) -->
       <p class="verif__message">{{ errorDetail()?.message }}</p>
+      <!-- Conditional resend link: only shown if error code is AUTH_VRF_002 (indicates token was found
+           but expired/consumed, so resend makes sense). Do not show for other errors like network failures. -->
       @if (errorDetail()?.code === 'AUTH_VRF_002') {
         <a class="verif__action" routerLink="/auth/resend-verification" data-testid="verif-resend">
           Resend verification email

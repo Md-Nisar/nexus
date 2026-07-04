@@ -1,20 +1,110 @@
 /**
- * Normalized application error. The API error interceptor converts every HTTP failure
- * (backend RFC 7807 problem responses, network failures) into this shape — components
- * never inspect HttpErrorResponse or status codes directly.
+ * Normalized application error shape.
+ *
+ * All HTTP failures (backend RFC 7807 problem responses, network timeouts, connection errors)
+ * are normalized into this shape by the HTTP error interceptor. Components never inspect
+ * HttpErrorResponse or raw HTTP status codes directly — they receive {@link AppError}
+ * through the error channel of {@link ViewState}.
+ *
+ * Error codes are domain-specific strings (e.g. "INVALID_CREDENTIALS", "EMAIL_NOT_VERIFIED",
+ * "ACCOUNT_LOCKED"). Do not couple UI text to HTTP status codes; use the code field instead.
+ *
+ * @security User-facing messages must not leak internal structure. Always render the
+ * backend-provided {@link message} field, never HTTP status or stack traces.
  */
 export interface AppError {
+  /**
+   * Machine-readable error code (e.g. "INVALID_CREDENTIALS", "RESOURCE_NOT_FOUND").
+   * Used to dispatch error handling logic, show translated error text, or trigger
+   * specific recovery flows (e.g. "EMAIL_NOT_VERIFIED" → redirect to verify page).
+   *
+   * Guaranteed to be non-empty and present on every error.
+   * @see {@link isAppError} — use to type-guard unknown values before reading code.
+   */
   readonly code: string;
+
+  /**
+   * Human-readable error message suitable for end users.
+   * Localized on the backend; safe to display in the UI without escaping risk
+   * (XSS is prevented server-side). Never log or expose this to external systems.
+   *
+   * Guaranteed to be non-empty and present on every error.
+   */
   readonly message: string;
+
+  /**
+   * Unique request trace ID (UUID) issued by the backend.
+   * Used to correlate frontend error events with backend logs during troubleshooting.
+   * Displayed in error dialogs and passed to analytics (not PII).
+   *
+   * Present on all backend-generated errors; may be absent for client-side errors
+   * (e.g. network timeouts before the request reached the server).
+   * @security Do not persist or expose in public URLs.
+   */
   readonly traceId?: string;
+
+  /**
+   * Validation error details for failed form submissions.
+   * Present when the error code is "VALIDATION_FAILED" or similar; absent for
+   * authentication/authorization/server errors.
+   *
+   * Each {@link FieldError} maps a form field name to its validation failure reason.
+   * Used to decorate individual form controls with error messages via the error control
+   * in the reactive form (see FormError service).
+   *
+   * Example: [{ field: "email", message: "Invalid email format" }]
+   */
   readonly details?: readonly FieldError[];
 }
 
+/**
+ * Single field validation error.
+ *
+ * Part of the {@link AppError.details} array for validation failures.
+ * Maps a form field name to a human-readable validation failure message.
+ *
+ * Field names match the reactive form control names exactly (case-sensitive)
+ * to enable automatic error association in templates via error directives.
+ */
 export interface FieldError {
+  /**
+   * Form control name (e.g. "email", "password", "firstName").
+   * Must match the reactive form control name exactly for error message binding to work.
+   * Nested controls use dot notation (e.g. "address.zipCode").
+   */
   readonly field: string;
+
+  /**
+   * Localized validation failure message.
+   * Suitable for display in form error regions; safe to render without escaping.
+   * Examples: "Email is required", "Password must be at least 12 characters",
+   * "This email is already registered".
+   */
   readonly message: string;
 }
 
+/**
+ * Type guard for {@link AppError}.
+ *
+ * Narrows an unknown value to AppError by checking that it has the required
+ * code and message fields. Safe to use on untrusted data (e.g. caught exceptions).
+ *
+ * @param value The value to check.
+ * @returns true if value is an AppError, false otherwise.
+ *
+ * @example
+ * ```typescript
+ * try {
+ *   // async operation
+ * } catch (err) {
+ *   if (isAppError(err)) {
+ *     this.error$ = signal(err);
+ *   } else {
+ *     // Handle unexpected error type
+ *   }
+ * }
+ * ```
+ */
 export function isAppError(value: unknown): value is AppError {
   return (
     typeof value === 'object' &&

@@ -47,6 +47,15 @@ public class SecurityConfig {
     this.frontendBaseUrl = frontendBaseUrl;
   }
 
+  /**
+   * Builds the security filter chain: stateless JWT bearer tokens, default-deny authorization,
+   * HSTS, and custom filters for JWT validation and rate limiting.
+   *
+   * @param http              Spring Security's {@link HttpSecurity} for configuration
+   * @param jwtFilter         validates the {@code Authorization: Bearer} header
+   * @param rateLimitFilter   enforces rate limits on login and refresh endpoints
+   * @return the configured {@link SecurityFilterChain}
+   */
   @Bean
   SecurityFilterChain apiSecurity(
       HttpSecurity http,
@@ -80,7 +89,12 @@ public class SecurityConfig {
     return http.build();
   }
 
-  /** Returns 401 RFC 7807 — no redirect, no {@code WWW-Authenticate: Basic} challenge. */
+  /**
+   * Builds an authentication entry point that returns 401 RFC 7807 problem documents.
+   * No redirect, no {@code WWW-Authenticate: Basic} challenge.
+   *
+   * @return an {@link AuthenticationEntryPoint} that writes JSON problem responses on 401
+   */
   @Bean
   AuthenticationEntryPoint jwtAuthenticationEntryPoint() {
     return (request, response, authException) -> {
@@ -93,6 +107,11 @@ public class SecurityConfig {
     };
   }
 
+  /**
+   * Builds an access-denied handler that returns 403 RFC 7807 problem documents.
+   *
+   * @return an {@link AccessDeniedHandler} that writes JSON problem responses on 403
+   */
   @Bean
   AccessDeniedHandler accessDeniedHandler() {
     return (request, response, accessDeniedException) -> {
@@ -105,12 +124,24 @@ public class SecurityConfig {
     };
   }
 
+  /**
+   * Instantiates the JWT authentication filter with the authentication entry point.
+   *
+   * @param jwtPort the JWT validation port
+   * @return a configured {@link JwtAuthenticationFilter}
+   */
   @Bean
   JwtAuthenticationFilter jwtAuthenticationFilter(JwtPort jwtPort) {
     return new JwtAuthenticationFilter(jwtPort, jwtAuthenticationEntryPoint());
   }
 
-  /** Prevents Spring Boot from auto-registering JwtAuthenticationFilter as a servlet filter. */
+  /**
+   * Registers the JWT filter with Spring Boot disabled to prevent duplicate servlet filter registration.
+   * The filter is registered manually in the {@link SecurityFilterChain}.
+   *
+   * @param filter the JWT authentication filter
+   * @return a disabled filter registration bean
+   */
   @Bean
   FilterRegistrationBean<JwtAuthenticationFilter> jwtFilterRegistration(
       JwtAuthenticationFilter filter) {
@@ -119,7 +150,13 @@ public class SecurityConfig {
     return reg;
   }
 
-  /** Prevents Spring Boot from auto-registering LoginRateLimitFilter as a servlet filter. */
+  /**
+   * Registers the login rate-limit filter with Spring Boot disabled to prevent duplicate servlet filter registration.
+   * The filter is registered manually in the {@link SecurityFilterChain}.
+   *
+   * @param filter the login rate-limit filter
+   * @return a disabled filter registration bean
+   */
   @Bean
   FilterRegistrationBean<LoginRateLimitFilter> loginRateLimitFilterRegistration(
       LoginRateLimitFilter filter) {
@@ -128,6 +165,12 @@ public class SecurityConfig {
     return reg;
   }
 
+  /**
+   * Builds the CORS configuration restricting origins to the configured frontend base URL.
+   * {@code Set-Cookie} is intentionally not exposed: the refresh token is HttpOnly and applied automatically.
+   *
+   * @return a {@link CorsConfigurationSource} configured for the frontend and well-known endpoints
+   */
   @Bean
   CorsConfigurationSource corsConfigurationSource() {
     CorsConfiguration cfg = new CorsConfiguration();

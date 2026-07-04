@@ -78,12 +78,26 @@ public class RegisterUserUseCase {
     this.eventPublisher = eventPublisher;
   }
 
-  /** Registers {@code rawEmail} under {@code tenantId}, or silently acknowledges a duplicate. */
+  /**
+   * Registers a new user with the provided credentials or silently acknowledges a duplicate registration (anti-enumeration).
+   * Passwords are validated against the configured policy. The Argon2id hash is computed before
+   * the duplicate check to equalize response timing across new and duplicate paths (SEC-5).
+   *
+   * <p>On successful registration, a verification token is generated and a {@code VerificationEmailEvent}
+   * is published for async email dispatch. Duplicate registrations trigger an {@code AccountExistsEmailEvent}
+   * to notify the existing account owner.
+   *
+   * @param tenantId    the owning tenant (from request config, never from request body)
+   * @param rawEmail    the raw email address supplied by the user (will be encrypted via {@link EmailCipher})
+   * @param rawPassword the plaintext password supplied by the user (will be hashed via {@link PasswordHasherPort})
+   * @param ctx         per-request context (IP, traceId)
+   * @throws FieldValidationException if {@code rawPassword} violates the password policy (weak password, common patterns, etc.)
+   */
   public void register(UUID tenantId, String rawEmail, String rawPassword, RequestContext ctx) {
     passwordPolicyService.validate(rawPassword);
 
     String emailHmac = emailBlindIndexService.blindIndex(rawEmail);
-    // Hash before duplicate check — equalises timing across new and duplicate paths (SEC-5).
+    // Hash before duplicate check — equalizes timing across new and duplicate paths (SEC-5).
     String passwordHash = passwordHasherPort.hash(rawPassword);
 
     Optional<User> existing = userRegistrationPort.findByTenantAndEmailHmac(tenantId, emailHmac);

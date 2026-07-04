@@ -13,6 +13,46 @@ import { AppError } from '../../../shared/types/app-error';
 import { NxInput, NxButton } from '../../../shared/ui';
 import { PasswordStrengthMeterComponent } from '../registration-form/password-strength-meter/password-strength-meter.component';
 
+/**
+ * Reset Password flow component.
+ *
+ * Completes password reset initiated by the forgot-password flow.
+ * Extracts a reset token from the URL, validates the new password, and submits the reset request.
+ *
+ * Security:
+ * - Token is immediately stripped from URL to prevent Referer leakage and browser history exposure.
+ * - Never displays the token in the UI.
+ * - Validates password meets policy (length, complexity).
+ * - Detects and rejects attempts to reuse the current password.
+ * - Detects expired/already-used tokens and offers a retry path.
+ *
+ * @componentName Reset Password
+ * @selector nx-reset-password
+ * @standalone true
+ *
+ * @signals
+ *   - `loading` (signal): Set to true while API request is in-flight
+ *   - `errorMessage` (signal): Set to error message on API failure (null on success/initial)
+ *   - `showPassword` (signal): Toggles password input type between password and text
+ *   - `showForgotLink` (signal): Shows "request new link" when token is expired
+ *
+ * @form
+ *   - `resetForm` (FormGroup): New password input form
+ *     - `newPassword` (FormControl): New password, validators: required, min 12 chars, max 256 chars
+ *
+ * @computed
+ *   - `passwordError` (computed): Human-readable error message for password field validation
+ *
+ * @lifecycle
+ *   - ngOnInit: Reads token from query param, strips it from URL (history/Referer protection)
+ *
+ * @a11y
+ *   - role="alert" on error banner for screen reader notification
+ *   - Password input includes aria-describedby="reset-strength-meter" for strength meter context
+ *   - Password visibility toggle icon button with aria-label
+ *   - Strength meter announces password strength via aria-label on role="status"
+ *   - Error messages clearly state requirements and validation failures
+ */
 @Component({
   selector: 'nx-reset-password',
   standalone: true,
@@ -138,12 +178,46 @@ export class ResetPasswordComponent implements OnInit {
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
 
+  /**
+   * Loading state: true while API request is in-flight.
+   * Used to disable submit button and show loading indicator.
+   */
   readonly loading = signal(false);
+
+  /**
+   * Error message state: null when no error, or error message string on failure.
+   * Set by API error handler based on error code.
+   * Displayed in alert banner for accessibility.
+   */
   readonly errorMessage = signal<string | null>(null);
+
+  /**
+   * Password visibility toggle: false = masked, true = visible.
+   * Allows user to toggle password input type between "password" and "text".
+   * Improves UX on mobile or when typing a complex password.
+   */
   readonly showPassword = signal(false);
+
+  /**
+   * Show "request new link" link: set to true only when token is expired/invalid (AUTH_RST_002).
+   * Provides UX recovery path when the email link is stale.
+   */
   readonly showForgotLink = signal(false);
+
+  /**
+   * The reset token extracted from URL query param.
+   * Private signal because token should never be exposed in template or console.
+   * Extracted in ngOnInit and immediately stripped from URL.
+   */
   private readonly tokenFromUrl = signal('');
 
+  /**
+   * Reactive form group for new password input.
+   * Validators:
+   *   - required: Password cannot be empty
+   *   - minLength(12): Password must be at least 12 characters (policy requirement)
+   *   - maxLength(256): Maximum reasonable password length
+   */
   readonly resetForm = new FormGroup({
     newPassword: new FormControl('', {
       nonNullable: true,
@@ -151,6 +225,12 @@ export class ResetPasswordComponent implements OnInit {
     }),
   });
 
+  /**
+   * Computed signal: derives error message from newPassword control validation state.
+   * Only shows error if field is touched (user has interacted with it).
+   * Maps validator errors to human-readable messages.
+   * Returns empty string if valid or untouched.
+   */
   readonly passwordError = computed(() => {
     const control = this.resetForm.controls.newPassword;
     if (!control.touched || control.valid) return '';
@@ -160,12 +240,43 @@ export class ResetPasswordComponent implements OnInit {
     return '';
   });
 
+  /**
+   * Component initialization: reads and clears the reset token from URL.
+   *
+   * Flow:
+   * 1. Read token from query param ?token=...
+   * 2. Store token in private signal (never exposed to template)
+   * 3. Immediately navigate to same route without token (replaceUrl=true)
+   *    - Prevents Referer header leakage if user navigates elsewhere
+   *    - Removes token from browser history to prevent account takeover via shared device
+   *
+   * Security note: This mitigation works at client level; backend must also
+   * validate token expiry and one-time use to prevent token reuse attacks.
+   */
   ngOnInit(): void {
     this.tokenFromUrl.set(this.route.snapshot.queryParamMap.get('token') ?? '');
     // Strip token from URL to prevent Referer leakage and browser history exposure (LOW-1).
     this.router.navigate([], { relativeTo: this.route, queryParams: {}, replaceUrl: true });
   }
 
+  /**
+   * Submits the password reset request.
+   *
+   * Flow:
+   * 1. Mark password field as touched to trigger error display
+   * 2. Validate form and loading state
+   * 3. Set loading=true and clear previous errors
+   * 4. Call AuthService.resetPassword(token, newPassword)
+   * 5. On success: navigate to login with reset=true query param (confirmation message)
+   * 6. On error: decode error code and set user-friendly message, show retry link if applicable
+   *
+   * Error codes handled:
+   *   - AUTH_RST_002: Token expired or already used → show "request new link" option
+   *   - AUTH_PWD_001: Password policy violation (length)
+   *   - AUTH_PWD_002: Password too common (dictionary check)
+   *   - AUTH_RST_003: New password same as current (prevent reuse)
+   *   - Default: Generic error message (never leak server details)
+   */
   submit(): void {
     this.resetForm.controls.newPassword.markAsTouched();
     if (this.resetForm.invalid || this.loading()) return;

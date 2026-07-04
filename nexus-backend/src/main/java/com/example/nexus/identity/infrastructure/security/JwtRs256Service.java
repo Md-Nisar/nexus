@@ -48,6 +48,14 @@ public class JwtRs256Service implements JwtPort {
     this.accessTokenTtlSeconds = accessTokenTtlSeconds;
   }
 
+  /**
+   * Issues a new RS256 JWT access token for the authenticated user.
+   * The token includes {@code sub} (user ID), {@code tenant_id}, {@code email_verified},
+   * {@code roles}, {@code token_version}, and standard claims ({@code iat}, {@code exp}, {@code jti}).
+   *
+   * @param user the user for whom to issue the token
+   * @return the JWT string, TTL in seconds, and unique JWT ID
+   */
   @Override
   public AccessTokenResult issue(User user) {
     Instant now = clock.instant();
@@ -72,6 +80,15 @@ public class JwtRs256Service implements JwtPort {
     return new AccessTokenResult(jwt, accessTokenTtlSeconds, jti);
   }
 
+  /**
+   * Verifies and parses an RS256 JWT, extracting and validating all required claims.
+   * Enforces algorithm RS256 (no alg=none or HS256 confusion — T-3.1, T-3.2) and validates
+   * claim presence (iat, exp, sub, jti, roles, token_version).
+   *
+   * @param rawJwt the signed JWT string
+   * @return extracted and validated claims
+   * @throws AuthenticationException if the token is invalid, expired, or claims are missing (AUTH_003)
+   */
   @Override
   public JwtClaims verify(String rawJwt) {
     try {

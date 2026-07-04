@@ -70,6 +70,18 @@ public class LoginController {
     this.defaultTenantId = defaultTenantId;
   }
 
+  /**
+   * Authenticates a user with email and password, issuing an access JWT and a refresh token.
+   * The refresh token is set in an {@code HttpOnly; Secure; SameSite=Strict} cookie.
+   *
+   * @param req     login credentials (email, password)
+   * @param request the HTTP request (used to extract client IP)
+   * @return 200 OK with {@link LoginResponse} containing access token, token type, and TTL.
+   *         The refresh token is set in a secure cookie (see security notes in class JavaDoc).
+   * @throws AuthenticationException if credentials are invalid or account is not active
+   * @throws AccountLockedException  if the account is locked (includes {@code Retry-After} header)
+   * @throws AccountNotVerifiedException if the account is pending email verification
+   */
   @PostMapping("/login")
   ResponseEntity<LoginResponse> login(
       @Valid @RequestBody LoginRequest req, HttpServletRequest request) {
@@ -82,6 +94,15 @@ public class LoginController {
             result.userId()));
   }
 
+  /**
+   * Rotates the refresh token and issues a new access JWT.
+   * The old refresh token is revoked; a new one is issued in the same family chain.
+   *
+   * @param cookieValue the raw refresh token from the {@code refresh_token} cookie (if present)
+   * @param request     the HTTP request (used to extract client IP)
+   * @return 200 OK with {@link LoginResponse} and a fresh refresh token in a secure cookie
+   * @throws AuthenticationException if the token is invalid, revoked, or expired (AUTH_004)
+   */
   @PostMapping("/refresh")
   ResponseEntity<LoginResponse> refresh(
       @CookieValue(value = "refresh_token", required = false) String cookieValue,
@@ -97,6 +118,14 @@ public class LoginController {
             result.userId()));
   }
 
+  /**
+   * Revokes all active refresh tokens for the authenticated user and clears the refresh cookie.
+   * Logout is idempotent: an unauthenticated request or missing token is accepted normally.
+   *
+   * @param cookieValue the raw refresh token from the {@code refresh_token} cookie (if present)
+   * @param request     the HTTP request (used to extract client IP and authenticated user)
+   * @return 204 No Content with refresh cookie cleared (max-age=0)
+   */
   @PostMapping("/logout")
   ResponseEntity<Void> logout(
       @CookieValue(value = "refresh_token", required = false) String cookieValue,
@@ -110,6 +139,13 @@ public class LoginController {
     return ResponseEntity.noContent().header(HttpHeaders.SET_COOKIE, clear.toString()).build();
   }
 
+  /**
+   * Constructs a {@link RequestContext} from the HTTP request, extracting client IP, correlation ID,
+   * and user-agent header for audit events and request tracing.
+   *
+   * @param req the HTTP servlet request
+   * @return request context with client IP, trace ID, and user-agent
+   */
   private RequestContext requestContext(HttpServletRequest req) {
     // user_agent is advisory forensic context only, never an authorization input -- captured
     // verbatim; RequestContext.of(...) caps and escapes it before it reaches storage.
@@ -117,6 +153,14 @@ public class LoginController {
         req.getRemoteAddr(), MDC.get(CorrelationIdFilter.MDC_KEY), req.getHeader("User-Agent"));
   }
 
+  /**
+   * Builds an {@code HttpOnly; Secure; SameSite=Strict} cookie for the refresh token.
+   * Set to {@code max-age=0} to clear an existing cookie.
+   *
+   * @param raw    the raw refresh token value (or empty string to clear)
+   * @param maxAge the cookie max-age in seconds (use {@link #REFRESH_COOKIE_MAX_AGE} for new tokens, 0 to clear)
+   * @return a {@link ResponseCookie} configured with security headers per OWASP guidelines
+   */
   private ResponseCookie buildRefreshCookie(String raw, long maxAge) {
     return ResponseCookie.from("refresh_token")
         .value(raw)

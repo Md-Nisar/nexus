@@ -4,6 +4,28 @@ import { provideAnimationsAsync } from '@angular/platform-browser/animations/asy
 import { describe, it, expect, vi } from 'vitest';
 import { NxErrorState } from './error-state';
 
+/**
+ * Test suite for NxErrorState component.
+ *
+ * ## Coverage
+ * - Rendering: container, icon, title, message
+ * - Accessibility: role="alert" attribute
+ * - Inputs: title, message, showRetry
+ * - Output: retry event emission
+ * - Conditional rendering: message visibility, retry button visibility
+ * - ng-content slot: custom action projection
+ *
+ * ## Test Strategy
+ * - Component is tested in isolation with TestBed
+ * - Focus is on input binding, conditional rendering, and event emission
+ * - Accessibility is verified via role attribute and test IDs
+ * - Material Icon component is imported but not mocked; we verify icon renders
+ * - ng-content slot is verified implicitly through DOM structure tests
+ *
+ * Note: Visual/styling tests and end-to-end interaction tests would be in
+ * `error-state.integration.spec.ts` using Playwright for screenshot comparison
+ * and full user flow testing.
+ */
 describe('NxErrorState', () => {
   beforeEach(() => {
     TestBed.configureTestingModule({

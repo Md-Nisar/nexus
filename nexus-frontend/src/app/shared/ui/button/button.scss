@@ -1,3 +1,9 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   BUTTON COMPONENT
+   Shared button/CTA with 6 variants (primary, secondary, tertiary, danger, ghost, inverse)
+   and 3 sizes (sm, md, lg) using --nx-* design tokens.
+   ───────────────────────────────────────────────────────────────────────── */
+
 :host {
   display: inline-flex;
 
@@ -15,6 +21,7 @@
 .nx-btn {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: var(--nx-space-2);
   border-radius: var(--nx-radius-md);
   border: none;
@@ -23,9 +30,10 @@
   cursor: pointer;
   transition:
     background-color var(--nx-duration-base) var(--nx-easing-standard),
-    box-shadow var(--nx-duration-base) var(--nx-easing-standard),
+    color var(--nx-duration-base) var(--nx-easing-standard),
     opacity var(--nx-duration-base) var(--nx-easing-standard);
 
+  /* Disabled & loading states */
   &:disabled,
   &--loading {
     opacity: 0.38;
@@ -33,7 +41,10 @@
     pointer-events: none;
   }
 
-  // Sizes
+  /* ─────────────────────────────────────────────────────────────────────
+     SIZE VARIANTS — 32px | 40px | 48px heights
+     ───────────────────────────────────────────────────────────────────── */
+
   &--sm {
     height: 32px;
     padding: 0 var(--nx-space-3);
@@ -52,7 +63,11 @@
     font-size: var(--nx-text-md);
   }
 
-  // Variants
+  /* ─────────────────────────────────────────────────────────────────────
+     STYLE VARIANTS — primary | secondary | tertiary | danger | ghost | inverse
+     ───────────────────────────────────────────────────────────────────── */
+
+  /* Solid primary — full lavender background */
   &--primary {
     background-color: var(--nx-color-primary);
     color: var(--nx-color-on-primary);
@@ -62,6 +77,7 @@
     }
   }
 
+  /* Secondary — outlined with primary color */
   &--secondary {
     background-color: transparent;
     color: var(--nx-color-primary);
@@ -72,6 +88,7 @@
     }
   }
 
+  /* Tertiary — text-only primary button */
   &--tertiary {
     background-color: transparent;
     color: var(--nx-color-primary);
@@ -81,6 +98,7 @@
     }
   }
 
+  /* Danger — red background for destructive actions */
   &--danger {
     background-color: var(--nx-color-error);
     color: var(--nx-color-on-error);
@@ -90,6 +108,7 @@
     }
   }
 
+  /* Ghost — low-emphasis neutral option */
   &--ghost {
     background-color: transparent;
     color: var(--nx-color-on-surface-muted);
@@ -99,6 +118,7 @@
     }
   }
 
+  /* Inverse — white background for dark surfaces (e.g., dark CTA on hero) */
   &--inverse {
     background-color: var(--nx-color-inverse-canvas);
     color: var(--nx-color-inverse-on);
@@ -109,6 +129,7 @@
   }
 }
 
+/* Loading spinner animation */
 .nx-btn__spinner {
   animation: nx-spin 1s linear infinite;
 }

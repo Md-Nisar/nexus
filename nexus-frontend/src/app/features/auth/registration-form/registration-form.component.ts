@@ -10,6 +10,18 @@ import { PasswordStrengthMeterComponent } from './password-strength-meter/passwo
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { NxInput, NxButton } from '../../../shared/ui';
 
+/**
+ * User registration form component.
+ *
+ * Collects email, password, and consent acceptance. Includes:
+ * - Real-time password strength meter
+ * - Client-side form validation
+ * - Server-side field error handling (email exists, password policy, etc.)
+ * - Successful registration success state
+ *
+ * On successful registration, displays a success message and prompts user
+ * to check their email for verification link.
+ */
 @Component({
   selector: 'app-registration-form',
   standalone: true,
@@ -29,6 +41,12 @@ import { NxInput, NxButton } from '../../../shared/ui';
 export class RegistrationFormComponent {
   private readonly authService = inject(AuthService);
 
+  /**
+   * Reactive form with email, password, and terms acceptance controls.
+   * Email: required, valid RFC 5321 format
+   * Password: required, policy enforcement on backend
+   * Consent: must be explicitly accepted
+   */
   readonly form = new FormGroup({
     email: new FormControl('', {
       validators: [Validators.required, Validators.email],
@@ -44,17 +62,30 @@ export class RegistrationFormComponent {
     }),
   });
 
+  /** Current submission state (idle, loading, success, or error). */
   protected readonly state = signal<ViewState<void>>(idle);
+
+  /** Controls password visibility toggle. */
   protected readonly showPassword = signal(false);
 
+  /** Synced form validation state to trigger error recomputation. */
   private readonly formStatus = toSignal(this.form.statusChanges, {
     initialValue: this.form.status,
   });
 
+  /**
+   * Password field value stream for real-time strength meter updates.
+   * Initial value is empty string.
+   */
   protected readonly passwordValue = toSignal(this.form.controls.password.valueChanges, {
     initialValue: '',
   });
 
+  /**
+   * Computes error message for email field.
+   * Prioritizes server-side errors (e.g., email already exists) over client validation.
+   * Returns empty string if valid or untouched.
+   */
   protected readonly emailError = computed(() => {
     this.formStatus();
     const ctrl = this.form.controls.email;
@@ -64,6 +95,11 @@ export class RegistrationFormComponent {
     return 'Enter a valid email address.';
   });
 
+  /**
+   * Computes error message for password field.
+   * Prioritizes server-side errors (e.g., password policy violations) over client validation.
+   * Returns empty string if valid or untouched.
+   */
   protected readonly passwordError = computed(() => {
     this.formStatus();
     const ctrl = this.form.controls.password;
@@ -73,6 +109,10 @@ export class RegistrationFormComponent {
     return 'Password does not meet requirements.';
   });
 
+  /**
+   * Computes error message for consent checkbox.
+   * Returns empty string if checked or untouched.
+   */
   protected readonly consentError = computed(() => {
     this.formStatus();
     const ctrl = this.form.controls.consentAccepted;
@@ -80,6 +120,11 @@ export class RegistrationFormComponent {
     return 'You must accept the terms to continue.';
   });
 
+  /**
+   * Checks if the current error state includes field-level server validation errors.
+   *
+   * @returns true if error state exists and contains field errors, false otherwise
+   */
   protected hasFieldErrors(): boolean {
     const state = this.state();
     if (state.kind !== 'error') return false;
@@ -89,12 +134,26 @@ export class RegistrationFormComponent {
     );
   }
 
+  /**
+   * Extracts the error object from current state.
+   *
+   * @returns The AppError if in error state, otherwise empty error object
+   */
   protected errorState(): AppError {
     const state = this.state();
     if (state.kind === 'error') return state.error;
     return { code: '', message: '' };
   }
 
+  /**
+   * Submits the registration form.
+   *
+   * On success, updates state to success which prompts email verification message.
+   * On error, applies server-side field errors to affected controls and displays
+   * a generic error banner.
+   *
+   * No-op if form invalid or submission already in flight.
+   */
   protected submit(): void {
     if (this.form.invalid || this.state().kind === 'loading') return;
     this.state.set(loading);

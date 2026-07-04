@@ -35,6 +35,20 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.context.ApplicationEventPublisher;
 
+/**
+ * Unit tests for {@link ResendVerificationUseCase}: verification email resend flow with rate limiting.
+ *
+ * <p>Test strategy:
+ * <ul>
+ *   <li>Unknown email: silent acknowledgment (anti-enumeration)
+ *   <li>Verified user: silent acknowledgment (cannot re-verify)
+ *   <li>Pending user: creates and sends verification email
+ *   <li>Rate limiting: max resends per hour enforced; throttled event recorded
+ *   <li>Audit events: verifies tenant ID and outcome on all paths
+ * </ul>
+ *
+ * <p>Mocks: all ports and services; lenient strictness.
+ */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
 class ResendVerificationUseCaseTest {

@@ -4,6 +4,26 @@ import { provideAnimationsAsync } from '@angular/platform-browser/animations/asy
 import { describe, it, expect, vi } from 'vitest';
 import { NxToast } from './toast';
 
+/**
+ * Test suite for NxToast service.
+ *
+ * ## Coverage
+ * - Toast variants: info, success, warning, error
+ * - Duration defaults: 4s for info/success/warning, 8s for error
+ * - Custom duration and action labels
+ * - Panel class assignment for variant-specific styling
+ * - Service methods: show(), success(), error(), warning(), info()
+ * - MatSnackBar integration: open() call with correct config
+ *
+ * ## Test Strategy
+ * - Service is tested in isolation by mocking MatSnackBar
+ * - Focus is on config passed to MatSnackBar.open() (duration, panelClass, position)
+ * - Event handling (user clicks action, auto-dismiss) is tested in integration tests
+ * - Since MatSnackBar itself handles animations/positioning, we only verify configuration
+ *
+ * Note: End-to-end tests (actual toast display, keyboard interaction, announcements)
+ * would be in `toast.integration.spec.ts` using Playwright.
+ */
 describe('NxToast', () => {
   let service: NxToast;
   let snackBarSpy: { open: ReturnType<typeof vi.fn> };

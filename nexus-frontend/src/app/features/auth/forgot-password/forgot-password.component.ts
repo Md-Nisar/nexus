@@ -4,6 +4,35 @@ import { RouterLink } from '@angular/router';
 import { AuthService } from '../auth.service';
 import { NxInput, NxButton } from '../../../shared/ui';
 
+/**
+ * Forgot Password flow component.
+ *
+ * Initiates the password reset process by requesting a reset link via email.
+ * The component implements anti-enumeration: always returns a success message
+ * (whether the account exists or not) to prevent email validation attacks.
+ *
+ * @componentName Forgot Password
+ * @selector nx-forgot-password
+ * @standalone true
+ *
+ * @signals
+ *   - `loading` (signal): Set to true while API request is in-flight
+ *   - `submitted` (signal): Set to true after successful email submission
+ *   - `errorMessage` (signal): Set to error message on API failure (null on success/initial)
+ *
+ * @form
+ *   - `forgotForm` (FormGroup): Email input form
+ *     - `email` (FormControl): Email address, validators: required, email format, max 254 chars
+ *
+ * @computed
+ *   - `emailError` (computed): Human-readable error message for email field validation
+ *
+ * @a11y
+ *   - role="alert" on error banner for screen reader notification
+ *   - Email field includes autocomplete="email" for autofill support
+ *   - Error messages clearly state requirements and validation failures
+ *   - Back link provides navigation path for screen reader users
+ */
 @Component({
   selector: 'nx-forgot-password',
   standalone: true,
@@ -135,10 +164,32 @@ import { NxInput, NxButton } from '../../../shared/ui';
 export class ForgotPasswordComponent {
   private readonly authService = inject(AuthService);
 
+  /**
+   * Loading state: true while API request is in-flight.
+   * Used to disable submit button and show loading indicator.
+   */
   readonly loading = signal(false);
+
+  /**
+   * Submission state: true after user email is successfully sent to backend.
+   * Toggles UI between form entry and confirmation message.
+   */
   readonly submitted = signal(false);
+
+  /**
+   * Error message state: null when no error, or error message string on failure.
+   * Backend failures (not email validation) trigger this signal.
+   * Displayed in alert banner for accessibility.
+   */
   readonly errorMessage = signal<string | null>(null);
 
+  /**
+   * Reactive form group for password reset email request.
+   * Validators:
+   *   - required: Email cannot be empty
+   *   - email: Must be valid email format (RFC 5321)
+   *   - maxLength(254): RFC 5321 max length for email address
+   */
   readonly forgotForm = new FormGroup({
     email: new FormControl('', {
       nonNullable: true,
@@ -146,6 +197,12 @@ export class ForgotPasswordComponent {
     }),
   });
 
+  /**
+   * Computed signal: derives error message from email control validation state.
+   * Only shows error if field is touched (user has interacted with it).
+   * Maps validator errors to human-readable messages.
+   * Returns empty string if valid or untouched.
+   */
   readonly emailError = computed(() => {
     const control = this.forgotForm.controls.email;
     if (!control.touched || control.valid) return '';
@@ -155,6 +212,20 @@ export class ForgotPasswordComponent {
     return '';
   });
 
+  /**
+   * Submits the password reset request.
+   *
+   * Flow:
+   * 1. Mark email field as touched to trigger error display
+   * 2. Validate form and loading state
+   * 3. Set loading=true and clear previous errors
+   * 4. Call AuthService.forgotPassword()
+   * 5. On success: set submitted=true (shows confirmation)
+   * 6. On error: display generic message (never reveal account existence)
+   *
+   * Anti-enumeration: Always shows success message even if account doesn't exist.
+   * Backend performs dummy operation to equalize timing.
+   */
   submit(): void {
     this.forgotForm.controls.email.markAsTouched();
     if (this.forgotForm.invalid || this.loading()) return;

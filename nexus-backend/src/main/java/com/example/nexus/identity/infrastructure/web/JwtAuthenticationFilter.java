@@ -43,6 +43,21 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     this.authenticationEntryPoint = authenticationEntryPoint;
   }
 
+  /**
+   * Validates the {@code Authorization: Bearer <jwt>} header and populates {@link SecurityContextHolder}
+   * with the authenticated principal and roles. Puts {@code userId} and {@code tenantId} into MDC for
+   * log propagation.
+   *
+   * <p>If no valid {@code Authorization} header is present, the filter is a no-op; the request proceeds
+   * to Spring Security's endpoint-level access control. Invalid tokens trigger the
+   * {@link AuthenticationEntryPoint} and the filter chain is short-circuited.
+   *
+   * @param req   the HTTP request (Bearer token in {@code Authorization} header)
+   * @param res   the HTTP response (401 problem document on invalid token)
+   * @param chain the filter chain
+   * @throws ServletException if an error occurs during filtering
+   * @throws IOException      if an I/O error occurs during filtering
+   */
   @Override
   protected void doFilterInternal(
       HttpServletRequest req, HttpServletResponse res, FilterChain chain)

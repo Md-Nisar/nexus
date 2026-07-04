@@ -1,11 +1,16 @@
 # Test profile — activated by @ActiveProfiles("test") in *IT classes.
 # Reduces Argon2 cost and rate-limit windows so tests run fast without sacrificing coverage.
+
+# --- Feature Flags (Test Enabled) ---
+# Enable all features for comprehensive integration test coverage
 feature:
   nexus-us002-auth-registration:
     enabled: true
   nexus-us003-auth-login:
     enabled: true
 
+# --- Security: Rate Limiting (Test Overrides) ---
+# Increased limits to prevent test interference from rate-limiting filters
 nexus:
   security:
     rate-limit:
