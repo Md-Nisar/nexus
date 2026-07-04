@@ -44,7 +44,7 @@ export class AuthStore {
    */
   setSession(session: AuthSession): void {
     this._session.set(session);
-    this.logger.debug('Auth session established', { userId: session.user.userId });
+    this.logger.debug('Auth session established', { context: { userId: session.user.userId } });
   }
 
   /**

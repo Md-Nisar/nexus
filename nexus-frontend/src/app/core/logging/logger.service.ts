@@ -2,113 +2,135 @@ import { Service, inject } from '@angular/core';
 import { APP_CONFIG, LogLevel } from '../config/app-config';
 
 /**
+ * Structured parameters for logging metadata.
+ */
+export interface LogParams {
+  event?: string;
+  operation?: string;
+  correlationId?: string;
+  outcome?: 'SUCCESS' | 'FAILURE';
+  errorCode?: string;
+  errorType?: string;
+  context?: Record<string, unknown>;
+}
+
+/**
  * Maps log level names to numeric values for comparison.
- * Used to determine if a message at a given level should be logged.
- *
- * @example
- * LEVEL_ORDER['debug'] = 0   // lowest priority, logged first
- * LEVEL_ORDER['error'] = 3   // highest priority, logged last
  */
 const LEVEL_ORDER: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
 
 /**
- * Level-aware logger — the only sanctioned way to log in this codebase (bare console.log
- * is an ESLint error). The minimum level comes from APP_CONFIG, so production builds stay
- * quiet while development builds are verbose.
- *
- * @example
- * constructor(private logger: LoggerService) {}
- *
- * doSomething() {
- *   this.logger.debug('Starting operation');
- *   this.logger.info('Operation complete');
- *   if (error) this.logger.error('Operation failed', error);
- * }
- *
- * @note
- * - In production, minLevel is typically 'warn', so only warn and error messages appear.
- * - In development, minLevel is typically 'debug', so all messages appear.
- * - Each log method prepends a [level] prefix to the message for easy console filtering.
+ * Regular expression to identify sensitive keys that should be redacted.
+ */
+const SENSITIVE_KEYS = /password|token|secret|authorization|cookie|apiKey|session/i;
+
+/**
+ * Checks if a value is a plain object to avoid recursing on DOM elements or class instances.
+ */
+function isPlainObject(val: unknown): val is Record<string, unknown> {
+  return Object.prototype.toString.call(val) === '[object Object]';
+}
+
+/**
+ * Deep-scrubs sensitive keys (e.g. passwords, tokens) from log parameters.
+ */
+function scrubSensitiveData(val: unknown): unknown {
+  if (val === null || val === undefined) {
+    return val;
+  }
+  if (Array.isArray(val)) {
+    return val.map(scrubSensitiveData);
+  }
+  if (isPlainObject(val)) {
+    const scrubbed: Record<string, unknown> = {};
+    for (const key of Object.keys(val)) {
+      if (SENSITIVE_KEYS.test(key)) {
+        scrubbed[key] = '[REDACTED]';
+      } else {
+        scrubbed[key] = scrubSensitiveData(val[key]);
+      }
+    }
+    return scrubbed;
+  }
+  return val;
+}
+
+/**
+ * Level-aware structured logger.
+ * Handles environment-based log filtering and sensitive data scrubbing.
  */
 @Service()
 export class LoggerService {
-  /**
-   * The minimum log level threshold. Messages below this level are suppressed.
-   * Derived from APP_CONFIG.logLevel at construction time.
-   */
-  private readonly minLevel = LEVEL_ORDER[inject(APP_CONFIG).logLevel];
+  private readonly config = inject(APP_CONFIG);
+  private readonly minLevel = LEVEL_ORDER[this.config.logLevel];
+  private readonly isProduction = this.config.production;
 
   /**
-   * Logs a debug message (lowest priority).
-   *
-   * @param message - The message to log
-   * @param context - Optional additional context data to include
-   *
-   * @example
-   * this.logger.debug('User clicked button', { userId: 123 });
+   * Logs a debug message.
    */
-  debug(message: string, ...context: unknown[]): void {
+  debug(message: string, params?: LogParams): void {
     if (this.enabled('debug')) {
-      // eslint-disable-next-line no-console
-      console.debug(`[debug] ${message}`, ...context);
+      const sanitized = params ? this.sanitizeParams(params) : undefined;
+      console.debug(`[DEBUG] ${message}`, sanitized || '');
     }
   }
 
   /**
    * Logs an informational message.
-   *
-   * @param message - The message to log
-   * @param context - Optional additional context data to include
-   *
-   * @example
-   * this.logger.info('Login successful', { username: 'john@example.com' });
    */
-  info(message: string, ...context: unknown[]): void {
+  info(message: string, params?: LogParams): void {
     if (this.enabled('info')) {
-      // eslint-disable-next-line no-console
-      console.info(`[info] ${message}`, ...context);
+      const sanitized = params ? this.sanitizeParams(params) : undefined;
+      console.info(`[INFO] ${message}`, sanitized || '');
     }
   }
 
   /**
    * Logs a warning message.
-   *
-   * @param message - The message to log
-   * @param context - Optional additional context data to include
-   *
-   * @example
-   * this.logger.warn('Deprecated API used', { method: 'oldMethod' });
    */
-  warn(message: string, ...context: unknown[]): void {
+  warn(message: string, params?: LogParams): void {
     if (this.enabled('warn')) {
-      console.warn(`[warn] ${message}`, ...context);
+      const sanitized = params ? this.sanitizeParams(params) : undefined;
+      console.warn(`[WARN] ${message}`, sanitized || '');
     }
   }
 
   /**
-   * Logs an error message (highest priority).
-   *
-   * @param message - The message to log
-   * @param context - Optional additional context data to include (e.g., Error objects, stack traces)
-   *
-   * @example
-   * this.logger.error('Request failed', { error: err, statusCode: 500 });
+   * Logs an error message.
    */
-  error(message: string, ...context: unknown[]): void {
+  error(message: string, params?: LogParams): void {
     if (this.enabled('error')) {
-      console.error(`[error] ${message}`, ...context);
+      const sanitized = params ? this.sanitizeParams(params) : undefined;
+      console.error(`[ERROR] ${message}`, sanitized || '');
     }
+  }
+
+  /**
+   * Sanitizes logging parameters by scrubbing sensitive values and removing stack traces in production.
+   */
+  private sanitizeParams(params: LogParams): LogParams {
+    const cleanContext = params.context
+      ? (scrubSensitiveData(params.context) as Record<string, unknown>)
+      : undefined;
+
+    // Secondary defensive safeguard: remove stack traces from the log context in production
+    if (cleanContext && this.isProduction && 'stack' in cleanContext) {
+      delete cleanContext['stack'];
+    }
+
+    return {
+      event: params.event,
+      operation: params.operation,
+      correlationId: params.correlationId,
+      outcome: params.outcome,
+      errorCode: params.errorCode,
+      errorType: params.errorType,
+      context: cleanContext,
+    };
   }
 
   /**
    * Determines if a message at the given level should be logged.
-   *
-   * Complex logic note:
-   * - Compares numeric level values: only logs if the message level >= minLevel.
-   * - This allows selective suppression: if minLevel is 'warn' (2), only 'warn' (2) and 'error' (3) pass through.
-   *
-   * @param level - The log level to check
-   * @returns true if the level meets or exceeds the minimum threshold
    */
   private enabled(level: LogLevel): boolean {
     return LEVEL_ORDER[level] >= this.minLevel;
