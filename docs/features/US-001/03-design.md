@@ -4,7 +4,7 @@
 **Feature:** US-001 — Establish tenant-aware identity data model and migrations
 **Date:** 2026-06-14
 **Author:** Principal Architect
-**Inputs:** `docs/features/US-001/02-impact.md` (approved), `ARCHITECTURE.md`, `SECURITY.md`,
+**Inputs:** `docs/features/US-001/02-impact.md` (approved), `docs/ARCHITECTURE.md`, `SECURITY.md`,
 `docs/coding-standards.md`, ADRs 0001–0003, `HexagonalArchitectureTest.java`, `pom.xml`
 
 ---

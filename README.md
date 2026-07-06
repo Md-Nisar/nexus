@@ -7,6 +7,34 @@ Nexus is a modern enterprise application platform designed to provide a scalable
 | [`nexus-backend`](nexus-backend/) | Spring Boot 4 · Java 25 · MySQL · Flyway | 1000 |
 | [`nexus-frontend`](nexus-frontend/) | Angular 21 · TypeScript 5.9 · Vitest · Playwright | 2000 |
 
+## Repository Structure
+
+```text
+C:\entomo\ai\nexus
+├── 📁 nexus-backend/       # Encapsulated Spring Boot backend
+├── 📁 nexus-frontend/      # Encapsulated Angular frontend
+├── 📁 nexus-database/      # Dedicated data infrastructure (mysql/init)
+├── 📁 nexus-scripts/       # Automation, CI/CD, and dev tooling
+│
+├── 📁 docs/
+│   ├── 📁 adr/             # Architecture Decision Records
+│   ├── 📁 features/        # Artifacts from the /new-feature pipeline
+│   ├── 📁 story/           # Inputs for the AI pipeline (Epic/Story markdown)
+│   ├── ARCHITECTURE.md     # High-level system design
+│   ├── DEVELOPMENT_GUIDE.md# Operating model
+│   └── TESTING.md          # Test strategy
+│
+├── 📁 .claude/             # AI agent skills, commands, and hooks
+├── 📁 .github/             # GitHub Actions workflows and PR templates
+│
+├── docker-compose.yml      # Local dev environment
+├── CLAUDE.md               # AI context and rules
+├── README.md               # Human context and onboarding
+├── CONTRIBUTING.md         # Process rules
+├── SECURITY.md             # Security baseline
+└── CHANGELOG.md            # Version history
+```
+
 ## Quickstart
 
 ```bash
@@ -24,7 +52,7 @@ npm ci && npm start             # http://localhost:2000
 
 Full containerized stack: `docker compose --profile full up -d`.
 
-> **Building a feature?** Start with `/new-feature <FEATURE-ID>` in Claude Code — the mandatory operating model (discovery → design gates → test-first build → reviews) is in [DEVELOPMENT_GUIDE.md → The Operating Model](DEVELOPMENT_GUIDE.md).
+> **Building a feature?** Start with `/new-feature <FEATURE-ID>` in Claude Code — the mandatory operating model (discovery → design gates → test-first build → reviews) is in [DEVELOPMENT_GUIDE.md → The Operating Model](docs/DEVELOPMENT_GUIDE.md).
 
 ## Everyday commands
 
@@ -39,9 +67,9 @@ Full containerized stack: `docker compose --profile full up -d`.
 
 ## Documentation
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) — system design, layering, conventions
-- [DEVELOPMENT_GUIDE.md](DEVELOPMENT_GUIDE.md) — setup, profiles, tooling, **the operating model**, gate enforcement
-- [TESTING.md](TESTING.md) — test strategy and coverage requirements
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — system design, layering, conventions
+- [DEVELOPMENT_GUIDE.md](docs/DEVELOPMENT_GUIDE.md) — setup, profiles, tooling, **the operating model**, gate enforcement
+- [TESTING.md](docs/TESTING.md) — test strategy and coverage requirements
 - [SECURITY.md](SECURITY.md) — security baseline and roadmap
 - [docs/QUALITY_GATES.md](docs/QUALITY_GATES.md) — comprehensive overview of local, CI/CD, and scheduled quality & security gates
 - [CONTRIBUTING.md](CONTRIBUTING.md) — branching, commits, PRs
@@ -50,7 +78,7 @@ Full containerized stack: `docker compose --profile full up -d`.
 
 ## CI
 
-- **Backend CI** (`maven.yml`) — build, Checkstyle, unit + integration tests (Testcontainers), per-layer JaCoCo coverage gates (see [TESTING.md](TESTING.md)), SpotBugs, ArchUnit; optional SonarQube job
+- **Backend CI** (`maven.yml`) — build, Checkstyle, unit + integration tests (Testcontainers), per-layer JaCoCo coverage gates (see [TESTING.md](docs/TESTING.md)), SpotBugs, ArchUnit; optional SonarQube job
 - **Frontend CI** (`node.yml`) — format check, ESLint, Vitest with coverage, production build, Playwright E2E
 - **PR Title** (`commit-lint.yml`) — Conventional Commit title check
 - **Security Scan** (`security.yml`, weekly) — OWASP Dependency-Check, npm audit, Trivy (vulns + secrets)

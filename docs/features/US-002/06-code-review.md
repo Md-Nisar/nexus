@@ -1,6 +1,6 @@
 # Code Review — US-002: Self-Service Registration with Email Verification
 
-Reviewed against: `CLAUDE.md`, `ARCHITECTURE.md`, `SECURITY.md`, `docs/coding-standards.md`, `docs/features/US-002/03-design.md`, `docs/features/US-002/03b-threat-model.md`.
+Reviewed against: `CLAUDE.md`, `docs/ARCHITECTURE.md`, `SECURITY.md`, `docs/coding-standards.md`, `docs/features/US-002/03-design.md`, `docs/features/US-002/03b-threat-model.md`.
 
 ---
 

@@ -1,6 +1,6 @@
 # Testing
 
-Moved — see the repository-level [TESTING.md](../TESTING.md) for the full strategy.
+Moved — see the repository-level [TESTING.md](../docs/TESTING.md) for the full strategy.
 
 Backend quick reference:
 

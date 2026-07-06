@@ -183,7 +183,7 @@ Add test: should_throw_when_wrongLengthBytesConverted.
 
 ### [LOW] Story AC lists password_hash and identity_provider columns absent from the migration and entity
 
-**File:** story/1-authentication/US-001.md (AC #1)
+**File:** docs/story/1-authentication/US-001.md (AC #1)
 **Cross-ref:** Design section 4a (intentional omission)
 
 **Issue:** Story AC #1 lists password_hash and identity_provider (default LOCAL) as required columns in users. Neither appears in V2__identity_schema.sql or User.java. The technical design intentionally defers these (section 4a). This is not a code defect — the design post-Gate 2 is the authoritative spec — but the story artifact and technical design are in conflict, which may confuse downstream reviewers or QA.

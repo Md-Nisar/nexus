@@ -161,7 +161,7 @@ No new metrics or log statements needed.
 ### Testability
 
 - **Backend unit:** Mockito mocks of `RefreshTokenPort`, `AuthEventPort`, `TokenHasher`, `UuidGenerator`, fixed `Clock` — pure, no Spring context.
-- **Backend IT:** Testcontainers MySQL only (never H2 — TESTING.md). New assertion added to `AuthAuditIT`.
+- **Backend IT:** Testcontainers MySQL only (never H2 — docs/TESTING.md). New assertion added to `AuthAuditIT`.
 - **Frontend unit:** Vitest, mirror existing `auth.interceptor.spec.ts` mock harness.
 - **E2E:** Playwright, mirror `e2e/auth/session-refresh.spec.ts` structure.
 

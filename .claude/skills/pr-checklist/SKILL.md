@@ -5,7 +5,7 @@ description: Use before opening or merging a pull request on Nexus, or whenever 
 
 # Pre-PR Checklist (executable gate runbook)
 
-Run the gates for whichever side changed. These mirror CI — passing here means CI should pass. The policy behind them lives in `CONTRIBUTING.md` (process) and `TESTING.md`/`SECURITY.md` (standards); this skill is the *how to run*.
+Run the gates for whichever side changed. These mirror CI — passing here means CI should pass. The policy behind them lives in `CONTRIBUTING.md` (process) and `docs/TESTING.md`/`SECURITY.md` (standards); this skill is the *how to run*.
 
 ## Determine scope
 ```bash

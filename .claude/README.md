@@ -49,7 +49,7 @@ claude mcp add github npx -- @modelcontextprotocol/server-github
 
 ## The Workflow
 
-The full operating model (gates, agents, requirements) lives in **`DEVELOPMENT_GUIDE.md` → The Operating Model** — the single source of truth. Start with `/new-feature <FEATURE-ID>`. Quick reference:
+The full operating model (gates, agents, requirements) lives in **`docs/DEVELOPMENT_GUIDE.md` → The Operating Model** — the single source of truth. Start with `/new-feature <FEATURE-ID>`. Quick reference:
 
 ```
 /new-feature JIRA-1234       → discovery + plan half (phases 1–4) with gates

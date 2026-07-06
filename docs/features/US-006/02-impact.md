@@ -90,7 +90,7 @@ US-006 hardens the login path with two independent brute-force defenses plus a P
 ### New test classes / files required
 
 - `LoginUseCase` lockout-lifecycle unit test set: 5 failures → lock; 4 + success → reset; auto-expire after window → success. Covers Test Scenarios #1, #2.
-- Integration test (`*IT`, Testcontainers MySQL, never H2 per TESTING.md) for the **full 423 HTTP contract** and **auto-expiry** — no `Login*IT` currently exists. Must assert `Retry-After` is present and counter persistence survives the failed-login rollback (Top Risk #1). Covers Scenario #1, #4.
+- Integration test (`*IT`, Testcontainers MySQL, never H2 per docs/TESTING.md) for the **full 423 HTTP contract** and **auto-expiry** — no `Login*IT` currently exists. Must assert `Retry-After` is present and counter persistence survives the failed-login rollback (Top Risk #1). Covers Scenario #1, #4.
 - Security/timing assertion: locked-account latency ≈ normal-401 latency (Argon2-always; Scenario #4), following the pattern in `RegistrationControllerIT`.
 
 ---

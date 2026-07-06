@@ -3,7 +3,7 @@ description: Canonical front door to the Nexus operating model — discovery →
 argument-hint: <FEATURE-ID> [short description]
 ---
 
-Kick off feature **`$1`** through the mandatory operating model (full reference: `DEVELOPMENT_GUIDE.md` → Operating Model). This is the single entry point; it walks the plan half with hard approval gates, then hands off to implementation.
+Kick off feature **`$1`** through the mandatory operating model (full reference: `docs/DEVELOPMENT_GUIDE.md` → Operating Model). This is the single entry point; it walks the plan half with hard approval gates, then hands off to implementation.
 
 ## Step 0 — Discovery (use the `feature-discovery` skill)
 Apply the **feature-discovery** skill: frame the problem, do the reuse-first survey, build the impact map, flag NFR/security/observability concerns, list open questions. Create `docs/features/$1/` if absent.

@@ -1,5 +1,5 @@
 # Smoke-profile config for Spring context smoke tests (NexusBackendApplicationTests).
-# Real integration tests (*IT) use Testcontainers MySQL — see TESTING.md.
+# Real integration tests (*IT) use Testcontainers MySQL — see docs/TESTING.md.
 
 # --- Database Configuration (H2 In-Memory) ---
 # SMOKE: Use in-memory H2 database for fast context load without Docker

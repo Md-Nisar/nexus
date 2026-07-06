@@ -313,7 +313,7 @@
                         </goals>
                     </execution>
 
-                    <!-- Coverage gate: per-layer targets from TESTING.md, enforced not just documented.
+                    <!-- Coverage gate: per-layer targets from docs/TESTING.md, enforced not just documented.
                          PACKAGE rules over empty layers pass automatically, so they activate as soon
                          as the first bounded context is added. BUNDLE floor guards the whole module. -->
                     <execution>

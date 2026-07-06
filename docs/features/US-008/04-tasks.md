@@ -2,7 +2,7 @@
 
 _Output of `/breakdown` (architect + backend-engineer + qa-engineer). Gate 3 deliverable. Turns the approved, Gate-2-amended design (`03-design.md`, incl. the two-lane priority/standard retry buffer) and threat model (`03b-threat-model.md`) into a sequenced, implementable task list. No design decisions are re-opened here._
 
-**Test-first.** Backend tasks use Spring Boot 4 / Java 25 / JUnit 5 + Testcontainers MySQL conventions (no H2 for `*IT`, per TESTING.md). **Zero frontend** — the design declares Angular/API/Caching explicitly N/A (`03-design.md` §9). Owner role is `backend-engineer` or `qa-engineer` only.
+**Test-first.** Backend tasks use Spring Boot 4 / Java 25 / JUnit 5 + Testcontainers MySQL conventions (no H2 for `*IT`, per docs/TESTING.md). **Zero frontend** — the design declares Angular/API/Caching explicitly N/A (`03-design.md` §9). Owner role is `backend-engineer` or `qa-engineer` only.
 
 **Sequencing follows the design's own recommended order (`03-design.md` §10.4):** WS-1 (enum) → WS-6 (column + RequestContext) → WS-4 (tenant) → WS-5 (logout enrichment) → WS-2 (DB user) → **WS-3 last** (highest risk, most threat-modeled, two-lane buffer). Tasks within a wave can be parallelised; cross-wave dependencies are explicit.
 

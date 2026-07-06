@@ -203,4 +203,4 @@ Reviewers respond within one business day. Authors respond within one business d
 | `*ngIf` / `*ngFor` | Angular 21 deprecated | `@if` / `@for` |
 | `localStorage` in Angular | No SSR compat, XSS risk | `StorageService` abstraction |
 | Hardcoded credentials | Security | Env var / Vault |
-| H2 in integration tests | Doesn't match MySQL semantics | Testcontainers MySQL (H2 only for the context smoke test — TESTING.md) |
+| H2 in integration tests | Doesn't match MySQL semantics | Testcontainers MySQL (H2 only for the context smoke test — docs/TESTING.md) |

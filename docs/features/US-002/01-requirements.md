@@ -4,8 +4,8 @@
 **Status:** DRAFT — awaiting Gate 1 approval  
 **Date:** 2026-06-16  
 **Author:** Business Analyst (Claude Code)  
-**Inputs:** `story/1-authentication/US-002.md`, `docs/features/US-001/03-design.md`,
-`ARCHITECTURE.md`, `SECURITY.md`, `docs/observability-standards.md`,
+**Inputs:** `docs/story/1-authentication/US-002.md`, `docs/features/US-001/03-design.md`,
+`docs/ARCHITECTURE.md`, `SECURITY.md`, `docs/observability-standards.md`,
 `docs/deployment-process.md`, all ADRs 0001–0006
 
 ---

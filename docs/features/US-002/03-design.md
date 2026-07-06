@@ -6,7 +6,7 @@
 **Author:** Principal Architect  
 **Inputs:** `docs/features/US-002/01-requirements.md` (approved, Q1–Q6 resolved),
 `docs/features/US-002/02-impact.md` (approved), `docs/features/US-001/03-design.md`,
-`ARCHITECTURE.md`, `SECURITY.md`, `docs/coding-standards.md`, ADRs 0001–0006,
+`docs/ARCHITECTURE.md`, `SECURITY.md`, `docs/coding-standards.md`, ADRs 0001–0006,
 `HexagonalArchitectureTest.java`, `pom.xml`
 
 ---

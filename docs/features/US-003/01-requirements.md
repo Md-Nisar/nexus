@@ -4,8 +4,8 @@
 **Status:** APPROVED — Gate 1 passed 2026-06-21  
 **Date:** 2026-06-21  
 **Author:** Business Analyst (Claude Code)  
-**Inputs:** `story/1-authentication/US-003.md`, `docs/features/US-002/01-requirements.md`,
-`ARCHITECTURE.md`, `SECURITY.md`, `docs/observability-standards.md`,
+**Inputs:** `docs/story/1-authentication/US-003.md`, `docs/features/US-002/01-requirements.md`,
+`docs/ARCHITECTURE.md`, `SECURITY.md`, `docs/observability-standards.md`,
 `docs/deployment-process.md`, all ADRs 0001–0006, codebase survey (US-001 + US-002 merged state)
 
 ---

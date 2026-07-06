@@ -9,7 +9,7 @@ Run this **before** design or implementation. Goal: understand the problem and t
 
 ## 1. Frame the problem
 - Restate the requirement in one or two sentences. What user outcome, what business rule?
-- Identify the **bounded context** it belongs to (existing or new — see `ARCHITECTURE.md`).
+- Identify the **bounded context** it belongs to (existing or new — see `docs/ARCHITECTURE.md`).
 - List explicit non-goals — what this change will *not* do.
 
 ## 2. Reuse-first survey (do not skip)

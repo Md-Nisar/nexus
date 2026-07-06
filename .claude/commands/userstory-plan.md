@@ -5,7 +5,7 @@ argument-hint: <FEATURE-ID>
 
 Run the **plan half** of the operating model end to end for feature `$1`: requirements → impact → design (+ threat model) → task breakdown, stopping at each approval gate.
 
-This is the batch entry point. For the guided, single front-door experience use **`/new-feature $1`** — it is the canonical entry to the operating model documented in `DEVELOPMENT_GUIDE.md`.
+This is the batch entry point. For the guided, single front-door experience use **`/new-feature $1`** — it is the canonical entry to the operating model documented in `docs/DEVELOPMENT_GUIDE.md`.
 
 Delegate to the phase commands in order, honoring their approval gates:
 

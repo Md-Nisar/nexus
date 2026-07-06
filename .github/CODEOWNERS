@@ -13,11 +13,15 @@
 # Frontend
 /nexus-frontend/            @Md-Nisar
 
-# Governance: standards, ADRs, CI, and the agent operating model need senior review
-/docs/                      @Md-Nisar
-/CLAUDE.md                  @Md-Nisar
-/ARCHITECTURE.md            @Md-Nisar
-/SECURITY.md                @Md-Nisar
+# Governance
 /.github/                   @Md-Nisar
-/.claude/                   @Md-Nisar
 /.githooks/                 @Md-Nisar
+/.claude/                   @Md-Nisar
+/.agents/                   @Md-Nisar
+/.codex/                    @Md-Nisar
+
+/docs/                      @Md-Nisar
+
+/CLAUDE.md                  @Md-Nisar
+/SECURITY.md                @Md-Nisar
+

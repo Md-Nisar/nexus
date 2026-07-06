@@ -7,9 +7,9 @@ Engineering reference for the Nexus platform. Every Claude agent and human contr
 | Topic | Canonical doc |
 |-------|---------------|
 | Project map & entry point | [`/README.md`](../README.md) |
-| Architecture, layering, non-negotiables | [`/ARCHITECTURE.md`](../ARCHITECTURE.md) |
-| Operating model & local dev | [`/DEVELOPMENT_GUIDE.md`](../DEVELOPMENT_GUIDE.md) |
-| Testing strategy & coverage gates | [`/TESTING.md`](../TESTING.md) |
+| Architecture, layering, non-negotiables | [`/ARCHITECTURE.md`](./ARCHITECTURE.md) |
+| Operating model & local dev | [`/DEVELOPMENT_GUIDE.md`](./DEVELOPMENT_GUIDE.md) |
+| Testing strategy & coverage gates | [`/TESTING.md`](./TESTING.md) |
 | Security baseline & standards | [`/SECURITY.md`](../SECURITY.md) |
 | Branching, commits, PRs | [`/CONTRIBUTING.md`](../CONTRIBUTING.md) |
 | Agent map & critical conventions | [`/CLAUDE.md`](../CLAUDE.md) |
@@ -37,7 +37,7 @@ ADRs are append-only — supersede an old decision with a new ADR; never edit an
 
 ## Feature documentation
 
-Epic and story source texts live in `/story/<SERIAL_NO-EPIC_NAME>/` at the repo root — they are the *inputs* to `/new-feature`. Each feature run through the operating model (see DEVELOPMENT_GUIDE.md) creates `docs/features/<FEATURE-ID>/` with **numbered, phase-ordered artifacts**:
+Epic and story source texts live in `docs/story/<SERIAL_NO-EPIC_NAME>/` at the repo root — they are the *inputs* to `/new-feature`. Each feature run through the operating model (see ./DEVELOPMENT_GUIDE.md) creates `docs/features/<FEATURE-ID>/` with **numbered, phase-ordered artifacts**:
 
 ```
 docs/features/<FEATURE-ID>/
