@@ -27,7 +27,7 @@ We will record significant architecture decisions as Architecture Decision Recor
 - ADRs are **append-only**. Never edit an accepted ADR's decision.
 - To change a decision: write a new ADR that supersedes the old one. Update the old ADR's Status to "Superseded by ADR-NNNN".
 
-**When to write one:** See `docs/architecture.md → When to Write an ADR`.
+**When to write one:** See `docs/ARCHITECTURE.md → When to Write an ADR`.
 
 ## Alternatives Considered
 

@@ -8,16 +8,16 @@ Nexus is a **modular monolith**:
 - **`nexus-backend/`** — Spring Boot 4, Java 25, Maven, Spring Data JPA, MySQL, Flyway, hexagonal architecture.
 - **`nexus-frontend/`** — Angular 21, TypeScript 5.9 (strict), standalone components, signals, Vitest, Playwright.
 - **`docs/`** — standards (`coding-standards`, `observability-standards`, `deployment-process`), ADRs, and `features/<ID>/` artifacts.
-- **`story/`** — epic/story inputs (e.g. `story/S1-authentication/`) that feed `/new-feature`.
+- **`docs/story/`** — epic/story inputs (e.g. `docs/story/S1-authentication/`) that feed `/new-feature`.
 - **`.claude/`** — agents, commands, skills, and enforcement hooks (see `.claude/README.md`).
 
 ## Documentation index (single source of truth per topic)
 
 | Need | Read |
 |------|------|
-| How to build/run/test, **the mandatory operating model**, enforcement | [DEVELOPMENT_GUIDE.md](DEVELOPMENT_GUIDE.md) |
-| System design, layering, non-negotiables | [ARCHITECTURE.md](ARCHITECTURE.md) |
-| Test strategy & coverage gates | [TESTING.md](TESTING.md) |
+| How to build/run/test, **the mandatory operating model**, enforcement | [DEVELOPMENT_GUIDE.md](docs/DEVELOPMENT_GUIDE.md) |
+| System design, layering, non-negotiables | [ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| Test strategy & coverage gates | [TESTING.md](docs/TESTING.md) |
 | Security baseline & standards | [SECURITY.md](SECURITY.md) |
 | Branching, commits, PRs | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Naming, formatting, forbidden patterns | [docs/coding-standards.md](docs/coding-standards.md) |
@@ -41,9 +41,9 @@ npm run lint && npm run format:check
 
 ## Operating model (do not skip for features)
 
-Full reference: **DEVELOPMENT_GUIDE.md → The Operating Model**. Front door: **`/new-feature <FEATURE-ID>`** → discovery → requirements (Gate 1) → impact → design + API/DB + threat model (Gate 2) → tasks (Gate 3) → implement (test-first) → `/review` → `/security-review` → `/test-validate` → `/docs` → `/release-prep`. Run **`/pre-pr-check`** before any PR. Artifacts: numbered files in `docs/features/<ID>/` (see `docs/README.md`). A quick fix doesn't need the full model — substantial features do.
+Full reference: **docs/DEVELOPMENT_GUIDE.md → The Operating Model**. Front door: **`/new-feature <FEATURE-ID>`** → discovery → requirements (Gate 1) → impact → design + API/DB + threat model (Gate 2) → tasks (Gate 3) → implement (test-first) → `/review` → `/security-review` → `/test-validate` → `/docs` → `/release-prep`. Run **`/pre-pr-check`** before any PR. Artifacts: numbered files in `docs/features/<ID>/` (see `docs/README.md`). A quick fix doesn't need the full model — substantial features do.
 
-## Critical conventions (full list: ARCHITECTURE.md → Non-negotiables)
+## Critical conventions (full list: docs/ARCHITECTURE.md → Non-negotiables)
 
 - Backend package root is **`com.example.nexus.<context>`** with `domain / application / infrastructure / interfaces` layers; inner layers never import outer (ArchUnit-enforced). Constructor injection only; `@Transactional` on application services; never return JPA entities from controllers.
 - **Cross-context domain exceptions** (e.g. `AccountLockedException`) live in **`common.domain`**, not in the originating bounded context, so `GlobalExceptionHandler` in `common.web` can import them without violating layer rules.
@@ -51,10 +51,10 @@ Full reference: **DEVELOPMENT_GUIDE.md → The Operating Model**. Front door: **
 - **Flyway owns the schema** (`ddl-auto=validate`, ADR 0003) — append-only `V<N>__*.sql` migrations.
 - Errors are **RFC 7807** problem documents with `code` + `traceId`; never leak internals.
 - Frontend: standalone + signals + modern control flow (`@if`/`@for`); no `any`; HTTP only via interceptors (components see `AppError`, never `HttpErrorResponse`); config via `APP_CONFIG`.
-- Integration tests (`*IT`) use **Testcontainers MySQL**, never H2; H2 serves only the no-Docker context smoke test (TESTING.md).
+- Integration tests (`*IT`) use **Testcontainers MySQL**, never H2; H2 serves only the no-Docker context smoke test (docs/TESTING.md).
 - **Anti-enumeration endpoints** (e.g. `/forgot`, `/resend-verification`) must return the same HTTP status and body regardless of account existence. The not-found path must perform a dummy CPU-equivalent operation (e.g. `tokenGenerator.generate()`) to partially equalise timing; document any residual DB round-trip delta in an inline comment. See `ForgotPasswordUseCase` for the canonical pattern.
 
-## Enforcement (gates fail automatically — DEVELOPMENT_GUIDE.md → How gates are enforced)
+## Enforcement (gates fail automatically — docs/DEVELOPMENT_GUIDE.md → How gates are enforced)
 
 `.claude/settings.json` wires cross-platform **Node hooks**: `block-prod-commands.mjs` (Bash), `secret-scan.mjs` (Write/Edit), `format.mjs` (PostToolUse), `run-tests.mjs` (Stop). Permissions deny `git push`, `rm -rf`, `sudo`, and reads/writes of `.env*` / `application-prod.*`. Beyond Claude: `.githooks/pre-push`, CI workflows, and branch protection (`scripts/setup-branch-protection.sh` + `.github/CODEOWNERS`).
 

@@ -2,7 +2,7 @@
      feature, or let `/new-feature <FEATURE-ID>` create the artifacts. Numbered convention:
        01-requirements.md  02-impact.md  03-design.md  03b-threat-model.md  04-tasks.md
        06-code-review.md   07-security-review.md  08-test-audit.md  09-technical.md  10-release/
-     Produced and gated per DEVELOPMENT_GUIDE.md → The Operating Model. -->
+     Produced and gated per docs/DEVELOPMENT_GUIDE.md → The Operating Model. -->
 
 # <FEATURE-ID> — <Feature name>: Requirements
 
@@ -12,7 +12,7 @@
 <!-- One or two sentences: user outcome + business rule. -->
 
 ## Bounded context
-<!-- Existing or new context (see ARCHITECTURE.md). -->
+<!-- Existing or new context (see docs/ARCHITECTURE.md). -->
 
 ## Non-goals
 <!-- What this feature explicitly will not do. -->

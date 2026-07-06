@@ -116,7 +116,7 @@ environment-variable or vault-sourced. They must never appear in code, YAML, or 
 future table partitioning by tenant.
 
 **NFR-008 (Testability)** — Integration tests (`*IT`) use Testcontainers MySQL 8.4 and cover all
-acceptance criteria. No H2 for integration tests (`ARCHITECTURE.md` non-negotiable 8).
+acceptance criteria. No H2 for integration tests (`docs/ARCHITECTURE.md` non-negotiable 8).
 
 **NFR-009 (Observability)** — `users`, `refresh_tokens`, `auth_tokens` use JPA auditing
 (`@CreatedDate`, `@LastModifiedDate`) for `created_at` / `updated_at`. `auth_events` has no

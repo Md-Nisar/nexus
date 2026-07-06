@@ -133,7 +133,7 @@ Every non-trivial change follows this model. It is enforced by approval gates (h
 ### Requirements summary
 - **Discovery/analysis before coding** — Steps 0–2, reuse-first.
 - **Architecture + API/DB + security review before coding** — Step 3, Gate 2.
-- **Testing** — test-first in Step 5; coverage gates in `TESTING.md` enforced at Step 8 and CI.
+- **Testing** — test-first in Step 5; coverage gates in `docs/TESTING.md` enforced at Step 8 and CI.
 - **Documentation** — Step 9 + update standards/ADRs when conventions change.
 - **PR requirements** — `/pre-pr-check` green + Definition of Done (`CONTRIBUTING.md`) + Conventional Commit title + ≥1 code-owner approval.
 

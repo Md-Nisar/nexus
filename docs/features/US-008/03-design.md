@@ -55,7 +55,7 @@ auth_events (MySQL — least-priv `nexus_app` user, triggers + INSERT/SELECT gra
 
 Flow: Login/Refresh/Forgot/Reset use cases call `SecureEventService` (REQUIRES_NEW); Logout/Register/Verify/Resend call `AuthEventPort` directly (same TX — see §7). Both paths converge on `JpaAuthEventAdapter`, which synchronously inserts and, on failure, enqueues into `AuthEventRetryBuffer`. The buffer's scheduled drainer retries via the repository directly and raises alerts through `AuditAlertPort` on backlog/exhaustion.
 
-**Layering compliance (ARCHITECTURE.md, ArchUnit-enforced):**
+**Layering compliance (docs/ARCHITECTURE.md, ArchUnit-enforced):**
 - `AuthEventType` and `AuthEvent` → **domain** (no outer imports).
 - `RequestContext` stays in **common.domain** (cross-context carrier; consistent with `AccountLockedException` living in `common.domain`).
 - `AuthEventPort`, `AuditAlertPort` → **application.port.out**.
@@ -509,4 +509,4 @@ WS-1 and WS-5 need **no new ADR**: WS-1 is a refactor (mapping table in §2.2 is
 - Format precedent: `C:\entomo\AI\nexus\docs\features\US-007\03-design.md`
 - Verified sources: `nexus-backend\src\main\java\com\example\nexus\identity\domain\AuthEvent.java`, `...\identity\domain\User.java`, `...\identity\application\service\SecureEventService.java`, `LoginUseCase.java`, `LogoutUseCase.java`, `RefreshTokenUseCase.java`, `...\identity\application\RegisterUserUseCase.java`, `VerifyEmailUseCase.java`, `ForgotPasswordUseCase.java`, `ResetPasswordUseCase.java`, `ResendVerificationUseCase.java`, `...\identity\application\port\out\AuthEventPort.java`, `...\identity\infrastructure\persistence\JpaAuthEventAdapter.java`, `...\common\domain\RequestContext.java`, `...\identity\interfaces\rest\LoginController.java`, `nexus-backend\src\main\resources\db\migration\V2__identity_schema.sql`, `docker-compose.yml`, `nexus-backend\src\main\resources\application.yml`, `nexus-backend\pom.xml`
 - ADRs: `C:\entomo\AI\nexus\docs\adr\0003-flyway-schema-migrations.md`, `C:\entomo\AI\nexus\docs\adr\0009-requires-new-transaction-for-lockout-counters.md` (next free: 0011, 0012)
-- Standards: `C:\entomo\AI\nexus\docs\observability-standards.md`, `ARCHITECTURE.md`, `docs\coding-standards.md`
+- Standards: `C:\entomo\AI\nexus\docs\observability-standards.md`, `docs/ARCHITECTURE.md`, `docs\coding-standards.md`

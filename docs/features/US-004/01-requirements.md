@@ -1,7 +1,7 @@
 # US-004 Requirements — Refresh sessions silently with rotating refresh tokens
 
 Status: DRAFT — awaiting Gate 1 approval  
-Source: `story/1-authentication/EPIC-001.md` (US-004)  
+Source: `docs/story/1-authentication/EPIC-001.md` (US-004)  
 Date: 2026-06-23
 
 ---

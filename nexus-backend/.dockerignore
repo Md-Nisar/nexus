@@ -2,4 +2,4 @@ target/
 .idea/
 *.iml
 .git/
-TESTING.md
+docs/TESTING.md
