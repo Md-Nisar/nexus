@@ -98,6 +98,18 @@ management:
           include: livenessState
         readiness:
           include: readinessState
+  # ADR 0016 §7: Redis-backed capabilities all fail open (rate limiting, RBAC cache, jti
+  # denylist) — Redis reachability is deliberately NOT a signal of application availability.
+  # Unlike authEventDbPrivilege above (a rare-drift indicator that stays UP >99% of the time),
+  # Redis is routinely absent in unit/slice test contexts and any environment where the
+  # rate-limit store-type is still "memory" — letting it into the aggregate /actuator/health
+  # would make that endpoint flaky wherever Redis isn't running, not just signal a real problem.
+  # Disabled outright rather than merely excluded from the readiness/liveness groups (which
+  # would still leave it dragging the aggregate /actuator/health status down). Redis reachability
+  # is instead observed via Lettuce/Micrometer metrics (see docs/redis-integration-plan.md §7).
+  health:
+    redis:
+      enabled: false
 
 # --- API Documentation ---
 springdoc:
