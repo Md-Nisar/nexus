@@ -83,6 +83,21 @@
             <artifactId>spring-boot-starter-mail</artifactId>
         </dependency>
 
+        <!-- Redis client (Lettuce, transitively) — rate limiting, jti denylist, RBAC permission
+             cache, lockout fast-path counters (see ADR 0016 / docs/redis-integration-plan.md).
+             Version managed by spring-boot-starter-parent BOM. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <!-- Required for spring.data.redis.lettuce.pool.* to take effect — Spring Boot silently
+             skips connection pooling if commons-pool2 isn't on the classpath. -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-pool2</artifactId>
+        </dependency>
+
         <!-- Exposes /actuator/prometheus for metrics scraping -->
         <dependency>
             <groupId>io.micrometer</groupId>

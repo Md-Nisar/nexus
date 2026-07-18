@@ -44,6 +44,18 @@ class HexagonalArchitectureTest {
                     .resideInAnyPackage("org.springframework.web..", "jakarta.servlet..")
                     .allowEmptyShould(true);
 
+    // ADR 0016 D6: Redis client types are confined to infrastructure/ adapters — domain and
+    // application must consume Redis-backed capabilities only through a hexagonal port
+    // (e.g. RateLimitStore), never by importing the client library directly.
+    @ArchTest
+    static final ArchRule domain_and_application_must_not_depend_on_redis =
+            noClasses()
+                    .that().resideInAnyPackage("..domain..", "..application..")
+                    .should().dependOnClassesThat()
+                    .resideInAnyPackage(
+                            "org.springframework.data.redis..", "io.lettuce..", "org.redisson..")
+                    .allowEmptyShould(true);
+
     @ArchTest
     static final ArchRule no_field_injection =
             GeneralCodingRules.NO_CLASSES_SHOULD_USE_FIELD_INJECTION;
