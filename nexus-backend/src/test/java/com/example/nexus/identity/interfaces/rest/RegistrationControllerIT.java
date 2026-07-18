@@ -31,6 +31,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
 import org.springframework.context.annotation.Import;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.NestedTestConfiguration;
 import org.springframework.test.context.NestedTestConfiguration.EnclosingConfiguration;
 import org.springframework.http.HttpEntity;
@@ -53,8 +54,17 @@ import org.springframework.web.context.WebApplicationContext;
  * <p>The outer class uses Testcontainers MySQL (feature flag ON). The inner
  * {@link WhenFeatureFlagDisabled} class uses H2 with the flag OFF to assert 404 on all endpoints.
  */
-@SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT)
+@SpringBootTest(
+    webEnvironment = WebEnvironment.RANDOM_PORT,
+    properties = {
+        "nexus.identity.encryption.password=test-enc-password-32-chars-long!!",
+        "nexus.identity.encryption.salt=cafebabecafebabecafebabecafebabe",
+        "nexus.identity.hmac-key=test-not-a-secret-hmac-key-min-32-bytes!!",
+        "nexus.identity.default-tenant-id=00000000-0000-7000-8000-000000000001",
+        "feature.nexus-us002-auth-registration.enabled=true"
+    })
 @Import(TestcontainersConfiguration.class)
+@ActiveProfiles("test")
 class RegistrationControllerIT {
 
   // Default :0 prevents PlaceholderResolutionException when the inner class's MOCK context
@@ -337,10 +347,13 @@ class RegistrationControllerIT {
           "spring.mail.host=127.0.0.1",
           "feature.nexus-us002-auth-registration.enabled=false",
           // Crypto properties that application-dev.yml provides for the outer context;
-          // OVERRIDE means we must supply them explicitly here.
-          "nexus.identity.encryption.password=dev-not-a-secret-encryption-password",
-          "nexus.identity.encryption.salt=deadbeefdeadbeefdeadbeefdeadbeef",
-          "nexus.identity.hmac-key=dev-not-a-secret-hmac-key-min-32-bytes-long",
+          // OVERRIDE means we must supply them explicitly here. Test-only values (NOT the
+          // DEV_PASSWORD_PLACEHOLDER literal) — IdentityCryptoConfig rejects that literal unless
+          // the active profile is dev/smoke (SEC-T5 guard), and OVERRIDE means no profile is
+          // inherited here, so using the real dev placeholder would fail that check.
+          "nexus.identity.encryption.password=test-enc-password-32-chars-long!!",
+          "nexus.identity.encryption.salt=cafebabecafebabecafebabecafebabe",
+          "nexus.identity.hmac-key=test-not-a-secret-hmac-key-min-32-bytes!!",
           "nexus.identity.default-tenant-id=00000000-0000-7000-8000-000000000001",
           "nexus.identity.argon2.memory-kb=4096",
           "nexus.identity.argon2.iterations=1",

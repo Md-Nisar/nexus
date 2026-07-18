@@ -382,6 +382,17 @@
                                         <include>*.infrastructure</include>
                                         <include>*.infrastructure.*</include>
                                     </includes>
+                                    <!-- rbac.infrastructure.persistence (US-009) is, by design, 4 bare
+                                         JpaRepository marker interfaces with zero method bodies and thus
+                                         zero instrumentable lines (03-design.md §4.5: no ports/adapters
+                                         in this story). A package with a zero total is excluded here
+                                         rather than left to the rule engine, which treats an empty
+                                         package's undefined ratio as a violation. Existing infrastructure
+                                         packages never hit this because they always mix in a concrete
+                                         adapter/converter class alongside their bare repositories. -->
+                                    <excludes>
+                                        <exclude>*.rbac.infrastructure.persistence</exclude>
+                                    </excludes>
                                     <limits>
                                         <limit>
                                             <counter>LINE</counter>

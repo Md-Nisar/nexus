@@ -7,6 +7,17 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ## [Unreleased]
 
+### Added — US-009 (RBAC data model and seed system roles/permissions)
+
+**Backend**
+- New bounded context `com.example.nexus.rbac`: `Permission`, `Role`, `RolePermission` (+ `RolePermissionId`, `@EmbeddedId`), `UserRole` entities + 4 Spring Data repositories, mirroring `identity`'s hexagonal layout.
+- `V5__rbac_schema.sql` — 4 new tables (`permissions`, `roles`, `role_permissions`, `user_roles`); a `STORED` generated column (`active_key`) + unique index enforcing "one active role assignment per (user, role)" at the DB level (MySQL 8.4 has no partial/filtered unique index, so this replaces that Postgres-only feature); a `CHECK` constraint guarding against backdated revocation; a `BEFORE DELETE`-only trigger (append-only `user_roles`, `revoked_at` remains the sole soft-delete path).
+- Seeded: 7 code-defined permissions (`resource:action` naming), 2 system roles (`TENANT_ADMIN` — all permissions, `MEMBER` — `user:read` only), scoped to a bootstrap default tenant.
+- Least-privilege `nexus_app` DB grants for all 4 new tables added across all 3 provisioning artifacts (dev init SQL, Testcontainers, prod runbook), including a column-scoped `GRANT UPDATE (revoked_at)` on `user_roles` — every other column on that table remains grant-level immutable, matching the `auth_events` posture.
+- ADR 0013 (RBAC model, permission naming, `active_key` technique), ADR 0014 (bootstrap tenant sourcing, `nexus_app` grants), ADR 0015 (Gate-2 threat-model hardening: column-scoped grant, non-prod-only tenant fallback).
+- Schema-only story — no runtime API, no enforcement, no feature flag. Hard gate for Epic 3 (Tenant Management) kickoff once `TENANT_ADMIN` is reachable; permission enforcement (US-011), JWT population (US-010), and the assignment/management APIs (US-012/US-015) are separate, upcoming stories.
+- 606/607 backend tests passing (1 unrelated pre-existing skip); AC9 grant smoke-verified end-to-end against real Docker MySQL 8.4, not just Testcontainers.
+
 ### Added — US-007 (Self-service password reset via email)
 
 **Backend**

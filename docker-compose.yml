@@ -19,9 +19,14 @@ services:
       - "3306:3306"
     volumes:
       - nexus-mysql-data:/var/lib/mysql
-      # Runs once, as root, only on a first-time (empty) data directory — creates the nexus_app
-      # user (CREATE USER only; no DDL-dependent GRANTs here, see 02-grants-post-schema.sql).
-      - ./nexus-database/mysql/init:/docker-entrypoint-initdb.d:ro
+      # Mount ONLY 01-grants.sql here, as a single file — NOT the whole init/ directory.
+      # docker-entrypoint-initdb.d runs every script it finds, in filename order, before Flyway
+      # (or anything else) ever connects. 02-grants-post-schema.sql GRANTs against tables that
+      # don't exist until Flyway creates them (ERROR 1146) — mounting the whole directory made
+      # MySQL execute both files on a fresh volume and crash on 02- (empirically confirmed).
+      # 02-grants-post-schema.sql is deliberately consumed only via the flyway-migrate service's
+      # afterMigrate.sql mount below, after the schema exists.
+      - ./nexus-database/mysql/init/01-grants.sql:/docker-entrypoint-initdb.d/01-grants.sql:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD:-root}"]
       interval: 10s
@@ -68,11 +73,22 @@ services:
     container_name: nexus-backend
     environment:
       SPRING_PROFILES_ACTIVE: dev
-      DB_URL: jdbc:mysql://mysql:3306/nexus?useSSL=false&serverTimezone=UTC
+      # allowPublicKeyRetrieval=true required: useSSL=false + MySQL 8's default caching_sha2_password
+      # auth plugin means the client needs the server's public key to encrypt the password on first
+      # connect. Without it, boot fails with "Public Key Retrieval is not allowed" (empirically
+      # confirmed) — matches the flyway-migrate JDBC URL above and application.yml's DB_URL default.
+      DB_URL: jdbc:mysql://mysql:3306/nexus?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
       # US-008 T-08-10 (ADR 0012): runtime connects as nexus_app, NOT root. nexus_app has no
       # DDL — migrations run separately, as root, in the flyway-migrate service above.
       DB_USERNAME: nexus_app
       DB_PASSWORD: ${NEXUS_APP_DB_PASSWORD:-nexus_app_dev_only}
+      # application.yml sets spring.flyway.enabled: true unconditionally (for the normal
+      # ./mvnw spring-boot:run case, which connects as root and owns migrations itself). Here,
+      # nexus_app has no DDL grants, so the backend's own embedded Flyway can't even see the
+      # flyway_schema_history table root already created — it fails boot with "Found non-empty
+      # schema(s) `nexus` but no schema history table" (empirically confirmed). flyway-migrate
+      # already applied every migration above; disable Flyway inside this container entirely.
+      SPRING_FLYWAY_ENABLED: "false"
     ports:
       - "1000:1000"
     depends_on:

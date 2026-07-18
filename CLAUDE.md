@@ -53,6 +53,8 @@ Full reference: **docs/DEVELOPMENT_GUIDE.md → The Operating Model**. Front doo
 - Frontend: standalone + signals + modern control flow (`@if`/`@for`); no `any`; HTTP only via interceptors (components see `AppError`, never `HttpErrorResponse`); config via `APP_CONFIG`.
 - Integration tests (`*IT`) use **Testcontainers MySQL**, never H2; H2 serves only the no-Docker context smoke test (docs/TESTING.md).
 - **Anti-enumeration endpoints** (e.g. `/forgot`, `/resend-verification`) must return the same HTTP status and body regardless of account existence. The not-found path must perform a dummy CPU-equivalent operation (e.g. `tokenGenerator.generate()`) to partially equalise timing; document any residual DB round-trip delta in an inline comment. See `ForgotPasswordUseCase` for the canonical pattern.
+- **MySQL has no partial/filtered unique index** (no Postgres-style `CREATE UNIQUE INDEX ... WHERE ...`). For a "unique among active rows only" invariant, use a `STORED` generated column that evaluates to `NULL` for inactive rows and a deterministic value for active ones, then a plain `UNIQUE INDEX` on it — MySQL never treats two `NULL`s as duplicates. See ADR 0013 D2 / `user_roles.active_key`.
+- **Hibernate rejects an `AttributeConverter` on `@IdClass` composite-key attributes**, even an explicit one. Use `@EmbeddedId` instead for any converter-backed (e.g. `UuidV7Converter`-mapped) composite key. See `rbac/domain/RolePermissionId.java`.
 
 ## Enforcement (gates fail automatically — docs/DEVELOPMENT_GUIDE.md → How gates are enforced)
 
