@@ -126,6 +126,17 @@ public class TestcontainersConfiguration {
                     statement.execute(
                         "GRANT SELECT, INSERT, UPDATE, DELETE ON nexus.auth_tokens TO"
                             + " 'nexus_app'@'%'");
+                    statement.execute(
+                        "GRANT SELECT ON nexus.permissions TO 'nexus_app'@'%'");
+                    statement.execute(
+                        "GRANT SELECT, INSERT ON nexus.roles TO 'nexus_app'@'%'");
+                    statement.execute(
+                        "GRANT SELECT, INSERT, DELETE ON nexus.role_permissions TO"
+                            + " 'nexus_app'@'%'");
+                    statement.execute(
+                        "GRANT SELECT, INSERT ON nexus.user_roles TO 'nexus_app'@'%'");
+                    statement.execute(
+                        "GRANT UPDATE (revoked_at) ON nexus.user_roles TO 'nexus_app'@'%'");
                     statement.execute("FLUSH PRIVILEGES");
                 } catch (SQLException e) {
                     throw new IllegalStateException(

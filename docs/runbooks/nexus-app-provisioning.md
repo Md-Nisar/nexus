@@ -72,6 +72,13 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON nexus.users          TO 'nexus_app'@'%';
 GRANT SELECT, INSERT, UPDATE, DELETE ON nexus.refresh_tokens TO 'nexus_app'@'%';
 GRANT SELECT, INSERT, UPDATE, DELETE ON nexus.auth_tokens    TO 'nexus_app'@'%';
 
+-- RBAC tables (US-009 T-09-08; ADR 0014 D6, amended by ADR 0015 D7):
+GRANT SELECT                 ON nexus.permissions      TO 'nexus_app'@'%';
+GRANT SELECT, INSERT         ON nexus.roles            TO 'nexus_app'@'%';
+GRANT SELECT, INSERT, DELETE ON nexus.role_permissions TO 'nexus_app'@'%';
+GRANT SELECT, INSERT         ON nexus.user_roles       TO 'nexus_app'@'%';
+GRANT UPDATE (revoked_at)    ON nexus.user_roles       TO 'nexus_app'@'%';
+
 FLUSH PRIVILEGES;
 ```
 
@@ -84,7 +91,7 @@ this list, and never add `WITH GRANT OPTION`.
 SHOW GRANTS FOR 'nexus_app'@'%';
 ```
 
-Expected output (four lines, plus the implicit `GRANT USAGE`):
+Expected output (nine lines, plus the implicit `GRANT USAGE`):
 
 ```
 GRANT USAGE ON *.* TO `nexus_app`@`%`
@@ -92,6 +99,11 @@ GRANT SELECT, INSERT ON `nexus`.`auth_events` TO `nexus_app`@`%`
 GRANT SELECT, INSERT, UPDATE, DELETE ON `nexus`.`auth_tokens` TO `nexus_app`@`%`
 GRANT SELECT, INSERT, UPDATE, DELETE ON `nexus`.`refresh_tokens` TO `nexus_app`@`%`
 GRANT SELECT, INSERT, UPDATE, DELETE ON `nexus`.`users` TO `nexus_app`@`%`
+GRANT SELECT ON `nexus`.`permissions` TO `nexus_app`@`%`
+GRANT SELECT, INSERT ON `nexus`.`roles` TO `nexus_app`@`%`
+GRANT SELECT, INSERT, DELETE ON `nexus`.`role_permissions` TO `nexus_app`@`%`
+GRANT SELECT, INSERT ON `nexus`.`user_roles` TO `nexus_app`@`%`
+GRANT UPDATE (`revoked_at`) ON `nexus`.`user_roles` TO `nexus_app`@`%`
 ```
 
 If anything else appears (`DROP`, `ALTER`, `CREATE`, `GRANT OPTION`, or `UPDATE`/`DELETE` on
