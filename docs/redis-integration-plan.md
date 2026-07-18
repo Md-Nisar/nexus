@@ -519,14 +519,20 @@ triggers.
   - Connection pool saturation (`lettuce.pool` metrics vs. configured `max-active`) and
     `connected_clients`.
   - Replica lag / Sentinel failover events, once the Sentinel topology is in place.
-- **Readiness vs. full health**: extend the precedent ADR 0012 already set for
-  `authEventDbPrivilege` (a non-fatal, security-observability indicator deliberately excluded from
-  the liveness/readiness groups while remaining visible on the full `/actuator/health` response).
-  Recommend the same for Redis — visible on `/actuator/health`, **excluded from the readiness probe
-  group** — because most of this plan's Redis-backed capabilities are designed to degrade
-  gracefully (§8) rather than justify pulling a healthy, still-mostly-functional pod out of
-  rotation. An operator should see and be alerted on Redis-down without Kubernetes removing
-  capacity that can still serve the bulk of traffic in degraded mode.
+- **Redis is excluded from `/actuator/health` entirely** (`management.health.redis.enabled:
+  false`), not merely from the readiness/liveness groups. The original design (drafted before
+  implementation) proposed mirroring ADR 0012's `authEventDbPrivilege` precedent — visible on the
+  aggregate `/actuator/health`, excluded only from the readiness/liveness sub-groups. That
+  precedent doesn't actually transfer: `authEventDbPrivilege` stays UP well over 99% of the time
+  (a DB-privilege drift is rare), so it almost never drags the aggregate down in practice. Redis is
+  routinely *absent* — in unit/slice test contexts, on a dev machine without `docker compose up`,
+  in any environment still on `store-type=memory` — so letting Spring Boot's auto-configured Redis
+  health indicator into the aggregate makes `/actuator/health` flaky wherever Redis isn't running,
+  not just signal a real problem (confirmed the hard way: a `SecurityConfigTest` asserting
+  `/actuator/health` returns 200 started failing with 503 in CI, since that test's Spring context
+  has no reachable Redis). Given every Redis-backed capability in this plan is designed to fail
+  open (§8), Redis reachability is deliberately not a signal of application availability at all —
+  it's observed via the Lettuce/Micrometer metrics above instead.
 
 ---
 
