@@ -1,6 +1,8 @@
 # ADR 0009 — REQUIRES_NEW + Bulk UPDATE for Lockout Counter Writes
 
-**Status:** Accepted
+**Status:** Accepted; the "Redis atomic increment" alternative below is superseded/adopted by
+**ADR 0016** (Redis adopted as an infrastructure dependency) as an additive fast path in front of
+this ADR's MySQL mechanism, which otherwise remains authoritative and unchanged.
 **Date:** 2026-06-30
 **Feature:** US-006 (Brute-force lockout)
 
@@ -61,4 +63,4 @@ int resetFailedAttemptsDirect(@Param("userId") UUID userId);
 | Write counters in the same outer TX | Rolled back on failure — lockout is disabled |
 | `SELECT FOR UPDATE` + pessimistic lock | Serialises all concurrent logins; unacceptable latency |
 | Atomic `UPDATE count = count + 1` for all counter writes | Would also fix the concurrency race (DF-3) but requires native SQL or a more complex JPQL update; deferred to a future improvement (the current approach is correct for the threshold-based check) |
-| Redis atomic increment | Eliminates per-JVM state and solves DF-3; deferred to when Redis is added as a dependency (future story) |
+| Redis atomic increment | Eliminates per-JVM state and solves DF-3; deferred to when Redis is added as a dependency (future story) — **adopted per ADR 0016**: `INCR`/`EXPIRE` Lua fast path layered in front of this ADR's unchanged MySQL write path, fail-closed to the mechanism above on Redis outage |

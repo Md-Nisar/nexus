@@ -55,4 +55,15 @@
         <Class name="com.example.nexus.identity.infrastructure.audit.AuthEventRetryBuffer" />
         <Bug pattern="EI_EXPOSE_REP2" />
     </Match>
+    <!--
+      ADR 0016: RedisRateLimitStore constructor-injects the Spring-managed singleton
+      StringRedisTemplate bean and stores it directly, per this project's constructor-injection-only
+      convention (CLAUDE.md). Same rationale as the other exclusions above: StringRedisTemplate is
+      a connection/operations factory (not a value object) with no sensible defensive copy, and it
+      is a Spring singleton never mutated after context startup.
+    -->
+    <Match>
+        <Class name="com.example.nexus.identity.infrastructure.security.RedisRateLimitStore" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
 </FindBugsFilter>

@@ -37,6 +37,22 @@ spring:
     enabled: true
     locations: classpath:db/migration
 
+  # --- Redis (ADR 0016 / docs/redis-integration-plan.md) ---
+  # Cache/coordination layer only — never a system of record. MySQL + Flyway above remains
+  # authoritative for everything. StringRedisTemplate/RedisConnectionFactory beans come from
+  # Spring Boot's own RedisAutoConfiguration — no custom config class needed.
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 2000ms
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 16
+          min-idle: 2
+
   # --- Mail Configuration ---
   mail:
     host: ${MAIL_HOST:}          # Required in staging/prod; dev overrides via application-dev.yml
@@ -94,6 +110,9 @@ springdoc:
 # Identity context crypto material — REQUIRED in every Flyway-enabled environment.
 # Missing key → fast-fail startup (IdentityCryptoConfig). Source from Vault/env vars in prod.
 nexus:
+  # --- Redis key namespacing (ADR 0016 D3) ---
+  redis:
+    key-prefix: ${NEXUS_REDIS_KEY_PREFIX:nexus}
   identity:
     # --- Encryption ---
     encryption:

@@ -1,6 +1,7 @@
 # ADR 0008 — Access-Token Revocation Strategy: TTL-Only for GA, jti Denylist as Fast-Follow
 
-**Status:** Accepted
+**Status:** Accepted; Option B superseded by **ADR 0016** (Redis adopted as an infrastructure
+dependency — see that ADR's D4 for the jti-denylist implementation).
 **Date:** 2026-06-29
 **Author:** Engineering Team
 
@@ -64,7 +65,10 @@ Rationale:
 - A compliance or security audit mandates a revocation SLA shorter than the access-token TTL.
 - The access-token TTL is increased beyond 15 min for any reason.
 - A "log out everywhere / kill session now" admin capability is introduced.
-- Redis is adopted for another reason (lowering the marginal cost of the denylist).
+- Redis is adopted for another reason (lowering the marginal cost of the denylist). **— Triggered:
+  Redis was adopted per ADR 0016 for the RBAC permission cache and rate-limiting store; Option B
+  (`jti` denylist keyed by `nexus:identity:jwt:denylist:{jti}`, TTL = remaining access-token
+  lifetime, fail-open on Redis outage) is now implemented as part of that ADR's rollout.**
 
 ## Consequences
 

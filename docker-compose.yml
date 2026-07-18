@@ -33,6 +33,33 @@ services:
       timeout: 5s
       retries: 10
 
+  # ADR 0016: cache/coordination layer (rate limiting, jti denylist, RBAC permission cache,
+  # lockout fast-path counters). No `profiles:` key — in the default set alongside mysql/mailhog,
+  # since it's an IDE-run-backend dependency, not just a `--profile full` one.
+  # noeviction (not allkeys-lru): several keys here are security-relevant (jti denylist, lockout
+  # counters) — silent eviction under memory pressure would be a silent security regression.
+  # AOF (appendonly + everysec) so a Redis restart doesn't silently un-revoke a token or
+  # un-lock an account.
+  redis:
+    image: redis:7.4-alpine
+    container_name: nexus-redis
+    command: >
+      redis-server
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+      --appendonly yes
+      --appendfsync everysec
+      --save 900 1
+    ports:
+      - "6379:6379"
+    volumes:
+      - nexus-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   # One-shot: applies Flyway migrations as root, then grants nexus_app its scoped privileges.
   # The grant step uses Flyway's native SQL-callback convention (a file literally named
   # afterMigrate.sql in the -locations directory is auto-discovered and run once, immediately
@@ -94,6 +121,8 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
+      redis:
+        condition: service_healthy
       flyway-migrate:
         condition: service_completed_successfully
 
@@ -115,3 +144,4 @@ services:
 
 volumes:
   nexus-mysql-data:
+  nexus-redis-data:
