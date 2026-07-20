@@ -1,6 +1,5 @@
 package com.example.nexus.identity.infrastructure.crypto;
 
-import org.springframework.boot.actuate.endpoint.SanitizableData;
 import org.springframework.boot.actuate.endpoint.SanitizingFunction;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;

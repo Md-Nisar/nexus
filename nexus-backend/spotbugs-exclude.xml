@@ -66,4 +66,34 @@
         <Class name="com.example.nexus.identity.infrastructure.security.RedisRateLimitStore" />
         <Bug pattern="EI_EXPOSE_REP2" />
     </Match>
+    <!--
+      US-010: RedisPermissionCacheAdapter constructor-injects the Spring-managed singleton
+      StringRedisTemplate bean and stores it directly. Same rationale as RedisRateLimitStore
+      above: StringRedisTemplate is a connection/operations factory (not a value object) with no
+      sensible defensive copy, and it is a Spring singleton never mutated after context startup.
+    -->
+    <Match>
+        <Class name="com.example.nexus.rbac.infrastructure.cache.RedisPermissionCacheAdapter" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
+    <!--
+      US-010: RbacDbPrivilegeHealthIndicator constructor-injects the Spring-managed singleton
+      DataSource bean and stores it directly, mirroring AuthEventDbPrivilegeHealthIndicator above
+      (same class of connection-factory dependency, same non-mutating-singleton rationale).
+    -->
+    <Match>
+        <Class name="com.example.nexus.rbac.infrastructure.health.RbacDbPrivilegeHealthIndicator" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
+    <!--
+      US-010: RoleResolutionService constructor-injects the Spring-managed singleton
+      PermissionCachePort bean and stores it directly, per this project's
+      constructor-injection-only convention (CLAUDE.md). A port/service reference has no sensible
+      defensive copy (it is behavior, not a value object), and it is a Spring singleton never
+      mutated after context startup — same rationale as the connection-factory exclusions above.
+    -->
+    <Match>
+        <Class name="com.example.nexus.rbac.application.RoleResolutionService" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
 </FindBugsFilter>

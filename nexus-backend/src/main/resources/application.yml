@@ -125,6 +125,14 @@ nexus:
   # --- Redis key namespacing (ADR 0016 D3) ---
   redis:
     key-prefix: ${NEXUS_REDIS_KEY_PREFIX:nexus}
+  # --- RBAC (US-010) ---
+  rbac:
+    # Permission cache TTL (ADR 0016 D4). RoleResolutionService always re-reads roles live and
+    # treats a role-set mismatch as a cache miss, so a role assignment/revocation is reflected
+    # immediately (US-010 AC6) — this TTL only bounds the lag for a role's own permission set
+    # changing without any (re-)assignment (a future US-015 concern). The JWT itself (re-issued at
+    # login/refresh) remains the actual enforcement authority.
+    permission-cache-ttl-seconds: ${NEXUS_RBAC_PERMISSION_CACHE_TTL_SECONDS:900}
   identity:
     # --- Encryption ---
     encryption:

@@ -79,7 +79,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
       auth.setDetails(Map.of(
           "tenantId", claims.tenantId(),
           "emailVerified", claims.emailVerified(),
-          "tokenVersion", claims.tokenVersion()));
+          "tokenVersion", claims.tokenVersion(),
+          "permissions", claims.permissions()));
       SecurityContextHolder.getContext().setAuthentication(auth);
       MDC.put("userId", claims.sub());
       MDC.put("tenantId", claims.tenantId());

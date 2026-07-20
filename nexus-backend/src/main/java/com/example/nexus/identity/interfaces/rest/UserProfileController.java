@@ -26,11 +26,19 @@ public class UserProfileController {
         .toList();
     Object tokenVersionObj = details.get("tokenVersion");
     int tokenVersion = tokenVersionObj instanceof Number n ? n.intValue() : 0;
+    // Sourced from the JWT's permissions[] claim (itself resolved by RoleResolutionService at
+    // token-mint time), not a fresh lookup — this endpoint makes no DB call (US-010 AC8).
+    Object permissionsObj = details.get("permissions");
+    List<String> permissions =
+        permissionsObj instanceof List<?> list
+            ? list.stream().map(String.class::cast).toList()
+            : List.of();
     return new MeResponse(
         (String) authentication.getPrincipal(),
         Boolean.TRUE.equals(details.get("emailVerified")),
         (String) details.get("tenantId"),
         roles,
+        permissions,
         tokenVersion);
   }
 }

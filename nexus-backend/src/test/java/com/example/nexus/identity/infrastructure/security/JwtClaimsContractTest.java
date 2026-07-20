@@ -5,8 +5,11 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.example.nexus.identity.domain.AccessTokenResult;
+import com.example.nexus.identity.domain.JwtClaims;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UserStatus;
+import com.example.nexus.rbac.application.RoleResolutionService;
+import com.example.nexus.rbac.domain.ResolvedPermissions;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jws;
 import io.jsonwebtoken.JwsHeader;
@@ -40,7 +43,14 @@ class JwtClaimsContractTest {
     when(devEnv.getActiveProfiles()).thenReturn(new String[]{"dev"});
     rsaKeyConfig = new RsaKeyConfig(devEnv);
     rsaKeyConfig.init();
-    service = new JwtRs256Service(rsaKeyConfig, UUID::randomUUID, Clock.systemUTC(), 900L);
+
+    RoleResolutionService roleResolutionService = mock(RoleResolutionService.class);
+    when(roleResolutionService.resolve(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+        .thenReturn(new ResolvedPermissions(List.of("USER"), List.of()));
+    service =
+        new JwtRs256Service(
+            rsaKeyConfig, UUID::randomUUID, Clock.systemUTC(), 900L, roleResolutionService);
 
     testUser = mock(User.class);
     when(testUser.getId()).thenReturn(UUID.randomUUID());
@@ -62,9 +72,11 @@ class JwtClaimsContractTest {
     Claims payload = jws.getPayload();
     JwsHeader header = jws.getHeader();
 
-    // Exactly these 8 claims — freeze gate: adding any new claim breaks this test
+    // Exactly these 10 claims — freeze gate: adding any new claim breaks this test.
+    // permissions/schema_version added in US-010 (schema_version bumped 1 -> 2 accordingly).
     assertThat(payload.keySet()).containsExactlyInAnyOrder(
-        "sub", "tenant_id", "email_verified", "roles", "iat", "exp", "jti", "token_version");
+        "sub", "tenant_id", "email_verified", "roles", "permissions", "iat", "exp", "jti",
+        "token_version", "schema_version");
 
     // No PII (T-7.5)
     assertThat(payload).doesNotContainKey("email");
@@ -73,8 +85,10 @@ class JwtClaimsContractTest {
 
     // Claim values
     assertThat(payload.get("roles", List.class)).containsExactly("USER");
+    assertThat(payload.get("permissions", List.class)).isEmpty();
     assertThat(payload.get("email_verified", Boolean.class)).isTrue();
     assertThat(payload.get("token_version", Integer.class)).isEqualTo(0);
+    assertThat(payload.get("schema_version", Integer.class)).isEqualTo(JwtClaims.CURRENT_VERSION);
 
     // TTL exactly 900 seconds
     long exp = payload.getExpiration().toInstant().getEpochSecond();

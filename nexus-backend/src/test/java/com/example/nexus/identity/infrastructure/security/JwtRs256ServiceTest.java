@@ -10,6 +10,8 @@ import com.example.nexus.identity.domain.AccessTokenResult;
 import com.example.nexus.identity.domain.JwtClaims;
 import com.example.nexus.identity.domain.UserStatus;
 import com.example.nexus.identity.domain.User;
+import com.example.nexus.rbac.application.RoleResolutionService;
+import com.example.nexus.rbac.domain.ResolvedPermissions;
 import io.jsonwebtoken.Jwts;
 import java.time.Clock;
 import java.time.Instant;
@@ -33,8 +35,20 @@ class JwtRs256ServiceTest {
     rsaKeyConfig.init();
   }
 
+  private RoleResolutionService roleResolutionServiceReturning(ResolvedPermissions resolved) {
+    RoleResolutionService svc = mock(RoleResolutionService.class);
+    when(svc.resolve(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+        .thenReturn(resolved);
+    return svc;
+  }
+
   private JwtRs256Service service(Clock clock) {
-    return new JwtRs256Service(rsaKeyConfig, UUID::randomUUID, clock, 900L);
+    return service(clock, new ResolvedPermissions(List.of("MEMBER"), List.of("user:read")));
+  }
+
+  private JwtRs256Service service(Clock clock, ResolvedPermissions resolved) {
+    return new JwtRs256Service(
+        rsaKeyConfig, UUID::randomUUID, clock, 900L, roleResolutionServiceReturning(resolved));
   }
 
   private User activeUser() {
@@ -57,10 +71,39 @@ class JwtRs256ServiceTest {
     assertThat(claims.sub()).isEqualTo(user.getId().toString());
     assertThat(claims.tenantId()).isEqualTo(user.getTenantId().toString());
     assertThat(claims.emailVerified()).isTrue();
-    assertThat(claims.roles()).containsExactly("USER");
+    assertThat(claims.roles()).containsExactly("MEMBER");
+    assertThat(claims.permissions()).containsExactly("user:read");
     assertThat(claims.tokenVersion()).isZero();
+    assertThat(claims.schemaVersion()).isEqualTo(JwtClaims.CURRENT_VERSION);
     assertThat(claims.jti()).isEqualTo(result.jti());
     assertThat(claims.exp() - claims.iat()).isEqualTo(900L);
+  }
+
+  @Test
+  void should_includeResolvedRolesAndPermissions_when_userHasMultipleRoles() {
+    ResolvedPermissions resolved =
+        new ResolvedPermissions(
+            List.of("MEMBER", "TENANT_ADMIN"),
+            List.of("tenant:read", "tenant:write", "user:read"));
+    JwtRs256Service svc = service(Clock.systemUTC(), resolved);
+
+    AccessTokenResult result = svc.issue(activeUser());
+    JwtClaims claims = svc.verify(result.token());
+
+    assertThat(claims.roles()).containsExactlyInAnyOrder("MEMBER", "TENANT_ADMIN");
+    assertThat(claims.permissions())
+        .containsExactlyInAnyOrder("tenant:read", "tenant:write", "user:read");
+  }
+
+  @Test
+  void should_issueEmptyClaims_when_userHasNoRoles() {
+    JwtRs256Service svc = service(Clock.systemUTC(), ResolvedPermissions.empty());
+
+    AccessTokenResult result = svc.issue(activeUser());
+    JwtClaims claims = svc.verify(result.token());
+
+    assertThat(claims.roles()).isEmpty();
+    assertThat(claims.permissions()).isEmpty();
   }
 
   @Test
@@ -129,10 +172,35 @@ class JwtRs256ServiceTest {
         .claim("tenant_id", UUID.randomUUID().toString())
         .claim("email_verified", true)
         // "roles" claim intentionally omitted
+        .claim("permissions", List.of("user:read"))
         .issuedAt(Date.from(now))
         .expiration(Date.from(now.plusSeconds(900)))
         .id(UUID.randomUUID().toString())
         .claim("token_version", 0)
+        .claim("schema_version", JwtClaims.CURRENT_VERSION)
+        .signWith(rsaKeyConfig.getKeyPair().getPrivate(), Jwts.SIG.RS256)
+        .compact();
+
+    JwtRs256Service svc = service(Clock.systemUTC());
+    assertThatThrownBy(() -> svc.verify(crafted))
+        .isInstanceOf(AuthenticationException.class)
+        .satisfies(e -> assertThat(((AuthenticationException) e).code()).isEqualTo("AUTH_003"));
+  }
+
+  @Test
+  void should_throwAuthException_AUTH_003_when_permissionsClaim_absent() {
+    Instant now = Instant.now();
+    String crafted = Jwts.builder()
+        .subject(UUID.randomUUID().toString())
+        .claim("tenant_id", UUID.randomUUID().toString())
+        .claim("email_verified", true)
+        .claim("roles", List.of("MEMBER"))
+        // "permissions" claim intentionally omitted
+        .issuedAt(Date.from(now))
+        .expiration(Date.from(now.plusSeconds(900)))
+        .id(UUID.randomUUID().toString())
+        .claim("token_version", 0)
+        .claim("schema_version", JwtClaims.CURRENT_VERSION)
         .signWith(rsaKeyConfig.getKeyPair().getPrivate(), Jwts.SIG.RS256)
         .compact();
 
@@ -151,10 +219,35 @@ class JwtRs256ServiceTest {
         .claim("tenant_id", UUID.randomUUID().toString())
         .claim("email_verified", true)
         .claim("roles", List.of("USER"))
+        .claim("permissions", List.of("user:read"))
         .issuedAt(Date.from(now))
         .expiration(Date.from(now.plusSeconds(900)))
         .id(UUID.randomUUID().toString())
         // "token_version" claim intentionally omitted
+        .claim("schema_version", JwtClaims.CURRENT_VERSION)
+        .signWith(rsaKeyConfig.getKeyPair().getPrivate(), Jwts.SIG.RS256)
+        .compact();
+
+    JwtRs256Service svc = service(Clock.systemUTC());
+    assertThatThrownBy(() -> svc.verify(crafted))
+        .isInstanceOf(AuthenticationException.class)
+        .satisfies(e -> assertThat(((AuthenticationException) e).code()).isEqualTo("AUTH_003"));
+  }
+
+  @Test
+  void should_throwAuthException_AUTH_003_when_schemaVersionClaim_absent() {
+    Instant now = Instant.now();
+    String crafted = Jwts.builder()
+        .subject(UUID.randomUUID().toString())
+        .claim("tenant_id", UUID.randomUUID().toString())
+        .claim("email_verified", true)
+        .claim("roles", List.of("USER"))
+        .claim("permissions", List.of("user:read"))
+        .issuedAt(Date.from(now))
+        .expiration(Date.from(now.plusSeconds(900)))
+        .id(UUID.randomUUID().toString())
+        .claim("token_version", 0)
+        // "schema_version" claim intentionally omitted
         .signWith(rsaKeyConfig.getKeyPair().getPrivate(), Jwts.SIG.RS256)
         .compact();
 
