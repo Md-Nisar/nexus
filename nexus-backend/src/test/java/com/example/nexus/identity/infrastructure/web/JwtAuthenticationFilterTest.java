@@ -65,7 +65,16 @@ class JwtAuthenticationFilterTest {
   @Test
   void doFilter_validBearerJwt_setsAuthAndDetails_thenCallsChain() throws Exception {
     JwtClaims claims = new JwtClaims(
-        "user-uuid-1", "tenant-uuid-1", true, List.of("USER"), 1000L, 1900L, "jti-abc", 1);
+        "user-uuid-1",
+        "tenant-uuid-1",
+        true,
+        List.of("USER"),
+        List.of("user:read"),
+        1000L,
+        1900L,
+        "jti-abc",
+        1,
+        JwtClaims.CURRENT_VERSION);
 
     MockHttpServletRequest req = new MockHttpServletRequest();
     req.addHeader("Authorization", "Bearer valid.jwt.token");
@@ -90,7 +99,8 @@ class JwtAuthenticationFilterTest {
     assertThat(details)
         .containsEntry("tenantId", "tenant-uuid-1")
         .containsEntry("emailVerified", true)
-        .containsEntry("tokenVersion", 1);
+        .containsEntry("tokenVersion", 1)
+        .containsEntry("permissions", List.of("user:read"));
   }
 
   @Test

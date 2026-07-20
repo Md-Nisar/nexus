@@ -76,4 +76,13 @@ public class UserRole {
     this.tenantId = tenantId;
     this.assignedBy = assignedBy;
   }
+
+  /**
+   * Revokes this assignment (soft delete) — the one permitted mutation path documented above.
+   * {@code active_key} is recomputed to {@code NULL} by the database on the resulting {@code
+   * UPDATE}, freeing the {@code (user_id, role_id)} pair for a future re-assignment.
+   */
+  public void revoke(Instant revokedAt) {
+    this.revokedAt = revokedAt;
+  }
 }

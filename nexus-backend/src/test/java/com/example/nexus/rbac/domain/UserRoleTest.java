@@ -2,6 +2,7 @@ package com.example.nexus.rbac.domain;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import java.time.Instant;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
@@ -37,5 +38,21 @@ class UserRoleTest {
     assertThat(userRole.getAssignedAt()).isNull();
     assertThat(userRole.getRevokedAt()).isNull();
     assertThat(userRole.getActiveKey()).isNull();
+  }
+
+  @Test
+  void should_setRevokedAt_when_revokeCalled() {
+    UserRole userRole =
+        new UserRole(
+            UUID.randomUUID(),
+            UUID.randomUUID(),
+            UUID.randomUUID(),
+            UUID.randomUUID(),
+            UUID.randomUUID());
+    Instant revokedAt = Instant.now();
+
+    userRole.revoke(revokedAt);
+
+    assertThat(userRole.getRevokedAt()).isEqualTo(revokedAt);
   }
 }

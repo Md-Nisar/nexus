@@ -7,9 +7,11 @@ public record MeResponse(
     boolean emailVerified,
     String tenantId,
     List<String> roles,
+    List<String> permissions,
     int tokenVersion) {
 
   public MeResponse {
     roles = List.copyOf(roles);
+    permissions = List.copyOf(permissions);
   }
 }
