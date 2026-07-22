@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   backend-build:
-    name: Build & Test
+    name: backend-build
     runs-on: ubuntu-latest
 
     env:
