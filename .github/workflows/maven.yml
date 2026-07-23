@@ -31,6 +31,11 @@ jobs:
           java-version: '25'
           cache: maven
 
+      # CrossTenantPermissionIT (com.example.nexus.rbac.security) is the RBAC epic's only
+      # end-to-end proof of the no-cross-tenant-privilege-escalation guarantee (EPIC-002,
+      # US-011 T-010/T-014). This step MUST run the full Failsafe *IT suite (no -DskipITs,
+      # no test exclusion covering rbac.security) — this job is a required, merge-blocking
+      # status check on main specifically so that guarantee cannot regress silently.
       - name: Build, Test and Verify
         working-directory: nexus-backend
         run: |

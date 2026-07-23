@@ -9,7 +9,12 @@ import com.example.nexus.common.domain.FieldValidationException;
 import com.example.nexus.common.domain.RateLimitException;
 import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.common.domain.TokenExpiredException;
+import com.example.nexus.common.security.AuthenticationDetailKeys;
+import com.example.nexus.common.security.InsufficientPermissionException;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.validation.ConstraintViolationException;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
@@ -37,6 +42,12 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 public class GlobalExceptionHandler {
 
   private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+  private final MeterRegistry meterRegistry;
+
+  public GlobalExceptionHandler(MeterRegistry meterRegistry) {
+    this.meterRegistry = meterRegistry;
+  }
 
   @ExceptionHandler(ResourceNotFoundException.class)
   ProblemDetail handleNotFound(ResourceNotFoundException e) {
@@ -131,6 +142,25 @@ public class GlobalExceptionHandler {
     return problem;
   }
 
+  @ExceptionHandler(InsufficientPermissionException.class)
+  ProblemDetail handleInsufficientPermission(InsufficientPermissionException e) {
+    Map<String, Object> extraFields = new LinkedHashMap<>();
+    extraFields.put("reason", e.getReason().name());
+    extraFields.put("requiredPermission", e.getRequiredPermission());
+    extraFields.put("userId", MDC.get(AuthenticationDetailKeys.MDC_USER_ID));
+    extraFields.put("tenantId", MDC.get(AuthenticationDetailKeys.MDC_TENANT_ID));
+    logHandledException(e, "WARN", "RBAC_001", extraFields);
+    Counter.builder("nexus.rbac.permission_denied")
+        .tag("permission", e.getRequiredPermission())
+        .tag("reason", e.getReason().name())
+        .register(meterRegistry)
+        .increment();
+    ProblemDetail problem =
+        problem(HttpStatus.FORBIDDEN, "RBAC_001", "You do not have permission to perform this action");
+    problem.setProperty("requiredPermission", e.getRequiredPermission());
+    return problem;
+  }
+
   @ExceptionHandler(AccessDeniedException.class)
   ProblemDetail handleAccessDenied(AccessDeniedException e) {
     logHandledException(e, "WARN", "ACCESS_DENIED");
@@ -159,26 +189,39 @@ public class GlobalExceptionHandler {
   }
 
   private void logHandledException(Exception e, String level, String errorCode) {
+    logHandledException(e, level, errorCode, Map.of());
+  }
+
+  /**
+   * Same base behavior as {@link #logHandledException(Exception, String, String)}, plus any
+   * additional structured key-value pairs a specific handler needs (e.g. RBAC denial reason,
+   * required permission, userId/tenantId) without duplicating the correlationId lookup and
+   * WARN/DEBUG structured-log scaffolding.
+   */
+  private void logHandledException(
+      Exception e, String level, String errorCode, Map<String, Object> extraFields) {
     String correlationId = MDC.get(CorrelationIdFilter.MDC_CORRELATION_ID_KEY);
     String errorType = e.getClass().getSimpleName();
     if ("WARN".equals(level)) {
-      log.atWarn()
+      var builder = log.atWarn()
           .addKeyValue("event", "api_request")
           .addKeyValue("correlationId", correlationId)
           .addKeyValue("outcome", "FAILURE")
           .addKeyValue("errorType", errorType)
-          .addKeyValue("errorCode", errorCode)
-          .log("Handled operational error: errorType={} errorCode={} correlationId={}",
-              errorType, errorCode, correlationId);
+          .addKeyValue("errorCode", errorCode);
+      extraFields.forEach(builder::addKeyValue);
+      builder.log("Handled operational error: errorType={} errorCode={} correlationId={}",
+          errorType, errorCode, correlationId);
     } else if ("DEBUG".equals(level)) {
-      log.atDebug()
+      var builder = log.atDebug()
           .addKeyValue("event", "api_request")
           .addKeyValue("correlationId", correlationId)
           .addKeyValue("outcome", "FAILURE")
           .addKeyValue("errorType", errorType)
-          .addKeyValue("errorCode", errorCode)
-          .log("Handled validation/domain error: errorType={} errorCode={} correlationId={}",
-              errorType, errorCode, correlationId);
+          .addKeyValue("errorCode", errorCode);
+      extraFields.forEach(builder::addKeyValue);
+      builder.log("Handled validation/domain error: errorType={} errorCode={} correlationId={}",
+          errorType, errorCode, correlationId);
     }
   }
 

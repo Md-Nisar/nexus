@@ -39,9 +39,71 @@ HTTP Basic in `SecurityConfig` is a **placeholder**. Until the `auth` bounded co
 ## 3. Authorization
 
 - **Default deny** (implemented). Every endpoint opts in.
-- `@PreAuthorize` on application-service methods for role/permission checks.
+- **Method-level permission checks:** `@RequiresPermission("resource:action")` — see §3.1 below.
 - **Object-level (IDOR):** every resource fetch verifies the caller owns/may access that specific object. Return **404, not 403**, for inaccessible resources to prevent enumeration.
 - **Tenant id comes from the JWT** — never from request body or path. Admin endpoints require an explicit admin-role check, not just authentication.
+
+### 3.1 Method-level permission checks — `@RequiresPermission`
+
+`@RequiresPermission("resource:action")` is a `@PreAuthorize` meta-annotation (`com.example.nexus.common.security.RequiresPermission`) enforced by `TenantAwarePermissionEvaluator` via Spring's method-security AOP proxy. Apply it directly to the controller method that is the actual HTTP entry point:
+
+```java
+@RestController
+class ExampleController {
+
+    @GetMapping("/tenants/{id}/settings")
+    @RequiresPermission("tenant:write")
+    public ResponseEntity<Void> updateSettings(@PathVariable String id) {
+        ...
+    }
+}
+```
+
+> **Warning — Spring AOP self-invocation bypasses this annotation.**
+> `@RequiresPermission` (like every `@PreAuthorize`-based check) only runs when the call goes *through the Spring-generated proxy* — i.e. an external caller (another bean, the servlet dispatcher) invokes the method. A call from **another method in the same class** goes directly to `this`, skips the proxy entirely, and **the permission check silently does not run**. No error, no log, no exception — the code simply executes unguarded.
+>
+> ```java
+> @RequiresPermission("tenant:write")
+> public void updateSettings(...) { ... }
+>
+> public void internalHelper(...) {
+>     updateSettings(...); // BYPASSES the check — same bean, no proxy involved
+> }
+> ```
+>
+> **Do this instead:**
+> - Annotate the method that is actually the external entry point (the controller method, the port method called by another bean) — not an internal helper it delegates to.
+> - If a guarded operation must also be reachable from another method in the same bean, extract it into a **separate bean** and call it through that bean's injected proxy.
+>
+> This is a general Spring AOP limitation, not specific to this annotation — but it is the highest-consequence pitfall with `@RequiresPermission` because the failure is a silent, permanent authorization bypass, not a compile error or a test failure you'd notice locally unless you specifically test the entry point you meant to guard.
+
+> **Also: `@RequiresPermission` must be on a `public`, non-`final` method.** Spring AOP cannot proxy `final` or `private` methods — the same silent-bypass failure mode as self-invocation above, just from a different cause. If a guarded method is ever marked `final` or `private`, the check silently stops running.
+
+**Single-permission scope.** `@RequiresPermission` takes exactly **one** permission string — there is no AND/OR composition (`value()` is a single `String`, not an array). If an operation genuinely needs more than one permission, drop to a raw `@PreAuthorize` SpEL expression on that method instead of trying to stack `@RequiresPermission`.
+
+**The `RBAC_001` response shape.** A denial from `@RequiresPermission` (authenticated caller, missing permission) returns:
+
+```json
+{
+  "type": "about:blank",
+  "title": "Forbidden",
+  "status": 403,
+  "detail": "You do not have permission to perform this action",
+  "code": "RBAC_001",
+  "traceId": "b1f2c3d4-...",
+  "requiredPermission": "tenant:write"
+}
+```
+
+Note the human-readable text is under `detail` (the RFC 7807 field every Nexus error uses), and the extra field is camelCase `requiredPermission` — not `message` / `required_permission`. This is distinct from the platform's generic `ACCESS_DENIED` 403 (filter-chain-level denials); `RBAC_001` is specific to a `@RequiresPermission` check failing.
+
+**401 vs. 403 — where the boundary is.** A missing, malformed, expired, or signature-invalid JWT never reaches `@RequiresPermission` at all: `JwtAuthenticationFilter` rejects it and the request short-circuits to a **401 `AUTH_003`** before Spring's method-security proxy — and therefore `TenantAwarePermissionEvaluator` — ever runs. **403 `RBAC_001` only ever means "you are authenticated, and you specifically lack this one permission."** If you see `RBAC_001`, authentication already succeeded.
+
+**A typo'd permission string fails closed — permanently, and silently at startup.** `@RequiresPermission("tennant:write")` (note the typo) compiles fine and is **not validated against the seeded permission list at application startup**. Since no real token's `permissions[]` claim will ever contain that misspelled string, every call to that endpoint is denied with `RBAC_001`, for every caller, forever — indistinguishable at runtime from "this caller genuinely lacks the permission." There is no separate error for "this permission string doesn't exist." When adding `@RequiresPermission`:
+- Copy the permission string from the seeded list (`V5__rbac_schema.sql` / the seven system permissions) rather than typing it from memory.
+- Write the MockMvc positive-control test (caller **with** the permission → 200) alongside the negative test — a positive control that unexpectedly 403s is your signal that the string doesn't match anything real.
+
+See `GuardedTestController` (`src/test/java/.../support/web/`) for a working, minimal usage example, and `TenantAwarePermissionEvaluatorTest` / `RequiresPermissionMockMvcTest` for the full behavioral contract (fail-closed on malformed authentication, tenant-presence guard, etc.).
 
 ## 4. Input validation & output encoding
 

@@ -16,6 +16,7 @@ import com.example.nexus.identity.application.ForgotPasswordUseCase;
 import com.example.nexus.identity.application.ResetPasswordUseCase;
 import com.example.nexus.identity.interfaces.rest.dto.ForgotPasswordRequest;
 import com.example.nexus.identity.interfaces.rest.dto.ResetPasswordRequest;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -47,7 +48,7 @@ class PasswordResetControllerTest {
     resetPasswordUseCase = mock(ResetPasswordUseCase.class);
     controller = new PasswordResetController(forgotPasswordUseCase, resetPasswordUseCase, DEFAULT_TENANT);
     mockMvc = MockMvcBuilders.standaloneSetup(controller)
-        .setControllerAdvice(new GlobalExceptionHandler())
+        .setControllerAdvice(new GlobalExceptionHandler(new SimpleMeterRegistry()))
         .build();
   }
 
