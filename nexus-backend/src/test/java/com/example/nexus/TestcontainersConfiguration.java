@@ -16,7 +16,9 @@ import org.springframework.boot.testcontainers.service.connection.ServiceConnect
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 import org.springframework.test.context.DynamicPropertyRegistrar;
+import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.MySQLContainer;
+import org.testcontainers.utility.DockerImageName;
 import org.testcontainers.utility.MountableFile;
 
 /**
@@ -68,6 +70,30 @@ public class TestcontainersConfiguration {
             .withCopyFileToContainer(
                 MountableFile.forClasspathResource("nexus-app-grants.sql"),
                 "/docker-entrypoint-initdb.d/01-nexus-app-user.sql");
+    }
+
+    /**
+     * {@code RedisPermissionCacheAdapter} is an unconditional {@code @Component} (unlike {@code
+     * RedisRateLimitStore}, which is {@code @ConditionalOnProperty}-gated), so every *IT context
+     * that imports this class always autoconfigures a real {@code LettuceConnectionFactory}. With
+     * no Redis reachable (CI never provisions one; locally, whenever the compose {@code redis}
+     * service is stopped), Lettuce's default auto-reconnect keeps retrying against
+     * {@code localhost:6379} in the background, and its failure-notification callbacks race this
+     * class's own context teardown between *IT classes — surfacing as {@code
+     * RejectedExecutionException: event executor terminated} log spam (harmless: every Redis-backed
+     * adapter already fails open per ADR 0016, but noisy on every CI run). Gives every such
+     * context a real, reachable Redis instead via {@code @ServiceConnection}. {@code name =
+     * "redis"} is required (empirically confirmed): {@code RedisContainerConnectionDetailsFactory}
+     * only recognizes the dedicated {@code com.redis.testcontainers.RedisContainer} type by image
+     * name, not a plain {@link GenericContainer} — omitting {@code name} fails context startup
+     * with {@code ConnectionDetailsNotFoundException}, unlike {@code mysqlContainer()} below,
+     * whose dedicated {@code MySQLContainer} type is recognized without one.
+     */
+    @Bean
+    @ServiceConnection(name = "redis")
+    GenericContainer<?> redisContainer() {
+        return new GenericContainer<>(DockerImageName.parse("redis:7.4-alpine"))
+            .withExposedPorts(6379);
     }
 
     /**
