@@ -20,6 +20,7 @@ import com.example.nexus.identity.application.service.LoginUseCase;
 import com.example.nexus.identity.application.service.LogoutUseCase;
 import com.example.nexus.identity.application.service.RefreshTokenUseCase;
 import com.example.nexus.identity.domain.LoginResult;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -51,7 +52,7 @@ class LoginControllerTest {
     LoginController controller = new LoginController(
         loginUseCase, refreshTokenUseCase, logoutUseCase, TENANT_ID);
     mockMvc = MockMvcBuilders.standaloneSetup(controller)
-        .setControllerAdvice(new GlobalExceptionHandler())
+        .setControllerAdvice(new GlobalExceptionHandler(new SimpleMeterRegistry()))
         .build();
   }
 

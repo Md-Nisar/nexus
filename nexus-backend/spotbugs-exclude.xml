@@ -96,4 +96,15 @@
         <Class name="com.example.nexus.rbac.application.RoleResolutionService" />
         <Bug pattern="EI_EXPOSE_REP2" />
     </Match>
+    <!--
+      US-011 T-005: GlobalExceptionHandler constructor-injects the Spring-managed singleton
+      MeterRegistry bean (to record the nexus.rbac.permission_denied counter) and stores it
+      directly. Same rationale as ExecutionObserver above: MeterRegistry is a metrics registry/
+      factory, not a value object, with no sensible defensive copy, and it is a Spring singleton
+      never mutated after context startup.
+    -->
+    <Match>
+        <Class name="com.example.nexus.common.web.GlobalExceptionHandler" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
 </FindBugsFilter>

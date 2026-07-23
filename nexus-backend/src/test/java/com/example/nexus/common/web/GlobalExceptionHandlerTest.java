@@ -4,6 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.example.nexus.common.domain.AccountLockedException;
 import com.example.nexus.common.domain.AccountNotVerifiedException;
 import com.example.nexus.common.domain.AuthenticationException;
@@ -13,11 +17,19 @@ import com.example.nexus.common.domain.FieldValidationException;
 import com.example.nexus.common.domain.RateLimitException;
 import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.common.domain.TokenExpiredException;
+import com.example.nexus.common.security.DenialReason;
+import com.example.nexus.common.security.InsufficientPermissionException;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.validation.ConstraintViolationException;
+import java.lang.reflect.Method;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
@@ -26,11 +38,18 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.BindingResult;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.method.annotation.ExceptionHandlerMethodResolver;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 class GlobalExceptionHandlerTest {
 
-    private final GlobalExceptionHandler handler = new GlobalExceptionHandler();
+    private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+    private final GlobalExceptionHandler handler = new GlobalExceptionHandler(meterRegistry);
+
+    @AfterEach
+    void clearMdc() {
+        MDC.clear();
+    }
 
     @Test
     void should_return404WithCode_when_resourceNotFound() {
@@ -93,6 +112,70 @@ class GlobalExceptionHandlerTest {
 
         assertThat(problem.getStatus()).isEqualTo(403);
         assertThat(problem.getProperties()).containsEntry("code", "ACCESS_DENIED");
+        assertThat(problem.getProperties()).doesNotContainEntry("code", "RBAC_001");
+    }
+
+    @Test
+    void should_return403WithRbac001CodeDetailAndRequiredPermission_when_insufficientPermissionThrown() {
+        MDC.put(CorrelationIdFilter.MDC_KEY, "test-trace-id");
+
+        ProblemDetail problem =
+                handler.handleInsufficientPermission(
+                        new InsufficientPermissionException("tenant:write", DenialReason.PERMISSION_ABSENT));
+
+        assertThat(problem.getStatus()).isEqualTo(403);
+        assertThat(problem.getProperties()).containsEntry("code", "RBAC_001");
+        assertThat(problem.getDetail())
+                .isEqualTo("You do not have permission to perform this action");
+        assertThat(problem.getProperties()).containsEntry("requiredPermission", "tenant:write");
+        assertThat(problem.getProperties()).containsEntry("traceId", "test-trace-id");
+    }
+
+    @Test
+    void should_incrementPermissionDeniedCounterWithPermissionAndReasonTags_when_permissionAbsent() {
+        handler.handleInsufficientPermission(
+                new InsufficientPermissionException("tenant:write", DenialReason.PERMISSION_ABSENT));
+
+        double count =
+                meterRegistry
+                        .find("nexus.rbac.permission_denied")
+                        .tag("permission", "tenant:write")
+                        .tag("reason", "PERMISSION_ABSENT")
+                        .counter()
+                        .count();
+
+        assertThat(count).isEqualTo(1.0);
+    }
+
+    @Test
+    void should_incrementPermissionDeniedCounterWithDistinctReasonTag_when_authenticationMalformed() {
+        handler.handleInsufficientPermission(
+                new InsufficientPermissionException(
+                        "tenant:write", DenialReason.MALFORMED_AUTHENTICATION));
+
+        double count =
+                meterRegistry
+                        .find("nexus.rbac.permission_denied")
+                        .tag("permission", "tenant:write")
+                        .tag("reason", "MALFORMED_AUTHENTICATION")
+                        .counter()
+                        .count();
+
+        assertThat(count).isEqualTo(1.0);
+        // Tagged by `reason` as well as `permission` (design §B7 — bounded cardinality: 7
+        // permissions x 3 reasons) so a MALFORMED_AUTHENTICATION spike is independently
+        // alertable from routine PERMISSION_ABSENT noise (threat-model T-08).
+    }
+
+    @Test
+    void should_resolveInsufficientPermissionHandler_notGenericAccessDeniedHandler_when_dispatched() {
+        var resolver = new ExceptionHandlerMethodResolver(GlobalExceptionHandler.class);
+
+        Method resolved =
+                resolver.resolveMethod(
+                        new InsufficientPermissionException("tenant:write", DenialReason.PERMISSION_ABSENT));
+
+        assertThat(resolved.getName()).isEqualTo("handleInsufficientPermission");
     }
 
     @Test
@@ -214,5 +297,79 @@ class GlobalExceptionHandlerTest {
         ProblemDetail problem = response.getBody();
         assertThat(problem).isNotNull();
         assertThat(problem.getProperties()).containsEntry("retryAfterSeconds", 0L);
+    }
+
+    // --- Structured log fields on permission denial ---
+    //
+    // src/test/resources/logback-test.xml sets the GlobalExceptionHandler logger to OFF so that
+    // should_return500WithoutInternalDetails_when_unexpectedException doesn't spam test output
+    // with an ERROR stack trace. These tests need WARN-level output captured instead, so they
+    // raise the level for their own duration and restore it to OFF afterward.
+
+    @Test
+    void should_logStructuredFieldsWithPermissionAbsentReason_when_insufficientPermissionThrown() {
+        Logger logger = (Logger) LoggerFactory.getLogger(GlobalExceptionHandler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.WARN);
+        try {
+            MDC.put("userId", "u-1");
+            MDC.put("tenantId", "t-1");
+            MDC.put(CorrelationIdFilter.MDC_CORRELATION_ID_KEY, "corr-1");
+
+            handler.handleInsufficientPermission(
+                    new InsufficientPermissionException("tenant:write", DenialReason.PERMISSION_ABSENT));
+
+            ILoggingEvent event = appender.list.get(0);
+            Map<String, Object> keyValues = keyValueMap(event);
+            assertThat(keyValues)
+                    .containsEntry("reason", "PERMISSION_ABSENT")
+                    .containsEntry("userId", "u-1")
+                    .containsEntry("tenantId", "t-1")
+                    .containsEntry("requiredPermission", "tenant:write")
+                    .containsEntry("correlationId", "corr-1");
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+            logger.setLevel(Level.OFF);
+        }
+    }
+
+    @Test
+    void should_logStructuredFieldsWithMalformedAuthenticationReason_when_insufficientPermissionThrown() {
+        Logger logger = (Logger) LoggerFactory.getLogger(GlobalExceptionHandler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.WARN);
+        try {
+            MDC.put("userId", "u-1");
+            MDC.put("tenantId", "t-1");
+            MDC.put(CorrelationIdFilter.MDC_CORRELATION_ID_KEY, "corr-1");
+
+            handler.handleInsufficientPermission(
+                    new InsufficientPermissionException(
+                            "tenant:write", DenialReason.MALFORMED_AUTHENTICATION));
+
+            ILoggingEvent event = appender.list.get(0);
+            Map<String, Object> keyValues = keyValueMap(event);
+            assertThat(keyValues)
+                    .containsEntry("reason", "MALFORMED_AUTHENTICATION")
+                    .containsEntry("userId", "u-1")
+                    .containsEntry("tenantId", "t-1")
+                    .containsEntry("requiredPermission", "tenant:write")
+                    .containsEntry("correlationId", "corr-1");
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+            logger.setLevel(Level.OFF);
+        }
+    }
+
+    private static Map<String, Object> keyValueMap(ILoggingEvent event) {
+        Map<String, Object> map = new HashMap<>();
+        event.getKeyValuePairs().forEach(kv -> map.put(kv.key, kv.value));
+        return map;
     }
 }

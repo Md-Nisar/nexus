@@ -2,6 +2,7 @@ package com.example.nexus.identity.infrastructure.security;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -21,6 +22,7 @@ import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.core.env.Environment;
 
 class JwtRs256ServiceTest {
@@ -49,6 +51,11 @@ class JwtRs256ServiceTest {
   private JwtRs256Service service(Clock clock, ResolvedPermissions resolved) {
     return new JwtRs256Service(
         rsaKeyConfig, UUID::randomUUID, clock, 900L, roleResolutionServiceReturning(resolved));
+  }
+
+  private JwtRs256Service service(Clock clock, RoleResolutionService roleResolutionService) {
+    return new JwtRs256Service(
+        rsaKeyConfig, UUID::randomUUID, clock, 900L, roleResolutionService);
   }
 
   private User activeUser() {
@@ -255,5 +262,21 @@ class JwtRs256ServiceTest {
     assertThatThrownBy(() -> svc.verify(crafted))
         .isInstanceOf(AuthenticationException.class)
         .satisfies(e -> assertThat(((AuthenticationException) e).code()).isEqualTo("AUTH_003"));
+  }
+
+  @Test
+  void should_sourcePermissionsResolutionAndTenantClaim_fromSameTenantId_when_tokenIssued() {
+    RoleResolutionService roleResolutionService = mock(RoleResolutionService.class);
+    ArgumentCaptor<UUID> tenantIdCaptor = ArgumentCaptor.forClass(UUID.class);
+    when(roleResolutionService.resolve(any(), tenantIdCaptor.capture()))
+        .thenReturn(new ResolvedPermissions(List.of("MEMBER"), List.of("user:read")));
+    JwtRs256Service svc = service(Clock.systemUTC(), roleResolutionService);
+    User user = activeUser();
+
+    AccessTokenResult result = svc.issue(user);
+    JwtClaims claims = svc.verify(result.token());
+
+    assertThat(tenantIdCaptor.getValue()).isEqualTo(user.getTenantId());
+    assertThat(claims.tenantId()).isEqualTo(tenantIdCaptor.getValue().toString());
   }
 }

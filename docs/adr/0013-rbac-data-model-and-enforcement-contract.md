@@ -100,3 +100,65 @@ Rationale: role-permission edits are expected to be infrequent relative to per-u
 - Any new bounded context introducing its own soft-deletable "at most one active row per key" invariant on MySQL should default to the D2 generated-column pattern rather than reintroducing Postgres-style partial indexes.
 - Any new `@PreAuthorize`/method-security denial that needs a response contract more specific than generic `403 + ACCESS_DENIED` should follow D3: a dedicated `AccessDeniedException` subtype + a more-specific `@ExceptionHandler`, not a shared flag or a change to the existing generic handler.
 - If a future epic needs sub-15-minute propagation of a permission change to all affected users (D4), that is a new decision to make at that time — do not retrofit bulk invalidation into US-015 without a concrete driver.
+
+---
+
+## Amendment (2026-07-22) — US-011 threat-model hardening (T-02)
+
+_Added during US-011 implementation (EPIC-002, Sprint 3) in response to the Gate-2 STRIDE threat
+model's priority finding T-02 (`docs/features/US-011/03b-threat-model.md`). Per ADR-0001's
+append-only rule, nothing above this line is edited — D1–D4 and their rationale stand exactly as
+originally accepted. This section records two additional decisions reached during
+implementation._
+
+### D5 — Enforcement uses a named-bean SpEL method, not `PermissionEvaluator`
+
+`TenantAwarePermissionEvaluator` (US-011) does **not** implement
+`org.springframework.security.access.PermissionEvaluator`. It is a plain
+`@Component("permissionEvaluator")` bean with `boolean hasPermission(Authentication, String)`,
+referenced from `@RequiresPermission`'s
+`@PreAuthorize("@permissionEvaluator.hasPermission(authentication, '{value}')")` meta-annotation
+(`{value}` substituted per usage via an `AnnotationTemplateExpressionDefaults` bean registered in
+`MethodSecurityConfig`).
+
+This deviates from EPIC-002's original Technical Note, which specified
+`@permissionEvaluator.hasPermission(authentication, #tenantId, '{permission}')` implementing
+Spring's `PermissionEvaluator` interface. The deviation follows directly from a Gate-1 lock on
+US-011's requirements that removed the `#tenantId` argument: there is no resource-tenant target for
+this story's flat permission check, so `PermissionEvaluator`'s domain-object-ACL-shaped signatures
+(`hasPermission(auth, targetDomainObject, permission)` /
+`hasPermission(auth, targetId, targetType, permission)`) would force passing a misleading `null`
+target and require wiring `DefaultMethodSecurityExpressionHandler.setPermissionEvaluator(...)` for
+no benefit. A named-bean SpEL method is an idiomatic, documented Spring Security pattern that keeps
+the signature honest — exactly the two values actually used. See
+`docs/features/US-011/03-design.md` §B3 for the full design rationale.
+
+### D6 — Tenant-provenance invariant, contract test, and sole-producer guard
+
+The epic's Critical-rated no-cross-tenant-escalation property rests on an invariant that the
+evaluator does not itself assert: **`permissions[]` and `tenant_id` on an authenticated
+`Authentication` must always be resolved for the same tenant.** The Gate-2 threat model (T-02,
+`docs/features/US-011/03b-threat-model.md`) found this invariant was maintained only in
+`JwtRs256Service.issue` + `RoleResolutionService`, was not asserted anywhere in US-011's own code,
+and was not protected against a future second producer (e.g. an admin-impersonation/tenant-switch
+feature, a service-to-service token minted outside `RoleResolutionService`, or a test principal
+leaking into a shared path).
+
+This is now made explicit and defended, without changing any runtime behaviour:
+
+1. **Documented** as a class-level Javadoc invariant on `TenantAwarePermissionEvaluator`
+   (`common.security`), naming `JwtRs256Service.issue` + `RoleResolutionService` as the sole
+   guaranteeing path.
+2. **Contract-tested**: `JwtRs256ServiceTest` asserts `issue()` sources both the
+   `RoleResolutionService.resolve(...)` tenant argument and the `tenant_id` claim from the same
+   `user.getTenantId()` value, so a future refactor that decouples them fails a test rather than
+   shipping silently.
+3. **Guarded**: an ArchUnit rule in `HexagonalArchitectureTest` asserts `JwtAuthenticationFilter`
+   is the only production class that calls `Authentication.setDetails(...)`, the sole mechanism
+   by which a `permissions` detail is attached to an authenticated `Authentication`. A second
+   producer fails this rule and must trigger an explicit re-review of this invariant before it
+   can be added.
+
+None of this changes runtime behaviour — it converts an implicit, single-mint-path assumption into
+a documented, tested, and structurally guarded one, addressing T-02's "Condition 1" required
+mitigation.

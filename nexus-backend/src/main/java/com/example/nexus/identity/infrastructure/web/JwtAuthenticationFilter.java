@@ -1,6 +1,7 @@
 package com.example.nexus.identity.infrastructure.web;
 
 import com.example.nexus.common.domain.AuthenticationException;
+import com.example.nexus.common.security.AuthenticationDetailKeys;
 import com.example.nexus.identity.application.port.out.JwtPort;
 import com.example.nexus.identity.domain.JwtClaims;
 import jakarta.servlet.FilterChain;
@@ -77,13 +78,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
           new UsernamePasswordAuthenticationToken(claims.sub(), null, authorities);
       // stash all extra claims as details (T-3.7 — downstream reads from SecurityContext)
       auth.setDetails(Map.of(
-          "tenantId", claims.tenantId(),
-          "emailVerified", claims.emailVerified(),
-          "tokenVersion", claims.tokenVersion(),
-          "permissions", claims.permissions()));
+          AuthenticationDetailKeys.TENANT_ID, claims.tenantId(),
+          AuthenticationDetailKeys.EMAIL_VERIFIED, claims.emailVerified(),
+          AuthenticationDetailKeys.TOKEN_VERSION, claims.tokenVersion(),
+          AuthenticationDetailKeys.PERMISSIONS, claims.permissions()));
       SecurityContextHolder.getContext().setAuthentication(auth);
-      MDC.put("userId", claims.sub());
-      MDC.put("tenantId", claims.tenantId());
+      MDC.put(AuthenticationDetailKeys.MDC_USER_ID, claims.sub());
+      MDC.put(AuthenticationDetailKeys.MDC_TENANT_ID, claims.tenantId());
     } catch (AuthenticationException e) {
       SecurityContextHolder.clearContext();
       authenticationEntryPoint.commence(req, res,
@@ -93,8 +94,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     try {
       chain.doFilter(req, res);
     } finally {
-      MDC.remove("userId");
-      MDC.remove("tenantId");
+      MDC.remove(AuthenticationDetailKeys.MDC_USER_ID);
+      MDC.remove(AuthenticationDetailKeys.MDC_TENANT_ID);
     }
   }
 }

@@ -117,6 +117,7 @@ class GlobalExceptionHandler {
   http.authorizeHttpRequests(auth -> auth.anyRequest().authenticated());
   ```
 - `@PreAuthorize` on service methods that need authorization (if auth module exists).
+- Method-level permission checks use `@RequiresPermission("resource:action")` — see `SECURITY.md` §3.1 for the usage pattern, the `RBAC_001` response shape, and the **Spring AOP self-invocation caveat** (annotated methods called from within the same bean are silently unenforced).
 - Object-level checks for IDOR — never trust the client-provided owner ID.
 - Use `SecureRandom`, never `Math.random`, for any security-sensitive randomness.
 - Bean validation is **not** a security boundary. Always validate again at the service layer for sensitive operations.

@@ -2,11 +2,14 @@ package com.example.nexus.architecture;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
+import com.example.nexus.identity.infrastructure.web.JwtAuthenticationFilter;
+import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
 import com.tngtech.archunit.lang.ArchRule;
 import com.tngtech.archunit.library.GeneralCodingRules;
+import org.springframework.security.core.Authentication;
 
 /**
  * Enforces the hexagonal dependency rule from ADR 0002 (follow-on NEXUS-0042): inner layers
@@ -54,6 +57,39 @@ class HexagonalArchitectureTest {
                     .should().dependOnClassesThat()
                     .resideInAnyPackage(
                             "org.springframework.data.redis..", "io.lettuce..", "org.redisson..")
+                    .allowEmptyShould(true);
+
+    // ADR 0016 D6 (mirrored): Spring Security types must be confined to infrastructure/
+    // interfaces adapters and cross-cutting common.security — domain and application must
+    // consume authentication/authorization capabilities only through a hexagonal port, never
+    // by importing Spring Security classes (e.g. Authentication, @PreAuthorize) directly.
+    @ArchTest
+    static final ArchRule domain_and_application_must_not_depend_on_spring_security =
+            noClasses()
+                    .that().resideInAnyPackage("..domain..", "..application..")
+                    .should().dependOnClassesThat()
+                    .resideInAnyPackage("org.springframework.security..")
+                    .allowEmptyShould(true);
+
+    // ADR 0013 amendment (US-011 threat-model T-02): only JwtAuthenticationFilter may attach
+    // RBAC-bearing details (permissions/tenantId) to an authenticated Authentication. A second
+    // producer would break the tenant-provenance invariant that TenantAwarePermissionEvaluator
+    // relies on but cannot itself verify.
+    @ArchTest
+    static final ArchRule only_jwtAuthenticationFilter_sets_authentication_details =
+            noClasses()
+                    .that().areNotAssignableTo(JwtAuthenticationFilter.class)
+                    .should().callMethodWhere(
+                            DescribedPredicate.describe(
+                                    "call Authentication.setDetails(Object)",
+                                    call -> call.getTarget().getName().equals("setDetails")
+                                            && call.getTarget().getOwner()
+                                                    .isAssignableTo(Authentication.class)))
+                    .because("only JwtAuthenticationFilter may attach RBAC-bearing details "
+                            + "(permissions/tenantId) to an authenticated Authentication — a second "
+                            + "producer breaks the tenant-provenance invariant (ADR-0013 amendment, "
+                            + "threat-model T-02) and needs an explicit re-review before it can be "
+                            + "added")
                     .allowEmptyShould(true);
 
     @ArchTest
