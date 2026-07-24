@@ -19,6 +19,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -35,6 +36,7 @@ import org.mockito.ArgumentCaptor;
  * increment is an {@code UPDATE failed_attempt_count = failed_attempt_count + 1 WHERE id = ?}
  * at the DB layer, tracked as a future enhancement.
  */
+@Tag("UnitTest")
 class SecureEventServiceConcurrencyTest {
 
   private AuthEventPort authEventPort;

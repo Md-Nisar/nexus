@@ -18,6 +18,7 @@ import com.example.nexus.support.web.GuardedTestControllerConfig;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -36,7 +37,7 @@ import org.springframework.web.context.WebApplicationContext;
  * method — {@link com.example.nexus.support.web.GuardedTestController} — is enforced end-to-end
  * through the real {@code JwtAuthenticationFilter}, real {@code SecurityContextHolder}, real
  * method-security proxy, and real {@link TenantAwarePermissionEvaluator}, mirroring the harness
- * conventions established by {@code SecurityConfigTest}.
+ * conventions established by {@code SecurityConfigWebTest}.
  *
  * <p>{@link #permissionEvaluator} is a {@code @MockitoSpyBean} wrapping the real evaluator bean:
  * normal calls execute real logic (so 200/403 outcomes are genuine), while the spy also lets the
@@ -76,7 +77,8 @@ import org.springframework.web.context.WebApplicationContext;
         "management.health.mail.enabled=false"
     })
 @Import(GuardedTestControllerConfig.class)
-class RequiresPermissionMockMvcTest {
+@Tag("WebSliceTest")
+class RequiresPermissionWebTest {
 
   @Autowired private WebApplicationContext ctx;
 

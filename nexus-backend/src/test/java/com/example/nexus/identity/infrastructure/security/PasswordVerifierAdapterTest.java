@@ -2,9 +2,11 @@ package com.example.nexus.identity.infrastructure.security;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.crypto.argon2.Argon2PasswordEncoder;
 
+@Tag("UnitTest")
 class PasswordVerifierAdapterTest {
 
   // Fast params for unit tests — not suitable for production

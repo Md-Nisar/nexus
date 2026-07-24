@@ -6,12 +6,14 @@ import com.example.nexus.identity.domain.AuthEvent;
 import com.example.nexus.identity.domain.AuthEventType;
 import java.time.Instant;
 import java.util.UUID;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
  * US-008 T-08-15 — basic correctness of the {@link BufferedAuthEvent} retry-state carrier.
  * Adversarial backoff-schedule-honoured-across-all-attempts scenarios belong to T-08-17.
  */
+@Tag("UnitTest")
 class BufferedAuthEventTest {
 
   private static final Instant ENQUEUED_AT = Instant.parse("2026-07-01T00:00:00Z");

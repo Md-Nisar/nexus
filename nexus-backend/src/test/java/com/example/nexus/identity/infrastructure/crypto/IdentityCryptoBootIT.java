@@ -2,9 +2,11 @@ package com.example.nexus.identity.infrastructure.crypto;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
+@Tag("IT")
 class IdentityCryptoBootIT {
 
   // Valid test values (not real credentials — example placeholders only)

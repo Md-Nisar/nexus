@@ -2,6 +2,7 @@ package com.example.nexus.identity.infrastructure.audit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.scheduling.annotation.ScheduledAnnotationBeanPostProcessor;
@@ -11,6 +12,7 @@ import org.springframework.scheduling.annotation.ScheduledAnnotationBeanPostProc
  * flag (design §10.3) genuinely gates whether Spring's scheduling infrastructure is enabled,
  * without loading the full application context.
  */
+@Tag("UnitTest")
 class SchedulingConfigTest {
 
   private final ApplicationContextRunner contextRunner =

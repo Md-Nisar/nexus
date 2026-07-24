@@ -17,6 +17,7 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -52,6 +53,7 @@ import org.springframework.web.client.RestTemplate;
     })
 @Import(TestcontainersConfiguration.class)
 @ActiveProfiles("test")
+@Tag("IT")
 class AuthAuditIT {
 
   @Value("${local.server.port:0}") private int port;

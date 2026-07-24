@@ -5,8 +5,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.nexus.common.domain.FieldValidationException;
 import java.util.Set;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+@Tag("UnitTest")
 class PasswordPolicyServiceTest {
 
   private static final String DENYLIST_ENTRY = "Password123!";

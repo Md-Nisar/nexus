@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Duration;
 import java.util.List;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.context.PropertyPlaceholderAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -16,6 +17,7 @@ import org.springframework.context.annotation.Configuration;
  * docs/features/US-008/03-design.md} §4.1 and ADR 0011 §2, so an accidental edit to a default is
  * caught immediately.
  */
+@Tag("UnitTest")
 class AuditRetryPropertiesTest {
 
   private final ApplicationContextRunner contextRunner =

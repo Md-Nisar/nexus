@@ -23,6 +23,7 @@ import com.example.nexus.identity.domain.User;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -49,6 +50,7 @@ import org.springframework.context.ApplicationEventPublisher;
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
+@Tag("UnitTest")
 class RegisterUserUseCaseTest {
 
   private static final UUID TENANT_ID = UUID.randomUUID();

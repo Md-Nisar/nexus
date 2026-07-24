@@ -13,6 +13,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -28,6 +29,7 @@ import org.testcontainers.utility.DockerImageName;
  * Retry-After contract, same atomicity guarantee under concurrent load.
  */
 @Testcontainers
+@Tag("IT")
 class RedisRateLimitStoreIT {
 
   private static final int WINDOW = 60;

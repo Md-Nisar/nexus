@@ -7,9 +7,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 
+@Tag("UnitTest")
 class MdcTaskDecoratorTest {
 
   private MdcTaskDecorator decorator;

@@ -13,6 +13,7 @@ import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import java.nio.ByteBuffer;
 import java.sql.SQLException;
 import java.util.UUID;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -30,6 +31,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
+@Tag("IT")
 class UserRolesAppendOnlyIT {
 
   @Autowired private JdbcTemplate jdbc;

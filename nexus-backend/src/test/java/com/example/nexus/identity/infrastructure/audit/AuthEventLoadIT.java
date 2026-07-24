@@ -85,6 +85,7 @@ import org.springframework.web.client.RestTemplate;
 @Import(TestcontainersConfiguration.class)
 @ActiveProfiles("test")
 @Tag("perf")
+@Tag("IT")
 class AuthEventLoadIT {
 
   private static final UUID TENANT_ID = UUID.fromString("00000000-0000-7000-8000-000000000001");

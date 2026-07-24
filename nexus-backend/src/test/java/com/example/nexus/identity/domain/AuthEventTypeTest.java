@@ -7,10 +7,12 @@ import java.util.EnumSet;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
+@Tag("UnitTest")
 class AuthEventTypeTest {
 
   private static final Set<AuthEventType> EXPECTED_PRIORITY =

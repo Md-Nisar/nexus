@@ -23,6 +23,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -83,6 +84,7 @@ import org.springframework.web.client.RestTemplate;
     })
 @Import({TestcontainersConfiguration.class, AuthEventsPiiScrubIT.CapturedEventConfig.class})
 @ActiveProfiles("test")
+@Tag("IT")
 class AuthEventsPiiScrubIT {
 
   @Value("${local.server.port:0}") private int port;

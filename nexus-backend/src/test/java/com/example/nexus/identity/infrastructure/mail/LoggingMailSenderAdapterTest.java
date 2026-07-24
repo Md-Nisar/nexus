@@ -2,10 +2,12 @@ package com.example.nexus.identity.infrastructure.mail;
 
 import static org.assertj.core.api.Assertions.assertThatCode;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import com.example.nexus.common.observation.ExecutionObserver;
 
+@Tag("UnitTest")
 class LoggingMailSenderAdapterTest {
 
   private final LoggingMailSenderAdapter adapter = new LoggingMailSenderAdapter(new ExecutionObserver(null));

@@ -36,6 +36,7 @@ import java.util.UUID;
 import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -54,6 +55,7 @@ import org.mockito.ArgumentCaptor;
  *
  * <p>Mocks: all ports/services; fixed Clock for deterministic lock timing; Mockito strict=LENIENT.
  */
+@Tag("UnitTest")
 class LoginUseCaseTest {
 
   private EmailBlindIndexService emailBlindIndexService;

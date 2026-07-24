@@ -7,10 +7,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.List;
 import org.assertj.core.api.InstanceOfAssertFactories;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 
+@Tag("UnitTest")
 class TenantAwarePermissionEvaluatorTest {
 
   private final TenantAwarePermissionEvaluator evaluator = new TenantAwarePermissionEvaluator();

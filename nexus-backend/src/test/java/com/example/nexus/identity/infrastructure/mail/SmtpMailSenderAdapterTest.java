@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.verify;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -15,6 +16,7 @@ import org.springframework.mail.javamail.JavaMailSender;
 import com.example.nexus.common.observation.ExecutionObserver;
 
 @ExtendWith(MockitoExtension.class)
+@Tag("UnitTest")
 class SmtpMailSenderAdapterTest {
 
   private static final String FROM = "noreply@nexus.test";

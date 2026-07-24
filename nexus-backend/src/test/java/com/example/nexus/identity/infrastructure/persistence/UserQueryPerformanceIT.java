@@ -24,6 +24,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
 @Tag("perf")
+@Tag("IT")
 class UserQueryPerformanceIT {
 
   private static final int ROW_COUNT = 1_000_000;

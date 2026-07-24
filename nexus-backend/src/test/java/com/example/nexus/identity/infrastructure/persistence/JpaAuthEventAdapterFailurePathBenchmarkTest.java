@@ -18,6 +18,7 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentMatchers;
@@ -75,6 +76,7 @@ import org.springframework.dao.DataIntegrityViolationException;
  * (well under 1s) and does not depend on external state, network, or Docker.
  */
 @ExtendWith(MockitoExtension.class)
+@Tag("UnitTest")
 class JpaAuthEventAdapterFailurePathBenchmarkTest {
 
   private static final int WARMUP_ITERATIONS = 50;

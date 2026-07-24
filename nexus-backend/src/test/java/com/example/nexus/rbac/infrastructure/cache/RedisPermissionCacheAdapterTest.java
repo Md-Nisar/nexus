@@ -14,6 +14,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -27,6 +28,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
  * stack). Live-Redis round-trip coverage lives in {@link RedisPermissionCacheAdapterIT}.
  */
 @ExtendWith(MockitoExtension.class)
+@Tag("UnitTest")
 class RedisPermissionCacheAdapterTest {
 
   private static final String KEY_PREFIX = "nexus-test";

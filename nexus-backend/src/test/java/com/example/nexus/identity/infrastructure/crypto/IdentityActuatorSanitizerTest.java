@@ -5,11 +5,13 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.actuate.endpoint.SanitizableData;
 import org.springframework.boot.actuate.endpoint.SanitizingFunction;
 import org.springframework.core.env.PropertySource;
 
+@Tag("UnitTest")
 class IdentityActuatorSanitizerTest {
 
   private SanitizingFunction sanitizer;

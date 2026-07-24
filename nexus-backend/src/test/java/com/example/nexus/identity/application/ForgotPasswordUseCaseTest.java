@@ -26,6 +26,7 @@ import java.time.temporal.ChronoUnit;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -47,6 +48,7 @@ import org.springframework.context.ApplicationEventPublisher;
  * <p>Mocks: all ports and services; uses fixed Clock for deterministic token TTL.
  */
 @ExtendWith(MockitoExtension.class)
+@Tag("UnitTest")
 class ForgotPasswordUseCaseTest {
 
   private static final UUID TENANT_ID = UUID.randomUUID();

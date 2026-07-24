@@ -11,10 +11,12 @@ import com.example.nexus.identity.application.port.out.JwkSetPort;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+@Tag("UnitTest")
 class JwksControllerTest {
 
   private MockMvc mockMvc;

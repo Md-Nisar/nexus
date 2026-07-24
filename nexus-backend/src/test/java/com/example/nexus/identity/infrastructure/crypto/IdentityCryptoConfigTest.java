@@ -7,10 +7,12 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.example.nexus.common.Profiles;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.env.Environment;
 import org.springframework.security.crypto.encrypt.TextEncryptor;
 
+@Tag("UnitTest")
 class IdentityCryptoConfigTest {
 
   // EXAMPLE placeholder values — not real credentials

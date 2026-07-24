@@ -14,6 +14,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import javax.sql.DataSource;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -25,6 +26,7 @@ import org.springframework.boot.health.contributor.Status;
  * database (Mockito {@link DataSource}/{@link Connection} stack; no Spring context).
  */
 @ExtendWith(MockitoExtension.class)
+@Tag("UnitTest")
 class AuthEventDbPrivilegeHealthIndicatorTest {
 
   @Mock private DataSource dataSource;

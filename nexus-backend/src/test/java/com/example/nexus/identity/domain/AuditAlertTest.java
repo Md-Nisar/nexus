@@ -3,8 +3,10 @@ package com.example.nexus.identity.domain;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Instant;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+@Tag("UnitTest")
 class AuditAlertTest {
 
   @Test

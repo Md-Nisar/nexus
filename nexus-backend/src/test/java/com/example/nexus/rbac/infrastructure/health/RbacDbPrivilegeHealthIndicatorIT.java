@@ -13,6 +13,7 @@ import java.sql.Statement;
 import java.util.List;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,6 +38,7 @@ import org.testcontainers.containers.MySQLContainer;
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
+@Tag("IT")
 class RbacDbPrivilegeHealthIndicatorIT {
 
   private static final String NEXUS_APP_USER = "nexus_app";

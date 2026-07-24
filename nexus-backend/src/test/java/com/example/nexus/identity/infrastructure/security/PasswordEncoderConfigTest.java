@@ -3,9 +3,11 @@ package com.example.nexus.identity.infrastructure.security;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.nexus.identity.application.port.out.PasswordHasherPort;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.security.crypto.argon2.Argon2PasswordEncoder;
 
+@Tag("UnitTest")
 class PasswordEncoderConfigTest {
 
   // Instantiated directly with fast dev-profile params — no Spring context needed.

@@ -13,9 +13,11 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 
+@Tag("UnitTest")
 class ApiRequestLoggingFilterTest {
 
   private ApiRequestLoggingFilter filter;

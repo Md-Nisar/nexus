@@ -8,9 +8,11 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 
+@Tag("UnitTest")
 class ExecutionObserverTest {
 
   private ExecutionObserver observer;

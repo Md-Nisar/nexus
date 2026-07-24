@@ -2,12 +2,14 @@ package com.example.nexus.common.domain;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
  * Unit tests for {@link AccountLockedException}: immutability and correctness of exception
  * construction, including retry-after duration handling (edge cases: zero and negative values).
  */
+@Tag("UnitTest")
 class AccountLockedExceptionTest {
 
   /**

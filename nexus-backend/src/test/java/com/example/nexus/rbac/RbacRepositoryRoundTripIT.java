@@ -18,6 +18,7 @@ import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionReposi
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import java.util.UUID;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -33,6 +34,7 @@ import org.springframework.dao.DataIntegrityViolationException;
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
+@Tag("IT")
 class RbacRepositoryRoundTripIT {
 
   @Autowired private JpaPermissionRepository permissionRepository;

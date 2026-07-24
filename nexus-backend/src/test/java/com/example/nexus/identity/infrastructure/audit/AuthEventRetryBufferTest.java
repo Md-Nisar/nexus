@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.Tag;
 import org.springframework.dao.DataAccessResourceFailureException;
 
 /**
@@ -44,6 +45,7 @@ import org.springframework.dao.DataAccessResourceFailureException;
  * attempts, exhaustion-alert-fires-at-attempt-5 end-to-end, and idempotency-on-duplicate-save.
  */
 @ExtendWith(MockitoExtension.class)
+@Tag("UnitTest")
 class AuthEventRetryBufferTest {
 
   private static final Instant FIXED_NOW = Instant.parse("2026-07-01T00:00:00Z");

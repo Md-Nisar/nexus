@@ -8,8 +8,10 @@ import com.example.nexus.identity.application.event.VerificationEmailEvent;
 import com.example.nexus.identity.application.port.out.MailSenderPort;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+@Tag("UnitTest")
 class MailEventListenerTest {
 
   private MailSenderPort mailSenderPort;

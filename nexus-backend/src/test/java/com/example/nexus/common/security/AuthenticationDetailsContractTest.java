@@ -11,6 +11,7 @@ import jakarta.servlet.FilterChain;
 import java.util.List;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
@@ -24,6 +25,7 @@ import org.springframework.security.web.AuthenticationEntryPoint;
  * point, guarding against the two sides of the {@code Authentication.getDetails()} contract
  * (production filter and consumer) drifting apart on key names (T-06).
  */
+@Tag("UnitTest")
 class AuthenticationDetailsContractTest {
 
   private JwtPort jwtPort;

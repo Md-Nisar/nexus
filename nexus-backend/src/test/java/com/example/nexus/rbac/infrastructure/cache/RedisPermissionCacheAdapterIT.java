@@ -8,6 +8,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -21,6 +22,7 @@ import org.testcontainers.utility.DockerImageName;
  * mirroring {@code RedisRateLimitStoreIT}'s container setup and fail-open coverage.
  */
 @Testcontainers
+@Tag("IT")
 class RedisPermissionCacheAdapterIT {
 
   private static final String KEY_PREFIX = "nexus-test";
