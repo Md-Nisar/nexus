@@ -7,6 +7,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import com.example.nexus.TestcontainersConfiguration;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -43,6 +44,7 @@ import org.springframework.web.context.WebApplicationContext;
     })
 @Import(TestcontainersConfiguration.class)
 @ActiveProfiles("test")
+@Tag("IT")
 class RateLimitIT {
 
   @Autowired private WebApplicationContext ctx;

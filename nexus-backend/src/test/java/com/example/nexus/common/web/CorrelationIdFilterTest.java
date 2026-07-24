@@ -6,12 +6,14 @@ import jakarta.servlet.ServletException;
 import java.io.IOException;
 
 import org.jspecify.annotations.NonNull;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
 import org.springframework.mock.web.MockFilterChain;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
+@Tag("UnitTest")
 class CorrelationIdFilterTest {
 
     private final CorrelationIdFilter filter = new CorrelationIdFilter();

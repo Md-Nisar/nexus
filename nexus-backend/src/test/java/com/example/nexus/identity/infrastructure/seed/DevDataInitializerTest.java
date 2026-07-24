@@ -18,6 +18,7 @@ import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -26,6 +27,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 /** Unit tests for {@link DevDataInitializer} (dev-profile E2E test-user seed). */
 @ExtendWith(MockitoExtension.class)
+@Tag("UnitTest")
 class DevDataInitializerTest {
 
   private static final UUID TENANT_ID = UUID.fromString("00000000-0000-7000-8000-000000000001");

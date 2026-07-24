@@ -28,12 +28,20 @@ Config classes and the application bootstrap are excluded from measurement (stil
 
 ## Backend (`nexus-backend/`)
 
-| Layer | Tooling | Naming | Runs in |
-|-------|---------|--------|---------|
-| Unit | JUnit 5 + Mockito + AssertJ — no Spring context | `*Test` | `mvn test` (surefire) — no Docker |
-| Slice | `@DataJpaTest`, `@WebMvcTest` | `*Test` | `mvn test` |
-| Architecture | ArchUnit (`HexagonalArchitectureTest`) | `*Test` | `mvn test` |
-| Integration | `@SpringBootTest` + **Testcontainers MySQL 8.4** | `*IT` | `mvn verify` (failsafe) — needs Docker |
+Four test types, by scope, execution time, and infrastructure needs. Prefer the lightest type that gives sufficient confidence — reach for Data/Web Slice before a full `*IT`, and for `*IT` only when multiple Spring components or real infrastructure must work together.
+
+| Test Type | JUnit Tag | Class Suffix | Maven Plugin | Weight | Infrastructure |
+|-----------|-----------|---------------|---------------|--------|-----------------|
+| Unit Test | `@Tag("UnitTest")` | `*Test` | Surefire | 🟢 Light | None — mocks/stubs only. ArchUnit checks (`HexagonalArchitectureTest`) also live here: no Spring context, no infra. |
+| Web Slice Test | `@Tag("WebSliceTest")` | `*WebTest` | Surefire | 🟡 Medium | `@WebMvcTest`, or `@SpringBootTest(webEnvironment = MOCK)` + `MockMvc` when the real filter chain/method-security proxy is needed — mocked collaborators (`@MockitoBean`/`@MockitoSpyBean`), never real infra. See `SecurityConfigWebTest`, `RequiresPermissionWebTest`. |
+| Data Slice Test | `@Tag("DataSliceTest")` | `*DataTest` | Surefire | 🟡 Medium | `@DataJpaTest` — embedded DB or Testcontainers (optional). |
+| Integration Test | `@Tag("IT")` | `*IT` | Failsafe | 🔴 Heavy | Full Spring Boot context + real/containerized infra (**Testcontainers MySQL 8.4**, Redis, WireMock). |
+
+Naming examples: `PasswordResetServiceTest` (Unit), `SecurityConfigWebTest` (Web Slice), `UserRepositoryDataTest` (Data Slice), `RegistrationControllerIT` (Integration).
+
+Every test class carries the matching `@Tag` so Surefire/Failsafe can filter by type (the same mechanism already used for `@Tag("perf")`, excluded from `mvn verify` via `excludedGroups` in `pom.xml`) — e.g. `mvn test -Dgroups=UnitTest`. One exception: `NexusSmokeTest` (the H2, no-Docker, full-context boot check) is deliberately untagged so it always runs regardless of tag filtering — see the class comment.
+
+`org.junit.jupiter.api.Tag` collides with Micrometer's `io.micrometer.core.instrument.Tag` in a couple of audit/observability tests (`AuditStoreDownIT`, `AuthEventLoadSmokeIT`); those use the fully-qualified `@org.junit.jupiter.api.Tag("IT")` instead of importing it.
 
 Conventions:
 - Test method names: `should_<expected>_when_<condition>`, readable as a sentence.

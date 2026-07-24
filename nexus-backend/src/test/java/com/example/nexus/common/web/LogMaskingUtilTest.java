@@ -1,9 +1,11 @@
 package com.example.nexus.common.web;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@Tag("UnitTest")
 class LogMaskingUtilTest {
 
     // ── maskEmail ────────────────────────────────────────────────────────────

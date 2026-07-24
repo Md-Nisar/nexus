@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.UUID;
 import javax.crypto.spec.SecretKeySpec;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.env.Environment;
 
@@ -37,6 +38,7 @@ import org.springframework.core.env.Environment;
  *
  * <p>No Spring context — pure JUnit 5 + JJWT.
  */
+@Tag("UnitTest")
 class JwtRs256ServiceSecurityTest {
 
   private static RsaKeyConfig rsaKeyConfig;

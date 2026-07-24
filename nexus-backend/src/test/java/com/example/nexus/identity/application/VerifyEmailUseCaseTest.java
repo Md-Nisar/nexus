@@ -25,6 +25,7 @@ import java.util.Optional;
 import java.util.UUID;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -34,6 +35,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.OptimisticLockingFailureException;
 
 @ExtendWith(MockitoExtension.class)
+@Tag("UnitTest")
 class VerifyEmailUseCaseTest {
 
   private static final String RAW_TOKEN = "a".repeat(64);

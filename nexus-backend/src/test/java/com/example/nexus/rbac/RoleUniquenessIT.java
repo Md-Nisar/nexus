@@ -7,6 +7,7 @@ import com.example.nexus.TestcontainersConfiguration;
 import com.example.nexus.identity.domain.UuidGenerator;
 import java.nio.ByteBuffer;
 import java.util.UUID;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -26,6 +27,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
+@Tag("IT")
 class RoleUniquenessIT {
 
   @Autowired private JdbcTemplate jdbc;

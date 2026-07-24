@@ -10,6 +10,7 @@ import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
 import jakarta.persistence.EntityManager;
 import java.util.UUID;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -20,6 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
 @Transactional
+@Tag("IT")
 class EmailCipherEncryptionIT {
 
   @Autowired private JpaUserRepository userRepository;

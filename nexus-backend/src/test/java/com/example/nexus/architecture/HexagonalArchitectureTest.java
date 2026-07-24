@@ -10,6 +10,7 @@ import com.tngtech.archunit.junit.ArchTest;
 import com.tngtech.archunit.lang.ArchRule;
 import com.tngtech.archunit.library.GeneralCodingRules;
 import org.springframework.security.core.Authentication;
+import org.junit.jupiter.api.Tag;
 
 /**
  * Enforces the hexagonal dependency rule from ADR 0002 (follow-on NEXUS-0042): inner layers
@@ -21,6 +22,7 @@ import org.springframework.security.core.Authentication;
 @AnalyzeClasses(
         packages = "com.example.nexus",
         importOptions = ImportOption.DoNotIncludeTests.class)
+@Tag("UnitTest")
 class HexagonalArchitectureTest {
 
     @ArchTest

@@ -21,10 +21,12 @@ import java.util.Date;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.core.env.Environment;
 
+@Tag("UnitTest")
 class JwtRs256ServiceTest {
 
   private static RsaKeyConfig rsaKeyConfig;

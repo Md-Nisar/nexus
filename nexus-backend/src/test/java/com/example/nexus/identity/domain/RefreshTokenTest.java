@@ -4,8 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Instant;
 import java.util.UUID;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+@Tag("UnitTest")
 class RefreshTokenTest {
 
   @Test

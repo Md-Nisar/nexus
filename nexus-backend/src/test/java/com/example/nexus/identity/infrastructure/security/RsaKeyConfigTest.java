@@ -9,9 +9,11 @@ import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.interfaces.RSAPublicKey;
 import java.util.Base64;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.env.Environment;
 
+@Tag("UnitTest")
 class RsaKeyConfigTest {
 
   private Environment devEnv() {

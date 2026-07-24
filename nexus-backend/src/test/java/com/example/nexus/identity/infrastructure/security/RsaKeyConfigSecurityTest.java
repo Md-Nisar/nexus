@@ -3,6 +3,7 @@ package com.example.nexus.identity.infrastructure.security;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.nexus.identity.infrastructure.crypto.IdentityActuatorSanitizer;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.actuate.endpoint.SanitizableData;
 import org.springframework.boot.actuate.endpoint.SanitizingFunction;
@@ -21,6 +22,7 @@ import org.springframework.boot.actuate.endpoint.SanitizingFunction;
  *
  * <p>No Spring context — pure JUnit 5.
  */
+@Tag("UnitTest")
 class RsaKeyConfigSecurityTest {
 
   // -----------------------------------------------------------------------

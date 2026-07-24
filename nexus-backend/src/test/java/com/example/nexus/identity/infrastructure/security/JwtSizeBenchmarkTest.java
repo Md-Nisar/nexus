@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.core.env.Environment;
 
@@ -23,6 +24,7 @@ import org.springframework.core.env.Environment;
  * US-010 AC5 / Test Scenario 5: with the maximum realistic role/permission set (5 roles, 20
  * permissions), the compact JWT must stay under 4KB.
  */
+@Tag("UnitTest")
 class JwtSizeBenchmarkTest {
 
   private static RsaKeyConfig rsaKeyConfig;

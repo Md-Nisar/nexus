@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -41,6 +42,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.method.annotation.ExceptionHandlerMethodResolver;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
+@Tag("UnitTest")
 class GlobalExceptionHandlerTest {
 
     private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();

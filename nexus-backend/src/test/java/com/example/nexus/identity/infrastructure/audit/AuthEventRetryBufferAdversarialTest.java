@@ -29,6 +29,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.Tag;
 import org.springframework.dao.DataAccessResourceFailureException;
 
 /**
@@ -67,6 +68,7 @@ import org.springframework.dao.DataAccessResourceFailureException;
  * flakiness risk.
  */
 @ExtendWith(MockitoExtension.class)
+@Tag("UnitTest")
 class AuthEventRetryBufferAdversarialTest {
 
   private static final Instant FIXED_NOW = Instant.parse("2026-07-01T00:00:00Z");

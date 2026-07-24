@@ -3,11 +3,13 @@ package com.example.nexus.identity.domain;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.List;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
  * Unit tests for {@link JwtClaims}: immutability and correct field storage for JWT claim data.
  */
+@Tag("UnitTest")
 class JwtClaimsTest {
 
   /**

@@ -2,8 +2,10 @@ package com.example.nexus.identity.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+@Tag("UnitTest")
 class TokenHasherTest {
 
   private final TokenHasher hasher = new TokenHasher();

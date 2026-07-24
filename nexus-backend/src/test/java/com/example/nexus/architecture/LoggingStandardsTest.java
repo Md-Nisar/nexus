@@ -7,6 +7,7 @@ import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
 import com.tngtech.archunit.lang.ArchRule;
 import com.tngtech.archunit.library.GeneralCodingRules;
+import org.junit.jupiter.api.Tag;
 
 /**
  * Enforces logging standards such as preventing direct stack trace printing, standard streams,
@@ -15,6 +16,7 @@ import com.tngtech.archunit.library.GeneralCodingRules;
 @AnalyzeClasses(
     packages = "com.example.nexus",
     importOptions = ImportOption.DoNotIncludeTests.class)
+@Tag("UnitTest")
 class LoggingStandardsTest {
 
   @ArchTest

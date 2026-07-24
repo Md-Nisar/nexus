@@ -22,6 +22,7 @@ import com.example.nexus.identity.application.service.RefreshTokenUseCase;
 import com.example.nexus.identity.domain.LoginResult;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -73,7 +74,8 @@ import org.springframework.web.context.WebApplicationContext;
         // No SMTP server on localhost — disable mail health indicator to keep /actuator/health UP
         "management.health.mail.enabled=false"
     })
-class SecurityConfigTest {
+@Tag("WebSliceTest")
+class SecurityConfigWebTest {
 
   @Autowired private WebApplicationContext ctx;
 

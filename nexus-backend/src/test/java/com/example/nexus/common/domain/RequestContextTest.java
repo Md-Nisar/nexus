@@ -8,6 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -19,6 +20,7 @@ import org.junit.jupiter.api.Test;
  * <p>T-T2 (P1): truncation of {@code userAgent} in {@link RequestContext#of} is character-based
  * (not byte-based) and never splits a UTF-16 surrogate pair / multi-byte code point.
  */
+@Tag("UnitTest")
 class RequestContextTest {
 
   private static final ObjectMapper JSON = new ObjectMapper();

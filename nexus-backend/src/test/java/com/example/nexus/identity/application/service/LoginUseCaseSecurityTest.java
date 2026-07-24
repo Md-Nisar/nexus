@@ -35,6 +35,7 @@ import java.time.ZoneOffset;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -49,6 +50,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
  * <p>No Spring context — pure JUnit 5 + Mockito.
  */
 @ExtendWith(MockitoExtension.class)
+@Tag("UnitTest")
 class LoginUseCaseSecurityTest {
 
   private EmailBlindIndexService emailBlindIndexService;

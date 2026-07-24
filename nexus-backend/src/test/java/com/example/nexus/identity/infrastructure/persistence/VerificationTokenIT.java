@@ -23,6 +23,7 @@ import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -34,6 +35,7 @@ import org.springframework.context.annotation.Import;
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
+@Tag("IT")
 class VerificationTokenIT {
 
   @Autowired private VerifyEmailUseCase verifyEmailUseCase;

@@ -15,6 +15,7 @@ import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -28,6 +29,7 @@ import org.springframework.context.annotation.Import;
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
+@Tag("IT")
 class RoleResolutionServiceIT {
 
   // Seeded literals — V5__rbac_schema.sql header comment.

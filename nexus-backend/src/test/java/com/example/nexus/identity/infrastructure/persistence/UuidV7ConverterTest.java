@@ -5,8 +5,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.nio.ByteBuffer;
 import java.util.UUID;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+@Tag("UnitTest")
 class UuidV7ConverterTest {
 
   private final UuidV7Converter converter = new UuidV7Converter();

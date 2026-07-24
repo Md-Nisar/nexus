@@ -16,10 +16,12 @@ import com.example.nexus.identity.application.port.out.RateLimitStore;
 import jakarta.servlet.FilterChain;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
+@Tag("UnitTest")
 class LoginRateLimitFilterTest {
 
   private RateLimitStore rateLimitStore;

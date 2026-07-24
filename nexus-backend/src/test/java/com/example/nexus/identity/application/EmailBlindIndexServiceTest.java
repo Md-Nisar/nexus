@@ -7,8 +7,10 @@ import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.text.Normalizer;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+@Tag("UnitTest")
 class EmailBlindIndexServiceTest {
 
   // 32 bytes exactly — satisfies the >=32 byte validation contract

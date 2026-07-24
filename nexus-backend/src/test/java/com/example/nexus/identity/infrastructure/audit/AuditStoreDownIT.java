@@ -96,6 +96,7 @@ import org.springframework.web.client.RestTemplate;
     })
 @Import(TestcontainersConfiguration.class)
 @ActiveProfiles("test")
+@org.junit.jupiter.api.Tag("IT")
 class AuditStoreDownIT {
 
   @Value("${local.server.port:0}") private int port;

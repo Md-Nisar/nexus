@@ -24,6 +24,7 @@ import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -65,6 +66,7 @@ import org.springframework.web.context.WebApplicationContext;
     })
 @Import(TestcontainersConfiguration.class)
 @ActiveProfiles("test")
+@Tag("IT")
 class RegistrationControllerIT {
 
   // Default :0 prevents PlaceholderResolutionException when the inner class's MOCK context

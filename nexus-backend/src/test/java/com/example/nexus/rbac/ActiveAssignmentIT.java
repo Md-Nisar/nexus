@@ -24,6 +24,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -49,6 +50,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
+@Tag("IT")
 class ActiveAssignmentIT {
 
   @Autowired private JpaUserRoleRepository userRoleRepository;

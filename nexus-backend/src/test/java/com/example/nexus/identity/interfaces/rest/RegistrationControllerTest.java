@@ -17,6 +17,7 @@ import com.example.nexus.identity.interfaces.rest.dto.VerifyEmailRequest;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
@@ -28,6 +29,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
  * verification (status codes, validation, security) is covered in RegistrationControllerIT.
  */
 @ExtendWith(MockitoExtension.class)
+@Tag("UnitTest")
 class RegistrationControllerTest {
 
   @Mock private RegisterUserUseCase registerUseCase;

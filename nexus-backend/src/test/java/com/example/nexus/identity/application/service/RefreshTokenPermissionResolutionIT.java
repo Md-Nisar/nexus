@@ -20,6 +20,7 @@ import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.UUID;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -54,6 +55,7 @@ import org.testcontainers.utility.DockerImageName;
 @Import(TestcontainersConfiguration.class)
 @ActiveProfiles("test")
 @Testcontainers
+@Tag("IT")
 class RefreshTokenPermissionResolutionIT {
 
   @Container
