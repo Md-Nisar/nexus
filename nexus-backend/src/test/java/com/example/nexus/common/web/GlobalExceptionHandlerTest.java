@@ -73,6 +73,29 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void should_incrementDomainConflictCounterTaggedWithCode_when_lastAdminRoleConflict() {
+        // RBAC_002 (US-012 LastAdminRoleException) — T-015 closes the gap that this code
+        // previously logged at DEBUG with zero metric (design §9.2, threat-model T-D4/T-D5).
+        handler.handleConflict(new ConflictException("RBAC_002", "Cannot revoke the last active admin."));
+
+        double count =
+                meterRegistry.find("nexus.domain.conflict").tag("code", "RBAC_002").counter().count();
+
+        assertThat(count).isEqualTo(1.0);
+    }
+
+    @Test
+    void should_incrementDomainConflictCounterTaggedWithCode_when_duplicateRoleAssignmentConflict() {
+        // RBAC_004 (US-012 DuplicateRoleAssignmentException) — same gap, distinct code tag.
+        handler.handleConflict(new ConflictException("RBAC_004", "Role already assigned."));
+
+        double count =
+                meterRegistry.find("nexus.domain.conflict").tag("code", "RBAC_004").counter().count();
+
+        assertThat(count).isEqualTo(1.0);
+    }
+
+    @Test
     void should_return422_when_genericDomainRuleViolated() {
         DomainException violation = new DomainException("ORDER_NOT_CANCELLABLE", "Order shipped.") {};
 

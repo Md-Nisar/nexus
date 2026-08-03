@@ -158,7 +158,7 @@ Custom `@RequiresPermission("tenant:write")` annotation backed by a Spring Secur
 - System role: `TENANT_ADMIN` (per-tenant, seeded on tenant creation in Epic 3; pre-seeded for default tenant in Epic 2)
 - System role: `MEMBER` — default role for new users; `user:read` permission only
 
-**Permission cache:** Redis; key `permissions:{tenant_id}:{user_id}`; TTL 15 min; invalidated on role assignment/revocation. Fallback: DB query if cache miss. Cache is a performance optimisation — the JWT is the authority.
+**Permission cache:** Redis; two keys per entry sharing a TTL — `{nexus.redis.key-prefix}:rbac:roleset:{tenant_id}:{user_id}` and `{nexus.redis.key-prefix}:rbac:permset:{tenant_id}:{user_id}` (`nexus.redis.key-prefix` defaults to `nexus`); TTL 15 min; invalidated via `PermissionCachePort.evict(tenantId, userId)` on role assignment/revocation. Fallback: DB query if cache miss. Cache is a performance optimisation — the JWT is the authority.
 
 **Effort estimate:** ~36 points total (US-009: 8, US-010: 3, US-011: 5, US-012: 5, US-013: 3, US-014: 3, US-015: 9 — US-009 revised from 5 to 8 after Gate 1 requirements analysis added JPA entities/repositories and `nexus_app` DB grants to its scope, see ADR-0014). Confidence: medium-high (model is well-understood; main uncertainty is Spring Security method security configuration complexity, and — for US-015 — cache-invalidation fan-out when a role's permission set changes under already-assigned users).
 
@@ -394,7 +394,7 @@ US-003 left `roles[]` as a placeholder empty array in the JWT. This story popula
 ### Technical Notes (ARC)
 - Modify `JwtTokenService` (US-003) to inject `RoleResolutionService` at token issuance
 - `RoleResolutionService`: queries `user_roles JOIN role_permissions JOIN permissions WHERE user_id = ? AND tenant_id = ? AND revoked_at IS NULL`
-- Result cached in Redis: key `permissions:{tenant_id}:{user_id}` TTL 15 min; warmed on login, invalidated on role change (US-012). **Redis is not currently a dependency anywhere in the backend** (no `spring-boot-starter-data-redis`, no client, only an unused config placeholder for rate-limiting) — this story must add the starter, client config, and a docker-compose service, not just a cache-key scheme. Size this as new infrastructure, not a config tweak.
+- Result cached in Redis: two keys sharing a TTL — `{nexus.redis.key-prefix}:rbac:roleset:{tenant_id}:{user_id}` and `{nexus.redis.key-prefix}:rbac:permset:{tenant_id}:{user_id}` (`nexus.redis.key-prefix` defaults to `nexus`) — TTL 15 min; warmed on login, invalidated via `PermissionCachePort.evict` on role change (US-012). **Redis is not currently a dependency anywhere in the backend** (no `spring-boot-starter-data-redis`, no client, only an unused config placeholder for rate-limiting) — this story must add the starter, client config, and a docker-compose service, not just a cache-key scheme. Size this as new infrastructure, not a config tweak.
 - Permission strings in JWT: short form only (`tenant:read`) — no descriptions
 - Token contract addition: `"permissions": ["tenant:read", "tenant:write"]` added to the frozen `JwtClaims` schema; **requires a `token_version` bump** (the record's existing doc comment explicitly requires this for any field addition) and an update to the existing contract test — not just appending a claim
 - `RoleResolutionService` output is also used to add `permissions: string[]` to the `GET /api/v1/users/me` response (`MeApiResponse`), alongside the existing `roles: string[]` — this is what the Angular frontend actually reads (see US-013); it does not decode the JWT
@@ -514,16 +514,16 @@ First admin capability on the platform. All endpoints are themselves protected b
 | 2 | Revoke role from user | DELETE /api/v1/users/{userId}/roles/{roleId} sets `revoked_at`; returns 204; requires `user:write` permission | P0 | Soft delete only |
 | 3 | List roles for a user | GET /api/v1/users/{userId}/roles returns active role assignments; requires `user:read` permission | P0 | |
 | 4 | Tenant isolation on assignment | Tenant Admin in Tenant A cannot assign roles to users in Tenant B; attempt returns 403 | P0 | |
-| 5 | Self-revocation of last admin role blocked | If user is the only active `TENANT_ADMIN` in the tenant, revoking their admin role returns 409 + RBAC_002 | P0 | Prevents tenant lockout |
-| 6 | Permission cache invalidated on change | Redis cache key `permissions:{tenant_id}:{user_id}` deleted on assignment and revocation; next token refresh reflects change | P0 | |
+| 5 | Revoking the tenant's last active TENANT_ADMIN role is blocked | If user is the only active `TENANT_ADMIN` in the tenant, revoking their admin role returns 409 + RBAC_002 | P0 | Actor-agnostic: fires for *any* caller revoking the tenant's last active `TENANT_ADMIN` assignment, not only self-revocation — prevents tenant lockout |
+| 6 | Permission cache invalidated on change | The permission cache is invalidated via `PermissionCachePort.evict(tenantId, userId)` on assignment and revocation; next token refresh reflects change | P0 | |
 | 7 | Assignment events audited | Every role assignment and revocation writes an event to the audit stream: `ROLE_ASSIGNED` / `ROLE_REVOKED` with user_id, role_id, assigned_by (assignment) or revoking principal (revocation), tenant_id | P0 | Revocation-actor attribution per threat model T-R1 |
 | 8 | Only `TENANT_ADMIN` may grant `TENANT_ADMIN` | Assigning the `TENANT_ADMIN` role requires the caller to already hold an active `TENANT_ADMIN` assignment in that tenant (not just generic `user:write`); attempt by a non-admin returns 403, even if they somehow hold `user:write` | P0 | Hard AC per threat model T-E1 — the schema (US-009) places no backstop between a self-registered member and the all-permissions admin role; this check is the actual control |
 
 ### Technical Notes (ARC)
 - Endpoints: POST + DELETE `/api/v1/users/{userId}/roles`, GET `/api/v1/users/{userId}/roles`, all protected by `@RequiresPermission`
 - `RoleAssignmentService`: validates user and role both belong to caller's `tenant_id` before write
-- Lockout guard: `SELECT COUNT(*) FROM user_roles WHERE role_id = TENANT_ADMIN AND tenant_id = ? AND revoked_at IS NULL` before any revocation of a `TENANT_ADMIN` role
-- Cache invalidation: `redisTemplate.delete("permissions:{tenant_id}:{userId}")` in `RoleAssignmentService` after write
+- Lockout guard: `SELECT COUNT(*) FROM user_roles WHERE role_id = :roleId AND tenant_id = ? AND revoked_at IS NULL` before any revocation of a `TENANT_ADMIN` role, where `:roleId` is resolved from `roles` by `(tenant_id, name = 'TENANT_ADMIN')` for the caller's own tenant, matched case-insensitively — there is no `TENANT_ADMIN` constant; `TENANT_ADMIN` is a per-tenant `roles` row
+- Cache invalidation: `PermissionCachePort.evict(tenantId, userId)` in `RoleAssignmentService` after write
 - Audit: publishes `ROLE_ASSIGNED` / `ROLE_REVOKED` events to existing audit event pipeline (US-008)
 - Feature flag required: No
 
@@ -713,7 +713,7 @@ US-009 seeds exactly two roles per tenant (`TENANT_ADMIN`, `MEMBER`) via migrati
 ### Technical Notes (ARC)
 - New `RoleManagementService` in the existing `com.example.nexus.rbac` bounded context, alongside `RoleAssignmentService` (US-012) — same package, same tenant-scoping style (explicit `tenantId` parameter, not a Hibernate filter)
 - System-role protection: check `is_system_role` before any mutating operation on a role or its `role_permissions`; throw a dedicated `SystemRoleImmutableException` mapped to `409 + RBAC_003` in `GlobalExceptionHandler`
-- **Cache fan-out (new relative to US-012):** revoking/assigning a *user's* role invalidates one `permissions:{tenant_id}:{user_id}` key (US-012). Editing a *role's* permissions here affects every user currently holding that role. Options: (a) query all active `user_roles` for the `role_id` and bulk-delete their cache keys on every `role_permissions` write, or (b) accept the existing 15-min TTL / 7-day refresh lag as sufficient and document it identically to US-012's revocation lag. Pick (a) if role-permission edits are expected to be rare-but-security-sensitive; (b) is simpler and consistent with the epic's already-accepted cache lag elsewhere — default to (b) unless ADR-0013 says otherwise.
+- **Cache fan-out (new relative to US-012):** revoking/assigning a *user's* role invalidates that user's cache entry via `PermissionCachePort.evict(tenantId, userId)` (US-012). Editing a *role's* permissions here affects every user currently holding that role. Options: (a) query all active `user_roles` for the `role_id` and bulk-delete their cache keys on every `role_permissions` write, or (b) accept the existing 15-min TTL / 7-day refresh lag as sufficient and document it identically to US-012's revocation lag. Pick (a) if role-permission edits are expected to be rare-but-security-sensitive; (b) is simpler and consistent with the epic's already-accepted cache lag elsewhere — default to (b) unless ADR-0013 says otherwise.
 - Endpoints all protected by `@RequiresPermission` (US-011); no new enforcement mechanism needed
 - Feature flag required: No
 

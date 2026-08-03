@@ -20,7 +20,9 @@ class AuthEventTypeTest {
           AuthEventType.LOCKOUT,
           AuthEventType.TOKEN_REFRESH_REUSE,
           AuthEventType.PASSWORD_CHANGED,
-          AuthEventType.ACCOUNT_LOCKED_WRITE_FAILED);
+          AuthEventType.ACCOUNT_LOCKED_WRITE_FAILED,
+          AuthEventType.ROLE_ASSIGNED,
+          AuthEventType.ROLE_REVOKED);
 
   @ParameterizedTest
   @EnumSource(AuthEventType.class)
@@ -68,26 +70,37 @@ class AuthEventTypeTest {
     assertThat(AuthEventType.ACCOUNT_LOCKED_WRITE_FAILED.isPriority()).isTrue();
   }
 
+  @Test
+  void should_returnTrue_when_isPriorityCheckedOnRoleAssigned() {
+    assertThat(AuthEventType.ROLE_ASSIGNED.isPriority()).isTrue();
+  }
+
+  @Test
+  void should_returnTrue_when_isPriorityCheckedOnRoleRevoked() {
+    assertThat(AuthEventType.ROLE_REVOKED.isPriority()).isTrue();
+  }
+
   @ParameterizedTest
   @EnumSource(value = AuthEventType.class, names = {"LOCKOUT", "TOKEN_REFRESH_REUSE",
-      "PASSWORD_CHANGED", "ACCOUNT_LOCKED_WRITE_FAILED"}, mode = EnumSource.Mode.EXCLUDE)
+      "PASSWORD_CHANGED", "ACCOUNT_LOCKED_WRITE_FAILED", "ROLE_ASSIGNED", "ROLE_REVOKED"},
+      mode = EnumSource.Mode.EXCLUDE)
   void should_returnFalse_when_isPriorityCheckedOnAllNonPriorityTypes(AuthEventType type) {
     assertThat(type.isPriority()).isFalse();
   }
 
   @Test
-  void should_containExactlyFourTypes_when_priorityTrueSetCollected() {
+  void should_containExactlySixTypes_when_priorityTrueSetCollected() {
     Set<AuthEventType> actualPriority =
         Arrays.stream(AuthEventType.values())
             .filter(AuthEventType::isPriority)
             .collect(Collectors.toSet());
 
-    assertThat(actualPriority).hasSize(4).isEqualTo(EXPECTED_PRIORITY);
+    assertThat(actualPriority).hasSize(6).isEqualTo(EXPECTED_PRIORITY);
   }
 
   @Test
-  void should_defineAllTwentyConstants_when_valuesCalled() {
-    assertThat(AuthEventType.values()).hasSize(20);
+  void should_defineAllTwentyTwoConstants_when_valuesCalled() {
+    assertThat(AuthEventType.values()).hasSize(22);
     assertThat(Arrays.stream(AuthEventType.values()).map(Enum::name))
         .containsExactlyInAnyOrder(
             "LOGIN_SUCCESS",
@@ -109,7 +122,9 @@ class AuthEventTypeTest {
             "PASSWORD_RESET_THROTTLED",
             "PASSWORD_RESET_FAILED",
             "RESEND_REQUESTED",
-            "RESEND_THROTTLED");
+            "RESEND_THROTTLED",
+            "ROLE_ASSIGNED",
+            "ROLE_REVOKED");
   }
 
   @Test

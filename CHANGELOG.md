@@ -7,6 +7,23 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ## [Unreleased]
 
+### Added — US-012 (Enable role assignment and revocation API)
+
+**Backend**
+- First controller in the `rbac` bounded context: `POST`/`GET`/`DELETE /api/v1/users/{userId}/roles[/{roleId}]`, gated by `@RequiresPermission("user:write"/"user:read")` (US-011) plus service-layer tenant-isolation (AC4), last-admin lockout (AC5), and self-escalation (AC8) guards — `TenantAwarePermissionEvaluator` checks only flat JWT `permissions[]` membership and cannot express any of the three.
+- `RoleAssignmentService` — the sole enforcement point for AC4/AC5/AC8; new outbound ports `UserRoleAssignmentPort`, `UserDirectoryPort`, `RbacAuditPort` (declared in `rbac.application.port.out`, implemented in `identity.infrastructure`, preserving the existing `identity → rbac` dependency direction — never the reverse — now mechanically enforced by a new ArchUnit rule).
+- AC5's lockout guard and AC8's live-admin check are both DB-level locking reads (`FOR UPDATE`/`FOR SHARE`) driven by the FK-indexed `role_id`, never the unindexed `tenant_id` — closes a TOCTOU race and a full-table-lock DoS hazard identified pre-implementation.
+- `RBAC_002` (409, last-admin lockout) and `RBAC_004` (409, duplicate active assignment) — new domain exceptions with static-literal messages (never echo a caught constraint-violation message, which would otherwise leak raw user/role ids into the client-visible response).
+- `ROLE_ASSIGNED`/`ROLE_REVOKED` added to `AuthEventType`, routed through the retry-buffer's `PRIORITY` lane (not `STANDARD`) so a correlated `LOGIN_FAILURE` flood cannot silently drop a role-change audit record.
+- New feature flag `feature.nexus-us012-rbac-role-assignment.enabled`, default `false` — overrides this story's own "no flag" text, since this is the platform's only control against a Critical self-escalation threat and a config flip is the fastest kill switch if a bypass is ever found.
+- No new Flyway migration — `V5__rbac_schema.sql` already carried every column/index/constraint this story needed. No new `nexus_app` DB grants required.
+- **Bug found and fixed in Phase 8 (test-validate):** `JpaUserRoleAssignmentAdapter.assign()` used `save()` instead of `saveAndFlush()`, letting a concurrent duplicate-assignment's `DataIntegrityViolationException` escape the adapter's own translation `try/catch` (Hibernate deferred the physical INSERT to a later auto-flush one call frame away) — would have surfaced as an unhandled 500 instead of a clean 409 under a real race. Fixed; caught by a new 8-thread concurrency test.
+- ADR: none required — every design decision traces to an already-accepted ADR (0002, 0003, 0005, 0013, 0014, 0015, 0016); confirmed still accurate after implementation, including the Phase 8 fix (a correctness fix, not a new architectural decision).
+- 429/429 backend tests passing; JaCoCo bundle + package gates met; SpotBugs 0 bugs; code review APPROVE WITH NITS (2 Medium/4 Low); security review APPROVED (3 Medium/10 Low, zero Blocker/High).
+
+**Frontend**
+- None — zero frontend impact (no client anywhere in `nexus-frontend/src` calls this endpoint family; `/users/me` is untouched).
+
 ### Added — US-009 (RBAC data model and seed system roles/permissions)
 
 **Backend**

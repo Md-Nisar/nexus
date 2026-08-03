@@ -1,14 +1,19 @@
 package com.example.nexus.architecture;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
+import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noMethods;
 
 import com.example.nexus.identity.infrastructure.web.JwtAuthenticationFilter;
 import com.tngtech.archunit.base.DescribedPredicate;
+import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
 import com.tngtech.archunit.lang.ArchRule;
 import com.tngtech.archunit.library.GeneralCodingRules;
+import java.security.Principal;
+import java.util.List;
+import java.util.Map;
 import org.springframework.security.core.Authentication;
 import org.junit.jupiter.api.Tag;
 
@@ -92,6 +97,46 @@ class HexagonalArchitectureTest {
                             + "producer breaks the tenant-provenance invariant (ADR-0013 amendment, "
                             + "threat-model T-02) and needs an explicit re-review before it can be "
                             + "added")
+                    .allowEmptyShould(true);
+
+    // US-012 Gate 1 Resolutions 1 and 4: rbac declares outbound ports (UserDirectoryPort,
+    // RbacAuditPort) that identity.infrastructure implements — the dependency direction is
+    // identity -> rbac, never the reverse. This converts that agreed direction from
+    // documentation (03-design.md §7.4) into a build failure.
+    @ArchTest
+    static final ArchRule rbac_must_not_depend_on_identity =
+            noClasses()
+                    .that().resideInAPackage("..rbac..")
+                    .should().dependOnClassesThat().resideInAPackage("..identity..")
+                    .because("rbac declares outbound ports (UserDirectoryPort, RbacAuditPort) that "
+                            + "identity.infrastructure implements; a direct rbac -> identity import "
+                            + "inverts the agreed direction (US-012 Gate 1 Resolutions 1 and 4) and "
+                            + "needs explicit re-review. Note: this rule cannot catch a shared helper "
+                            + "placed in a neutral `common.*` package and consumed by both contexts, "
+                            + "which would recreate the same coupling with this rule green — that "
+                            + "class of regression needs human review, not ArchUnit.")
+                    .allowEmptyShould(true);
+
+    // US-012 threat-model T-E10: the existing domain_and_application_must_not_depend_on_spring_
+    // security rule is structural (it forbids importing org.springframework.security..) but does
+    // not catch java.security.Principal or java.util.Map parameters, which live outside that
+    // package and would still let raw authentication data (Principal, or authentication.get
+    // Details()'s Map) reach the application layer. RoleAssignmentService's own hard-enforced
+    // invariant is that its public methods accept only RoleChangeActor/UUID/RequestContext.
+    @ArchTest
+    static final ArchRule rbac_application_methods_must_not_accept_principal_or_map =
+            noMethods()
+                    .that().areDeclaredInClassesThat().resideInAPackage("..rbac.application..")
+                    .should().haveRawParameterTypes(
+                            DescribedPredicate.describe(
+                                    "java.security.Principal or java.util.Map",
+                                    (List<JavaClass> types) -> types.stream()
+                                            .anyMatch(t -> t.isEquivalentTo(Principal.class)
+                                                    || t.isEquivalentTo(Map.class))))
+                    .because("RoleAssignmentService's own hard-enforced invariant (T-E10) is that its "
+                            + "methods accept only RoleChangeActor/UUID/RequestContext; Principal and "
+                            + "Map both stay outside the existing Spring-Security-package ArchUnit "
+                            + "rule while reintroducing raw authentication data into this layer")
                     .allowEmptyShould(true);
 
     @ArchTest
