@@ -38,10 +38,24 @@ public enum AuthEventType {
   PASSWORD_RESET_THROTTLED("PASSWORD_RESET_THROTTLED"),
   PASSWORD_RESET_FAILED("PASSWORD_RESET_FAILED"),
   RESEND_REQUESTED("RESEND_REQUESTED"),
-  RESEND_THROTTLED("RESEND_THROTTLED");
+  RESEND_THROTTLED("RESEND_THROTTLED"),
 
+  // RBAC role-change events (US-012, Res. 2 — US-012 owns emission; US-014 extends/verifies)
+  ROLE_ASSIGNED("ROLE_ASSIGNED"),
+  ROLE_REVOKED("ROLE_REVOKED");
+
+  // ROLE_ASSIGNED/ROLE_REVOKED are PRIORITY (T-R4, reversing the original US-012 D10 decision):
+  // role-change audit events must not share the drop-newest STANDARD lane with high-volume
+  // events like LOGIN_FAILURE — a lost ROLE_ASSIGNED record is exactly the repudiation risk
+  // AC7 exists to prevent.
   private static final Set<AuthEventType> PRIORITY =
-      EnumSet.of(LOCKOUT, TOKEN_REFRESH_REUSE, PASSWORD_CHANGED, ACCOUNT_LOCKED_WRITE_FAILED);
+      EnumSet.of(
+          LOCKOUT,
+          TOKEN_REFRESH_REUSE,
+          PASSWORD_CHANGED,
+          ACCOUNT_LOCKED_WRITE_FAILED,
+          ROLE_ASSIGNED,
+          ROLE_REVOKED);
 
   private final String wireName;
 
@@ -57,9 +71,10 @@ public enum AuthEventType {
   /**
    * Used by {@code AuthEventRetryBuffer} to route into the priority vs. standard buffer lane.
    *
-   * @return {@code true} for the 4 highest-value forensic/security-incident signals ({@link
+   * @return {@code true} for the 6 highest-value forensic/security-incident signals ({@link
    *     #LOCKOUT}, {@link #TOKEN_REFRESH_REUSE}, {@link #PASSWORD_CHANGED}, {@link
-   *     #ACCOUNT_LOCKED_WRITE_FAILED}); {@code false} for all other types.
+   *     #ACCOUNT_LOCKED_WRITE_FAILED}, {@link #ROLE_ASSIGNED}, {@link #ROLE_REVOKED}); {@code
+   *     false} for all other types.
    */
   public boolean isPriority() {
     return PRIORITY.contains(this);

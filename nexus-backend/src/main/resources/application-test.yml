@@ -8,6 +8,8 @@ feature:
     enabled: true
   nexus-us003-auth-login:
     enabled: true
+  nexus-us012-rbac-role-assignment:
+    enabled: true
 
 # --- Security: Rate Limiting (Test Overrides) ---
 # Increased limits to prevent test interference from rate-limiting filters
@@ -19,3 +21,27 @@ nexus:
       user-max-attempts: 100     # same — lockout ITs drive account lockout via DB, not this filter
       user-window-seconds: 900
       refresh-max-attempts: 1000   # high so refresh-path ITs are not throttled
+  # --- Identity Context (Test Credentials) ---
+  # TEST ONLY — non-secret placeholder values, mirroring application-dev.yml's dev block.
+  # Statically defined here (not left solely to TestcontainersConfiguration's
+  # DynamicPropertyRegistrar) because a DynamicPropertyRegistrar bean is only applied AFTER
+  # component scan — a documented Spring Boot 4 property-precedence gotcha in this repo. A
+  # @SpringBootTest(webEnvironment = RANDOM_PORT) context eagerly instantiates the Filter bean
+  # graph (jwtFilterRegistration -> ... -> IdentityCryptoConfig) during
+  # ServletWebServerApplicationContext.onRefresh(), which can run before that registrar's
+  # properties are visible, intermittently failing context startup with an unresolved
+  # ${NEXUS_IDENTITY_ENCRYPTION_PASSWORD} placeholder. Static values here are available before
+  # component scan and close that race for every RANDOM_PORT *IT in the codebase, not just one
+  # story's. TestcontainersConfiguration's DynamicPropertyRegistrar still sets the identical
+  # values (harmless, idempotent) — left as-is rather than removed, to avoid touching a working
+  # mechanism other tests may depend on.
+  identity:
+    encryption:
+      password: test-not-a-secret-encryption-password
+      salt: cafebabecafebabecafebabecafebabe
+    hmac-key: test-not-a-secret-hmac-key-min-32-bytes!!
+    default-tenant-id: "00000000-0000-7000-8000-000000000001"
+    argon2:
+      memory-kb: 4096
+      iterations: 1
+      parallelism: 1

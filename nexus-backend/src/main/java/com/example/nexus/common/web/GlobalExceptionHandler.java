@@ -58,6 +58,7 @@ public class GlobalExceptionHandler {
   @ExceptionHandler(ConflictException.class)
   ProblemDetail handleConflict(ConflictException e) {
     logHandledException(e, "DEBUG", e.code());
+    Counter.builder("nexus.domain.conflict").tag("code", e.code()).register(meterRegistry).increment();
     return problem(HttpStatus.CONFLICT, e.code(), e.getMessage());
   }
 

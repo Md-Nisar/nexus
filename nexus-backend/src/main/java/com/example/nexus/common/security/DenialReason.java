@@ -8,5 +8,9 @@ package com.example.nexus.common.security;
 public enum DenialReason {
   PERMISSION_ABSENT,
   MALFORMED_AUTHENTICATION,
-  MISSING_TENANT
+  MISSING_TENANT,
+  // US-012: the target of a role assignment/revocation/read does not belong to the caller's tenant.
+  CROSS_TENANT_TARGET,
+  // US-012 AC8: caller lacks an active TENANT_ADMIN assignment and attempted to grant TENANT_ADMIN.
+  NOT_TENANT_ADMIN
 }

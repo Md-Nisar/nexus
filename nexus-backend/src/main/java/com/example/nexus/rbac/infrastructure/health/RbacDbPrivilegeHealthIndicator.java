@@ -19,9 +19,18 @@ import org.springframework.stereotype.Component;
  * this is the only runtime detection for a still-on-{@code root} environment or an over-grant.
  *
  * <p>Unlike the {@code auth_events} indicator (which checks {@code UPDATE} or {@code DELETE}),
- * this checks only {@code DELETE} — {@code nexus_app} intentionally holds a column-scoped {@code
- * UPDATE (revoked_at)} grant on {@code user_roles} (ADR-0015 D7), which must not itself trigger a
- * finding here.
+ * the over-grant check below looks only for {@code DELETE} — {@code nexus_app} intentionally
+ * holds a column-scoped {@code UPDATE (revoked_at)} grant on {@code user_roles} (ADR-0015 D7),
+ * which must not itself trigger that finding.
+ *
+ * <p><b>Positive grant-scope check (T-015 / {@code 03b-threat-model.md} T-E12).</b> The
+ * over-grant check above cannot detect a <em>silent widening</em> of the {@code UPDATE} grant
+ * itself: a future {@code GRANT UPDATE ON nexus.user_roles} (bare, table-scoped, no column list)
+ * would quietly re-permit the multi-column {@code UPDATE} that R-1/D2 exists to prevent, and would
+ * pass every existing check here (it is neither {@code DELETE} nor {@code ALL PRIVILEGES}). This
+ * indicator therefore also flags DOWN when {@code information_schema.TABLE_PRIVILEGES} shows a
+ * bare table-scoped {@code UPDATE} grant on {@code user_roles} for the current user — the signal
+ * that the intended column scoping has been silently lost.
  *
  * <p>Observational only (cannot constrain a DB superuser); never issues a live {@code DELETE}
  * against {@code user_roles} to "test" the grant. Registered as a named {@link HealthIndicator}
@@ -52,25 +61,33 @@ public class RbacDbPrivilegeHealthIndicator implements HealthIndicator {
       boolean hasTablePrivilege = hasTableDeletePrivilege(connection, userName);
       boolean hasGlobalPrivilege = hasGlobalDeletePrivilege(connection, userName);
       boolean overPrivileged = isRoot || hasTablePrivilege || hasGlobalPrivilege;
+      boolean hasBareTableUpdateGrant = hasBareTableUpdatePrivilege(connection, userName);
 
-      if (overPrivileged) {
+      if (overPrivileged || hasBareTableUpdateGrant) {
         log.warn(
             "user_roles DB privilege drift detected dbUser={} isRoot={} "
-                + "hasTableDeleteGrant={} hasGlobalDeleteGrant={}",
+                + "hasTableDeleteGrant={} hasGlobalDeleteGrant={} hasTableScopedUpdateGrant={}",
             currentUser,
             isRoot,
             hasTablePrivilege,
-            hasGlobalPrivilege);
+            hasGlobalPrivilege,
+            hasBareTableUpdateGrant);
         return Health.down()
             .withDetail("dbUser", currentUser)
             .withDetail("isRoot", isRoot)
             .withDetail("hasTableDeleteGrant", hasTablePrivilege)
             .withDetail("hasGlobalDeleteGrant", hasGlobalPrivilege)
+            .withDetail("hasTableScopedUpdateGrant", hasBareTableUpdateGrant)
             .withDetail(
                 "issue",
-                "connected DB user can DELETE from user_roles or holds ALL PRIVILEGES/root —"
-                    + " least-privilege nexus_app provisioning (ADR-0014/ADR-0015) has drifted or"
-                    + " was never applied")
+                overPrivileged
+                    ? "connected DB user can DELETE from user_roles or holds ALL PRIVILEGES/root —"
+                        + " least-privilege nexus_app provisioning (ADR-0014/ADR-0015) has drifted"
+                        + " or was never applied"
+                    : "connected DB user holds a bare table-scoped UPDATE grant on user_roles —"
+                        + " the intended column-scoped UPDATE (revoked_at) grant (ADR-0015 D7) has"
+                        + " been silently widened, re-permitting the multi-column UPDATE R-1/D2"
+                        + " exists to prevent")
             .build();
       }
       return Health.up().withDetail("dbUser", currentUser).build();
@@ -136,6 +153,32 @@ public class RbacDbPrivilegeHealthIndicator implements HealthIndicator {
             + "AND GRANTEE LIKE ?";
     try (var preparedStatement = connection.prepareStatement(sql)) {
       preparedStatement.setString(1, "'" + userName + "'@%");
+      try (ResultSet resultSet = preparedStatement.executeQuery()) {
+        return resultSet.next() && resultSet.getInt(1) > 0;
+      }
+    }
+  }
+
+  /**
+   * T-015 / T-E12 positive grant-scope check via {@code information_schema.TABLE_PRIVILEGES}. A
+   * column-scoped grant (the intended {@code GRANT UPDATE (revoked_at) ON nexus.user_roles})
+   * never produces a row here — only in {@code COLUMN_PRIVILEGES} — so any row this query returns
+   * for {@code PRIVILEGE_TYPE = 'UPDATE'} means a bare, table-scoped {@code UPDATE} grant exists,
+   * i.e. the column scoping has been widened away. This is a distinct, additional check from
+   * {@link #hasTableDeletePrivilege}/{@link #hasGlobalDeletePrivilege} above (which look for
+   * {@code DELETE}/{@code ALL PRIVILEGES}), not a replacement for either.
+   */
+  private boolean hasBareTableUpdatePrivilege(Connection connection, String userName)
+      throws SQLException {
+    String sql =
+        "SELECT COUNT(*) FROM information_schema.TABLE_PRIVILEGES "
+            + "WHERE TABLE_SCHEMA = DATABASE() "
+            + "AND TABLE_NAME = ? "
+            + "AND PRIVILEGE_TYPE = 'UPDATE' "
+            + "AND GRANTEE LIKE ?";
+    try (var preparedStatement = connection.prepareStatement(sql)) {
+      preparedStatement.setString(1, USER_ROLES_TABLE);
+      preparedStatement.setString(2, "'" + userName + "'@%");
       try (ResultSet resultSet = preparedStatement.executeQuery()) {
         return resultSet.next() && resultSet.getInt(1) > 0;
       }

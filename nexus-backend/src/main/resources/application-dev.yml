@@ -50,3 +50,5 @@ feature:
     enabled: true
   nexus-us003-auth-login:
     enabled: true
+  nexus-us012-rbac-role-assignment:
+    enabled: true

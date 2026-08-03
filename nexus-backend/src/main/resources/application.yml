@@ -86,6 +86,14 @@ management:
       probes:
         enabled: true
       show-details: when-authorized
+      # 07-security-review.md M-2: /actuator/health/** is permitAll and carries no rate limit,
+      # and US-012's rbacZeroActiveAdmins indicator runs a cross-tenant roles scan on every hit.
+      # Without a cache TTL, an anonymous caller looping this endpoint forces an unbounded number
+      # of those scans. A short TTL bounds the amplification to the platform's normal
+      # health-check cadence without weakening the signal (the story's own detection controls are
+      # explicitly framed as running "on a health-check cadence, not a hot path").
+      cache:
+        time-to-live: 30s
       group:
         # US-008 T-08-12 (ADR 0012 §5): authEventDbPrivilege is a non-fatal security-observability
         # signal (detects DB-role drift away from the least-privilege nexus_app user, T-E2/T-T4),
@@ -199,4 +207,9 @@ feature:
     enabled: ${FEATURE_AUTH_REGISTRATION_ENABLED:false}  # Defaults off; enable per-env
   nexus-us003-auth-login:
     enabled: false  # Defaults off; enabled per-env via application-{profile}.yml
+  nexus-us012-rbac-role-assignment:
+    # Defaults off; this is the platform's only control against a Critical self-escalation
+    # threat (T-E1), so a config flip is the fastest kill switch if a bypass is ever found
+    # post-deploy. Enabled per-env via application-{profile}.yml.
+    enabled: false
 

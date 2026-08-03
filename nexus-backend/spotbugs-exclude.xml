@@ -107,4 +107,26 @@
         <Class name="com.example.nexus.common.web.GlobalExceptionHandler" />
         <Bug pattern="EI_EXPOSE_REP2" />
     </Match>
+    <!--
+      US-012 T-0xx: RoleAssignmentService constructor-injects the Spring-managed singleton
+      PermissionCachePort bean and stores it directly, mirroring RoleResolutionService above
+      (same port, same non-value-object/non-mutating-singleton rationale).
+    -->
+    <Match>
+        <Class name="com.example.nexus.rbac.application.RoleAssignmentService" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
+    <!--
+      US-012: RbacAuthEventAdapter constructor-injects two Spring-managed singletons and stores
+      them directly, per this project's constructor-injection-only convention (CLAUDE.md):
+        - MeterRegistry: a metrics registry/factory, not a value object (same rationale as
+          ExecutionObserver and GlobalExceptionHandler above).
+        - ObjectMapper (tools.jackson.databind): a thread-safe, stateless serialization service
+          bean, not a value object, with no sensible defensive copy, never mutated after context
+          startup.
+    -->
+    <Match>
+        <Class name="com.example.nexus.identity.infrastructure.audit.RbacAuthEventAdapter" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
 </FindBugsFilter>

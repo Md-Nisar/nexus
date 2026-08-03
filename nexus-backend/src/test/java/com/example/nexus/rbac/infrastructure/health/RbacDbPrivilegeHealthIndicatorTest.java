@@ -37,6 +37,8 @@ class RbacDbPrivilegeHealthIndicatorTest {
   @Mock private ResultSet tablePrivilegeResultSet;
   @Mock private PreparedStatement globalPrivilegeStatement;
   @Mock private ResultSet globalPrivilegeResultSet;
+  @Mock private PreparedStatement bareTableUpdatePrivilegeStatement;
+  @Mock private ResultSet bareTableUpdatePrivilegeResultSet;
 
   private RbacDbPrivilegeHealthIndicator indicator() {
     return new RbacDbPrivilegeHealthIndicator(dataSource);
@@ -52,7 +54,7 @@ class RbacDbPrivilegeHealthIndicatorTest {
   }
 
   private void givenTablePrivilegeCount(int count) throws SQLException {
-    when(connection.prepareStatement(contains("TABLE_PRIVILEGES")))
+    when(connection.prepareStatement(contains("PRIVILEGE_TYPE IN ('DELETE', 'ALL PRIVILEGES')")))
         .thenReturn(tablePrivilegeStatement);
     when(tablePrivilegeStatement.executeQuery()).thenReturn(tablePrivilegeResultSet);
     when(tablePrivilegeResultSet.next()).thenReturn(true);
@@ -67,11 +69,24 @@ class RbacDbPrivilegeHealthIndicatorTest {
     when(globalPrivilegeResultSet.getInt(1)).thenReturn(count);
   }
 
+  /** Column-scoped grants (the intended {@code UPDATE (revoked_at)}) never match this — that is
+   *  the point of the check: a nonzero count here means a bare table-scoped {@code UPDATE} grant
+   *  exists (T-015 / T-E12). */
+  private void givenBareTableUpdatePrivilegeCount(int count) throws SQLException {
+    when(connection.prepareStatement(contains("PRIVILEGE_TYPE = 'UPDATE'")))
+        .thenReturn(bareTableUpdatePrivilegeStatement);
+    when(bareTableUpdatePrivilegeStatement.executeQuery())
+        .thenReturn(bareTableUpdatePrivilegeResultSet);
+    when(bareTableUpdatePrivilegeResultSet.next()).thenReturn(true);
+    when(bareTableUpdatePrivilegeResultSet.getInt(1)).thenReturn(count);
+  }
+
   @Test
   void should_report_up_when_connected_as_nexus_app_with_no_delete_grant() throws SQLException {
     givenConnectedAs("nexus_app@%");
     givenTablePrivilegeCount(0);
     givenGlobalPrivilegeCount(0);
+    givenBareTableUpdatePrivilegeCount(0);
 
     var health = indicator().health();
 
@@ -84,6 +99,7 @@ class RbacDbPrivilegeHealthIndicatorTest {
     givenConnectedAs("root@localhost");
     givenTablePrivilegeCount(0);
     givenGlobalPrivilegeCount(0);
+    givenBareTableUpdatePrivilegeCount(0);
 
     var health = indicator().health();
 
@@ -98,6 +114,7 @@ class RbacDbPrivilegeHealthIndicatorTest {
     givenConnectedAs("over_privileged@%");
     givenTablePrivilegeCount(1);
     givenGlobalPrivilegeCount(0);
+    givenBareTableUpdatePrivilegeCount(0);
 
     var health = indicator().health();
 
@@ -112,6 +129,7 @@ class RbacDbPrivilegeHealthIndicatorTest {
     givenConnectedAs("superuser_like@%");
     givenTablePrivilegeCount(0);
     givenGlobalPrivilegeCount(1);
+    givenBareTableUpdatePrivilegeCount(0);
 
     var health = indicator().health();
 
@@ -130,11 +148,43 @@ class RbacDbPrivilegeHealthIndicatorTest {
     assertThat(indicator.health().getStatus()).isEqualTo(Status.UNKNOWN);
   }
 
+  // --- T-015 / T-E12 positive grant-scope check: bare table-scoped UPDATE vs column-scoped ---
+
+  @Test
+  void should_report_down_when_update_grant_is_table_scoped_not_column_scoped()
+      throws SQLException {
+    givenConnectedAs("widened_grant_user@%");
+    givenTablePrivilegeCount(0);
+    givenGlobalPrivilegeCount(0);
+    givenBareTableUpdatePrivilegeCount(1);
+
+    var health = indicator().health();
+
+    assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+    assertThat(health.getDetails()).containsEntry("hasTableScopedUpdateGrant", true);
+    assertThat(health.getDetails()).containsEntry("isRoot", false);
+    assertThat(health.getDetails()).containsEntry("hasTableDeleteGrant", false);
+    assertThat(health.getDetails()).containsEntry("hasGlobalDeleteGrant", false);
+  }
+
+  @Test
+  void should_report_up_when_update_grant_is_column_scoped_only() throws SQLException {
+    givenConnectedAs("nexus_app@%");
+    givenTablePrivilegeCount(0);
+    givenGlobalPrivilegeCount(0);
+    givenBareTableUpdatePrivilegeCount(0);
+
+    var health = indicator().health();
+
+    assertThat(health.getStatus()).isEqualTo(Status.UP);
+  }
+
   @Test
   void should_never_attempt_delete_against_user_roles() throws SQLException {
     givenConnectedAs("nexus_app@%");
     givenTablePrivilegeCount(0);
     givenGlobalPrivilegeCount(0);
+    givenBareTableUpdatePrivilegeCount(0);
 
     indicator().health();
 
