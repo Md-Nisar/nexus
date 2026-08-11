@@ -5,7 +5,7 @@
 Nexus is a **modular monolith**: one Spring Boot backend organized into isolated bounded contexts, one Angular SPA organized into lazy-loaded features. Contexts are isolated by package convention (enforced with ArchUnit), so a future extraction to microservices is a deployment decision, not a rewrite.
 
 ```
-Browser ──> nexus-frontend (Angular 21, :2000)
+Browser ──> nexus-frontend (Angular 22, :2000)
                  │  /api/** (correlation id attached per request)
                  ▼
             nexus-backend (Spring Boot 4, :1000)
@@ -70,12 +70,14 @@ Virtual threads (`spring.threads.virtual.enabled=true`) — thread-per-request p
 
 ```
 src/app/
-├── core/          # Singletons: config token, logger, HTTP interceptors
-├── shared/        # Stateless reusables: types (AppError, ViewState), future UI components
+├── core/          # Singletons: config token, logger, HTTP interceptors, route guards
+├── shared/        # Cross-feature reusables: types/, ui/ (design system), directives/, pages/
 ├── features/      # One lazy-loaded folder per bounded context (see features/README.md)
 ├── app.config.ts  # Providers: router (+component input binding), HttpClient (+interceptors)
 └── app.routes.ts  # Top-level routes — loadChildren per feature
 ```
+
+`shared/` may depend on `core/` (e.g. a directive reading session state); neither `core/` nor `shared/` may depend on `features/`.
 
 - **State:** signals (`signal`/`computed`); service-held state exposed read-only. RxJS only at HTTP/event boundaries.
 - **HTTP:** `correlationIdInterceptor` (end-to-end tracing) and `apiErrorInterceptor` (normalizes every failure to `AppError`) wrap all calls. Components never see `HttpErrorResponse`.
@@ -117,7 +119,7 @@ The `code-reviewer` and `architect` agents enforce these; ArchUnit and CI enforc
 6. Secrets only via environment variables / Vault — never in code. *(hook + permission-enforced)*
 7. Every endpoint declares explicit authentication and authorization.
 8. Integration tests (`*IT`) use Testcontainers MySQL — never H2. H2 is permitted only for the no-Docker context smoke test (see docs/TESTING.md).
-9. No `any` in TypeScript; modern control flow (`@if`/`@for`), not `*ngIf`/`*ngFor`. *(ESLint-enforced)*
+9. No `any` in TypeScript; modern built-in control flow (`@if`/`@for`), not `*ngIf`/`*ngFor` — custom structural directives (e.g. `*appHasPermission`) remain permitted for cross-cutting concerns. *(ESLint-enforced)*
 
 ## When to write an ADR
 

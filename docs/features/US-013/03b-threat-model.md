@@ -101,7 +101,7 @@ _Output of Step 3b (`/security-review` in **threat-model mode**) against `docs/f
 | | Threat | Existing mitigation | Verdict |
 |---|---|---|---|
 | **S** | Forged permission list | Server-side provenance (RS256 → tenant-scoped resolution → `/users/me`), locked by US-011's provenance test. The frontend **never decodes the JWT** — §4.1 even corrects the stale doc comment that wrongly implied it did. | Sound. Correcting that comment is a real (if small) security-hygiene win, because a future engineer reading "Extracted from the JWT access token" might add client-side JWT decoding as a "faster" source — which would be an unverified-claims trust bug. |
-| **T** | Client-side mutation | Compile-time `readonly` only; populated array unfrozen. | **T-10 (Low)**, above. |
+| **T** | Client-side mutation | Compile-time `readonly` only; populated array unfrozen. | **T-10 (Low)**, above. **Resolved post-implementation:** `buildSession()` now assigns `Object.freeze(me.permissions ?? [])`, so this is a runtime guarantee, not only compile-time — see the T-10 finding (§5) for the adopted fix. |
 | **R** | — | N/A. | — |
 | **I** | `permissions[]` persisted to `localStorage`/`sessionStorage`, or shipped to analytics | In-memory `signal` only (`auth.store.ts:15`). **Independently grep-verified: `src/` contains exactly one `localStorage` consumer — `theme.service.ts` (the theme string) — and zero `sessionStorage` writes, zero `sendBeacon`, zero `gtag`, zero telemetry sink. `auth.interceptor.spec.ts:336` already regression-tests that the refresh cycle writes to neither Storage.** | **Design claim confirmed true.** But see **T-08 (Low)**: `shared/types/auth.ts:52–54` — a file this story is already editing — carries a `@security` comment falsely asserting the session *is* "Stored in sessionStorage (not localStorage)". As written it **sanctions** persisting the session (now including `permissions[]`) to Storage. |
 | **I** | Session data reaches a future error-tracking sink | `AppError` is the object that travels; see T-05. `AuthSession` itself is not attached to errors. | See T-05 for the adjacent path. |
@@ -137,7 +137,7 @@ Out of scope to re-review (shipped and audited under US-010/US-011). Consumption
 **Trivial: yes — confirmed, by at least four independent routes**, none requiring source modification:
 
 1. **Override the response.** Devtools Network request-override (or any local proxy) rewrites `GET /v1/users/me` to return an inflated `permissions` array. `buildSession` copies it verbatim into the store; the guard allows and the directive renders. No signature covers the response body, and none should — the body is not the enforcement artifact.
-2. **Write the signal.** Angular devtools / `ng.*` global debug APIs reach the component/injector graph in a dev build; in a prod build the closure is minified but the store instance is still reachable, and `permissions()` returns a **mutable array** (T-10) — `.push()` alone is sufficient.
+2. **Write the signal.** Angular devtools / `ng.*` global debug APIs reach the component/injector graph in a dev build; in a prod build the closure is minified but the store instance is still reachable. At design time `permissions()` returned a mutable array (T-10), making `.push()` alone sufficient; post-implementation the populated array is frozen (`Object.freeze`, T-10's recommended fix R-a, adopted), so `.push()` now throws in strict mode — but the store's `setSession()` remains directly callable from a reachable instance, so the bypass survives via that route instead.
 3. **Skip the guard entirely.** `router.navigate()` from the console, or simply requesting the URL — the guard is a client-side function in code the attacker controls.
 4. **Ignore the UI.** Call the API directly. The directive's DOM decision is irrelevant.
 
@@ -310,6 +310,7 @@ Why the control is nonetheless insufficient: the design's own words are the indi
 **Issue:** Design §4.2 freezes only the empty case (`NO_PERMISSIONS = Object.freeze([])`) and explicitly reasons about mutation there — but the populated array is `me.permissions` straight off the JSON body, unfrozen. TypeScript `readonly` is erased at runtime, so a single `push()` on the value returned by `authStore.permissions()` permanently mutates the one shared session array that every subsequent guard and directive check reads.
 **Risk:** Cosmetic in isolation (the server still enforces), but the design asserts an immutability contract it does not enforce, and the vector is broader than devtools: a compromised transitive npm dependency or an in-app bug could silently and globally alter every client-side permission check. **A08 defense-in-depth.**
 **Fix (recommended, one line):** freeze a copy in `buildSession` so the freeze is symmetric with `NO_PERMISSIONS`, turning tamper attempts into a `TypeError` in strict mode.
+**Post-implementation update: ADOPTED, though only Recommended (R-a), not a required mitigation.** `buildSession()` now assigns `permissions: Object.freeze(me.permissions ?? [])`, verified present in the shipped code by both `06-code-review.md` and `07-security-review.md`. `readonly` is now a runtime guarantee, symmetric with `NO_PERMISSIONS`.
 
 ### [Low] T-11 — `mailto:support@yourcompany.example` placeholder — confirmed non-issue security-wise
 **File:** `nexus-frontend/src/app/shared/pages/access-denied/access-denied.component.ts` (design §4.6)
@@ -347,7 +348,7 @@ Why the control is nonetheless insufficient: the design's own words are the indi
 
 | # | Threat | Recommendation |
 |---|---|---|
-| R-a | **T-10** | Freeze a copy of the populated array in `buildSession`, making immutability real and symmetric with `NO_PERMISSIONS`. |
+| R-a | **T-10** | Freeze a copy of the populated array in `buildSession`, making immutability real and symmetric with `NO_PERMISSIONS`. **Adopted** — see the T-10 finding (§5) for verification. |
 | R-b | **T-09 / RR-1** | When Epic 3 ships the first genuinely gated route, add one Playwright assertion that the API 403s even when the client-side check is bypassed — converting "the backend enforces this" from an inherited claim into local, continuous evidence. Complements the deferred E2E already in §16.3. |
 | R-c | **T-05 / RR-8** | If frontend log shipping (§16.3 backlog) ever lands, treat `permission_denied_client` as **non-admissible security evidence** — it is client-attested, forgeable, and suppressible. The authoritative denial record remains the backend's `nexus.rbac.permission_denied` counter. |
 | R-d | **T-12** | Future `core/http` hardening ticket: validate the full `ProblemDocument` shape, including `details` element shapes, rather than only `code`. |

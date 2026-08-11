@@ -9,20 +9,12 @@ import { AuthService } from '../../features/auth/auth.service';
 import { AuthSession } from '../../shared/types/auth';
 import { APP_CONFIG } from '../config/app-config';
 import { of, Subject, throwError } from 'rxjs';
+import { createAuthSession, createAuthUser } from '../../shared/testing/auth.fixtures';
 
-const TEST_SESSION: AuthSession = {
+const TEST_SESSION: AuthSession = createAuthSession({
   accessToken: 'test-token-abc',
-  tokenType: 'Bearer',
-  expiresIn: 3600,
-  expiresAt: Date.now() + 3600 * 1000,
-  user: {
-    userId: 'user-1',
-    tenantId: 'tenant-1',
-    emailVerified: true,
-    roles: ['USER'],
-    tokenVersion: 1,
-  },
-};
+  user: createAuthUser({ userId: 'user-1', tenantId: 'tenant-1' }),
+});
 
 describe('authInterceptor', () => {
   let http: HttpClient;

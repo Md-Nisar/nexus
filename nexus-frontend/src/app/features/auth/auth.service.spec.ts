@@ -225,6 +225,7 @@ describe('AuthService — login/logout/refresh', () => {
     emailVerified: true,
     tenantId: 'tenant-1',
     roles: ['USER'],
+    permissions: ['users:read'],
     tokenVersion: 1,
   };
 
@@ -239,6 +240,7 @@ describe('AuthService — login/logout/refresh', () => {
       tenantId: 'tenant-1',
       emailVerified: true,
       roles: ['USER'],
+      permissions: ['users:read'],
       tokenVersion: 1,
     },
   } satisfies AuthSession;
@@ -284,6 +286,26 @@ describe('AuthService — login/logout/refresh', () => {
 
     expect(result).toEqual(EXPECTED_SESSION);
     expect(mockAuthStore.setSession).toHaveBeenCalledWith(EXPECTED_SESSION);
+  });
+
+  it('login() defaults permissions to [] when /users/me response omits the field (older backend)', () => {
+    let result: AuthSession | undefined;
+    service.login('user@example.com', USER_PASS).subscribe({ next: (s) => (result = s) });
+
+    controller.expectOne('/api/v1/auth/login').flush(LOGIN_RESPONSE);
+
+    // Simulates a newly deployed frontend served against an older backend that has not
+    // yet shipped US-010's `permissions[]` field — the exact scenario buildSession()'s
+    // `?? []` default exists to protect against (US-013 AC-4: must not throw).
+    controller.expectOne('/api/v1/users/me').flush({
+      userId: 'user-1',
+      emailVerified: true,
+      tenantId: 'tenant-1',
+      roles: ['USER'],
+      tokenVersion: 1,
+    });
+
+    expect(result?.user.permissions).toEqual([]);
   });
 
   it('logout() POSTs to /auth/logout, clears session on success', () => {

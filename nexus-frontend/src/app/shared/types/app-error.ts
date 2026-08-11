@@ -62,6 +62,25 @@ export interface AppError {
    * Example: [{ field: "email", message: "Invalid email format" }]
    */
   readonly details?: readonly FieldError[];
+
+  /**
+   * The RBAC permission the backend required but the caller did not hold.
+   *
+   * Present **only** on a 403 whose `code` is `RBAC_001` (from the backend's
+   * `@RequiresPermission` check). A 403 with `code: 'ACCESS_DENIED'` (Spring Security)
+   * carries no such field. Never key logic on "status was 403 ⇒ this field is present".
+   *
+   * @security Developer-facing diagnostic only. EPIC-002 §UX forbids surfacing this to
+   * end users — do not render it, do not put it in a URL, do not send it to analytics.
+   * Render {@link message} instead.
+   *
+   * @remarks If this AppError reaches an *unhandled* rejection path, GlobalErrorHandler's
+   * JSON.stringify fallback can put this field into a production-enabled log line, and
+   * any future remote error-tracking sink (e.g. Sentry) wired to that handler would
+   * receive it by default. Treat AppError as unsafe to forward to a remote sink without
+   * an explicit serializer/scrubber.
+   */
+  readonly requiredPermission?: string;
 }
 
 /**

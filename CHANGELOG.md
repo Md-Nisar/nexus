@@ -7,6 +7,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ## [Unreleased]
 
+### Added — US-013 (Implement Angular permission guard and directive)
+
+**Frontend**
+- `permissionGuard` — functional route guard (`CanActivateFn`, mirrors the existing `authGuard` pattern); redirects to `/access-denied` (never `/auth/login`) when the current user's `AuthStore.permissions` signal lacks the route's `data.permission`. Fails open (allows navigation) on a missing/invalid `data.permission` — a deliberate, documented misconfiguration response, not a security decision, since this guard is UX only.
+- `HasPermissionDirective` (`*appHasPermission`) — the first `@Directive` in this codebase; a reactive structural directive (`effect()` + `computed()` short-circuit + a plain `hasView` boolean) that shows/hides its host element based on the same permission signal. Degrades gracefully to "hidden" on an empty/absent permission list — never throws.
+- `AccessDeniedComponent` — new public, unguarded, WCAG 2.1 AA page at `/access-denied`, reusing the existing `NxErrorState` component; owns its own `<main>`/`<h1>` (visually hidden, focus-managed on route entry) since `NxErrorState`'s `title` renders as a `<p>`, not a heading.
+- `AuthStore.permissions` — new computed signal, and `AuthUser.permissions`/`MeApiResponse.permissions` wiring through `buildSession()` — connects the already-shipped backend `permissions[]` field (US-010) to the frontend for the first time; frozen for immutability, defaults to `[]` (never `undefined`) so downstream consumers never need a null check.
+- `AppError.requiredPermission` — new optional field threading the backend's `RBAC_001` 403 field (US-011) through `api-error.interceptor.ts` for developer diagnostics; explicitly never rendered to end users.
+- **Mechanical route-table contract** (`permission-guard-contract.spec.ts`) replaces two documentation-only invariants with a build-time check: every route using `permissionGuard` must declare a non-empty `data.permission` and compose `authGuard` (same `canActivate`/`canActivateChild` array or an ancestor route) — deliberately not an ESLint rule (trivially defeated by aliasing). Statically visible routes only: a `loadChildren`-loaded feature's own route table needs an equivalent contract test local to that module. Vacuously green today; becomes load-bearing the moment a real route adopts the guard.
+- Shipped as **infrastructure only** — no existing route or component uses either the guard or the directive yet; the first real behavior change lands with the first Epic 3 route that adopts them.
+- No backend change, no database migration, no feature flag (design's own explicit assessment: this story adds code nothing yet calls, so a flag would gate nothing).
+- Threat model: PASS WITH REQUIRED FOLLOW-UPS (0 Blocker/High, 4 Medium, 6 Low), all 6 required mitigations closed. Security review: APPROVED (0 Blocker/High/Medium, 3 Low) — 2 of 3 Low findings (SEC-1 fragment stripping, SEC-2 `canActivateChild` coverage) remediated and re-tested; the third (SEC-3, `GlobalErrorHandler`'s wholesale `JSON.stringify` fallback) is accepted and ticketed, not closed, gated on landing before any remote error-tracking sink is wired. Independently re-verified that neither the guard's nor the directive's output is readable by application code, foreclosing the story's own top-named risk (mistaking this for real authorization) by construction, not just by documentation.
+- 29/29 frontend test files, 208/208 tests passing; `npm run lint` and `npm run build` clean.
+- ADR: none required — the one candidate (clarifying `*appHasPermission` doesn't violate `ARCHITECTURE.md`'s "no `*ngIf`/`*ngFor`" non-negotiable) was resolved with a one-clause doc edit instead of a new ADR.
+
 ### Added — US-012 (Enable role assignment and revocation API)
 
 **Backend**

@@ -1,8 +1,9 @@
 /**
  * Authenticated user identity and authorization context.
  *
- * Extracted from the JWT access token and used throughout the application
- * to control feature availability, audit logging, and multi-tenant routing.
+ * Populated from `GET /v1/users/me` on login and token refresh — the frontend never
+ * decodes the JWT access token client-side. Used throughout the application to control
+ * feature availability, audit logging, and multi-tenant routing.
  * Never modify these properties — they are refreshed on token refresh.
  */
 export interface AuthUser {
@@ -37,6 +38,20 @@ export interface AuthUser {
   readonly roles: readonly string[];
 
   /**
+   * RBAC permissions granted to the user, in `resource:action` form
+   * (e.g. "users:read", "roles:assign"). Lowercase and colon-separated by backend
+   * convention; matched client-side by exact, case-sensitive string equality.
+   *
+   * Populated from `GET /v1/users/me`, never decoded from the JWT client-side.
+   * Always present: an empty array means "no permissions", never `undefined`.
+   *
+   * @security UX only. Client-side checks against this list (`permissionGuard`,
+   * `*appHasPermission`) are cosmetic. The server's `@RequiresPermission` is the only
+   * enforcement boundary — never gate data access or trust decisions on this value.
+   */
+  readonly permissions: readonly string[];
+
+  /**
    * Token version counter, incremented on each logout/token revocation.
    * Used to invalidate cached tokens if the user force-logs-out on another device.
    * If stale (server version > client version), trigger re-login flow.
@@ -49,9 +64,11 @@ export interface AuthUser {
 /**
  * Active authentication session with access credentials and user identity.
  *
- * Holds the JWT access token and computed expiry time. Stored in sessionStorage
- * (not localStorage) to limit exposure to XSS. Cleared on logout, page close, or
- * on 401 response from the API.
+ * Holds the JWT access token and computed expiry time. Held in memory only, as a
+ * plain Angular signal in AuthStore — never persisted to sessionStorage, localStorage,
+ * or any other Web Storage, to limit exposure to XSS. Cleared on logout, page reload
+ * (implicitly, since in-memory state does not survive one), or on 401 response
+ * from the API.
  *
  * @security Never log, transmit to analytics, or expose in error messages.
  */
@@ -89,8 +106,9 @@ export interface AuthSession {
   readonly expiresAt: number;
 
   /**
-   * Authenticated user identity and roles.
-   * Extracted from the JWT claims; immutable during the session.
+   * Authenticated user identity, roles, and permissions.
+   * Populated from `GET /v1/users/me` on login and token refresh; never decoded from the
+   * JWT client-side. Immutable during the session.
    */
   readonly user: AuthUser;
 }

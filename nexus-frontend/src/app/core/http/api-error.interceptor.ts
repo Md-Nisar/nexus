@@ -70,6 +70,11 @@ function toAppError(error: unknown, correlationId?: string): AppError {
         traceId: body.traceId,
         correlationId,
         details: body.details,
+        // `isProblemDocument` validates only `code`, so this field is otherwise
+        // unvalidated — guard against a malformed/non-string value rather than passing
+        // it through unchecked.
+        requiredPermission:
+          typeof body.requiredPermission === 'string' ? body.requiredPermission : undefined,
       };
     }
     if (error.status === 0) {
@@ -94,7 +99,9 @@ interface ProblemDocument {
   readonly code: string;
   readonly detail?: string;
   readonly traceId?: string;
-  readonly details?: NonNullable<AppError['details']>;
+  readonly details?: AppError['details'];
+  /** Set only by the backend's RBAC_001 403 branch; absent on ACCESS_DENIED. */
+  readonly requiredPermission?: string;
 }
 
 /**

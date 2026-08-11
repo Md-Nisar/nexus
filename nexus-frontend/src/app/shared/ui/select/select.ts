@@ -32,6 +32,8 @@ export interface SelectOption<T = string> {
   readonly disabled?: boolean;
 }
 
+export type SelectValue<T> = T | T[] | null;
+
 /**
  * Dropdown select component built on Material Design 3.
  *
@@ -204,21 +206,21 @@ export class NxSelect<T = string> implements ControlValueAccessor {
    */
   readonly selectionChange = output<T | T[]>();
 
-  protected readonly value = signal<T | T[] | null>(null);
+  protected readonly value = signal<SelectValue<T>>(null);
   protected readonly isDisabled = signal(false);
 
-  private onChange: (v: T | T[] | null) => void = () => {
+  private onChange: (v: SelectValue<T>) => void = () => {
     /* replaced by registerOnChange */
   };
   protected onTouched: () => void = () => {
     /* replaced by registerOnTouched */
   };
 
-  writeValue(val: T | T[] | null): void {
+  writeValue(val: SelectValue<T>): void {
     this.value.set(val ?? null);
   }
 
-  registerOnChange(fn: (v: T | T[] | null) => void): void {
+  registerOnChange(fn: (v: SelectValue<T>) => void): void {
     this.onChange = fn;
   }
 
