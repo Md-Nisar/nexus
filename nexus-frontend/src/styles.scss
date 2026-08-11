@@ -1,13 +1,13 @@
 @use 'styles/tokens';
 @use 'styles/material-theme';
 
-@use '@fontsource/inter/400.css';
-@use '@fontsource/inter/500.css';
-@use '@fontsource/inter/600.css';
-@use '@fontsource/inter/700.css';
-@use '@fontsource/jetbrains-mono/400.css';
-@use '@fontsource/jetbrains-mono/500.css';
-@use 'material-icons/iconfont/material-icons.css';
+@use '@fontsource/inter/400.css' as inter400;
+@use '@fontsource/inter/500.css' as inter500;
+@use '@fontsource/inter/600.css' as inter600;
+@use '@fontsource/inter/700.css' as inter700;
+@use '@fontsource/jetbrains-mono/400.css' as mono400;
+@use '@fontsource/jetbrains-mono/500.css' as mono500;
+@use 'material-icons/iconfont/material-icons.css' as icons;
 
 /* ─────────────────────────────────────────────────────────────────────────
    GLOBAL STYLES — Base HTML/body, focus ring, scrollbar, text selection

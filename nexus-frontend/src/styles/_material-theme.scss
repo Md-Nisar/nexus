@@ -30,26 +30,20 @@ $nexus-theme: mat.define-theme(
 
 html {
   @include mat.all-component-themes($nexus-theme);
-}
 
-/* ─────────────────────────────────────────────────────────────────────────
-   PRIMARY & ERROR COLORS — Sync accent tokens from Material's computed palette
-   Only Material-computed tokens; surface/outline tokens are mode-dependent in _tokens.scss
-   ───────────────────────────────────────────────────────────────────────── */
-
-html {
+  /* ─────────────────────────────────────────────────────────────────────────
+     PRIMARY & ERROR COLORS — Sync accent tokens from Material's computed palette
+     Only Material-computed tokens; surface/outline tokens are mode-dependent in _tokens.scss
+     ───────────────────────────────────────────────────────────────────────── */
   --nx-color-primary: #{mat.get-theme-color($nexus-theme, primary)};
   --nx-color-on-primary: #{mat.get-theme-color($nexus-theme, on-primary)};
   --nx-color-error: #{mat.get-theme-color($nexus-theme, error)};
   --nx-color-on-error: #{mat.get-theme-color($nexus-theme, on-error)};
-}
 
-/* ─────────────────────────────────────────────────────────────────────────
-   SYSTEM TOKENS BRIDGE — Redirect Material tokens to --nx-* for theme adaptability
-   mat.all-component-themes() outputs dark-only values; remap to tokens that vary by mode.
-   ───────────────────────────────────────────────────────────────────────── */
-
-html {
+  /* ─────────────────────────────────────────────────────────────────────────
+     SYSTEM TOKENS BRIDGE — Redirect Material tokens to --nx-* for theme adaptability
+     mat.all-component-themes() outputs dark-only values; remap to tokens that vary by mode.
+     ───────────────────────────────────────────────────────────────────────── */
   --mat-sys-surface: var(--nx-color-surface);
   --mat-sys-on-surface: var(--nx-color-on-surface);
   --mat-sys-on-surface-variant: var(--nx-color-on-surface-muted);
@@ -58,13 +52,10 @@ html {
   --mat-sys-outline-variant: var(--nx-color-outline-variant);
   --mat-app-background-color: var(--nx-color-canvas);
   --mat-app-text-color: var(--nx-color-on-surface);
-}
 
-/* ─────────────────────────────────────────────────────────────────────────
-   COMPONENT SHAPE TOKENS — Linear's minimal 8px hairline radius
-   ───────────────────────────────────────────────────────────────────────── */
-
-html {
+  /* ─────────────────────────────────────────────────────────────────────────
+     COMPONENT SHAPE TOKENS — Linear's minimal 8px hairline radius
+     ───────────────────────────────────────────────────────────────────────── */
   --mdc-filled-button-container-shape: var(--nx-radius-md);
   --mdc-outlined-button-container-shape: var(--nx-radius-md);
   --mdc-text-button-container-shape: var(--nx-radius-md);
@@ -74,14 +65,11 @@ html {
   --mdc-dialog-container-shape: var(--nx-radius-lg);
   --mat-card-container-shape: var(--nx-radius-lg);
   --mdc-snackbar-container-shape: var(--nx-radius-md);
-}
 
-/* ─────────────────────────────────────────────────────────────────────────
-   TEXT FIELD COLORS — MDC components read MDC tokens, not --mat-sys-*
-   Explicit color overrides for input, label, outline, and error states
-   ───────────────────────────────────────────────────────────────────────── */
-
-html {
+  /* ─────────────────────────────────────────────────────────────────────────
+     TEXT FIELD COLORS — MDC components read MDC tokens, not --mat-sys-*
+     Explicit color overrides for input, label, outline, and error states
+     ───────────────────────────────────────────────────────────────────────── */
   /* Input & label text color states */
   --mdc-outlined-text-field-input-text-color: var(--nx-color-on-surface);
   --mdc-outlined-text-field-label-text-color: var(--nx-color-on-surface-faint);
@@ -104,14 +92,11 @@ html {
   /* Form field helper/error text */
   --mat-form-field-subscript-text-color: var(--nx-color-on-surface-faint);
   --mat-form-field-error-text-color: var(--nx-color-error);
-}
 
-/* ─────────────────────────────────────────────────────────────────────────
-   CHECKBOX — Override M3 dark theme's default amber/orange unselected color
-   Use outline-strong for unselected state, primary for checked state
-   ───────────────────────────────────────────────────────────────────────── */
-
-html {
+  /* ─────────────────────────────────────────────────────────────────────────
+     CHECKBOX — Override M3 dark theme's default amber/orange unselected color
+     Use outline-strong for unselected state, primary for checked state
+     ───────────────────────────────────────────────────────────────────────── */
   --mat-checkbox-label-text-color: var(--nx-color-on-surface-muted);
   --mdc-checkbox-unselected-icon-color: var(--nx-color-outline-strong);
   --mdc-checkbox-unselected-hover-icon-color: var(--nx-color-on-surface-muted);

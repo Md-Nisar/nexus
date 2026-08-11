@@ -2,23 +2,23 @@
 @switch (state().kind) {
   <!-- Loading: verification request in progress -->
   @case ('loading') {
-    <div class="verif verif--verifying" data-testid="verif-verifying" role="status">
+    <output class="verif verif--verifying" data-testid="verif-verifying">
       <!-- Spinner icon: aria-hidden because the status message conveys the state to screen readers -->
       <mat-icon class="verif__spinner-icon" aria-hidden="true">sync</mat-icon>
       <p class="verif__message">Verifying your email address…</p>
-    </div>
+    </output>
   }
 
   <!-- Success: email verified, account transitioned PENDING → ACTIVE -->
   @case ('success') {
-    <div class="verif verif--success" data-testid="verif-success" role="status">
+    <output class="verif verif--success" data-testid="verif-success">
       <!-- Checkmark icon: decorative only, screen reader sees the heading -->
       <mat-icon class="verif__icon verif__icon--success" aria-hidden="true">check_circle</mat-icon>
       <h2 class="verif__heading">Email verified!</h2>
       <p class="verif__message">Your account is active. You can now log in.</p>
       <!-- Link to login page: next step in the user journey -->
       <a class="verif__action" routerLink="/auth/login">Go to login</a>
-    </div>
+    </output>
   }
 
   <!-- Error: token invalid, expired, or already consumed -->

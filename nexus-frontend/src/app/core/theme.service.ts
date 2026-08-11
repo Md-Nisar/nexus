@@ -70,7 +70,7 @@ export class ThemeService {
    * - This prevents a visual "flash" of the wrong theme on page load
    */
   constructor() {
-    document.documentElement.setAttribute('data-theme', this._theme());
+    document.documentElement.dataset['theme'] = this._theme();
   }
 
   /**
@@ -87,7 +87,7 @@ export class ThemeService {
   toggle(): void {
     const next: Theme = this._theme() === 'dark' ? 'light' : 'dark';
     this._theme.set(next);
-    document.documentElement.setAttribute('data-theme', next);
+    document.documentElement.dataset['theme'] = next;
     localStorage.setItem(STORAGE_KEY, next);
   }
 
