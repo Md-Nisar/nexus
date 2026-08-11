@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "sonarcloud": {
+      "serverUrl": "https://api.sonarcloud.io/mcp",
+      "headers": {
+        "Authorization": "Bearer 976eeeaf7710ccd2a07615311e6755167ab0daa2",
+        "SONARQUBE_ORG": "Md-Nisar"
+      }
+    }
+  }
+}
