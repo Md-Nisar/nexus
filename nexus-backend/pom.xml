@@ -37,6 +37,11 @@
         <pmd.plugin.version>3.27.0</pmd.plugin.version>
         <dependency-check.version>12.1.0</dependency-check.version>
         <jjwt.version>0.12.6</jjwt.version>
+
+        <!-- SonarCloud configuration -->
+        <sonar.organization>Md-Nisar</sonar.organization>
+        <sonar.host.url>https://sonarcloud.io</sonar.host.url>
+        <sonar.coverage.jacoco.xmlReportPaths>${project.basedir}/target/site/jacoco/jacoco.xml</sonar.coverage.jacoco.xmlReportPaths>
     </properties>
 
     <dependencyManagement>
