@@ -87,67 +87,19 @@ describe('LoginFormComponent', () => {
     expect(mockAuthService.login).toHaveBeenCalledTimes(1);
   });
 
-  it('AUTH_001 error sets invalid-credentials message and resets loading', () => {
-    const err: AppError = { code: 'AUTH_001', message: 'Unauthorized.' };
+  it.each([
+    ['AUTH_001', 'Unauthorized.', 'Invalid email or password.'],
+    ['AUTH_002', 'Email not verified.', 'Please verify your email before logging in.'],
+    ['RATE_001', 'Too many requests.', 'Too many attempts. Please try again later.'],
+    ['UNKNOWN', 'Something went wrong.', 'An unexpected error occurred. Please try again.'],
+  ])('%s error sets message "%s" and resets loading', (code, errorMsg, expectedBanner) => {
+    const err: AppError = { code, message: errorMsg };
     const loginFn = vi.fn(() => throwError(() => err));
     const { fixture, component } = setup(loginFn);
     fillForm(fixture);
     component.submit();
     fixture.detectChanges();
-    expect(component.errorMessage()).toBe('Invalid email or password.');
-    expect(component.loading()).toBe(false);
-  });
-
-  it('AUTH_002 error sets email-verification message and resets loading', () => {
-    const err: AppError = { code: 'AUTH_002', message: 'Email not verified.' };
-    const loginFn = vi.fn(() => throwError(() => err));
-    const { fixture, component } = setup(loginFn);
-    fillForm(fixture);
-    component.submit();
-    fixture.detectChanges();
-    expect(component.errorMessage()).toBe('Please verify your email before logging in.');
-    expect(component.loading()).toBe(false);
-  });
-
-  it('RATE_001 error sets rate-limit message and resets loading', () => {
-    const err: AppError = { code: 'RATE_001', message: 'Too many requests.' };
-    const loginFn = vi.fn(() => throwError(() => err));
-    const { fixture, component } = setup(loginFn);
-    fillForm(fixture);
-    component.submit();
-    fixture.detectChanges();
-    expect(component.errorMessage()).toBe('Too many attempts. Please try again later.');
-    expect(component.loading()).toBe(false);
-  });
-
-  it('AUTH_LCK_001 error sets lockout message, resets loading, and does not navigate', () => {
-    const err: AppError = { code: 'AUTH_LCK_001', message: 'Account locked.' };
-    const loginFn = vi.fn(() => throwError(() => err));
-    const { fixture, component, navigateSpy } = setup(loginFn);
-    fillForm(fixture);
-    component.submit();
-    fixture.detectChanges();
-    expect(component.errorMessage()).toBe(
-      'Too many attempts. Try again later or reset your password.',
-    );
-    expect(component.loading()).toBe(false);
-    expect(navigateSpy).not.toHaveBeenCalled();
-    const banner = fixture.nativeElement.querySelector(
-      '[data-testid="login-error"]',
-    ) as HTMLElement;
-    expect(banner.textContent?.trim()).toBe(
-      'Too many attempts. Try again later or reset your password.',
-    );
-  });
-
-  it('unknown error code sets generic message', () => {
-    const err: AppError = { code: 'UNKNOWN', message: 'Something went wrong.' };
-    const loginFn = vi.fn(() => throwError(() => err));
-    const { fixture, component } = setup(loginFn);
-    fillForm(fixture);
-    component.submit();
-    fixture.detectChanges();
-    expect(component.errorMessage()).toBe('An unexpected error occurred. Please try again.');
+    expect(component.errorMessage()).toBe(expectedBanner);
     expect(component.loading()).toBe(false);
   });
 

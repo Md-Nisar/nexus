@@ -74,7 +74,7 @@ test.describe('registration', () => {
 
   test('happy path — fill form, see success, verify email', async ({ page, request }) => {
     if (!(await isBackendUp(request))) {
-      test.skip();
+      test.skip(true, 'Backend is not reachable');
       return;
     }
     const email = `e2e-${Date.now()}@example.com`;
@@ -96,7 +96,7 @@ test.describe('registration', () => {
     // ── 3. Fetch verification token from MailHog (skip if unavailable) ──────
     const token = await fetchVerificationToken(request, email, 10, 2_000);
     if (!token) {
-      test.skip();
+      test.skip(true, 'MailHog is not reachable');
       return;
     }
 
@@ -110,7 +110,7 @@ test.describe('registration', () => {
 
   test('expired / invalid token shows error with resend link', async ({ page, request }) => {
     if (!(await isBackendUp(request))) {
-      test.skip();
+      test.skip(true, 'Backend is not reachable');
       return;
     }
     // 63 f-chars — invalid format, backend returns 410 AUTH_VRF_002

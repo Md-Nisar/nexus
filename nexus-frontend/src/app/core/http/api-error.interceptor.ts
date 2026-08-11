@@ -94,7 +94,7 @@ interface ProblemDocument {
   readonly code: string;
   readonly detail?: string;
   readonly traceId?: string;
-  readonly details?: AppError['details'];
+  readonly details?: NonNullable<AppError['details']>;
 }
 
 /**
