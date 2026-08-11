@@ -73,6 +73,84 @@ describe('apiErrorInterceptor', () => {
     );
   });
 
+  it('should map requiredPermission from an RBAC_001 problem response onto AppError', () => {
+    const { http, controller } = setup();
+    let captured: AppError | undefined;
+
+    http.get('/api/v1/roles').subscribe({ error: (e: AppError) => (captured = e) });
+    controller.expectOne('/api/v1/roles').flush(
+      {
+        code: 'RBAC_001',
+        detail: 'You do not have permission to perform this action',
+        traceId: 'trace-rbac-1',
+        requiredPermission: 'roles:read',
+      },
+      { status: 403, statusText: 'Forbidden' },
+    );
+
+    expect(captured?.code).toBe('RBAC_001');
+    expect(captured?.requiredPermission).toBe('roles:read');
+  });
+
+  it('should leave requiredPermission undefined for an ACCESS_DENIED problem response', () => {
+    const { http, controller } = setup();
+    let captured: AppError | undefined;
+
+    http.get('/api/v1/roles').subscribe({ error: (e: AppError) => (captured = e) });
+    controller
+      .expectOne('/api/v1/roles')
+      .flush(
+        { code: 'ACCESS_DENIED', detail: 'You do not have access to this resource.' },
+        { status: 403, statusText: 'Forbidden' },
+      );
+
+    expect(captured?.code).toBe('ACCESS_DENIED');
+    expect(captured?.requiredPermission).toBeUndefined();
+  });
+
+  it('should ignore a non-string requiredPermission in a malformed problem response', () => {
+    const { http, controller } = setup();
+    let captured: AppError | undefined;
+
+    http.get('/api/v1/roles').subscribe({ error: (e: AppError) => (captured = e) });
+    controller
+      .expectOne('/api/v1/roles')
+      .flush(
+        { code: 'RBAC_001', detail: 'Malformed.', requiredPermission: 12345 },
+        { status: 403, statusText: 'Forbidden' },
+      );
+
+    expect(captured?.requiredPermission).toBeUndefined();
+  });
+
+  it('should map a 4xx response with no code field to the generic HTTP_ERROR fallback', () => {
+    // Regression guard for the RBAC changes: isProblemDocument's `code`-only validation
+    // gates both the pre-existing fallback path and the new requiredPermission narrowing,
+    // so a body missing `code` entirely must still fall through to HTTP_ERROR rather than
+    // throwing or accidentally satisfying isProblemDocument.
+    const { http, controller } = setup();
+    let captured: AppError | undefined;
+
+    http.get('/api/legacy').subscribe({ error: (e: AppError) => (captured = e) });
+    controller
+      .expectOne('/api/legacy')
+      .flush('Internal error', { status: 400, statusText: 'Bad Request' });
+
+    expect(captured?.code).toBe('HTTP_ERROR');
+    expect(captured?.requiredPermission).toBeUndefined();
+  });
+
+  it('should map a non-object error body to the generic HTTP_ERROR fallback', () => {
+    const { http, controller } = setup();
+    let captured: AppError | undefined;
+
+    http.get('/api/legacy').subscribe({ error: (e: AppError) => (captured = e) });
+    controller.expectOne('/api/legacy').flush(null, { status: 404, statusText: 'Not Found' });
+
+    expect(captured?.code).toBe('HTTP_ERROR');
+    expect(captured?.requiredPermission).toBeUndefined();
+  });
+
   it('should log 429 at WARN level', () => {
     const { http, controller } = setup();
 

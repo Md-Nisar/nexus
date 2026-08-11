@@ -3,6 +3,15 @@ import { LoggerService } from '../logging/logger.service';
 import { AuthSession } from '../../shared/types/auth';
 
 /**
+ * Stable, frozen empty permission list returned when no session exists.
+ *
+ * A module-level frozen constant (rather than an inline `?? []`) keeps the computed's
+ * reference identity stable across recomputations, so downstream `computed`/`effect`
+ * consumers — notably HasPermissionDirective — never see spurious identity churn.
+ */
+const NO_PERMISSIONS: readonly string[] = Object.freeze([]);
+
+/**
  * Manages the current authentication session state via signals.
  *
  * Provides reactive access to the authenticated user, access token, and authentication
@@ -36,6 +45,18 @@ export class AuthStore {
    * Computed signal containing the current access token or null if not authenticated.
    */
   readonly accessToken = computed(() => this._session()?.accessToken ?? null);
+
+  /**
+   * Computed signal containing the current user's RBAC permissions.
+   *
+   * Returns a stable empty array when there is no session, so consumers never need a
+   * null check and `.includes()` can never throw (US-013 AC-4).
+   *
+   * @security UX only — see {@link AuthUser.permissions}. Never an authorization decision.
+   */
+  readonly permissions = computed<readonly string[]>(
+    () => this._session()?.user.permissions ?? NO_PERMISSIONS,
+  );
 
   /**
    * Establishes a new authentication session.

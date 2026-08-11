@@ -6,7 +6,7 @@ Guidance for Claude Code (claude.ai/code) in this repository. This is a **map an
 
 Nexus is a **modular monolith**:
 - **`nexus-backend/`** — Spring Boot 4, Java 25, Maven, Spring Data JPA, MySQL, Flyway, hexagonal architecture.
-- **`nexus-frontend/`** — Angular 21, TypeScript 5.9 (strict), standalone components, signals, Vitest, Playwright.
+- **`nexus-frontend/`** — Angular 22, TypeScript 6.0 (strict), standalone components, signals, Vitest, Playwright.
 - **`docs/`** — standards (`coding-standards`, `observability-standards`, `deployment-process`), ADRs, and `features/<ID>/` artifacts.
 - **`docs/story/`** — epic/story inputs (e.g. `docs/story/S1-authentication/`) that feed `/new-feature`.
 - **`.claude/`** — agents, commands, skills, and enforcement hooks (see `.claude/README.md`).
@@ -57,6 +57,7 @@ Full reference: **docs/DEVELOPMENT_GUIDE.md → The Operating Model**. Front doo
 - **Hibernate rejects an `AttributeConverter` on `@IdClass` composite-key attributes**, even an explicit one. Use `@EmbeddedId` instead for any converter-backed (e.g. `UuidV7Converter`-mapped) composite key. See `rbac/domain/RolePermissionId.java`.
 - **This project's pinned Hibernate version rejects HQL's `FUNCTION('now', N)` construct** at repository-proxy-creation time (`"Function now() has 0 parameters, but 1 arguments given"`) — its registered `now` function template takes no arguments, even though `FUNCTION('now', 6)` is valid MySQL. For a DB-side, microsecond-precision "now" in a JPQL bulk `UPDATE`, compute the timestamp app-side instead (e.g. `Instant.now()`, clamped against an already-loaded reference instant to satisfy any `CHECK` constraint ordering) and bind it as a parameter. See `rbac/infrastructure/persistence/JpaUserRoleRepository.java`'s `revokeById` (M6) and `RoleAssignmentService.revoke`'s `max(now, assignedAt)` clamp.
 - **A JPA adapter that must synchronously translate a `DataIntegrityViolationException` into a domain exception** (e.g. a TOCTOU-guarded unique-constraint pre-check backed by an `INSERT`) needs `saveAndFlush()`, not `save()`. A plain `save()` only queues the INSERT in Hibernate's persistence context; if any later call in the same transaction (e.g. a re-read of the just-inserted row) triggers the auto-flush instead, the constraint violation surfaces one call frame away from the adapter's own `try/catch`, escaping translation entirely and producing an unhandled 500 instead of a clean 409. See `rbac/infrastructure/persistence/JpaUserRoleAssignmentAdapter.assign()`.
+- **Frontend permission gating** (`permissionGuard` / `*appHasPermission`, `core/guards/`, `shared/directives/`) **is UX only, never the security boundary** — the backend's `@RequiresPermission` (US-011) is the sole enforcement point. `permissionGuard` must always be composed after `authGuard` (or under an `authGuard`-protected ancestor), never alone. See docs/DEVELOPMENT_GUIDE.md → "Permission-gating the UI".
 
 ## Enforcement (gates fail automatically — docs/DEVELOPMENT_GUIDE.md → How gates are enforced)
 

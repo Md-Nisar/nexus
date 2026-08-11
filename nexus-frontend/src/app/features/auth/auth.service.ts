@@ -23,6 +23,7 @@ interface MeApiResponse {
   emailVerified: boolean;
   tenantId: string;
   roles: string[];
+  permissions: string[];
   tokenVersion: number;
 }
 
@@ -214,6 +215,13 @@ export class AuthService {
         tenantId: me.tenantId,
         emailVerified: me.emailVerified,
         roles: me.roles,
+        // Intentional wire-defensive default, not dead code: a newly deployed frontend
+        // bundle served against an older backend omits `permissions`, and US-013 AC-4
+        // forbids throwing on absent permissions. Do not "simplify" this away.
+        // Frozen for symmetry with AuthStore's NO_PERMISSIONS constant — readonly is a
+        // compile-time-only guarantee otherwise, and this is the one place the array is
+        // constructed from live wire data.
+        permissions: Object.freeze(me.permissions ?? []),
         tokenVersion: me.tokenVersion,
       },
     };

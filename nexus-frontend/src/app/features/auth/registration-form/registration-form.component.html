@@ -1,6 +1,6 @@
 <!-- Success state: confirmation after email submitted -->
 @if (state().kind === 'success') {
-  <div class="reg-form__success" data-testid="reg-success" role="status">
+  <output class="reg-form__success" data-testid="reg-success">
     <!-- Decorative icon; status role announces the message to screen readers -->
     <mat-icon aria-hidden="true" class="reg-form__success-icon">check_circle</mat-icon>
     <h2 class="reg-form__success-heading">Check your inbox</h2>
@@ -8,7 +8,7 @@
       We've sent a verification link to your email address. Please click the link to activate your
       account.
     </p>
-  </div>
+  </output>
 } @else {
   <!-- Form state: registration form with email, password, consent, and submit -->
   <form class="reg-form" [formGroup]="form" (ngSubmit)="submit()" novalidate>

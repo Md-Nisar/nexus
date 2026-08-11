@@ -74,6 +74,121 @@ npm run build            # production build
 
 Follow `src/app/features/README.md`: pages/components/services/models per feature, lazy route registration in `app.routes.ts`, no cross-feature imports. Conventions: `.claude/skills/angular-standards/SKILL.md`.
 
+### Permission-gating the UI (`permissionGuard` / `*appHasPermission`)
+
+> **UX only — not a security boundary.** Both tools below merely tidy the interface. The
+> server-side `@RequiresPermission` check (US-011) is the *only* thing that actually
+> protects an operation: a user who edits client state, replays a request, or calls the API
+> directly still receives `403`. Never let a client-side check be the only protection for
+> anything.
+>
+
+> **Never use `*appHasPermission` to hide data that is already in the browser.** Hiding a
+> salary column, an audit field, another tenant's row, or any other value the backend has
+> already sent in the response payload does **not** protect that data — by the time the
+> directive runs, it has already been delivered to the client and is trivially visible via
+> devtools or the network tab. This directive is for hiding *controls* (buttons, menu
+> items, links) whose *action* is independently enforced server-side, never for hiding
+> data whose *visibility* is the thing that needs protecting. Permission-based field
+> hiding within a component is explicitly out of scope for this pattern — do not reach for
+> `*appHasPermission` to build it.
+
+Both read `AuthStore.permissions` — a `computed<readonly string[]>` populated from
+`GET /v1/users/me` (`permissions[]`, `resource:action`, lowercase). Matching is exact and
+case-sensitive. The signal is never `undefined`; "no session" and "no permissions" both
+yield an empty array.
+
+#### Gating a route
+
+```typescript
+{
+  path: 'roles',
+  canActivate: [authGuard, permissionGuard],   // order matters — see below
+  data: { permission: 'roles:read' },
+  loadComponent: () => import('./features/roles/roles.component').then((m) => m.RolesComponent),
+}
+```
+
+On denial the guard redirects to `/access-denied` (never `/auth/login` — the user *is*
+authenticated, they just lack the permission).
+
+**`permissionGuard` must never be used alone.** Compose it *after* `authGuard`, or attach
+it to a route whose ancestor already carries `authGuard`. Angular evaluates a
+`canActivate` array sequentially and short-circuits on the first non-`true` result, so
+`authGuard` finishes restoring the session before `permissionGuard` reads it. Used alone,
+a cold start (page reload, in-memory session `null`) makes `permissionGuard` see an empty
+permission list and send an entitled user to `/access-denied` instead of `/auth/login`.
+
+**`permissionGuard` fails open.** A route that reaches the guard without a non-empty
+string `data.permission` is treated as a misconfiguration and is **allowed through**,
+silently. That is deliberate — the guard is not a security boundary, so a typo must not
+lock users out of a feature. The consequence: every route using `permissionGuard` needs a
+test asserting its `data.permission` value, or a typo will never be caught (see the
+route-table contract spec at `core/guards/permission-guard-contract.spec.ts`, which
+mechanically enforces both this and the ordering rule above against the real route table).
+Note also that Angular merges a parent route's `data` into child snapshots, so declare
+`permission` on the exact route you are gating.
+
+**`/access-denied` must remain a top-level, unguarded route and must never become a
+descendant of a route carrying `data.permission`.** Because a parent's `data` merges into
+child snapshots, nesting the Access Denied page under a gated ancestor would make its own
+denial redirect target a route that itself denies — a navigation loop instead of the
+intended UX.
+
+#### Hiding an element
+
+```typescript
+import { HasPermissionDirective } from '../../shared/directives/has-permission.directive';
+
+@Component({
+  imports: [HasPermissionDirective],   // each standalone component imports it itself
+  template: `
+    <button *appHasPermission="'users:delete'" (click)="delete()">Delete user</button>
+  `,
+})
+export class UsersComponent {}
+```
+
+There is no global shared-imports barrel in this codebase, and the directive is
+intentionally **not** exported from `shared/ui/index.ts` (that barrel is the design-system
+component library). Import it directly from its file.
+
+The directive is reactive: elements appear/disappear automatically when the permission set
+changes (login, token refresh, `/users/me` re-fetch). When the user lacks the permission —
+including before the session has loaded — the element is simply absent from the DOM; the
+directive never throws and never logs. There is no `else`-template variant yet; it can be
+added later without breaking this API.
+
+`*appHasPermission` is a **custom structural directive**, which is permitted. The
+"`@if`/`@for`, not `*ngIf`/`*ngFor`" non-negotiable
+(`docs/ARCHITECTURE.md` §Non-negotiables #9) targets Angular's *built-in* control flow;
+custom structural directives remain the right tool for a cross-cutting concern like this.
+
+#### Route gating does not protect code
+
+A gated route's lazy chunk is an unauthenticated static asset: `canActivate` gates
+*component activation*, not *chunk delivery*. Anyone — including an unauthenticated
+visitor who guesses the filename — can fetch a gated feature's JS chunk and read its
+templates, endpoint paths, permission strings, and client-side business rules. **Never
+place secrets, credentials, internal hostnames, or confidential business logic in a
+permission-gated component.** This is inherent to any SPA, not specific to this pattern,
+but worth stating here because this is the story that establishes it.
+
+#### Reacting to a 403 in a component
+
+`AppError.requiredPermission` carries the permission the backend demanded — **camelCase**,
+and present **only** when `AppError.code === 'RBAC_001'`. A 403 with
+`code === 'ACCESS_DENIED'` (Spring Security) has no such field, so never infer its presence
+from the status code. It is a developer diagnostic: log it, correlate it with `traceId` — but
+never render it, never put it in a URL, and never send it to analytics. Show
+`AppError.message` to the user.
+
+#### Code-review checklist for anything touching permission gating
+
+- `AppError.requiredPermission` is never rendered, put in a URL, or forwarded to analytics/telemetry.
+- Data hidden by `*appHasPermission` is also omitted **server-side** — the directive hides controls, never data.
+- No secret, credential, internal hostname, or confidential business rule lives inside a permission-gated component.
+
 ## Docker
 
 ```bash
