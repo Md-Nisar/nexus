@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "sonarcloud": {
+      "serverUrl": "https://api.sonarcloud.io/mcp",
+      "headers": {
+        "Authorization": "Bearer ${SONAR_TOKEN}",
+        "SONARQUBE_ORG": "Md-Nisar"
+      }
+    }
+  },
+    "github": {
+      "command": "npx.cmd",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+      }
+    }
+}

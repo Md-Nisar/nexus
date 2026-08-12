@@ -103,7 +103,7 @@ class AuthEventsPiiScrubIT {
   private static final String NEW_STRONG_PASS = "NewValidPassphrase_88!";
 
   private static final Pattern EMAIL_PATTERN =
-      Pattern.compile("[\\w.+-]+@[\\w-]+\\.[a-zA-Z]{2,}");
+      Pattern.compile("[^@\\s]+@[^@\\s]+\\.[a-zA-Z]{2,}");
 
   @BeforeEach
   void setUp() {

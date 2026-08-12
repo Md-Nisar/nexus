@@ -21,6 +21,9 @@ import org.springframework.transaction.event.TransactionalEventListener;
 @Component
 public class MailEventListener {
 
+  private static final String EVENT_PROCESSING = "event_processing";
+  private static final String EXECUTION_TYPE_ASYNC = "async";
+
   private final MailSenderPort mailSenderPort;
   private final ExecutionObserver executionObserver;
 
@@ -39,8 +42,8 @@ public class MailEventListener {
   @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
   public void onVerificationEmail(VerificationEmailEvent event) {
     executionObserver.observe(
-        "event_processing",
-        "async",
+        EVENT_PROCESSING,
+        EXECUTION_TYPE_ASYNC,
         "onVerificationEmail",
         true, // Log success at INFO
         true, // Terminal async boundary
@@ -58,8 +61,8 @@ public class MailEventListener {
   @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
   public void onAccountExists(AccountExistsEmailEvent event) {
     executionObserver.observe(
-        "event_processing",
-        "async",
+        EVENT_PROCESSING,
+        EXECUTION_TYPE_ASYNC,
         "onAccountExists",
         true,
         true,
@@ -77,8 +80,8 @@ public class MailEventListener {
   @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
   public void onPasswordReset(PasswordResetEmailEvent event) {
     executionObserver.observe(
-        "event_processing",
-        "async",
+        EVENT_PROCESSING,
+        EXECUTION_TYPE_ASYNC,
         "onPasswordReset",
         true,
         true,

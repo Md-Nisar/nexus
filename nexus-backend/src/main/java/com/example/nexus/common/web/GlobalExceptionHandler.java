@@ -43,6 +43,19 @@ public class GlobalExceptionHandler {
 
   private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
+  private static final String KEY_ERROR_CODE = "errorCode";
+  private static final String LEVEL_DEBUG = "DEBUG";
+  private static final String CODE_VALIDATION_FAILED = "VALIDATION_FAILED";
+  private static final String EVENT_API_REQUEST = "api_request";
+  private static final String KEY_EVENT = "event";
+  private static final String KEY_CORRELATION_ID = "correlationId";
+  private static final String KEY_OUTCOME = "outcome";
+  private static final String OUTCOME_FAILURE = "FAILURE";
+  private static final String KEY_ERROR_TYPE = "errorType";
+  private static final String KEY_DETAILS = "details";
+  private static final String KEY_MESSAGE = "message";
+  private static final String KEY_FIELD = "field";
+
   private final MeterRegistry meterRegistry;
 
   public GlobalExceptionHandler(MeterRegistry meterRegistry) {
@@ -51,28 +64,28 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler(ResourceNotFoundException.class)
   ProblemDetail handleNotFound(ResourceNotFoundException e) {
-    logHandledException(e, "DEBUG", e.code());
+    logHandledException(e, LEVEL_DEBUG, e.code());
     return problem(HttpStatus.NOT_FOUND, e.code(), e.getMessage());
   }
 
   @ExceptionHandler(ConflictException.class)
   ProblemDetail handleConflict(ConflictException e) {
-    logHandledException(e, "DEBUG", e.code());
+    logHandledException(e, LEVEL_DEBUG, e.code());
     Counter.builder("nexus.domain.conflict").tag("code", e.code()).register(meterRegistry).increment();
     return problem(HttpStatus.CONFLICT, e.code(), e.getMessage());
   }
 
   @ExceptionHandler(FieldValidationException.class)
   ProblemDetail handleFieldValidation(FieldValidationException e) {
-    logHandledException(e, "DEBUG", e.code());
+    logHandledException(e, LEVEL_DEBUG, e.code());
     ProblemDetail problem = problem(HttpStatus.BAD_REQUEST, e.code(), e.getMessage());
-    problem.setProperty("details", List.of(Map.of("field", e.field(), "message", e.getMessage())));
+    problem.setProperty(KEY_DETAILS, List.of(Map.of(KEY_FIELD, e.field(), KEY_MESSAGE, e.getMessage())));
     return problem;
   }
 
   @ExceptionHandler(TokenExpiredException.class)
   ProblemDetail handleTokenExpired(TokenExpiredException e) {
-    logHandledException(e, "DEBUG", e.code());
+    logHandledException(e, LEVEL_DEBUG, e.code());
     return problem(HttpStatus.GONE, e.code(), e.getMessage());
   }
 
@@ -110,36 +123,36 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler(DomainException.class)
   ProblemDetail handleDomain(DomainException e) {
-    logHandledException(e, "DEBUG", e.code());
+    logHandledException(e, LEVEL_DEBUG, e.code());
     return problem(HttpStatus.UNPROCESSABLE_CONTENT, e.code(), e.getMessage());
   }
 
   @ExceptionHandler(MethodArgumentNotValidException.class)
   ProblemDetail handleBodyValidation(MethodArgumentNotValidException e) {
-    logHandledException(e, "DEBUG", "VALIDATION_FAILED");
+    logHandledException(e, LEVEL_DEBUG, CODE_VALIDATION_FAILED);
     ProblemDetail problem =
-        problem(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "Request validation failed.");
+        problem(HttpStatus.BAD_REQUEST, CODE_VALIDATION_FAILED, "Request validation failed.");
     problem.setProperty(
-        "details",
+        KEY_DETAILS,
         e.getBindingResult().getFieldErrors().stream()
             .map(f -> Map.of(
-                "field", f.getField(),
-                "message", String.valueOf(f.getDefaultMessage())))
+                KEY_FIELD, f.getField(),
+                KEY_MESSAGE, String.valueOf(f.getDefaultMessage())))
             .toList());
     return problem;
   }
 
   @ExceptionHandler(ConstraintViolationException.class)
   ProblemDetail handleParamValidation(ConstraintViolationException e) {
-    logHandledException(e, "DEBUG", "VALIDATION_FAILED");
+    logHandledException(e, LEVEL_DEBUG, CODE_VALIDATION_FAILED);
     ProblemDetail problem =
-        problem(HttpStatus.BAD_REQUEST, "VALIDATION_FAILED", "Request validation failed.");
+        problem(HttpStatus.BAD_REQUEST, CODE_VALIDATION_FAILED, "Request validation failed.");
     List<Map<String, String>> details = e.getConstraintViolations().stream()
         .map(v -> Map.of(
-            "field", String.valueOf(v.getPropertyPath()),
-            "message", v.getMessage()))
+            KEY_FIELD, String.valueOf(v.getPropertyPath()),
+            KEY_MESSAGE, v.getMessage()))
         .toList();
-    problem.setProperty("details", details);
+    problem.setProperty(KEY_DETAILS, details);
     return problem;
   }
 
@@ -171,7 +184,7 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler(NoResourceFoundException.class)
   ProblemDetail handleNoResource(NoResourceFoundException e) {
-    logHandledException(e, "DEBUG", "RESOURCE_NOT_FOUND");
+    logHandledException(e, LEVEL_DEBUG, "RESOURCE_NOT_FOUND");
     return problem(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", "Resource not found.");
   }
 
@@ -179,11 +192,11 @@ public class GlobalExceptionHandler {
   ProblemDetail handleUnexpected(Exception e) {
     String correlationId = MDC.get(CorrelationIdFilter.MDC_CORRELATION_ID_KEY);
     log.atError()
-        .addKeyValue("event", "api_request")
-        .addKeyValue("correlationId", correlationId)
-        .addKeyValue("outcome", "FAILURE")
-        .addKeyValue("errorType", e.getClass().getSimpleName())
-        .addKeyValue("errorCode", "INTERNAL_ERROR")
+        .addKeyValue(KEY_EVENT, EVENT_API_REQUEST)
+        .addKeyValue(KEY_CORRELATION_ID, correlationId)
+        .addKeyValue(KEY_OUTCOME, OUTCOME_FAILURE)
+        .addKeyValue(KEY_ERROR_TYPE, e.getClass().getSimpleName())
+        .addKeyValue(KEY_ERROR_CODE, "INTERNAL_ERROR")
         .log("Unhandled exception traceId=" + correlationId, e);
     return problem(
         HttpStatus.INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", "An unexpected error occurred.");
@@ -205,21 +218,21 @@ public class GlobalExceptionHandler {
     String errorType = e.getClass().getSimpleName();
     if ("WARN".equals(level)) {
       var builder = log.atWarn()
-          .addKeyValue("event", "api_request")
-          .addKeyValue("correlationId", correlationId)
-          .addKeyValue("outcome", "FAILURE")
-          .addKeyValue("errorType", errorType)
-          .addKeyValue("errorCode", errorCode);
+          .addKeyValue(KEY_EVENT, EVENT_API_REQUEST)
+          .addKeyValue(KEY_CORRELATION_ID, correlationId)
+          .addKeyValue(KEY_OUTCOME, OUTCOME_FAILURE)
+          .addKeyValue(KEY_ERROR_TYPE, errorType)
+          .addKeyValue(KEY_ERROR_CODE, errorCode);
       extraFields.forEach(builder::addKeyValue);
       builder.log("Handled operational error: errorType={} errorCode={} correlationId={}",
           errorType, errorCode, correlationId);
-    } else if ("DEBUG".equals(level)) {
+    } else if (LEVEL_DEBUG.equals(level)) {
       var builder = log.atDebug()
-          .addKeyValue("event", "api_request")
-          .addKeyValue("correlationId", correlationId)
-          .addKeyValue("outcome", "FAILURE")
-          .addKeyValue("errorType", errorType)
-          .addKeyValue("errorCode", errorCode);
+          .addKeyValue(KEY_EVENT, EVENT_API_REQUEST)
+          .addKeyValue(KEY_CORRELATION_ID, correlationId)
+          .addKeyValue(KEY_OUTCOME, OUTCOME_FAILURE)
+          .addKeyValue(KEY_ERROR_TYPE, errorType)
+          .addKeyValue(KEY_ERROR_CODE, errorCode);
       extraFields.forEach(builder::addKeyValue);
       builder.log("Handled validation/domain error: errorType={} errorCode={} correlationId={}",
           errorType, errorCode, correlationId);

@@ -19,6 +19,15 @@ public class ExecutionObserver {
 
   private static final Logger log = LoggerFactory.getLogger(ExecutionObserver.class);
 
+  private static final String KEY_CORRELATION_ID = "correlationId";
+  private static final String KEY_EVENT = "event";
+  private static final String KEY_EXECUTION_TYPE = "executionType";
+  private static final String KEY_OPERATION = "operation";
+  private static final String KEY_DURATION_MS = "durationMs";
+  private static final String KEY_OUTCOME = "outcome";
+  private static final String OUTCOME_SUCCESS = "SUCCESS";
+  private static final String OUTCOME_FAILURE = "FAILURE";
+
   private final MeterRegistry meterRegistry;
 
   /**
@@ -51,12 +60,12 @@ public class ExecutionObserver {
       Supplier<T> supplier) {
     long startTime = System.nanoTime();
     boolean correlationIdAdded = false;
-    String currentCorrelationId = MDC.get("correlationId");
+    String currentCorrelationId = MDC.get(KEY_CORRELATION_ID);
 
     // Initialize correlationId if missing (e.g. in background jobs)
     if (currentCorrelationId == null) {
       currentCorrelationId = UUID.randomUUID().toString();
-      MDC.put("correlationId", currentCorrelationId);
+      MDC.put(KEY_CORRELATION_ID, currentCorrelationId);
       MDC.put("traceId", currentCorrelationId); // Deprecated alias
       correlationIdAdded = true;
     }
@@ -68,27 +77,27 @@ public class ExecutionObserver {
 
       if (logSuccessAtInfo) {
         log.atInfo()
-            .addKeyValue("event", event)
-            .addKeyValue("executionType", executionType)
-            .addKeyValue("operation", operation)
-            .addKeyValue("correlationId", currentCorrelationId)
-            .addKeyValue("durationMs", durationMs)
-            .addKeyValue("outcome", "SUCCESS")
+            .addKeyValue(KEY_EVENT, event)
+            .addKeyValue(KEY_EXECUTION_TYPE, executionType)
+            .addKeyValue(KEY_OPERATION, operation)
+            .addKeyValue(KEY_CORRELATION_ID, currentCorrelationId)
+            .addKeyValue(KEY_DURATION_MS, durationMs)
+            .addKeyValue(KEY_OUTCOME, OUTCOME_SUCCESS)
             .log("Execution completed: event={} operation={} durationMs={} outcome=SUCCESS",
                 event, operation, durationMs);
       } else {
         log.atDebug()
-            .addKeyValue("event", event)
-            .addKeyValue("executionType", executionType)
-            .addKeyValue("operation", operation)
-            .addKeyValue("correlationId", currentCorrelationId)
-            .addKeyValue("durationMs", durationMs)
-            .addKeyValue("outcome", "SUCCESS")
+            .addKeyValue(KEY_EVENT, event)
+            .addKeyValue(KEY_EXECUTION_TYPE, executionType)
+            .addKeyValue(KEY_OPERATION, operation)
+            .addKeyValue(KEY_CORRELATION_ID, currentCorrelationId)
+            .addKeyValue(KEY_DURATION_MS, durationMs)
+            .addKeyValue(KEY_OUTCOME, OUTCOME_SUCCESS)
             .log("Execution completed: event={} operation={} durationMs={} outcome=SUCCESS",
                 event, operation, durationMs);
       }
 
-      recordMetric(event, operation, "SUCCESS", durationMs);
+      recordMetric(event, operation, OUTCOME_SUCCESS, durationMs);
       return result;
     } catch (Exception e) {
       long durationMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(
@@ -100,12 +109,12 @@ public class ExecutionObserver {
         // At the terminal boundary, we must log the full stack trace to ensure diagnostic
         // details are not lost.
         log.atError()
-            .addKeyValue("event", event)
-            .addKeyValue("executionType", executionType)
-            .addKeyValue("operation", operation)
-            .addKeyValue("correlationId", currentCorrelationId)
-            .addKeyValue("durationMs", durationMs)
-            .addKeyValue("outcome", "FAILURE")
+            .addKeyValue(KEY_EVENT, event)
+            .addKeyValue(KEY_EXECUTION_TYPE, executionType)
+            .addKeyValue(KEY_OPERATION, operation)
+            .addKeyValue(KEY_CORRELATION_ID, currentCorrelationId)
+            .addKeyValue(KEY_DURATION_MS, durationMs)
+            .addKeyValue(KEY_OUTCOME, OUTCOME_FAILURE)
             .addKeyValue("errorCode", "INTERNAL_ERROR")
             .log("Execution failed at terminal boundary: event=" + event + " operation="
                 + operation + " durationMs=" + durationMs + " outcome=FAILURE errorType="
@@ -113,22 +122,22 @@ public class ExecutionObserver {
       } else {
         // Not a terminal boundary: log a single-line failure without stack trace and rethrow.
         log.atWarn()
-            .addKeyValue("event", event)
-            .addKeyValue("executionType", executionType)
-            .addKeyValue("operation", operation)
-            .addKeyValue("correlationId", currentCorrelationId)
-            .addKeyValue("durationMs", durationMs)
-            .addKeyValue("outcome", "FAILURE")
+            .addKeyValue(KEY_EVENT, event)
+            .addKeyValue(KEY_EXECUTION_TYPE, executionType)
+            .addKeyValue(KEY_OPERATION, operation)
+            .addKeyValue(KEY_CORRELATION_ID, currentCorrelationId)
+            .addKeyValue(KEY_DURATION_MS, durationMs)
+            .addKeyValue(KEY_OUTCOME, OUTCOME_FAILURE)
             .addKeyValue("errorCode", "INTERNAL_ERROR")
             .log("Execution failed: event={} operation={} durationMs={} outcome=FAILURE errorType={}",
                 event, operation, durationMs, errorType);
       }
 
-      recordMetric(event, operation, "FAILURE", durationMs);
+      recordMetric(event, operation, OUTCOME_FAILURE, durationMs);
       throw e;
     } finally {
       if (correlationIdAdded) {
-        MDC.remove("correlationId");
+        MDC.remove(KEY_CORRELATION_ID);
         MDC.remove("traceId");
       }
     }

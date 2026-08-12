@@ -65,6 +65,7 @@ public class UserRoleController {
 
   private static final String USER_WRITE = "user:write";
   private static final String USER_READ = "user:read";
+  private static final String PATH_PARAM_USER_ID = "userId";
 
   private static final Pattern CANONICAL_UUID =
       Pattern.compile(
@@ -104,7 +105,7 @@ public class UserRoleController {
       Authentication authentication,
       HttpServletRequest httpRequest) {
     RoleChangeActor actor = resolveActor(authentication, USER_WRITE);
-    UUID targetUserId = parsePathUuid(userId, "userId");
+    UUID targetUserId = parsePathUuid(userId, PATH_PARAM_USER_ID);
     UUID roleId = parsePathUuid(request.roleId(), "roleId");
 
     ActiveRoleAssignment assignment =
@@ -130,7 +131,7 @@ public class UserRoleController {
   public RoleAssignmentListResponse listRoles(
       @PathVariable String userId, Authentication authentication) {
     RoleChangeActor actor = resolveActor(authentication, USER_READ);
-    UUID targetUserId = parsePathUuid(userId, "userId");
+    UUID targetUserId = parsePathUuid(userId, PATH_PARAM_USER_ID);
 
     List<RoleAssignmentResponse> data =
         roleAssignmentService.listActive(actor, targetUserId).stream()
@@ -162,7 +163,7 @@ public class UserRoleController {
       Authentication authentication,
       HttpServletRequest httpRequest) {
     RoleChangeActor actor = resolveActor(authentication, USER_WRITE);
-    UUID targetUserId = parsePathUuid(userId, "userId");
+    UUID targetUserId = parsePathUuid(userId, PATH_PARAM_USER_ID);
     UUID parsedRoleId = parsePathUuid(roleId, "roleId");
 
     roleAssignmentService.revoke(actor, targetUserId, parsedRoleId, requestContext(httpRequest));

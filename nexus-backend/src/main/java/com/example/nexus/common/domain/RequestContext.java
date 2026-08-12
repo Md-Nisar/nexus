@@ -80,7 +80,7 @@ public record RequestContext(String ipAddress, String traceId, String userAgent)
           // RFC 8259: every U+0000-U+001F control character must be escaped inside a JSON
           // string, not just \n \r \t -- an unescaped one would break the native JSON column
           // parser (and any downstream JSON parser), which is exactly the T-T1 threat.
-          if ((int) c <= MAX_JSON_CONTROL_CHAR) {
+          if (c <= MAX_JSON_CONTROL_CHAR) {
             escaped.append(String.format("\\u%04x", (int) c));
           } else {
             escaped.append(c);

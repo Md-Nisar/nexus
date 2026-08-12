@@ -1,7 +1,7 @@
 import { ApplicationConfig, provideBrowserGlobalErrorListeners, ErrorHandler } from '@angular/core';
 import { provideHttpClient, withInterceptors, withXhr } from '@angular/common/http';
 import { provideRouter, withComponentInputBinding } from '@angular/router';
-import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
+import { provideAnimations } from '@angular/platform-browser/animations';
 
 import { routes } from './app.routes';
 import { correlationIdInterceptor } from './core/http/correlation-id.interceptor';
@@ -124,6 +124,6 @@ export const appConfig: ApplicationConfig = {
      * For most modern SPAs, async initialization is preferred for better
      * Lighthouse scores and faster time-to-interactive.
      */
-    provideAnimationsAsync(),
+    provideAnimations(),
   ],
 };
