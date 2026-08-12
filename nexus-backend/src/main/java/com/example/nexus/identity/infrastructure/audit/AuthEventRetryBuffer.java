@@ -212,10 +212,10 @@ public class AuthEventRetryBuffer {
       }
       if (buffered.isNotYetDue(now)) {
         requeueOrDrop(lane, queue, buffered); // not due yet this tick — put back, don't retry
-        continue;
+      } else {
+        stats.processed++;
+        attemptRetry(lane, queue, buffered, now, stats);
       }
-      stats.processed++;
-      attemptRetry(lane, queue, buffered, now, stats);
     }
   }
 

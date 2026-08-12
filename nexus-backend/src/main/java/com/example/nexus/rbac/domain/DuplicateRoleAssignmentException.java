@@ -13,6 +13,7 @@ import com.example.nexus.common.domain.ConflictException;
  * constraint-violation message for this constraint would leak the constraint name, index name, and
  * a hex fragment of {@code user_roles.active_key} that encodes the raw target user/role UUIDs.
  */
+@SuppressWarnings("java:S110")
 public class DuplicateRoleAssignmentException extends ConflictException {
 
   public DuplicateRoleAssignmentException() {

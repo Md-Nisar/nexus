@@ -52,6 +52,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * regardless of deployment topology.
  */
 @Component
+@SuppressWarnings("java:S1075")
 public class LoginRateLimitFilter extends OncePerRequestFilter {
 
   private static final String LOGIN_PATH = "/api/v1/auth/login";
@@ -249,7 +250,7 @@ public class LoginRateLimitFilter extends OncePerRequestFilter {
       return new ServletInputStream() {
         @Override public boolean isFinished() { return bais.available() == 0; }
         @Override public boolean isReady() { return true; }
-        @Override public void setReadListener(ReadListener listener) { }
+        @Override public void setReadListener(ReadListener listener) { /* Non-blocking IO not supported here */ }
         @Override public int read() throws IOException { return bais.read(); }
         @Override public int read(byte[] b, int off, int len) throws IOException {
           return bais.read(b, off, len);

@@ -172,7 +172,7 @@ class UserRolesPrivilegeIT {
     // be scoped to the revoked_at column specifically -- this is the assertion that would catch
     // a future silent grant-widening regression (threat T-E12) that assertions 1 and 3 alone
     // would not (a table-scoped UPDATE would also pass both of those).
-    java.util.regex.Pattern columnScopedPattern = java.util.regex.Pattern.compile("UPDATE\\s*\\([^)]*REVOKED_AT[^)]*\\)");
+    java.util.regex.Pattern columnScopedPattern = java.util.regex.Pattern.compile("UPDATE\\s*\\([^)]*?REVOKED_AT[^)]*\\)");
     long columnScopedUpdateLines =
         userRoleGrants.stream()
             .filter(

@@ -66,6 +66,7 @@ public class JwtRs256Service implements JwtPort {
    * @return the JWT string, TTL in seconds, and unique JWT ID
    */
   @Override
+  @SuppressWarnings("java:S2143")
   public AccessTokenResult issue(User user) {
     Instant now = clock.instant();
     String jti = uuidGenerator.newId().toString();

@@ -19,7 +19,7 @@ let refreshInFlight: Observable<AuthSession> | null = null;
  * HTTP paths that must not trigger proactive refresh to prevent infinite loops.
  * Includes auth endpoints (login, refresh, logout) that manage session state directly.
  */
-const AUTH_PATHS = ['/api/v1/auth/login', '/api/v1/auth/refresh', '/api/v1/auth/logout'];
+const AUTH_PATHS = new Set(['/api/v1/auth/login', '/api/v1/auth/refresh', '/api/v1/auth/logout']);
 
 /**
  * Proactively refresh when access token has less than this many milliseconds remaining.
@@ -86,7 +86,7 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
   // Extract the endpoint path using exact pathname comparison to avoid false matches on
   // future paths (e.g., /admin/auth/login-audit would incorrectly match an includes() check).
   const path = new URL(req.url, window.location.origin).pathname;
-  const isAuthEndpoint = AUTH_PATHS.includes(path);
+  const isAuthEndpoint = AUTH_PATHS.has(path);
 
   // ───────────────────────────────────────────────────────────────────────────────────
   // Proactive refresh (AC-4): Refresh before forwarding if the access token will expire
@@ -102,14 +102,12 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
     session !== null && session.expiresAt - Date.now() < PROACTIVE_REFRESH_THRESHOLD_MS;
 
   if (proactive && !isAuthEndpoint) {
-    if (!refreshInFlight) {
-      refreshInFlight = authService.refresh().pipe(
-        finalize(() => {
-          refreshInFlight = null;
-        }),
-        shareReplay(1),
-      );
-    }
+    refreshInFlight ??= authService.refresh().pipe(
+      finalize(() => {
+        refreshInFlight = null;
+      }),
+      shareReplay(1),
+    );
     return refreshInFlight.pipe(
       catchError((err) => {
         authStore.clearSession();
@@ -138,14 +136,12 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
       // manage their own session state.
       // ───────────────────────────────────────────────────────────────────────────────
       if (error instanceof HttpErrorResponse && error.status === 401 && !isAuthEndpoint) {
-        if (!refreshInFlight) {
-          refreshInFlight = authService.refresh().pipe(
-            finalize(() => {
-              refreshInFlight = null;
-            }),
-            shareReplay(1),
-          );
-        }
+        refreshInFlight ??= authService.refresh().pipe(
+          finalize(() => {
+            refreshInFlight = null;
+          }),
+          shareReplay(1),
+        );
 
         return refreshInFlight.pipe(
           switchMap((session) =>

@@ -5,6 +5,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import javax.sql.DataSource;
+import com.example.nexus.common.security.DbUserUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.health.contributor.Health;
@@ -55,8 +56,8 @@ public class RbacDbPrivilegeHealthIndicator implements HealthIndicator {
   @Override
   public Health health() {
     try (Connection connection = dataSource.getConnection()) {
-      String currentUser = readCurrentUser(connection);
-      String userName = usernamePart(currentUser);
+      String currentUser = DbUserUtil.readCurrentUser(connection);
+      String userName = DbUserUtil.usernamePart(currentUser);
       boolean isRoot = "root".equalsIgnoreCase(userName);
       boolean hasTablePrivilege = hasTableDeletePrivilege(connection, userName);
       boolean hasGlobalPrivilege = hasGlobalDeletePrivilege(connection, userName);
@@ -101,23 +102,7 @@ public class RbacDbPrivilegeHealthIndicator implements HealthIndicator {
     }
   }
 
-  private String readCurrentUser(Connection connection) throws SQLException {
-    try (Statement statement = connection.createStatement();
-        ResultSet resultSet = statement.executeQuery("SELECT CURRENT_USER()")) {
-      if (resultSet.next()) {
-        return resultSet.getString(1);
-      }
-      throw new SQLException("SELECT CURRENT_USER() returned no rows");
-    }
-  }
 
-  private String usernamePart(String currentUser) {
-    if (currentUser == null) {
-      return "";
-    }
-    int at = currentUser.indexOf('@');
-    return at >= 0 ? currentUser.substring(0, at) : currentUser;
-  }
 
   /**
    * Table-scoped grant check via {@code information_schema.TABLE_PRIVILEGES}. Matches on the

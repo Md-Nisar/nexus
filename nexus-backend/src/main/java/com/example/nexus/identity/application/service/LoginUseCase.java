@@ -149,18 +149,8 @@ public class LoginUseCase {
     }
 
     // Step 4: Lockout pre-check — after Argon2 to preserve timing uniformity (T-LCK-5)
-    if (found && user.getStatus() == UserStatus.LOCKED) {
-      secureEventService.recordEvent(
-          new AuthEvent(uuidGenerator.newId(), AuthEventType.LOGIN_FAILURE, OUTCOME_FAILURE)
-              .withUserId(user.getId())
-              .withTenantId(tenantId)
-              .withIpAddress(clientIp)
-              .withMetadata(ctx.toMetadataJson()));
-      long retryAfterSeconds = (user.getLockedUntil() != null)
-          ? Math.max(0, user.getLockedUntil().getEpochSecond() - clock.instant().getEpochSecond())
-          : 0L;
-      throw new AccountLockedException(AUTH_LCK_001,
-          "Account locked. Try again later or reset your password.", retryAfterSeconds);
+    if (found) {
+      checkLockoutStatus(user, tenantId, clientIp, ctx);
     }
 
     // Step 5: Credential failure — unknown user OR wrong password (identical code path for both)
@@ -178,25 +168,7 @@ public class LoginUseCase {
 
     // Step 6: Status gate — ACTIVE allowlist (T-2.5 — allowlist, not denylist).
     // LOCKED was already handled in Step 4; only PENDING and other statuses reach here.
-    if (user.getStatus() == UserStatus.PENDING) {
-      secureEventService.recordEvent(
-          new AuthEvent(uuidGenerator.newId(), AuthEventType.LOGIN_PENDING_ACCOUNT, OUTCOME_FAILURE)
-              .withUserId(user.getId())
-              .withTenantId(tenantId)
-              .withIpAddress(clientIp)
-              .withMetadata(ctx.toMetadataJson()));
-      throw new AccountNotVerifiedException(AUTH_002, "Account not verified. Please check your email.");
-    }
-    if (user.getStatus() != UserStatus.ACTIVE) {
-      // DISABLED or any future status — NEVER fall through to token issuance
-      secureEventService.recordEvent(
-          new AuthEvent(uuidGenerator.newId(), AuthEventType.LOGIN_FAILURE, OUTCOME_FAILURE)
-              .withUserId(user.getId())
-              .withTenantId(tenantId)
-              .withIpAddress(clientIp)
-              .withMetadata(ctx.toMetadataJson()));
-      throw new AuthenticationException(AUTH_001, "Invalid email or password");
-    }
+    checkAccountStatus(user, tenantId, clientIp, ctx);
 
     // Step 7: Issue access JWT
     AccessTokenResult accessResult = jwtPort.issue(user);
@@ -233,5 +205,43 @@ public class LoginUseCase {
     log.debug("LOGIN_SUCCESS userId={} tenantId={}", user.getId(), tenantId);
     return new LoginResult(accessResult.token(), accessResult.expiresInSeconds(),
         user.getId().toString(), rawRefreshToken);
+  }
+
+  private void checkLockoutStatus(User user, UUID tenantId, String clientIp, RequestContext ctx) {
+    if (user.getStatus() == UserStatus.LOCKED) {
+      secureEventService.recordEvent(
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.LOGIN_FAILURE, OUTCOME_FAILURE)
+              .withUserId(user.getId())
+              .withTenantId(tenantId)
+              .withIpAddress(clientIp)
+              .withMetadata(ctx.toMetadataJson()));
+      long retryAfterSeconds = (user.getLockedUntil() != null)
+          ? Math.max(0, user.getLockedUntil().getEpochSecond() - clock.instant().getEpochSecond())
+          : 0L;
+      throw new AccountLockedException(AUTH_LCK_001,
+          "Account locked. Try again later or reset your password.", retryAfterSeconds);
+    }
+  }
+
+  private void checkAccountStatus(User user, UUID tenantId, String clientIp, RequestContext ctx) {
+    if (user.getStatus() == UserStatus.PENDING) {
+      secureEventService.recordEvent(
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.LOGIN_PENDING_ACCOUNT, OUTCOME_FAILURE)
+              .withUserId(user.getId())
+              .withTenantId(tenantId)
+              .withIpAddress(clientIp)
+              .withMetadata(ctx.toMetadataJson()));
+      throw new AccountNotVerifiedException(AUTH_002, "Account not verified. Please check your email.");
+    }
+    if (user.getStatus() != UserStatus.ACTIVE) {
+      // DISABLED or any future status — NEVER fall through to token issuance
+      secureEventService.recordEvent(
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.LOGIN_FAILURE, OUTCOME_FAILURE)
+              .withUserId(user.getId())
+              .withTenantId(tenantId)
+              .withIpAddress(clientIp)
+              .withMetadata(ctx.toMetadataJson()));
+      throw new AuthenticationException(AUTH_001, "Invalid email or password");
+    }
   }
 }

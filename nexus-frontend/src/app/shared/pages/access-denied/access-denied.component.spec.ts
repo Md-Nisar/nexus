@@ -24,7 +24,7 @@ describe('AccessDeniedComponent', () => {
     fixture.detectChanges();
 
     const headings = fixture.debugElement.queryAll(By.css('h1'));
-    expect(headings.length).toBe(1);
+    expect(headings).toHaveLength(1);
     expect((headings[0].nativeElement as HTMLElement).textContent?.trim()).toBe('Access denied');
   });
 
