@@ -16,6 +16,9 @@ import org.springframework.stereotype.Component;
 @ConditionalOnProperty(name = "spring.mail.host", havingValue = "disabled")
 public class LoggingMailSenderAdapter implements MailSenderPort {
 
+  private static final String EVENT_INTEGRATION_CALL = "integration_call";
+  private static final String EXECUTION_TYPE_ASYNC = "async";
+
   private final ExecutionObserver executionObserver;
 
   public LoggingMailSenderAdapter(ExecutionObserver executionObserver) {
@@ -25,8 +28,8 @@ public class LoggingMailSenderAdapter implements MailSenderPort {
   @Override
   public void sendVerificationEmail(String toEmail, String rawToken) {
     executionObserver.observe(
-        "integration_call",
-        "async",
+        EVENT_INTEGRATION_CALL,
+        EXECUTION_TYPE_ASYNC,
         "sendVerificationEmail",
         true, // Log success at INFO for stubbed integration
         false, // Not terminal boundary
@@ -40,8 +43,8 @@ public class LoggingMailSenderAdapter implements MailSenderPort {
   @Override
   public void sendAccountExistsEmail(String toEmail) {
     executionObserver.observe(
-        "integration_call",
-        "async",
+        EVENT_INTEGRATION_CALL,
+        EXECUTION_TYPE_ASYNC,
         "sendAccountExistsEmail",
         true,
         false,
@@ -55,8 +58,8 @@ public class LoggingMailSenderAdapter implements MailSenderPort {
   @Override
   public void sendPasswordResetEmail(String toEmail, String rawToken) {
     executionObserver.observe(
-        "integration_call",
-        "async",
+        EVENT_INTEGRATION_CALL,
+        EXECUTION_TYPE_ASYNC,
         "sendPasswordResetEmail",
         true,
         false,

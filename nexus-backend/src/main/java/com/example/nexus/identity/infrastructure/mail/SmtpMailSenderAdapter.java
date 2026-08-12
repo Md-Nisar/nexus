@@ -23,6 +23,9 @@ public class SmtpMailSenderAdapter implements MailSenderPort {
   private static final String EXISTS_SUBJECT = "You already have a Nexus account";
   private static final String RESET_SUBJECT = "Reset your Nexus password";
 
+  private static final String EVENT_INTEGRATION_CALL = "integration_call";
+  private static final String EXECUTION_TYPE_ASYNC = "async";
+
   private final JavaMailSender mailSender;
   private final String fromAddress;
   private final String frontendBaseUrl;
@@ -49,8 +52,8 @@ public class SmtpMailSenderAdapter implements MailSenderPort {
     msg.setText("Click the link below to verify your email address:\n\n"
         + url + "\n\nThis link expires in 24 hours.");
     executionObserver.observe(
-        "integration_call",
-        "async",
+        EVENT_INTEGRATION_CALL,
+        EXECUTION_TYPE_ASYNC,
         "sendVerificationEmail",
         true,
         false, // Not terminal boundary (event listener handles errors)
@@ -67,8 +70,8 @@ public class SmtpMailSenderAdapter implements MailSenderPort {
     msg.setText("A Nexus account already exists for this email address. "
         + "If you forgot your password, please use the password-reset flow.");
     executionObserver.observe(
-        "integration_call",
-        "async",
+        EVENT_INTEGRATION_CALL,
+        EXECUTION_TYPE_ASYNC,
         "sendAccountExistsEmail",
         true,
         false,
@@ -87,8 +90,8 @@ public class SmtpMailSenderAdapter implements MailSenderPort {
         + url + "\n\nThis link expires in 1 hour. If you did not request a reset, "
         + "you can safely ignore this email.");
     executionObserver.observe(
-        "integration_call",
-        "async",
+        EVENT_INTEGRATION_CALL,
+        EXECUTION_TYPE_ASYNC,
         "sendPasswordResetEmail",
         true,
         false,

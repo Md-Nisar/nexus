@@ -50,6 +50,7 @@ public class RefreshTokenUseCase {
   private static final Logger log = LoggerFactory.getLogger(RefreshTokenUseCase.class);
   private static final String AUTH_004 = "AUTH_004";
   private static final String MSG_INVALID = "Refresh token invalid";
+  private static final String OUTCOME_FAILURE = "FAILURE";
 
   private final RefreshTokenPort refreshTokenPort;
   private final UserRegistrationPort userRegistrationPort;
@@ -114,7 +115,7 @@ public class RefreshTokenUseCase {
     if (token.getRevokedAt() != null) {
       secureEventService.revokeFamily(token.getFamilyId(), now);
       secureEventService.recordEvent(
-          new AuthEvent(uuidGenerator.newId(), AuthEventType.TOKEN_REFRESH_REUSE, "FAILURE")
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.TOKEN_REFRESH_REUSE, OUTCOME_FAILURE)
               .withUserId(token.getUserId())
               .withIpAddress(clientIp));
       throw new AuthenticationException(AUTH_004, MSG_INVALID);
@@ -174,7 +175,7 @@ public class RefreshTokenUseCase {
   }
 
   private AuthEvent failureEvent(UUID userId, String clientIp, AuthEventType eventType) {
-    return new AuthEvent(uuidGenerator.newId(), eventType, "FAILURE")
+    return new AuthEvent(uuidGenerator.newId(), eventType, OUTCOME_FAILURE)
         .withUserId(userId)
         .withIpAddress(clientIp);
   }
@@ -186,7 +187,7 @@ public class RefreshTokenUseCase {
    * optimistic-lock conflict), which stay tenant-NULL.
    */
   private AuthEvent failureEvent(User user, String clientIp, AuthEventType eventType) {
-    return new AuthEvent(uuidGenerator.newId(), eventType, "FAILURE")
+    return new AuthEvent(uuidGenerator.newId(), eventType, OUTCOME_FAILURE)
         .withUserId(user.getId())
         .withTenantId(user.getTenantId())
         .withIpAddress(clientIp);

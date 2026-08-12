@@ -278,6 +278,7 @@ class AuditStoreDownIT {
     return counter != null ? counter.count() : 0.0;
   }
 
+  @SuppressWarnings("java:S2925")
   private void sleepMillis(long millis) {
     try {
       Thread.sleep(millis);

@@ -172,12 +172,12 @@ class UserRolesPrivilegeIT {
     // be scoped to the revoked_at column specifically -- this is the assertion that would catch
     // a future silent grant-widening regression (threat T-E12) that assertions 1 and 3 alone
     // would not (a table-scoped UPDATE would also pass both of those).
+    java.util.regex.Pattern columnScopedPattern = java.util.regex.Pattern.compile("UPDATE\\s*\\([^)]*REVOKED_AT[^)]*\\)");
     long columnScopedUpdateLines =
         userRoleGrants.stream()
             .filter(
                 g ->
-                    g.toUpperCase(Locale.ROOT)
-                        .matches(".*UPDATE\\s*\\([^)]*REVOKED_AT[^)]*\\).*"))
+                    columnScopedPattern.matcher(g.toUpperCase(Locale.ROOT)).find())
             .count();
     assertThat(columnScopedUpdateLines)
         .as(
@@ -188,9 +188,10 @@ class UserRolesPrivilegeIT {
     // No line may grant a bare, table-scoped UPDATE (UPDATE not immediately followed by a column
     // list) on user_roles -- a silent reversion to table-scoped UPDATE would pass assertions 1
     // and 3 above while quietly re-opening the R-1 load-mutate-save hazard D2 exists to close.
+    java.util.regex.Pattern tableScopedPattern = java.util.regex.Pattern.compile("\\bUPDATE\\b(?!\\s*\\()");
     boolean tableScopedUpdatePresent =
         userRoleGrants.stream()
-            .anyMatch(g -> g.toUpperCase(Locale.ROOT).matches(".*\\bUPDATE\\b(?!\\s*\\().*"));
+            .anyMatch(g -> tableScopedPattern.matcher(g.toUpperCase(Locale.ROOT)).find());
     assertThat(tableScopedUpdatePresent)
         .as("UPDATE on user_roles must never be table-scoped (bare UPDATE keyword): " + userRoleGrants)
         .isFalse();

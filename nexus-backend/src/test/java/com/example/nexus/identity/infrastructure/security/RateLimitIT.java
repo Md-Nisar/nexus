@@ -130,6 +130,7 @@ class RateLimitIT {
    * Note: this test deliberately sleeps 11 s.
    */
   @Test
+  @SuppressWarnings("java:S2925")
   void rate_limit_resets_after_window() throws Exception {
     String ip = "10.3.0.1";
     String email = "rl-win-" + UUID.randomUUID() + "@example.com";

@@ -1,6 +1,6 @@
 package com.example.nexus;
 
-import com.example.nexus.common.web.LogMaskingUtil;
+import com.example.nexus.common.domain.LogMaskingUtil;
 import com.example.nexus.identity.application.port.out.MailSenderPort;
 import java.sql.Connection;
 import java.sql.DriverManager;

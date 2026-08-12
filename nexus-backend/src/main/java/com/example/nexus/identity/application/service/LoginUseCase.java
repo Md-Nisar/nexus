@@ -58,6 +58,7 @@ public class LoginUseCase {
   private static final String AUTH_001 = "AUTH_001";
   private static final String AUTH_002 = "AUTH_002";
   private static final String AUTH_LCK_001 = "AUTH_LCK_001";
+  private static final String OUTCOME_FAILURE = "FAILURE";
 
   private final EmailBlindIndexService emailBlindIndexService;
   private final UserRegistrationPort userRegistrationPort;
@@ -150,7 +151,7 @@ public class LoginUseCase {
     // Step 4: Lockout pre-check — after Argon2 to preserve timing uniformity (T-LCK-5)
     if (found && user.getStatus() == UserStatus.LOCKED) {
       secureEventService.recordEvent(
-          new AuthEvent(uuidGenerator.newId(), AuthEventType.LOGIN_FAILURE, "FAILURE")
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.LOGIN_FAILURE, OUTCOME_FAILURE)
               .withUserId(user.getId())
               .withTenantId(tenantId)
               .withIpAddress(clientIp)
@@ -169,7 +170,7 @@ public class LoginUseCase {
         secureEventService.persistFailedAttempt(user.getId(), clock.instant());
       }
       secureEventService.recordEvent(
-          new AuthEvent(uuidGenerator.newId(), AuthEventType.LOGIN_FAILURE, "FAILURE")
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.LOGIN_FAILURE, OUTCOME_FAILURE)
               .withIpAddress(clientIp)
               .withMetadata(ctx.toMetadataJson()));
       throw new AuthenticationException(AUTH_001, "Invalid email or password");
@@ -179,7 +180,7 @@ public class LoginUseCase {
     // LOCKED was already handled in Step 4; only PENDING and other statuses reach here.
     if (user.getStatus() == UserStatus.PENDING) {
       secureEventService.recordEvent(
-          new AuthEvent(uuidGenerator.newId(), AuthEventType.LOGIN_PENDING_ACCOUNT, "FAILURE")
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.LOGIN_PENDING_ACCOUNT, OUTCOME_FAILURE)
               .withUserId(user.getId())
               .withTenantId(tenantId)
               .withIpAddress(clientIp)
@@ -189,7 +190,7 @@ public class LoginUseCase {
     if (user.getStatus() != UserStatus.ACTIVE) {
       // DISABLED or any future status — NEVER fall through to token issuance
       secureEventService.recordEvent(
-          new AuthEvent(uuidGenerator.newId(), AuthEventType.LOGIN_FAILURE, "FAILURE")
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.LOGIN_FAILURE, OUTCOME_FAILURE)
               .withUserId(user.getId())
               .withTenantId(tenantId)
               .withIpAddress(clientIp)

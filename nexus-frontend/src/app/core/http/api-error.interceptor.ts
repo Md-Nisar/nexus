@@ -30,7 +30,7 @@ export const apiErrorInterceptor: HttpInterceptorFn = (req, next) => {
         errorType: error instanceof HttpErrorResponse ? 'HttpErrorResponse' : 'Error',
         context: {
           status: status !== -1 ? status : undefined,
-          statusText: error instanceof HttpErrorResponse ? error.statusText : undefined,
+          errorMessage: error instanceof HttpErrorResponse ? error.message : undefined,
           url: req.url,
         },
       };

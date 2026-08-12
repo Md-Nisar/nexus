@@ -14,5 +14,6 @@ class NexusSmokeTest {
 
     @Test
     void contextLoads() {
+        // Context loads successfully if this block executes.
     }
 }

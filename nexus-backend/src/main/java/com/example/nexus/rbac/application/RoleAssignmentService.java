@@ -51,6 +51,11 @@ public class RoleAssignmentService {
   private static final String USER_WRITE = "user:write";
   private static final String USER_READ = "user:read";
 
+  private static final String LOG_KEY_EVENT = "event";
+  private static final String LOG_KEY_TENANT_ID = "tenantId";
+  private static final String LOG_KEY_TARGET_USER_ID = "targetUserId";
+  private static final String LOG_KEY_ROLE_ID = "roleId";
+
   private final UserRoleAssignmentPort userRoleAssignmentPort;
   private final UserDirectoryPort userDirectoryPort;
   private final RbacAuditPort rbacAuditPort;
@@ -111,10 +116,10 @@ public class RoleAssignmentService {
       // not a security signal (contrast the WARN below on the last-admin lockout guard).
       // nexus.domain.conflict{code="RBAC_004"} already provides the trend-line metric.
       log.atDebug()
-          .addKeyValue("event", "RBAC_DUPLICATE_ASSIGNMENT")
-          .addKeyValue("tenantId", actor.tenantId())
-          .addKeyValue("targetUserId", targetUserId)
-          .addKeyValue("roleId", roleId)
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_DUPLICATE_ASSIGNMENT")
+          .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+          .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
+          .addKeyValue(LOG_KEY_ROLE_ID, roleId)
           .log("Duplicate active role assignment attempted");
       throw new DuplicateRoleAssignmentException();
     }
@@ -145,10 +150,10 @@ public class RoleAssignmentService {
           // Operator-visible confirmation independent of the audit table's own availability
           // (the audit write above is itself best-effort — see RbacAuditPort's contract).
           log.atInfo()
-              .addKeyValue("event", "ROLE_ASSIGNED")
-              .addKeyValue("tenantId", actor.tenantId())
-              .addKeyValue("targetUserId", targetUserId)
-              .addKeyValue("roleId", roleId)
+              .addKeyValue(LOG_KEY_EVENT, "ROLE_ASSIGNED")
+              .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+              .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
+              .addKeyValue(LOG_KEY_ROLE_ID, roleId)
               .addKeyValue("assignedBy", actor.userId())
               .log("Role assigned");
         });
@@ -190,11 +195,11 @@ public class RoleAssignmentService {
         // WARN, not DEBUG: an operator needs to know which tenant nearly locked itself out
         // and who tried, independent of the nexus.domain.conflict{code="RBAC_002"} counter.
         log.atWarn()
-            .addKeyValue("event", "RBAC_LAST_ADMIN_REVOCATION_BLOCKED")
-            .addKeyValue("tenantId", actor.tenantId())
-            .addKeyValue("targetUserId", targetUserId)
+            .addKeyValue(LOG_KEY_EVENT, "RBAC_LAST_ADMIN_REVOCATION_BLOCKED")
+            .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+            .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
             .addKeyValue("actorUserId", actor.userId())
-            .addKeyValue("roleId", roleId)
+            .addKeyValue(LOG_KEY_ROLE_ID, roleId)
             .log("Blocked revocation of the tenant's last active TENANT_ADMIN assignment");
         throw new LastAdminRoleException();
       }
@@ -226,10 +231,10 @@ public class RoleAssignmentService {
                   actor.userId(),
                   requestContext));
           log.atInfo()
-              .addKeyValue("event", "ROLE_REVOKED")
-              .addKeyValue("tenantId", actor.tenantId())
-              .addKeyValue("targetUserId", targetUserId)
-              .addKeyValue("roleId", roleId)
+              .addKeyValue(LOG_KEY_EVENT, "ROLE_REVOKED")
+              .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+              .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
+              .addKeyValue(LOG_KEY_ROLE_ID, roleId)
               .addKeyValue("revokedBy", actor.userId())
               .log("Role revoked");
         });

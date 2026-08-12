@@ -8,3 +8,6 @@ Thumbs.db
 # Environment files (never commit secrets)
 .env
 .env.*
+
+# AI Agents MCP
+.agents/mcp_config.json
