@@ -73,6 +73,7 @@ class AuthEventsAppendOnlyIT {
     try {
       jdbc.update("UPDATE auth_events SET outcome = ? WHERE id = ?", "FAILURE", id);
     } catch (org.springframework.dao.DataAccessException ignored) {
+      // Expected to throw because trigger enforces append-only
     }
 
     String outcome =

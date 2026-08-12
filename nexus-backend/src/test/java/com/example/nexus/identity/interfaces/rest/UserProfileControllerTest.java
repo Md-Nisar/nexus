@@ -11,19 +11,17 @@ import org.junit.jupiter.api.Test;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+
 
 @Tag("UnitTest")
 class UserProfileControllerTest {
 
   private UserProfileController controller;
-  private MockMvc mockMvc;
+
 
   @BeforeEach
   void setUp() {
     controller = new UserProfileController();
-    mockMvc = MockMvcBuilders.standaloneSetup(controller).build();
   }
 
   @Test

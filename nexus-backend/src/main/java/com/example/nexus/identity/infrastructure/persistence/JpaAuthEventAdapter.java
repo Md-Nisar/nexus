@@ -48,6 +48,7 @@ public class JpaAuthEventAdapter implements AuthEventPort {
   }
 
   @Override
+  @SuppressWarnings("java:S6213")
   public void record(AuthEvent event) {
     try {
       authEventRepository.save(event);
