@@ -328,11 +328,11 @@ class UserTest {
     // Force-lock with null: lockAccount sets lockedUntil, so we simulate a hypothetical
     // state by locking and then checking with a past expiry (production code always sets
     // lockedUntil non-null, but the guard condition checks for null).
-    // The check in unlockIfExpired is: status==LOCKED && lockedUntil != null && isBefore(now)
-    // This test drives the lockedUntil==null branch by not calling lockAccount at all.
-    // Easiest approach: construct a fresh PENDING user and manually reach the LOCKED path is
-    // not possible without reflection because lockAccount always sets lockedUntil.
-    // Verify the existing ACTIVE path (lockedUntil is null) returns false without NPE.
+    // The guard condition checks if the status is locked, the locked-until date is present, and it is in the past.
+    // This test drives the null locked-until branch by not calling lockAccount at all.
+    // Easiest approach is to construct a fresh user and manually reach the locked path, but it is
+    // not possible without reflection because lockAccount always sets the locked-until field.
+    // Verify the existing active path (locked-until is null) returns false without NPE.
     boolean result = user.unlockIfExpired(Instant.now());
 
     assertThat(result).isFalse();

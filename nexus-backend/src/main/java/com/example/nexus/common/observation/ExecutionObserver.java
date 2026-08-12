@@ -162,9 +162,9 @@ public class ExecutionObserver {
   private void recordMetric(String event, String operation, String outcome, long durationMs) {
     if (meterRegistry != null) {
       Timer.builder("nexus.execution.duration")
-          .tag("event", event)
-          .tag("operation", operation)
-          .tag("outcome", outcome)
+          .tag(KEY_EVENT, event)
+          .tag(KEY_OPERATION, operation)
+          .tag(KEY_OUTCOME, outcome)
           .register(meterRegistry)
           .record(durationMs, java.util.concurrent.TimeUnit.MILLISECONDS);
     }

@@ -99,7 +99,7 @@ interface ProblemDocument {
   readonly code: string;
   readonly detail?: string;
   readonly traceId?: string;
-  readonly details?: AppError['details'];
+  readonly details: AppError['details'];
   /** Set only by the backend's RBAC_001 403 branch; absent on ACCESS_DENIED. */
   readonly requiredPermission?: string;
 }

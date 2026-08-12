@@ -33,10 +33,7 @@ public class LoggingMailSenderAdapter implements MailSenderPort {
         "sendVerificationEmail",
         true, // Log success at INFO for stubbed integration
         false, // Not terminal boundary
-        () -> {
-          // No-op stub
-          return null;
-        }
+        () -> null
     );
   }
 
@@ -48,10 +45,7 @@ public class LoggingMailSenderAdapter implements MailSenderPort {
         "sendAccountExistsEmail",
         true,
         false,
-        () -> {
-          // No-op stub
-          return null;
-        }
+        () -> null
     );
   }
 
@@ -63,10 +57,7 @@ public class LoggingMailSenderAdapter implements MailSenderPort {
         "sendPasswordResetEmail",
         true,
         false,
-        () -> {
-          // No-op stub
-          return null;
-        }
+        () -> null
     );
   }
 }
