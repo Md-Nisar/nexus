@@ -1,7 +1,6 @@
 import { ApplicationConfig, provideBrowserGlobalErrorListeners, ErrorHandler } from '@angular/core';
 import { provideHttpClient, withInterceptors, withXhr } from '@angular/common/http';
 import { provideRouter, withComponentInputBinding } from '@angular/router';
-import { provideAnimations } from '@angular/platform-browser/animations';
 
 import { routes } from './app.routes';
 import { correlationIdInterceptor } from './core/http/correlation-id.interceptor';
@@ -110,20 +109,6 @@ export const appConfig: ApplicationConfig = {
       withInterceptors([correlationIdInterceptor, apiErrorInterceptor, authInterceptor]),
     ),
 
-    /**
-     * Angular animations module (async initialization).
-     *
-     * provideAnimationsAsync():
-     * - Loads the BrowserAnimationsModule asynchronously
-     * - Defers animation feature initialization until after first render
-     * - Improves initial page load performance (critical for First Contentful Paint)
-     * - Material components still work during async initialization
-     *
-     * Integration note:
-     * If animations are needed immediately, use provideAnimations() instead.
-     * For most modern SPAs, async initialization is preferred for better
-     * Lighthouse scores and faster time-to-interactive.
-     */
-    provideAnimations(),
+    // No global animations provider required as of Angular 20.2/21 (use animate.enter/leave).
   ],
 };

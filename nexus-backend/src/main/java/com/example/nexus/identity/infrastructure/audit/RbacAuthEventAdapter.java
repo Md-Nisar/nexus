@@ -72,6 +72,7 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
     record(event, AuthEventType.ROLE_REVOKED, "revokedBy", "revoke");
   }
 
+  @SuppressWarnings("java:S6213")
   private void record(
       RbacAuditEvent event, AuthEventType eventType, String actorFieldName, String operation) {
     try {

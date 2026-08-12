@@ -27,6 +27,7 @@ import org.springframework.stereotype.Component;
  * #verify(String)} guards against alg=none and HS256-confusion attacks (T-3.1, T-3.2).
  */
 @Component
+@SuppressWarnings("java:S2143")
 public class JwtRs256Service implements JwtPort {
 
   private static final String AUTH_003 = "AUTH_003";

@@ -21,5 +21,6 @@ public interface AuthEventPort {
    *
    * @param event the event to record
    */
+  @SuppressWarnings("java:S6213")
   void record(AuthEvent event);
 }
