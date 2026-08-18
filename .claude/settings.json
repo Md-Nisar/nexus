@@ -28,7 +28,49 @@
       "Write(./**/application-prod.*)"
     ]
   },
-  "hooks": {},
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/block-prod-commands.mjs"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/secret-scan.mjs"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/format.mjs"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/run-tests.mjs"
+          }
+        ]
+      }
+    ]
+  },
   "env": {
     "JAVA_TOOL_OPTIONS": "-Dfile.encoding=UTF-8",
     "MAVEN_OPTS": "-Xmx2g"

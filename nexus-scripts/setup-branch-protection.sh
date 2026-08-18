@@ -10,8 +10,8 @@ REPO="${1:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"
 echo "Configuring branch protection for ${REPO}@main ..."
 
 # Required status checks must match the job names produced by the CI workflows:
-#   maven.yml  -> "backend-build"
-#   node.yml   -> "frontend-build", "e2e"
+#   backend-ci.yml  -> "backend-build"
+#   frontend-ci.yml -> "frontend-build", "e2e"
 #   commit-lint.yml -> "pr-title"
 gh api -X PUT "repos/${REPO}/branches/main/protection" \
   --input - <<'JSON'

@@ -1,4 +1,4 @@
-// Shared helpers for Claude Code hooks. Cross-platform (Windows/macOS/Linux):
+// Shared helpers for Claude Code and Antigravity hooks. Cross-platform (Windows/macOS/Linux):
 // invoked via `node`, no shell-specific syntax.
 
 import { spawnSync } from 'node:child_process';
@@ -17,10 +17,56 @@ export async function readStdin() {
   }
 }
 
-/** The text a Write/Edit tool is about to persist (content or new_string). */
+/** Detect whether the payload came from Antigravity/AGY. */
+export function isAgy(input) {
+  return Boolean(input?.toolCall || input?.conversationId || input?.workspacePaths);
+}
+
+/** Extract the command being executed across Claude and Antigravity. */
+export function commandBeingRun(input) {
+  return input?.tool_input?.command ?? input?.toolCall?.args?.CommandLine ?? '';
+}
+
+/** Extract the target file path across Claude and Antigravity tools. */
+export function targetFilePath(input) {
+  return (
+    input?.tool_input?.file_path ??
+    input?.toolCall?.args?.TargetFile ??
+    input?.toolCall?.args?.AbsolutePath ??
+    ''
+  );
+}
+
+/** The text a Write/Edit tool is about to persist across Claude and Antigravity. */
 export function textBeingWritten(input) {
   const ti = input?.tool_input ?? {};
-  return ti.content ?? ti.new_string ?? '';
+  if (ti.content || ti.new_string) return ti.content ?? ti.new_string ?? '';
+  const args = input?.toolCall?.args ?? {};
+  if (args.CodeContent) return args.CodeContent;
+  if (args.ReplacementContent) return args.ReplacementContent;
+  if (Array.isArray(args.ReplacementChunks)) {
+    return args.ReplacementChunks.map((c) => c.ReplacementContent || '').join('\n');
+  }
+  return '';
+}
+
+/** Respond with a block/deny decision in the appropriate format for the caller. */
+export function deny(input, reason) {
+  if (isAgy(input)) {
+    process.stdout.write(JSON.stringify({ decision: 'deny', reason }) + '\n');
+    process.exit(0);
+  } else {
+    process.stderr.write(reason + '\n');
+    process.exit(2);
+  }
+}
+
+/** Respond with an allow/pass decision in the appropriate format for the caller. */
+export function allow(input) {
+  if (isAgy(input)) {
+    process.stdout.write(JSON.stringify({ decision: 'allow' }) + '\n');
+  }
+  process.exit(0);
 }
 
 /** Returns a reason string if the path is protected from agent writes, else null. */

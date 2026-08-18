@@ -11,3 +11,10 @@ Thumbs.db
 
 # AI Agents MCP
 .agents/mcp_config.json
+
+# Python
+__pycache__/
+*.pyc
+
+# Maven
+nexus-backend/.mvn

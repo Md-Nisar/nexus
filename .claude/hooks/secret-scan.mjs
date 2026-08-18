@@ -7,7 +7,7 @@
 // detection included in its fs scan) complete the net.
 // Exit 2 → the write is blocked and stderr is shown to Claude.
 
-import { readStdin, textBeingWritten, blockedTargetPath } from './_hooklib.mjs';
+import { readStdin, textBeingWritten, targetFilePath, blockedTargetPath, deny, allow } from './_hooklib.mjs';
 
 // High-confidence patterns only — kept tight to avoid blocking legitimate writes
 // (e.g. documentation that mentions a key format). Placeholders are exempted below.
@@ -25,16 +25,16 @@ const SECRET_PATTERNS = [
 const PLACEHOLDER = /(EXAMPLE|PLACEHOLDER|CHANGEME|CHANGE_ME|YOUR[_-]|XXXX|\.\.\.|\$\{|<[a-z-]+>|redacted|dummy|sample|test)/i;
 
 const input = await readStdin();
-const filePath = input?.tool_input?.file_path ?? '';
+const filePath = targetFilePath(input);
 
 // 1) Protected files must never be written by the agent.
 const blocked = blockedTargetPath(filePath);
 if (blocked) {
-  process.stderr.write(
+  deny(
+    input,
     `Blocked write to protected file: ${filePath}\n` +
-      `Reason: ${blocked}. Production config and key material are managed outside the repo.\n`,
+      `Reason: ${blocked}. Production config and key material are managed outside the repo.`,
   );
-  process.exit(2);
 }
 
 // 2) Scan the content being written.
@@ -44,15 +44,15 @@ if (text) {
     if (PLACEHOLDER.test(line)) continue;
     for (const { name, re } of SECRET_PATTERNS) {
       if (re.test(line)) {
-        process.stderr.write(
+        deny(
+          input,
           `Possible secret blocked (${name}) in ${filePath || 'content'}.\n` +
             `If this is a real credential, use an environment variable / Vault reference instead.\n` +
-            `If it is a false positive (example value), add a placeholder marker (e.g. EXAMPLE) and retry.\n`,
+            `If it is a false positive (example value), add a placeholder marker (e.g. EXAMPLE) and retry.`,
         );
-        process.exit(2);
       }
     }
   }
 }
 
-process.exit(0);
+allow(input);

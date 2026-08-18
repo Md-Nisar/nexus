@@ -78,8 +78,8 @@ Full containerized stack: `docker compose --profile full up -d`.
 
 ## CI
 
-- **Backend CI** (`maven.yml`) — build, Checkstyle, unit + integration tests (Testcontainers), per-layer JaCoCo coverage gates (see [TESTING.md](docs/TESTING.md)), SpotBugs, ArchUnit; optional SonarQube job
-- **Frontend CI** (`node.yml`) — format check, ESLint, Vitest with coverage, production build, Playwright E2E
+- **Backend CI** (`backend-ci.yml`) — build, Checkstyle, unit + integration tests (Testcontainers), per-layer JaCoCo coverage gates (see [TESTING.md](docs/TESTING.md)), SpotBugs, ArchUnit; optional SonarQube job
+- **Frontend CI** (`frontend-ci.yml`) — format check, ESLint, Vitest with coverage, production build, Playwright E2E
 - **PR Title** (`commit-lint.yml`) — Conventional Commit title check
 - **Security Scan** (`security.yml`, weekly) — OWASP Dependency-Check, npm audit, Trivy (vulns + secrets)
 

@@ -5,12 +5,12 @@
 // the pre-push git hook and `npm run format:check` in CI. Java formatting is NOT
 // done here (no per-file formatter configured) — Checkstyle enforces Java style in CI.
 
-import { readStdin, run } from './_hooklib.mjs';
+import { readStdin, run, targetFilePath } from './_hooklib.mjs';
 
 const FRONTEND_EXT = /\.(ts|tsx|html|scss|css|json|mjs)$/;
 
 const input = await readStdin();
-const target = (input?.tool_input?.file_path ?? '').replace(/\\/g, '/');
+const target = targetFilePath(input).replace(/\\/g, '/');
 
 if (target && FRONTEND_EXT.test(target) && target.includes('nexus-frontend/')) {
   // Run Prettier from the frontend package so its config (package.json) applies.
@@ -18,4 +18,5 @@ if (target && FRONTEND_EXT.test(target) && target.includes('nexus-frontend/')) {
   run('npx', ['prettier', '--write', '--log-level', 'warn', rel], 'nexus-frontend');
 }
 
+process.stdout.write('{}\n');
 process.exit(0);

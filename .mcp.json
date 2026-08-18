@@ -7,6 +7,22 @@
         "@playwright/mcp@latest"
       ],
       "env": {}
+    },
+    "sonarqube": {
+      "command": "npx",
+      "args": ["-y", "sonarqube-mcp-server@latest"],
+      "env": {
+        "SONARQUBE_URL": "https://sonarcloud.io",
+        "SONARQUBE_ORG": "md-nisar",
+        "SONARQUBE_TOKEN": "${SONAR_READ_TOKEN}"
+      }
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_READ_TOKEN}"
+      }
     }
   }
 }

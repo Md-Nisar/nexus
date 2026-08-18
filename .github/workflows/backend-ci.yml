@@ -12,6 +12,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   backend-build:
     name: backend-build
@@ -48,6 +52,7 @@ jobs:
         with:
           name: test-results
           path: nexus-backend/target/surefire-reports
+          retention-days: 7
 
       - name: Upload JaCoCo Report
         if: always()
@@ -55,6 +60,7 @@ jobs:
         with:
           name: jacoco-report
           path: nexus-backend/target/site/jacoco
+          retention-days: 7
 
       - name: Upload SpotBugs Report
         if: always()
@@ -62,6 +68,7 @@ jobs:
         with:
           name: spotbugs-report
           path: nexus-backend/target/spotbugs*
+          retention-days: 7
 
   sonar:
     name: SonarQube Analysis
@@ -71,8 +78,6 @@ jobs:
 
     permissions:
       contents: read
-
-
 
     steps:
       - name: Checkout Code
@@ -103,7 +108,7 @@ jobs:
 
       # 3. Unified SonarCloud Scan
       - name: SonarCloud Scan
-        uses: SonarSource/sonarcloud-github-action@master
+        uses: SonarSource/sonarcloud-github-action@v3.1.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

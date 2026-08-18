@@ -3,7 +3,7 @@
 // Complements settings.json deny rules (which catch exact prefixes) by matching
 // dangerous *patterns*. Exit 2 → command blocked, stderr shown to Claude.
 
-import { readStdin } from './_hooklib.mjs';
+import { readStdin, commandBeingRun, deny, allow } from './_hooklib.mjs';
 
 const DANGER = [
   { name: 'recursive root delete', re: /\brm\s+-[a-z]*r[a-z]*f?\s+(\/|~|\$HOME|\.\.)(\s|$)/ },
@@ -22,16 +22,16 @@ const DANGER = [
 ];
 
 const input = await readStdin();
-const command = input?.tool_input?.command ?? '';
+const command = commandBeingRun(input);
 
 for (const { name, re } of DANGER) {
   if (re.test(command)) {
-    process.stderr.write(
+    deny(
+      input,
       `Blocked dangerous command (${name}):\n  ${command}\n` +
-        `If this is intentional and safe, ask the user to run it manually.\n`,
+        `If this is intentional and safe, ask the user to run it manually.`,
     );
-    process.exit(2);
   }
 }
 
-process.exit(0);
+allow(input);

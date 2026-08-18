@@ -1,5 +1,7 @@
-target/
 .idea/
+.mvn/
+docs/
+target/
 *.iml
 .git/
-docs/TESTING.md
+
