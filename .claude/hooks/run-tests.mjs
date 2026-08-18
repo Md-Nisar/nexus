@@ -84,11 +84,17 @@ if (sides.has('frontend')) {
 }
 
 if (failures.length) {
-  process.stderr.write(
-    `\nTests failing: ${failures.join(', ')}.\n` +
-      `Fix them before ending the session, or tell the user explicitly that tests are red.\n`,
-  );
-  process.exit(2);
+  const msg = `Tests failing: ${failures.join(', ')}.\nFix them before ending the session, or tell the user explicitly that tests are red.`;
+  if (input?.terminationReason || input?.executionNum !== undefined) {
+    process.stdout.write(JSON.stringify({ decision: 'continue', reason: msg }) + '\n');
+    process.exit(0);
+  } else {
+    process.stderr.write(`\n${msg}\n`);
+    process.exit(2);
+  }
 }
 
+if (input?.terminationReason || input?.executionNum !== undefined) {
+  process.stdout.write(JSON.stringify({ decision: 'allow' }) + '\n');
+}
 process.exit(0);

@@ -1,0 +1,46 @@
+name: AI Guardrails
+
+# Runs only on agent-authored PRs. This is the enforcement layer:
+# Automated agents cannot edit this file (CODEOWNERS + settings.json deny),
+# so these limits hold even if an agent misbehaves or is prompt-injected.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  guardrails:
+    name: AI Guardrails
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip if not an AI branch
+        id: check
+        run: |
+          if [[ "${{ github.head_ref }}" == ai/* ]]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "Not an ai/** branch - guardrails not applicable."
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.run == 'true'
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        if: steps.check.outputs.run == 'true'
+        with:
+          python-version: '3.12'
+
+      - name: Enforce diff budget and forbidden paths
+        if: steps.check.outputs.run == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python nexus-scripts/check_guardrails.py

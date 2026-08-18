@@ -109,7 +109,7 @@ Managed via GitHub Actions on every pull request or push to `main` or `feature/*
 * **Allowed Types**: `feat`, `fix`, `migration`, `docs`, `test`, `refactor`, `chore`, `perf`, `security`, `build`, `ci`.
 
 #### B. Frontend CI
-* **Workflow**: [node.yml](file:///C:/entomo/AI/nexus/.github/workflows/node.yml)
+* **Workflow**: [frontend-ci.yml](file:///C:/entomo/AI/nexus/.github/workflows/frontend-ci.yml)
 * **Environment**: Node.js 24 on Ubuntu Runner.
 * **Checks**:
   1. `npm run format:check` — Ensures formatting consistency.
@@ -119,7 +119,7 @@ Managed via GitHub Actions on every pull request or push to `main` or `feature/*
   5. `npm run e2e` — Runs end-to-end user flows in headless Chromium via **Playwright**.
 
 #### C. Backend CI
-* **Workflow**: [maven.yml](file:///C:/entomo/AI/nexus/.github/workflows/maven.yml)
+* **Workflow**: [backend-ci.yml](file:///C:/entomo/AI/nexus/.github/workflows/backend-ci.yml)
 * **Environment**: JDK 25 (Temurin) on Ubuntu Runner.
 * **Checks**:
   1. `mvn clean verify` — Runs compilation, unit tests, and integration tests.

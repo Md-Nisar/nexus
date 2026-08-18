@@ -6,8 +6,7 @@
         "Authorization": "Bearer ${SONAR_TOKEN}",
         "SONARQUBE_ORG": "Md-Nisar"
       }
-    }
-  },
+    },
     "github": {
       "command": "npx.cmd",
       "args": [
@@ -18,4 +17,5 @@
         "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
       }
     }
+  }
 }
