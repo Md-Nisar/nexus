@@ -259,7 +259,7 @@ Standards are not just documented — they fail builds and block merges:
 1. **Claude hooks** (`.claude/settings.json`, cross-platform Node `.mjs`): block prod-command/prod-file/secret writes (PreToolUse), auto-format frontend (PostToolUse), run affected unit tests at session end (Stop).
 2. **Local git hook** (`.githooks/pre-push`): runs format/lint/tests for changed sides before a human push. Enable once: `git config core.hooksPath .githooks` (also in setup below).
 3. **CI** (`.github/workflows/`): `mvn verify` (Checkstyle, per-layer JaCoCo, SpotBugs, ArchUnit, Testcontainers ITs), frontend format/lint/test/build/e2e, weekly OWASP+Trivy, Conventional-Commit PR-title check.
-4. **Branch protection** (`scripts/setup-branch-protection.sh` + `.github/CODEOWNERS`): required status checks, ≥1 code-owner approval, resolved conversations, no force-push. A repo admin runs the script once.
+4. **Branch protection** (`nexus-scripts/setup-branch-protection.sh` + `.github/CODEOWNERS`): required status checks, ≥1 code-owner approval, resolved conversations, no force-push. A repo admin runs the script once.
 
 ### One-time local setup
 ```bash

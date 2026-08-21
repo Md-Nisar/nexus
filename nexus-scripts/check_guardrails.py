@@ -51,7 +51,6 @@ FORBIDDEN_PATTERNS = [
     "**/config/**",
 ]
 
-SONAR_KEY_RE = re.compile(r"\b[A-Za-z0-9_-]{8,}\b")
 RULE_KEY_RE = re.compile(r"\b(java|typescript|javascript|css|html):S\d+\b")
 
 failures: list[str] = []

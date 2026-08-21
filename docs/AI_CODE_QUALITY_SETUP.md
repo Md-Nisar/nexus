@@ -1,6 +1,6 @@
 # Nexus AI Code-Quality & Automated Refactoring Setup
 
-This guide documents the automated code-quality pipeline for the **Nexus** platform (Java 25 / Spring Boot 4 + Angular 21 / TypeScript).
+This guide documents the automated code-quality pipeline for the **Nexus** platform (Java 25 / Spring Boot 4 + Angular 22 / TypeScript).
 
 It features a **multi-provider AI architecture** allowing automated maintenance to run on **Google Gemini** (default, ~98% cost savings), **OpenAI**, or **Anthropic Claude**.
 
