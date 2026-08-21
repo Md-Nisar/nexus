@@ -3,7 +3,7 @@
 # (https://cli.github.com), so it cannot be applied from inside the repo — a human
 # admin runs this once. Re-running is safe (idempotent PUT).
 #
-# Usage:  ./scripts/setup-branch-protection.sh [owner/repo]
+# Usage:  ./nexus-scripts/setup-branch-protection.sh [owner/repo]
 set -euo pipefail
 
 REPO="${1:-$(gh repo view --json nameWithOwner -q .nameWithOwner)}"

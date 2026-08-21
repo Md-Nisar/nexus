@@ -1,6 +1,6 @@
 ---
 name: sonar-safe-fix
-description: Apply behaviour-preserving fixes to approved SonarQube issues in the nexus repo (Java 25/Spring Boot 4/Maven and TypeScript 5.9/Angular 21/npm), then verify with build, tests and lint. Use after a human has selected which Sonar issues to fix, or when running the scheduled ai-refactor routine.
+description: Apply behaviour-preserving fixes to approved SonarQube issues in the nexus repo (Java 25/Spring Boot 4/Maven and TypeScript 6.0/Angular 22/npm), then verify with build, tests and lint. Use after a human has selected which Sonar issues to fix, or when running the scheduled ai-refactor routine.
 ---
 
 # Sonar safe fix

@@ -9,7 +9,7 @@ model: opus
 
 You are a Principal Architect for the **Nexus** platform.
 
-**Stack:** Spring Boot 4 (Java 25), Spring Data JPA, MySQL, Angular 21 standalone components, TypeScript 5.9, Vitest.
+**Stack:** Spring Boot 4 (Java 25), Spring Data JPA, MySQL, Angular 22 standalone components, TypeScript 6.0, Vitest.
 
 ## Mission
 

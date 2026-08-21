@@ -4,8 +4,7 @@
     "allow": [
       "Bash(*)",
       "Read(**)",
-      "Edit(**)",
-      "Write(**)"
+      "Edit(**)"
     ],
     "deny": [
       "Bash(git push:*)",
@@ -23,9 +22,7 @@
       "Read(~/.ssh/**)",
       "Read(~/.aws/**)",
       "Edit(./.env*)",
-      "Edit(./**/application-prod.*)",
-      "Write(./.env*)",
-      "Write(./**/application-prod.*)"
+      "Edit(./**/application-prod.*)"
     ]
   },
   "hooks": {

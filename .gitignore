@@ -1,20 +1,28 @@
-# Local agent overrides
-.claude/settings.local.json
-
-# OS noise
+# OS
 .DS_Store
 Thumbs.db
 
-# Environment files (never commit secrets)
+# Environment files
 .env
 .env.*
 
-# AI Agents MCP
+# AI Agents
+.claude/settings.local.json
 .agents/mcp_config.json
+
+# Backend
+# Java
+nexus-backend/target/
+nexus-backend/nexus-backend.hprof
+
+# Maven
+nexus-backend/.mvn/wrapper/maven-wrapper.jar
 
 # Python
 __pycache__/
 *.pyc
 
-# Maven
-nexus-backend/.mvn
+# Frontend
+# Angular
+nexus-frontend/dist/
+nexus-frontend/node_modules/

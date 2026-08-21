@@ -5,7 +5,7 @@ Nexus is a modern enterprise application platform designed to provide a scalable
 | Module | Stack | Port |
 |--------|-------|------|
 | [`nexus-backend`](nexus-backend/) | Spring Boot 4 · Java 25 · MySQL · Flyway | 1000 |
-| [`nexus-frontend`](nexus-frontend/) | Angular 21 · TypeScript 5.9 · Vitest · Playwright | 2000 |
+| [`nexus-frontend`](nexus-frontend/) | Angular 22 · TypeScript 6.0 · Vitest · Playwright | 2000 |
 
 ## Repository Structure
 
@@ -83,4 +83,4 @@ Full containerized stack: `docker compose --profile full up -d`.
 - **PR Title** (`commit-lint.yml`) — Conventional Commit title check
 - **Security Scan** (`security.yml`, weekly) — OWASP Dependency-Check, npm audit, Trivy (vulns + secrets)
 
-Merges to `main` additionally require ≥1 code-owner approval and green required checks — `scripts/setup-branch-protection.sh` (run once by a repo admin).
+Merges to `main` additionally require ≥1 code-owner approval and green required checks — `nexus-scripts/setup-branch-protection.sh` (run once by a repo admin).

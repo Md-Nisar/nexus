@@ -1,6 +1,6 @@
 ---
 name: sonar-triage
-description: Fetch, analyse and prioritise SonarQube Cloud issues for the nexus project (Java 25 / Spring Boot 4 + Angular 21 / TypeScript). Use when the user asks to find, list, review or prioritise Sonar issues, technical debt, code smells, or quality-gate failures. Read-only - never modifies code.
+description: Fetch, analyse and prioritise SonarQube Cloud issues for the nexus project (Java 25 / Spring Boot 4 + Angular 22 / TypeScript). Use when the user asks to find, list, review or prioritise Sonar issues, technical debt, code smells, or quality-gate failures. Read-only - never modifies code.
 ---
 
 # Sonar triage
@@ -11,7 +11,7 @@ Turn a raw Sonar issue list into a ranked, decision-ready shortlist.
 
 - Project key: `Md-Nisar_nexus`, organisation `md-nisar`, host `https://sonarcloud.io`
 - Backend: `nexus-backend/` (Java 25, Spring Boot 4, Maven)
-- Frontend: `nexus-frontend/` (TypeScript 5.9, Angular 21, Vitest)
+- Frontend: `nexus-frontend/` (TypeScript 6.0, Angular 22, Vitest) — `nexus-frontend/package.json` is authoritative
 
 ## Procedure
 
