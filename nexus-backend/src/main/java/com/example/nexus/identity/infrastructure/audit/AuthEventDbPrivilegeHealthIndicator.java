@@ -3,7 +3,6 @@ package com.example.nexus.identity.infrastructure.audit;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Statement;
 import javax.sql.DataSource;
 import com.example.nexus.common.security.DbUserUtil;
 import org.slf4j.Logger;
