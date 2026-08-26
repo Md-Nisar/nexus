@@ -42,12 +42,28 @@ public enum AuthEventType {
 
   // RBAC role-change events (US-012, Res. 2 — US-012 owns emission; US-014 extends/verifies)
   ROLE_ASSIGNED("ROLE_ASSIGNED"),
-  ROLE_REVOKED("ROLE_REVOKED");
+  ROLE_REVOKED("ROLE_REVOKED"),
+
+  // US-014 AC4: a DENIED role assignment/revocation attempt (403 authorization denials only).
+  // Deliberately NOT in PRIORITY below — see the comment on that field.
+  ROLE_ASSIGNMENT_DENIED("ROLE_ASSIGNMENT_DENIED");
 
   // ROLE_ASSIGNED/ROLE_REVOKED are PRIORITY (T-R4, reversing the original US-012 D10 decision):
   // role-change audit events must not share the drop-newest STANDARD lane with high-volume
   // events like LOGIN_FAILURE — a lost ROLE_ASSIGNED record is exactly the repudiation risk
   // AC7 exists to prevent.
+  //
+  // ROLE_ASSIGNMENT_DENIED is deliberately NOT priority (US-014 design decision 5): a denial row
+  // is far cheaper to generate per row than a success row — it requires no valid mutation, no
+  // lock, and (for the cross-tenant-target path) only a published, low-entropy role id, whereas
+  // ROLE_ASSIGNED/ROLE_REVOKED require an actual state mutation with a last-admin guard and
+  // duplicate check in the way. The priority lane is capacity-200 with drop-newest overflow (ADR
+  // 0011 §1), so admitting this cheaper-to-generate type would let a user:write holder's probing
+  // loop crowd out LOCKOUT/TOKEN_REFRESH_REUSE — the same hazard the two-lane split exists to
+  // prevent (T-D1), reproduced inside the protected lane — and would hand that caller a direct
+  // pager trigger (depth-critical >=180 -> page). Membership in the priority lane turns on
+  // cost-and-uniqueness per row, not mere triggerability by an authenticated caller (today:
+  // TENANT_ADMIN only — see design §0 decision 5a).
   private static final Set<AuthEventType> PRIORITY =
       EnumSet.of(
           LOCKOUT,

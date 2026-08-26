@@ -189,7 +189,8 @@ public class AuthEventRetryBuffer {
    * priority status from the wire name rather than requiring callers to pass the enum separately.
    * Historical/non-canonical literals (design §2.2 — Gap 6, no backfill) do not match any {@link
    * AuthEventType} constant and route to the standard lane, which is the correct conservative
-   * default (only the 4 named priority types are ever elevated).
+   * default (only the types for which {@link AuthEventType#isPriority()} returns {@code true} are
+   * ever elevated).
    */
   private boolean isPriorityWireName(String wireName) {
     for (AuthEventType type : AuthEventType.values()) {

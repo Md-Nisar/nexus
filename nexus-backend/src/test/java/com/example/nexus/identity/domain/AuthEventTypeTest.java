@@ -99,8 +99,8 @@ class AuthEventTypeTest {
   }
 
   @Test
-  void should_defineAllTwentyTwoConstants_when_valuesCalled() {
-    assertThat(AuthEventType.values()).hasSize(22);
+  void should_defineAllTwentyThreeConstants_when_valuesCalled() {
+    assertThat(AuthEventType.values()).hasSize(23);
     assertThat(Arrays.stream(AuthEventType.values()).map(Enum::name))
         .containsExactlyInAnyOrder(
             "LOGIN_SUCCESS",
@@ -124,7 +124,20 @@ class AuthEventTypeTest {
             "RESEND_REQUESTED",
             "RESEND_THROTTLED",
             "ROLE_ASSIGNED",
-            "ROLE_REVOKED");
+            "ROLE_REVOKED",
+            "ROLE_ASSIGNMENT_DENIED");
+  }
+
+  /**
+   * US-014 design decision 5: {@code ROLE_ASSIGNMENT_DENIED} is deliberately NOT priority — a
+   * denial row is far cheaper to generate per row than a success row, so admitting it to the
+   * capacity-200 drop-newest priority lane would let a probing loop crowd out genuine
+   * LOCKOUT/TOKEN_REFRESH_REUSE arrivals. Named after the decision itself so a future "for
+   * consistency with ROLE_ASSIGNED" edit fails a test whose name states why it shouldn't.
+   */
+  @Test
+  void should_returnFalse_when_isPriorityCheckedOnRoleAssignmentDenied() {
+    assertThat(AuthEventType.ROLE_ASSIGNMENT_DENIED.isPriority()).isFalse();
   }
 
   @Test

@@ -92,8 +92,17 @@ public class RoleAssignmentService {
   @Transactional
   public ActiveRoleAssignment assign(
       RoleChangeActor actor, UUID targetUserId, UUID roleId, RequestContext requestContext) {
-    verifySameTenant(targetUserId, actor, USER_WRITE);
-    Role role = resolveRoleInTenant(roleId, actor, USER_WRITE);
+    Role role;
+    try {
+      verifySameTenant(targetUserId, actor, USER_WRITE);
+      role = resolveRoleInTenant(roleId, actor, USER_WRITE);
+    } catch (InsufficientPermissionException e) {
+      // roleName is null by construction here: T1 runs before the role is resolved, and T2's
+      // resolveRoleInTenant throws without returning the (foreign-tenant) Role. A denial row
+      // therefore never carries another tenant's role name.
+      recordDenial(actor, targetUserId, roleId, null, e.getReason(), requestContext);
+      throw e;
+    }
 
     if (RbacRoleNames.TENANT_ADMIN.equalsIgnoreCase(role.getName())) {
       // AC8: only an active TENANT_ADMIN may grant TENANT_ADMIN. This MUST be a live,
@@ -107,6 +116,9 @@ public class RoleAssignmentService {
           userRoleAssignmentPort.hasActiveAdminAssignment(
               actor.userId(), role.getId(), actor.tenantId());
       if (!callerIsActiveAdmin) {
+        recordDenial(
+            actor, targetUserId, roleId, role.getName(), DenialReason.NOT_TENANT_ADMIN,
+            requestContext);
         throw new InsufficientPermissionException(USER_WRITE, DenialReason.NOT_TENANT_ADMIN);
       }
     }
@@ -178,8 +190,15 @@ public class RoleAssignmentService {
   @Transactional
   public void revoke(
       RoleChangeActor actor, UUID targetUserId, UUID roleId, RequestContext requestContext) {
-    verifySameTenant(targetUserId, actor, USER_WRITE);
-    Role role = resolveRoleInTenant(roleId, actor, USER_WRITE);
+    Role role;
+    try {
+      verifySameTenant(targetUserId, actor, USER_WRITE);
+      role = resolveRoleInTenant(roleId, actor, USER_WRITE);
+    } catch (InsufficientPermissionException e) {
+      // roleName is null by construction here -- same rationale as assign()'s catch above.
+      recordDenial(actor, targetUserId, roleId, null, e.getReason(), requestContext);
+      throw e;
+    }
 
     // Resolved once, ahead of the admin-lockout check: this covers "never assigned" and
     // "already revoked" identically for both admin and non-admin roles, and its id is what
@@ -330,6 +349,37 @@ public class RoleAssignmentService {
   private ResourceNotFoundException assignmentNotFound() {
     return new ResourceNotFoundException(
         "ROLE_ASSIGNMENT_NOT_FOUND", "This role assignment does not exist or was already revoked");
+  }
+
+  /**
+   * Emits a {@code ROLE_ASSIGNMENT_DENIED} audit row for a 403 authorization denial (US-014 AC4).
+   * Called INLINE, before the caller rethrows, from a transaction about to roll back -- never via
+   * {@link #registerPostCommitSideEffects}, since {@code afterCommit} never fires on a doomed
+   * transaction. {@code actor.tenantId()}: the row is always written under the actor's tenant,
+   * never the target's.
+   */
+  private void recordDenial(
+      RoleChangeActor actor,
+      UUID targetUserId,
+      UUID roleId,
+      String roleName,
+      DenialReason reason,
+      RequestContext requestContext) {
+    try {
+      rbacAuditPort.recordRoleAssignmentDenied(
+          new RbacAuditEvent(
+              actor.tenantId(), targetUserId, roleId, roleName, actor.userId(), requestContext),
+          reason);
+    } catch (RuntimeException e) {
+      // Defense in depth: RbacAuditPort's contract already says implementations must never
+      // throw, but the denial itself must win regardless of whether a future implementation
+      // honors that contract.
+      log.atError()
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_AUDIT_DENIAL_CALL_SITE_FAILED")
+          .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+          .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
+          .log("recordRoleAssignmentDenied threw despite its never-throw contract", e);
+    }
   }
 
   /**

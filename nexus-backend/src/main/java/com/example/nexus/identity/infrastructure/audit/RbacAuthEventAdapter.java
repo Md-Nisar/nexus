@@ -1,5 +1,6 @@
 package com.example.nexus.identity.infrastructure.audit;
 
+import com.example.nexus.common.security.DenialReason;
 import com.example.nexus.identity.application.service.SecureEventService;
 import com.example.nexus.identity.domain.AuthEvent;
 import com.example.nexus.identity.domain.AuthEventType;
@@ -39,7 +40,9 @@ import tools.jackson.databind.ObjectMapper;
  * never fires for this failure mode. This adapter's catch-all therefore logs at {@code ERROR}
  * (not WARN) with a distinct {@code event=RBAC_AUDIT_WRITE_LOST} marker and increments {@code
  * nexus.rbac.audit_write_failed{operation}} — without this, a committed role change can lose its
- * audit record with zero operational signal.
+ * audit record with zero operational signal. For {@link #recordRoleAssignmentDenied}, the
+ * surrounding caller transaction is already doomed to roll back, so {@code REQUIRES_NEW} here is
+ * not merely a durability nicety but the sole reason the denial row survives (US-014 AC4).
  */
 @Component
 public class RbacAuthEventAdapter implements RbacAuditPort {
@@ -64,25 +67,41 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
 
   @Override
   public void recordRoleAssigned(RbacAuditEvent event) {
-    record(event, AuthEventType.ROLE_ASSIGNED, "assignedBy", "assign");
+    record(event, AuthEventType.ROLE_ASSIGNED, "SUCCESS", "assignedBy", "assign", null);
   }
 
   @Override
   public void recordRoleRevoked(RbacAuditEvent event) {
-    record(event, AuthEventType.ROLE_REVOKED, "revokedBy", "revoke");
+    record(event, AuthEventType.ROLE_REVOKED, "SUCCESS", "revokedBy", "revoke", null);
+  }
+
+  @Override
+  public void recordRoleAssignmentDenied(RbacAuditEvent event, DenialReason reason) {
+    record(
+        event,
+        AuthEventType.ROLE_ASSIGNMENT_DENIED,
+        "DENIED",
+        "attemptedBy",
+        "deny",
+        reason != null ? reason.name() : null);
   }
 
   @SuppressWarnings("java:S6213")
   private void record(
-      RbacAuditEvent event, AuthEventType eventType, String actorFieldName, String operation) {
+      RbacAuditEvent event,
+      AuthEventType eventType,
+      String outcome,
+      String actorFieldName,
+      String operation,
+      String reasonName) {
     try {
       // Metadata JSON is built and serialised BEFORE any transaction/port call (T-R3 mitigation
       // #3): a JsonProcessingException is caught here, before SecureEventService's REQUIRES_NEW
       // transaction ever opens.
-      String metadata = buildMetadataJson(event, actorFieldName);
+      String metadata = buildMetadataJson(event, actorFieldName, reasonName);
 
       AuthEvent authEvent =
-          new AuthEvent(uuidGenerator.newId(), eventType, "SUCCESS")
+          new AuthEvent(uuidGenerator.newId(), eventType, outcome)
               .withUserId(event.targetUserId()) // the subject, matching the LOCKOUT convention
               .withTenantId(event.tenantId())
               .withIpAddress(event.requestContext() != null ? event.requestContext().ipAddress() : null)
@@ -112,7 +131,7 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
    * Builds the ordered metadata map and serialises it to JSON. Keys are omitted entirely when
    * their value is {@code null} — never emitted as a JSON {@code null} (03-design.md §6.3).
    */
-  private String buildMetadataJson(RbacAuditEvent event, String actorFieldName) {
+  private String buildMetadataJson(RbacAuditEvent event, String actorFieldName, String reasonName) {
     Map<String, Object> metadata = new LinkedHashMap<>();
     String traceId = event.requestContext() != null ? event.requestContext().traceId() : null;
     if (traceId != null) {
@@ -123,6 +142,9 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
     }
     if (event.roleName() != null) {
       metadata.put("roleName", event.roleName());
+    }
+    if (reasonName != null) {
+      metadata.put("reason", reasonName);
     }
     if (event.actorUserId() != null) {
       metadata.put(actorFieldName, event.actorUserId().toString());
