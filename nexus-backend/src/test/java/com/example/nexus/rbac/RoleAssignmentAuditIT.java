@@ -26,9 +26,17 @@ import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Callable;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -128,6 +136,9 @@ class RoleAssignmentAuditIT {
         .as("metadata must be valid JSON per MySQL's own JSON_VALID(), never asserted via string"
             + " equality (binary JSON normalises key order)")
         .isEqualTo(1);
+    // Load-bearing (US-014 T-T8 item 5): only guard, at the real-MySQL level, that a successful
+    // assign still writes outcome=SUCCESS after record(...) was parameterised with an outcome
+    // argument (RbacAuthEventAdapter). See also RbacAuthEventAdapterTest's mirrored assertion.
     assertThat(row.get("outcome")).isEqualTo("SUCCESS");
     assertThat(toUuid((byte[]) row.get("user_id")))
         .as("event user_id must be the TARGET user, not the actor")
@@ -157,6 +168,8 @@ class RoleAssignmentAuditIT {
 
     Map<String, Object> row = findLatestAuditRow(target.getId(), "ROLE_REVOKED");
     assertThat(((Number) row.get("valid")).intValue()).isEqualTo(1);
+    // Load-bearing (US-014 T-T8 item 5) -- see the comment in
+    // should_writeValidRoleAssignedEventWithCorrectFields_when_assignSucceeds above.
     assertThat(row.get("outcome")).isEqualTo("SUCCESS");
     assertThat(row.get("revoked_by"))
         .as("revokedBy must be the ACTOR")
@@ -286,6 +299,258 @@ class RoleAssignmentAuditIT {
         .isEqualTo(1);
   }
 
+  // ── US-014 AC4: a ROLE_ASSIGNMENT_DENIED row survives the caller's TX1 rollback ─────────
+  // ── (read AFTER assertThatThrownBy completes -- the only proof the REQUIRES_NEW write ───
+  // ── actually committed; a Mockito verify would prove nothing about durability) ──────────
+
+  @Test
+  void should_writeRoleAssignmentDeniedRow_when_assignFailsWithCrossTenantTarget() {
+    UUID actorTenantId = uuidGenerator.newId();
+    UUID targetTenantId = uuidGenerator.newId();
+    User actorUser = seedUser("audit-denied-403-actor", actorTenantId);
+    User target = seedUser("audit-denied-403-target", targetTenantId);
+    Role role = seedRole("AUDIT-DENIED-403", actorTenantId);
+    RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), actorTenantId);
+    RequestContext ctx = requestContext();
+
+    assertThatThrownBy(
+            () -> roleAssignmentService.assign(actor, target.getId(), role.getId(), ctx))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .satisfies(
+            e ->
+                assertThat(((InsufficientPermissionException) e).getReason())
+                    .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+
+    assertThat(countAuditRows(target.getId(), "ROLE_ASSIGNMENT_DENIED"))
+        .as("the denial row must survive TX1's rollback")
+        .isEqualTo(1);
+    assertThat(countAuditRows(target.getId(), "ROLE_ASSIGNED"))
+        .as("a denial must never be miscategorised as a successful assignment")
+        .isZero();
+
+    Map<String, Object> row = findLatestDenialAuditRow(target.getId());
+    assertThat(row.get("outcome")).isEqualTo("DENIED");
+    assertThat(toUuid((byte[]) row.get("user_id"))).isEqualTo(target.getId());
+    assertThat(toUuid((byte[]) row.get("tenant_id"))).isEqualTo(actorTenantId);
+    assertThat(row.get("reason")).isEqualTo("CROSS_TENANT_TARGET");
+    assertThat(row.get("attempted_by")).isEqualTo(actorUser.getId().toString());
+    assertThat(row.get("role_id")).isEqualTo(role.getId().toString());
+    assertThat(row.get("role_name"))
+        .as("T1 fires before the role is ever resolved -- roleName must be absent")
+        .isNull();
+    assertThat(row.get("trace_id")).isEqualTo(ctx.traceId());
+  }
+
+  @Test
+  void should_writeRoleAssignmentDeniedRow_when_assignFailsWithNotTenantAdmin() {
+    UUID tenantId = uuidGenerator.newId();
+    User actorUser = seedUser("audit-denied-admin-actor", tenantId);
+    User target = seedUser("audit-denied-admin-target", tenantId);
+    // seedRole prefixes names ("RAA-" + tag + "-" + randomUUID), which can never match
+    // RbacRoleNames.TENANT_ADMIN under equalsIgnoreCase (03-design.md §0.1 item 5) -- the role
+    // must be built directly with the literal name for AC8's guard to fire at all.
+    Role role =
+        roleRepository.save(new Role(uuidGenerator.newId(), tenantId, "TENANT_ADMIN", null, false));
+    RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
+    RequestContext ctx = requestContext();
+    // actorUser holds no active TENANT_ADMIN assignment, so AC8's guard denies the grant.
+
+    assertThatThrownBy(
+            () -> roleAssignmentService.assign(actor, target.getId(), role.getId(), ctx))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .satisfies(
+            e ->
+                assertThat(((InsufficientPermissionException) e).getReason())
+                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
+
+    Map<String, Object> row = findLatestDenialAuditRow(target.getId());
+    assertThat(row.get("outcome")).isEqualTo("DENIED");
+    assertThat(row.get("reason")).isEqualTo("NOT_TENANT_ADMIN");
+    assertThat(row.get("role_name"))
+        .as("T3 fires only after the role is resolved in the actor's own tenant")
+        .isEqualTo("TENANT_ADMIN");
+    assertThat(row.get("attempted_by")).isEqualTo(actorUser.getId().toString());
+  }
+
+  // ── US-014 Phase 8 test-coverage audit: concurrent access on the REQUIRES_NEW audit write ──
+  // ── (threat model T-D6 flags the nested REQUIRES_NEW transaction as a pool-pressure risk ──
+  // ── under concurrent denials; no existing test proves the writes themselves stay correct ──
+  // ── and independent -- not merely that ONE denial round-trips -- under real concurrency) ──
+
+  /**
+   * Eight threads, each with its OWN tenant/actor/target/role fixture (so this proves independent
+   * {@code REQUIRES_NEW} transactions never cross-contaminate each other's audit row, rather than
+   * modelling the {@code FOR SHARE} lock-contention shape T-D6 separately describes for a single
+   * shared admin row), fire a T1 cross-tenant {@code assign} denial simultaneously via a {@link
+   * CyclicBarrier} — the same deterministic, no-{@code Thread.sleep} harness {@code
+   * LastAdminLockoutIT#should_allowExactlyOneWinner_when_eightConcurrentRevokesRaceAcrossTwoAdmins}
+   * already establishes for this codebase. Every thread's own doomed TX1 suspends and a
+   * independent TX2 commits concurrently with the other seven; asserts (a) no deadlock — all
+   * eight complete within a generous bounded timeout, and (b) each of the eight target users ends
+   * up with EXACTLY its own {@code ROLE_ASSIGNMENT_DENIED} row, correctly attributed to its own
+   * actor/tenant — proving the concurrent {@code REQUIRES_NEW} writes never collide, duplicate, or
+   * bleed fields across threads.
+   */
+  @Test
+  void should_writeOneCorrectlyAttributedDenialRowPerThread_when_eightConcurrentCrossTenantDenialsRace()
+      throws Exception {
+    int threadCount = 8;
+    List<User> actors = new ArrayList<>();
+    List<UUID> actorTenantIds = new ArrayList<>();
+    List<User> targets = new ArrayList<>();
+    List<Role> roles = new ArrayList<>();
+
+    for (int i = 0; i < threadCount; i++) {
+      UUID actorTenantId = uuidGenerator.newId();
+      UUID targetTenantId = uuidGenerator.newId();
+      actorTenantIds.add(actorTenantId);
+      actors.add(seedUser("audit-conc-actor-" + i, actorTenantId));
+      targets.add(seedUser("audit-conc-target-" + i, targetTenantId));
+      roles.add(seedRole("AUDIT-CONC-" + i, actorTenantId));
+    }
+
+    CyclicBarrier barrier = new CyclicBarrier(threadCount);
+    ExecutorService executor = Executors.newFixedThreadPool(threadCount);
+    List<Future<DenialReason>> futures = new ArrayList<>();
+
+    for (int i = 0; i < threadCount; i++) {
+      int idx = i;
+      futures.add(
+          executor.submit(
+              (Callable<DenialReason>)
+                  () -> {
+                    barrier.await(5, TimeUnit.SECONDS);
+                    RoleChangeActor actor =
+                        new RoleChangeActor(actors.get(idx).getId(), actorTenantIds.get(idx));
+                    try {
+                      roleAssignmentService.assign(
+                          actor, targets.get(idx).getId(), roles.get(idx).getId(),
+                          requestContext());
+                      return null;
+                    } catch (InsufficientPermissionException e) {
+                      return e.getReason();
+                    }
+                  }));
+    }
+
+    executor.shutdown();
+    boolean terminated = executor.awaitTermination(15, TimeUnit.SECONDS);
+    assertThat(terminated)
+        .as("all 8 concurrent REQUIRES_NEW denial writes must complete without deadlock")
+        .isTrue();
+
+    for (Future<DenialReason> future : futures) {
+      // future.get() rethrows unwrapped for anything unexpected -- a raw DataAccessException
+      // or any outcome other than the expected denial fails this loop loudly.
+      assertThat(future.get())
+          .as("every thread must observe its own genuine T1 cross-tenant-target denial")
+          .isEqualTo(DenialReason.CROSS_TENANT_TARGET);
+    }
+
+    for (int i = 0; i < threadCount; i++) {
+      Map<String, Object> row = findLatestDenialAuditRow(targets.get(i).getId());
+      assertThat(row.get("outcome")).isEqualTo("DENIED");
+      assertThat(row.get("attempted_by"))
+          .as("thread " + i + "'s row must be attributed to ITS OWN actor, never another"
+              + " concurrently-running thread's")
+          .isEqualTo(actors.get(i).getId().toString());
+      assertThat(countAuditRows(targets.get(i).getId(), "ROLE_ASSIGNMENT_DENIED"))
+          .as("thread " + i + " must produce EXACTLY one denial row -- no duplication from the"
+              + " concurrent REQUIRES_NEW commits")
+          .isEqualTo(1);
+    }
+  }
+
+  // ── US-014 AC3: ROLE_ASSIGNMENT_DENIED rows are append-only, same as ROLE_ASSIGNED ──────
+  // ── (mirrors AuthEventsAppendOnlyIT, differing only in the event_type literal used) ─────
+
+  @Test
+  void should_rejectUpdate_when_roleAssignedAuditRowModified() {
+    byte[] id = toBytes(uuidGenerator.newId());
+    jdbc.update(
+        "INSERT INTO auth_events (id, event_type, outcome) VALUES (?, ?, ?)",
+        id, "ROLE_ASSIGNED", "SUCCESS");
+
+    assertThatThrownBy(
+            () -> jdbc.update("UPDATE auth_events SET outcome = ? WHERE id = ?", "DENIED", id))
+        .isInstanceOf(org.springframework.dao.DataAccessException.class)
+        .hasMessageContaining("append-only")
+        .satisfies(
+            ex -> {
+              Throwable cause = ex;
+              while (cause != null && !(cause instanceof java.sql.SQLException)) {
+                cause = cause.getCause();
+              }
+              assertThat(cause).isInstanceOf(java.sql.SQLException.class);
+              assertThat(((java.sql.SQLException) cause).getSQLState()).isEqualTo("45000");
+            });
+  }
+
+  @Test
+  void should_leaveRoleAssignedAuditRowUnchanged_when_updateRejected() {
+    byte[] id = toBytes(uuidGenerator.newId());
+    jdbc.update(
+        "INSERT INTO auth_events (id, event_type, outcome) VALUES (?, ?, ?)",
+        id, "ROLE_ASSIGNED", "SUCCESS");
+
+    try {
+      jdbc.update("UPDATE auth_events SET outcome = ? WHERE id = ?", "DENIED", id);
+    } catch (org.springframework.dao.DataAccessException ignored) {
+      // Expected to throw because the append-only trigger enforces no UPDATE.
+    }
+
+    String outcome =
+        jdbc.queryForObject("SELECT outcome FROM auth_events WHERE id = ?", String.class, id);
+    assertThat(outcome).isEqualTo("SUCCESS");
+  }
+
+  // ── US-014 AC5: ordered assign/revoke history for a (tenant, user) pair ─────────────────
+
+  @Test
+  void should_returnAssignThenRevokeInCreatedAtOrder_when_queryingRoleHistoryForUserInTenant() {
+    UUID tenantA = uuidGenerator.newId();
+    User actorA = seedUser("audit-history-a-actor", tenantA);
+    User targetA = seedUser("audit-history-a-target", tenantA);
+    Role roleA = seedRole("AUDIT-HISTORY-A", tenantA);
+    RoleChangeActor changeActorA = new RoleChangeActor(actorA.getId(), tenantA);
+
+    // Decoy in an unrelated tenant B -- must never appear in tenant A's history.
+    UUID tenantB = uuidGenerator.newId();
+    User actorB = seedUser("audit-history-b-actor", tenantB);
+    User targetB = seedUser("audit-history-b-target", tenantB);
+    Role roleB = seedRole("AUDIT-HISTORY-B", tenantB);
+    roleAssignmentService.assign(
+        new RoleChangeActor(actorB.getId(), tenantB), targetB.getId(), roleB.getId(),
+        requestContext());
+
+    // Two separate service calls -> two separate committed transactions -> two distinct
+    // DB-generated created_at values, making a microsecond DATETIME(6) tie effectively
+    // impossible without needing an artificial secondary sort key.
+    roleAssignmentService.assign(changeActorA, targetA.getId(), roleA.getId(), requestContext());
+    roleAssignmentService.revoke(changeActorA, targetA.getId(), roleA.getId(), requestContext());
+
+    List<Map<String, Object>> rows =
+        jdbc.queryForList(
+            "SELECT event_type, created_at, user_id FROM auth_events WHERE tenant_id = ? AND "
+                + "user_id = ? AND event_type IN ('ROLE_ASSIGNED','ROLE_REVOKED') ORDER BY "
+                + "created_at",
+            toBytes(tenantA), toBytes(targetA.getId()));
+
+    assertThat(rows).hasSize(2);
+    assertThat(rows.stream().map(r -> (String) r.get("event_type")))
+        .containsExactly("ROLE_ASSIGNED", "ROLE_REVOKED");
+    assertThat(rows.stream().map(r -> toUuid((byte[]) r.get("user_id"))))
+        .as("the tenant-B decoy must never appear in tenant A's history")
+        .containsOnly(targetA.getId());
+
+    java.time.LocalDateTime firstCreatedAt = (java.time.LocalDateTime) rows.get(0).get("created_at");
+    java.time.LocalDateTime secondCreatedAt = (java.time.LocalDateTime) rows.get(1).get("created_at");
+    assertThat(secondCreatedAt)
+        .as("flake control for the DATETIME(6) tie risk -- two real, separate service calls "
+            + "make a tie effectively impossible")
+        .isAfter(firstCreatedAt);
+  }
+
   // ── Scenario 5 (T-R3, the most important scenario in this file): forced real ───────────
   // ── MySQL-level audit-write failure ─────────────────────────────────────────────────────
 
@@ -386,6 +651,24 @@ class RoleAssignmentAuditIT {
             + "FROM auth_events WHERE user_id = ? AND event_type = ? ORDER BY created_at DESC"
             + " LIMIT 1",
         toBytes(targetUserId), eventType);
+  }
+
+  /**
+   * Sibling of {@link #findLatestAuditRow}, for {@code ROLE_ASSIGNMENT_DENIED} rows: adds {@code
+   * reason}/{@code attempted_by} JSON extraction in place of {@code assigned_by}/{@code
+   * revoked_by} (US-014 §4.2's denial-row shape).
+   */
+  private Map<String, Object> findLatestDenialAuditRow(UUID targetUserId) {
+    return jdbc.queryForMap(
+        "SELECT outcome, user_id, tenant_id, "
+            + "JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.roleId')) AS role_id, "
+            + "JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.roleName')) AS role_name, "
+            + "JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.reason')) AS reason, "
+            + "JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.attemptedBy')) AS attempted_by, "
+            + "JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.traceId')) AS trace_id "
+            + "FROM auth_events WHERE user_id = ? AND event_type = 'ROLE_ASSIGNMENT_DENIED' "
+            + "ORDER BY created_at DESC LIMIT 1",
+        toBytes(targetUserId));
   }
 
   private int countAuditRows(UUID targetUserId, String eventType) {

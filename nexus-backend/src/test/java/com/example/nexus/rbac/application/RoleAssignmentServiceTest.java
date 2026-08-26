@@ -4,12 +4,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.common.security.DenialReason;
@@ -26,7 +31,9 @@ import com.example.nexus.rbac.domain.LastAdminRoleException;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -37,6 +44,7 @@ import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.LoggerFactory;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
@@ -126,6 +134,10 @@ class RoleAssignmentServiceTest {
             new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx));
   }
 
+  // Load-bearing (US-014 Decision 2): this and the other 404/409 negative assertions in this
+  // file are now proof of the 403-only ROLE_ASSIGNMENT_DENIED scope, not incidental. Do not
+  // weaken -- defense-in-depth only, the catch type in RoleAssignmentService is the structural
+  // control.
   @Test
   void should_throwResourceNotFound_when_targetUserNotFound() {
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.empty());
@@ -150,9 +162,66 @@ class RoleAssignmentServiceTest {
                     .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
 
     verify(userRoleAssignmentPort, never()).findRole(any());
-    verifyNoInteractions(permissionCachePort, rbacAuditPort);
+    verify(rbacAuditPort)
+        .recordRoleAssignmentDenied(
+            new RbacAuditEvent(tenantId, targetUserId, roleId, null, actorId, ctx),
+            DenialReason.CROSS_TENANT_TARGET);
+    verifyNoInteractions(permissionCachePort);
   }
 
+  /**
+   * US-014 Phase 8 test-coverage audit: {@code recordDenial}'s own {@code catch (RuntimeException)}
+   * (defense-in-depth atop {@link RbacAuditPort}'s "must never throw" contract) is untested by any
+   * existing test -- every other test mocks {@code rbacAuditPort} to succeed silently. Proves the
+   * real denial ({@code CROSS_TENANT_TARGET}) still wins and is not masked or replaced by the audit
+   * port's contract violation.
+   */
+  @Test
+  void should_stillThrowOriginalDenialException_when_rbacAuditPortViolatesNeverThrowContract() {
+    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(otherTenantId));
+    doThrow(new RuntimeException("audit port broke its never-throw contract"))
+        .when(rbacAuditPort)
+        .recordRoleAssignmentDenied(any(), any());
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .satisfies(
+            e ->
+                assertThat(((InsufficientPermissionException) e).getReason())
+                    .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+  }
+
+  /**
+   * Companion to the test above: the defensive catch must also make the contract violation
+   * operationally visible via an ERROR log carrying the {@code RBAC_AUDIT_DENIAL_CALL_SITE_FAILED}
+   * marker, mirroring {@code RbacAuthEventAdapterTest}'s {@code RBAC_AUDIT_WRITE_LOST} pattern.
+   */
+  @Test
+  void should_logErrorWithCallSiteFailedMarker_when_rbacAuditPortViolatesNeverThrowContract() {
+    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(otherTenantId));
+    doThrow(new RuntimeException("audit port broke its never-throw contract"))
+        .when(rbacAuditPort)
+        .recordRoleAssignmentDenied(any(), any());
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+          .isInstanceOf(InsufficientPermissionException.class);
+
+      var errorEvents = appender.list.stream().filter(e -> e.getLevel() == Level.ERROR).toList();
+      assertThat(errorEvents).hasSize(1);
+      Map<String, Object> keyValues = keyValueMap(errorEvents.get(0));
+      assertThat(keyValues)
+          .containsEntry("event", "RBAC_AUDIT_DENIAL_CALL_SITE_FAILED")
+          .containsEntry("tenantId", tenantId)
+          .containsEntry("targetUserId", targetUserId);
+    } finally {
+      stopLogCapture(appender);
+    }
+  }
+
+  // Load-bearing (US-014 Decision 2) -- see the comment on
+  // should_throwResourceNotFound_when_targetUserNotFound above.
   @Test
   void should_throwResourceNotFound_when_assignRoleNotFound() {
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
@@ -179,7 +248,11 @@ class RoleAssignmentServiceTest {
                     .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
 
     verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
-    verifyNoInteractions(permissionCachePort, rbacAuditPort);
+    verify(rbacAuditPort)
+        .recordRoleAssignmentDenied(
+            new RbacAuditEvent(tenantId, targetUserId, roleId, null, actorId, ctx),
+            DenialReason.CROSS_TENANT_TARGET);
+    verifyNoInteractions(permissionCachePort);
   }
 
   @Test
@@ -199,7 +272,11 @@ class RoleAssignmentServiceTest {
 
     verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
     verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
-    verifyNoInteractions(permissionCachePort, rbacAuditPort);
+    verify(rbacAuditPort)
+        .recordRoleAssignmentDenied(
+            new RbacAuditEvent(tenantId, targetUserId, roleId, "TENANT_ADMIN", actorId, ctx),
+            DenialReason.NOT_TENANT_ADMIN);
+    verifyNoInteractions(permissionCachePort);
   }
 
   /**
@@ -225,7 +302,11 @@ class RoleAssignmentServiceTest {
                     .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
 
     verify(userRoleAssignmentPort).hasActiveAdminAssignment(actorId, roleId, tenantId);
-    verifyNoInteractions(permissionCachePort, rbacAuditPort);
+    verify(rbacAuditPort)
+        .recordRoleAssignmentDenied(
+            new RbacAuditEvent(tenantId, targetUserId, roleId, "tenant_admin", actorId, ctx),
+            DenialReason.NOT_TENANT_ADMIN);
+    verifyNoInteractions(permissionCachePort);
   }
 
   /**
@@ -262,6 +343,8 @@ class RoleAssignmentServiceTest {
             new RbacAuditEvent(tenantId, targetUserId, roleId, "TENANT_ADMIN", actorId, ctx));
   }
 
+  // Load-bearing (US-014 Decision 2) -- see the comment on
+  // should_throwResourceNotFound_when_targetUserNotFound above.
   @Test
   void should_throwDuplicateRoleAssignment_when_activeAssignmentAlreadyExists() {
     Role role = memberRole();
@@ -371,6 +454,8 @@ class RoleAssignmentServiceTest {
             new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx));
   }
 
+  // Load-bearing (US-014 Decision 2) -- see the comment on
+  // should_throwResourceNotFound_when_targetUserNotFound above.
   @Test
   void should_throwResourceNotFound_when_revokeTargetUserNotFound() {
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.empty());
@@ -393,9 +478,15 @@ class RoleAssignmentServiceTest {
                 assertThat(((InsufficientPermissionException) e).getReason())
                     .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
 
-    verifyNoInteractions(permissionCachePort, rbacAuditPort);
+    verify(rbacAuditPort)
+        .recordRoleAssignmentDenied(
+            new RbacAuditEvent(tenantId, targetUserId, roleId, null, actorId, ctx),
+            DenialReason.CROSS_TENANT_TARGET);
+    verifyNoInteractions(permissionCachePort);
   }
 
+  // Load-bearing (US-014 Decision 2) -- see the comment on
+  // should_throwResourceNotFound_when_targetUserNotFound above.
   @Test
   void should_throwResourceNotFound_when_revokeRoleNotFound() {
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
@@ -422,7 +513,11 @@ class RoleAssignmentServiceTest {
                     .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
 
     verify(userRoleAssignmentPort, never()).findActiveAssignmentRef(any(), any(), any());
-    verifyNoInteractions(permissionCachePort, rbacAuditPort);
+    verify(rbacAuditPort)
+        .recordRoleAssignmentDenied(
+            new RbacAuditEvent(tenantId, targetUserId, roleId, null, actorId, ctx),
+            DenialReason.CROSS_TENANT_TARGET);
+    verifyNoInteractions(permissionCachePort);
   }
 
   /**
@@ -431,6 +526,8 @@ class RoleAssignmentServiceTest {
    * identically for admin and non-admin roles. So the lockout-guard port method must never be
    * called for a non-admin role...
    */
+  // Load-bearing (US-014 Decision 2) -- see the comment on
+  // should_throwResourceNotFound_when_targetUserNotFound above.
   @Test
   void should_neverCallLockActiveAssignmentIds_when_nonAdminRoleAssignmentNotFound() {
     Role role = memberRole();
@@ -454,6 +551,8 @@ class RoleAssignmentServiceTest {
    * lockActiveAssignmentIds} (M1) is ever reached, so a not-found assignment short-circuits
    * before the lockout guard runs, even when the role being revoked is {@code TENANT_ADMIN}.
    */
+  // Load-bearing (US-014 Decision 2) -- see the comment on
+  // should_throwResourceNotFound_when_targetUserNotFound above.
   @Test
   void should_neverCallLockActiveAssignmentIds_when_adminRoleAssignmentNotFound() {
     Role role = adminRole("TENANT_ADMIN");
@@ -472,6 +571,8 @@ class RoleAssignmentServiceTest {
   }
 
   /** AC5, actor-agnostic variant 1: the actor is revoking their OWN last-admin assignment. */
+  // Load-bearing (US-014 Decision 2) -- see the comment on
+  // should_throwResourceNotFound_when_targetUserNotFound above.
   @Test
   void should_throwLastAdminRoleException_when_lockedSetSizeOneContainsTargetRef_selfRevoke() {
     UUID refId = UUID.randomUUID();
@@ -496,6 +597,8 @@ class RoleAssignmentServiceTest {
    * AC5, actor-agnostic variant 2: a DIFFERENT admin revokes someone else's last-admin
    * assignment. The guard must fire identically -- it is not conditioned on self-revocation.
    */
+  // Load-bearing (US-014 Decision 2) -- see the comment on
+  // should_throwResourceNotFound_when_targetUserNotFound above.
   @Test
   void should_throwLastAdminRoleException_when_lockedSetSizeOneContainsTargetRef_differentAdminRevoking() {
     UUID refId = UUID.randomUUID();
@@ -561,6 +664,8 @@ class RoleAssignmentServiceTest {
     verify(userRoleAssignmentPort).revoke(eq(refId), any());
   }
 
+  // Load-bearing (US-014 Decision 2) -- see the comment on
+  // should_throwResourceNotFound_when_targetUserNotFound above.
   @Test
   void should_throwResourceNotFound_when_revokeLosesRaceAndZeroRowsAffected() {
     Role role = memberRole();
@@ -658,5 +763,34 @@ class RoleAssignmentServiceTest {
                     .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
 
     verify(userRoleAssignmentPort, never()).findActiveAssignmentViews(any(), any());
+    // Load-bearing (US-014 T-E14): listActive's 403 is deliberately excluded from AC4 — this
+    // is the binding, build-blocking control on that exclusion, not the RequestContext-shaped
+    // barrier alone. If this assertion is ever removed, a read-path denial could mislabel a GET
+    // and widen the emitting population from TENANT_ADMIN to every user:read holder.
+    verifyNoInteractions(rbacAuditPort);
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // Log-capture helpers (mirrors RbacAuthEventAdapterTest's pattern)
+  // ---------------------------------------------------------------------------------------
+
+  private ListAppender<ILoggingEvent> startLogCapture() {
+    Logger logger = (Logger) LoggerFactory.getLogger(RoleAssignmentService.class);
+    ListAppender<ILoggingEvent> listAppender = new ListAppender<>();
+    listAppender.start();
+    logger.addAppender(listAppender);
+    return listAppender;
+  }
+
+  private void stopLogCapture(ListAppender<ILoggingEvent> listAppender) {
+    Logger logger = (Logger) LoggerFactory.getLogger(RoleAssignmentService.class);
+    logger.detachAppender(listAppender);
+    listAppender.stop();
+  }
+
+  private static Map<String, Object> keyValueMap(ILoggingEvent event) {
+    Map<String, Object> map = new HashMap<>();
+    event.getKeyValuePairs().forEach(kv -> map.put(kv.key, kv.value));
+    return map;
   }
 }

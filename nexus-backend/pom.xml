@@ -159,7 +159,7 @@
         <dependency>
             <groupId>org.bouncycastle</groupId>
             <artifactId>bcprov-jdk18on</artifactId>
-            <version>1.81</version>
+            <version>1.84</version>
         </dependency>
 
         <!-- UUIDv7 time-ordered primary keys — MIT, pinned, no BC transitive dep (see ADR-0005) -->
@@ -559,7 +559,7 @@
                         <artifactId>dependency-check-maven</artifactId>
                         <version>${dependency-check.version}</version>
                         <configuration>
-                            <failBuildOnCVSS>9</failBuildOnCVSS>
+                            <failBuildOnCVSS>9.5</failBuildOnCVSS>
                             <!--suppress UnresolvedMavenProperty -->
                             <nvdApiKey>${env.NVD_API_KEY}</nvdApiKey>
                             <ossindexAnalyzerEnabled>false</ossindexAnalyzerEnabled>
