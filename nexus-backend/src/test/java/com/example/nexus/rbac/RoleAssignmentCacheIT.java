@@ -27,6 +27,7 @@ import com.example.nexus.rbac.domain.UserRole;
 import com.example.nexus.rbac.infrastructure.cache.RedisPermissionCacheAdapter;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Tag;
@@ -80,6 +81,7 @@ class RoleAssignmentCacheIT {
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private StringRedisTemplate redisTemplate;
   @Autowired private PlatformTransactionManager transactionManager;
+  @Autowired private MeterRegistry meterRegistry;
 
   @Value("${nexus.redis.key-prefix:nexus}")
   private String keyPrefix;
@@ -156,7 +158,7 @@ class RoleAssignmentCacheIT {
         new RedisPermissionCacheAdapter(brokenTemplate, keyPrefix, ttlSeconds);
     RoleAssignmentService service =
         new RoleAssignmentService(
-            userRoleAssignmentPort, userDirectoryPort, rbacAuditPort, brokenCache);
+            userRoleAssignmentPort, userDirectoryPort, rbacAuditPort, brokenCache, meterRegistry);
     return new RoleAssignmentServiceWithBrokenCache(service, brokenFactory);
   }
 

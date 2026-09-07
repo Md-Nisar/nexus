@@ -46,7 +46,14 @@ public enum AuthEventType {
 
   // US-014 AC4: a DENIED role assignment/revocation attempt (403 authorization denials only).
   // Deliberately NOT in PRIORITY below — see the comment on that field.
-  ROLE_ASSIGNMENT_DENIED("ROLE_ASSIGNMENT_DENIED");
+  ROLE_ASSIGNMENT_DENIED("ROLE_ASSIGNMENT_DENIED"),
+
+  // US-015 AC12 (03-design.md §6.4, D7): role-definition and role-permission audit events.
+  // ROLE_PERMISSION_GRANTED/ROLE_PERMISSION_REVOKED are PRIORITY; ROLE_CREATED is not — see the
+  // comment on the PRIORITY field below for the admission reasoning.
+  ROLE_CREATED("ROLE_CREATED"),
+  ROLE_PERMISSION_GRANTED("ROLE_PERMISSION_GRANTED"),
+  ROLE_PERMISSION_REVOKED("ROLE_PERMISSION_REVOKED");
 
   // ROLE_ASSIGNED/ROLE_REVOKED are PRIORITY (T-R4, reversing the original US-012 D10 decision):
   // role-change audit events must not share the drop-newest STANDARD lane with high-volume
@@ -64,6 +71,20 @@ public enum AuthEventType {
   // pager trigger (depth-critical >=180 -> page). Membership in the priority lane turns on
   // cost-and-uniqueness per row, not mere triggerability by an authenticated caller (today:
   // TENANT_ADMIN only — see design §0 decision 5a).
+  //
+  // ROLE_PERMISSION_GRANTED/ROLE_PERMISSION_REVOKED are PRIORITY (US-015 03-design.md §6.4, D7):
+  // applying the same cost-and-uniqueness test, each row requires an actual role_permissions
+  // mutation past the AC7 system-role guard, a permission-existence read, a duplicate check, and
+  // (for the 3 dangerous permissions) a locking admin-status read — and uniqueness is bounded by
+  // |permissions| = 7 per role, so a probing loop cannot mint unbounded distinct rows. Forensic
+  // value is strictly greater than a single ROLE_ASSIGNED: one row changes the effective
+  // privileges of every current and future holder of that role.
+  //
+  // ROLE_CREATED is deliberately NOT priority (US-015 03-design.md §6.4, D7): it is the cheapest
+  // of the three to generate (one INSERT, no locking read, no existence check) and its
+  // uniqueness is caller-controlled and unbounded (distinct names, one cheap INSERT each) — the
+  // same hazard profile as ROLE_ASSIGNMENT_DENIED, not ROLE_ASSIGNED. A freshly created role
+  // also carries zero permissions and confers nothing until a separately audited grant.
   private static final Set<AuthEventType> PRIORITY =
       EnumSet.of(
           LOCKOUT,
@@ -71,7 +92,9 @@ public enum AuthEventType {
           PASSWORD_CHANGED,
           ACCOUNT_LOCKED_WRITE_FAILED,
           ROLE_ASSIGNED,
-          ROLE_REVOKED);
+          ROLE_REVOKED,
+          ROLE_PERMISSION_GRANTED,
+          ROLE_PERMISSION_REVOKED);
 
   private final String wireName;
 
@@ -87,10 +110,11 @@ public enum AuthEventType {
   /**
    * Used by {@code AuthEventRetryBuffer} to route into the priority vs. standard buffer lane.
    *
-   * @return {@code true} for the 6 highest-value forensic/security-incident signals ({@link
+   * @return {@code true} for the 8 highest-value forensic/security-incident signals ({@link
    *     #LOCKOUT}, {@link #TOKEN_REFRESH_REUSE}, {@link #PASSWORD_CHANGED}, {@link
-   *     #ACCOUNT_LOCKED_WRITE_FAILED}, {@link #ROLE_ASSIGNED}, {@link #ROLE_REVOKED}); {@code
-   *     false} for all other types.
+   *     #ACCOUNT_LOCKED_WRITE_FAILED}, {@link #ROLE_ASSIGNED}, {@link #ROLE_REVOKED}, {@link
+   *     #ROLE_PERMISSION_GRANTED}, {@link #ROLE_PERMISSION_REVOKED}); {@code false} for all other
+   *     types.
    */
   public boolean isPriority() {
     return PRIORITY.contains(this);

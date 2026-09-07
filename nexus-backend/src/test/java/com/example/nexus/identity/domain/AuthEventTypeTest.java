@@ -22,7 +22,9 @@ class AuthEventTypeTest {
           AuthEventType.PASSWORD_CHANGED,
           AuthEventType.ACCOUNT_LOCKED_WRITE_FAILED,
           AuthEventType.ROLE_ASSIGNED,
-          AuthEventType.ROLE_REVOKED);
+          AuthEventType.ROLE_REVOKED,
+          AuthEventType.ROLE_PERMISSION_GRANTED,
+          AuthEventType.ROLE_PERMISSION_REVOKED);
 
   @ParameterizedTest
   @EnumSource(AuthEventType.class)
@@ -80,27 +82,38 @@ class AuthEventTypeTest {
     assertThat(AuthEventType.ROLE_REVOKED.isPriority()).isTrue();
   }
 
+  @Test
+  void should_returnTrue_when_isPriorityCheckedOnRolePermissionGranted() {
+    assertThat(AuthEventType.ROLE_PERMISSION_GRANTED.isPriority()).isTrue();
+  }
+
+  @Test
+  void should_returnTrue_when_isPriorityCheckedOnRolePermissionRevoked() {
+    assertThat(AuthEventType.ROLE_PERMISSION_REVOKED.isPriority()).isTrue();
+  }
+
   @ParameterizedTest
   @EnumSource(value = AuthEventType.class, names = {"LOCKOUT", "TOKEN_REFRESH_REUSE",
-      "PASSWORD_CHANGED", "ACCOUNT_LOCKED_WRITE_FAILED", "ROLE_ASSIGNED", "ROLE_REVOKED"},
+      "PASSWORD_CHANGED", "ACCOUNT_LOCKED_WRITE_FAILED", "ROLE_ASSIGNED", "ROLE_REVOKED",
+      "ROLE_PERMISSION_GRANTED", "ROLE_PERMISSION_REVOKED"},
       mode = EnumSource.Mode.EXCLUDE)
   void should_returnFalse_when_isPriorityCheckedOnAllNonPriorityTypes(AuthEventType type) {
     assertThat(type.isPriority()).isFalse();
   }
 
   @Test
-  void should_containExactlySixTypes_when_priorityTrueSetCollected() {
+  void should_containExactlyEightTypes_when_priorityTrueSetCollected() {
     Set<AuthEventType> actualPriority =
         Arrays.stream(AuthEventType.values())
             .filter(AuthEventType::isPriority)
             .collect(Collectors.toSet());
 
-    assertThat(actualPriority).hasSize(6).isEqualTo(EXPECTED_PRIORITY);
+    assertThat(actualPriority).hasSize(8).isEqualTo(EXPECTED_PRIORITY);
   }
 
   @Test
-  void should_defineAllTwentyThreeConstants_when_valuesCalled() {
-    assertThat(AuthEventType.values()).hasSize(23);
+  void should_defineAllTwentySixConstants_when_valuesCalled() {
+    assertThat(AuthEventType.values()).hasSize(26);
     assertThat(Arrays.stream(AuthEventType.values()).map(Enum::name))
         .containsExactlyInAnyOrder(
             "LOGIN_SUCCESS",
@@ -125,7 +138,10 @@ class AuthEventTypeTest {
             "RESEND_THROTTLED",
             "ROLE_ASSIGNED",
             "ROLE_REVOKED",
-            "ROLE_ASSIGNMENT_DENIED");
+            "ROLE_ASSIGNMENT_DENIED",
+            "ROLE_CREATED",
+            "ROLE_PERMISSION_GRANTED",
+            "ROLE_PERMISSION_REVOKED");
   }
 
   /**
@@ -138,6 +154,19 @@ class AuthEventTypeTest {
   @Test
   void should_returnFalse_when_isPriorityCheckedOnRoleAssignmentDenied() {
     assertThat(AuthEventType.ROLE_ASSIGNMENT_DENIED.isPriority()).isFalse();
+  }
+
+  /**
+   * US-015 design decision D7: {@code ROLE_CREATED}, unlike {@code ROLE_PERMISSION_GRANTED}/
+   * {@code ROLE_PERMISSION_REVOKED}, is deliberately NOT priority — its uniqueness is
+   * caller-controlled and unbounded (a {@code role:write} holder can loop with distinct names at
+   * one cheap {@code INSERT} each) and its privilege consequence is zero (a freshly created role
+   * carries no permissions). Named after the decision itself so a future "for consistency with
+   * ROLE_PERMISSION_GRANTED" edit fails a test whose name states why it shouldn't.
+   */
+  @Test
+  void should_returnFalse_when_isPriorityCheckedOnRoleCreated() {
+    assertThat(AuthEventType.ROLE_CREATED.isPriority()).isFalse();
   }
 
   @Test

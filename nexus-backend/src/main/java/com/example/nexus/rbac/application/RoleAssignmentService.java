@@ -16,6 +16,8 @@ import com.example.nexus.rbac.domain.LastAdminRoleException;
 import com.example.nexus.rbac.domain.RbacRoleNames;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -60,16 +62,19 @@ public class RoleAssignmentService {
   private final UserDirectoryPort userDirectoryPort;
   private final RbacAuditPort rbacAuditPort;
   private final PermissionCachePort permissionCachePort;
+  private final MeterRegistry meterRegistry;
 
   public RoleAssignmentService(
       UserRoleAssignmentPort userRoleAssignmentPort,
       UserDirectoryPort userDirectoryPort,
       RbacAuditPort rbacAuditPort,
-      PermissionCachePort permissionCachePort) {
+      PermissionCachePort permissionCachePort,
+      MeterRegistry meterRegistry) {
     this.userRoleAssignmentPort = userRoleAssignmentPort;
     this.userDirectoryPort = userDirectoryPort;
     this.rbacAuditPort = rbacAuditPort;
     this.permissionCachePort = permissionCachePort;
+    this.meterRegistry = meterRegistry;
   }
 
   /**
@@ -85,9 +90,23 @@ public class RoleAssignmentService {
    * today (only {@code TENANT_ADMIN} itself carries {@code user:write} pre-US-015), but the
    * moment a future story lets a tenant create a custom role carrying {@code user:write} (or
    * {@code role:write}/{@code tenant:write}), a non-admin can self-grant admin-equivalent
-   * authority through that role with AC8 never firing. A custom-roles story must close this by
-   * gating any role carrying such a permission on an active {@code TENANT_ADMIN} check (reusing
-   * {@link UserRoleAssignmentPort#hasActiveAdminAssignment}), not by extending the name match.
+   * authority through that role with AC8 never firing.
+   *
+   * <p><b>US-015 discharged only half of this note.</b> Its AC11 closes the <em>mint</em> side:
+   * attaching {@code role:write}, {@code user:write} or {@code tenant:write} to any role now
+   * requires the caller to hold an active {@code TENANT_ADMIN} assignment, verified by a fresh
+   * locking read of the same {@code hasActiveAdminAssignment} this note anticipated. The
+   * <em>propagate</em> side described above is <b>still open and is not addressed by US-015</b>:
+   * this method's AC8 guard continues to match on the role name, so once an administrator
+   * legitimately attaches a dangerous permission to a custom role — which US-015 AC11 permits by
+   * design — any holder of {@code user:write} may grant that role to anyone, including
+   * themselves, with AC8 never firing. {@link #revoke}'s T-E9 note documents the symmetric hole.
+   * Accepted as a residual risk at US-015's Gate 2 ({@code docs/features/US-015/03-design.md}
+   * §10, {@code 03b-threat-model.md}), compensated by the {@code
+   * nexus.rbac.dangerous_permission_granted} alert, and tracked for closure by the
+   * "Privilege-aware role assignment gating" story, which must gate <b>both</b> {@link #assign}
+   * and {@link #revoke} on a privilege-carrying test rather than a name match. <b>Do not delete
+   * this note when that story ships — replace it with the closure reference.</b>
    */
   @Transactional
   public ActiveRoleAssignment assign(
@@ -168,6 +187,26 @@ public class RoleAssignmentService {
               .addKeyValue(LOG_KEY_ROLE_ID, roleId)
               .addKeyValue("assignedBy", actor.userId())
               .log("Role assigned");
+
+          // RC-7 (T-005, 03-design.md §9.2/§10.2): unconditional exploitation-side detection
+          // signal for the M-3/T-E16 propagate-side escalation chain. Deliberately no new
+          // query and no dangerous-permission lookup -- actorUserId and targetUserId are
+          // already in hand at this point on every successful assignment. The severity
+          // distinction (whether the assigned role is actually dangerous) is made at alert
+          // time by composing this counter with nexus.rbac.dangerous_permission_granted, not
+          // here.
+          if (targetUserId.equals(actor.userId())) {
+            Counter.builder("nexus.rbac.self_role_assignment")
+                .tag("tenantId", actor.tenantId().toString())
+                .register(meterRegistry)
+                .increment();
+            log.atWarn()
+                .addKeyValue(LOG_KEY_EVENT, "RBAC_SELF_ROLE_ASSIGNMENT")
+                .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+                .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
+                .addKeyValue(LOG_KEY_ROLE_ID, roleId)
+                .log("Actor assigned a role to themselves");
+          }
         });
 
     return assignment;
@@ -186,6 +225,11 @@ public class RoleAssignmentService {
    * holds {@code user:write}) that a future story enabling custom roles with {@code user:write}
    * must close with a symmetric "only an active TENANT_ADMIN may revoke TENANT_ADMIN" check before
    * it ships.
+   *
+   * <p>See {@link #assign}'s M-3 note for the current status of this gap: it remains open after
+   * US-015, accepted as a residual risk at US-015's Gate 2 ({@code
+   * docs/features/US-015/03-design.md} §10, {@code 03b-threat-model.md}) and tracked for closure
+   * by the same "Privilege-aware role assignment gating" successor story.
    */
   @Transactional
   public void revoke(

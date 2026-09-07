@@ -7,6 +7,7 @@ import com.example.nexus.identity.domain.AuthEventType;
 import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.rbac.application.port.out.RbacAuditEvent;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
+import com.example.nexus.rbac.application.port.out.RoleAuditEvent;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.util.LinkedHashMap;
@@ -84,6 +85,98 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
         "attemptedBy",
         "deny",
         reason != null ? reason.name() : null);
+  }
+
+  /**
+   * Records a successful role creation (AC12, 03-design.md §6.3). {@code auth_events.user_id}
+   * stays {@code NULL} — {@link RoleAuditEvent} has no {@code targetUserId}; these events have no
+   * subject user by design.
+   */
+  @Override
+  public void recordRoleCreated(RoleAuditEvent event) {
+    record(event, AuthEventType.ROLE_CREATED, "createdBy", "createRole");
+  }
+
+  /** @see #recordRoleCreated(RoleAuditEvent) */
+  @Override
+  public void recordRolePermissionGranted(RoleAuditEvent event) {
+    record(event, AuthEventType.ROLE_PERMISSION_GRANTED, "grantedBy", "grantPermission");
+  }
+
+  /** @see #recordRoleCreated(RoleAuditEvent) */
+  @Override
+  public void recordRolePermissionRevoked(RoleAuditEvent event) {
+    record(event, AuthEventType.ROLE_PERMISSION_REVOKED, "revokedBy", "revokePermission");
+  }
+
+  /**
+   * The {@link RoleAuditEvent} counterpart of {@link #record(RbacAuditEvent, AuthEventType,
+   * String, String, String, String)}. All three callers are post-commit successes (03-design.md
+   * §6.2), so {@code outcome} is hardcoded to {@code "SUCCESS"} rather than threaded through as an
+   * always-constant parameter. {@code withUserId} is deliberately never called — {@code
+   * auth_events.user_id} stays {@code NULL} for these three event types (03-design.md §6.1/§6.3).
+   */
+  private void record(
+      RoleAuditEvent event, AuthEventType eventType, String actorFieldName, String operation) {
+    try {
+      // Metadata JSON is built and serialised BEFORE any transaction/port call (T-R3 mitigation
+      // #3): a JsonProcessingException is caught here, before SecureEventService's REQUIRES_NEW
+      // transaction ever opens.
+      String metadata = buildMetadataJson(event, actorFieldName);
+
+      AuthEvent authEvent =
+          new AuthEvent(uuidGenerator.newId(), eventType, "SUCCESS")
+              .withTenantId(event.tenantId())
+              .withIpAddress(event.requestContext() != null ? event.requestContext().ipAddress() : null)
+              .withUserAgent(event.requestContext() != null ? event.requestContext().userAgent() : null)
+              .withMetadata(metadata);
+
+      secureEventService.recordEvent(authEvent);
+    } catch (Exception e) {
+      String traceId = event.requestContext() != null ? event.requestContext().traceId() : null;
+      log.atError()
+          .addKeyValue("event", "RBAC_AUDIT_WRITE_LOST")
+          .addKeyValue("tenantId", event.tenantId())
+          .addKeyValue("roleId", event.roleId())
+          .addKeyValue("actorUserId", event.actorUserId())
+          .addKeyValue("traceId", traceId)
+          .log("RBAC audit write lost: operation={} tenantId={} roleId={}",
+              operation, event.tenantId(), event.roleId(), e);
+      Counter.builder("nexus.rbac.audit_write_failed")
+          .tag("operation", operation)
+          .register(meterRegistry)
+          .increment();
+    }
+  }
+
+  /**
+   * Builds the ordered metadata map for a {@link RoleAuditEvent} and serialises it to JSON. Keys
+   * are omitted entirely when their value is {@code null} — never emitted as a JSON {@code null}
+   * (03-design.md §6.3). Key order: {@code traceId}, {@code roleId}, {@code roleName}, {@code
+   * permissionId}, {@code permissionName}, {@code <actorFieldName>}.
+   */
+  private String buildMetadataJson(RoleAuditEvent event, String actorFieldName) {
+    Map<String, Object> metadata = new LinkedHashMap<>();
+    String traceId = event.requestContext() != null ? event.requestContext().traceId() : null;
+    if (traceId != null) {
+      metadata.put("traceId", traceId);
+    }
+    if (event.roleId() != null) {
+      metadata.put("roleId", event.roleId().toString());
+    }
+    if (event.roleName() != null) {
+      metadata.put("roleName", event.roleName());
+    }
+    if (event.permissionId() != null) {
+      metadata.put("permissionId", event.permissionId().toString());
+    }
+    if (event.permissionName() != null) {
+      metadata.put("permissionName", event.permissionName());
+    }
+    if (event.actorUserId() != null) {
+      metadata.put(actorFieldName, event.actorUserId().toString());
+    }
+    return objectMapper.writeValueAsString(metadata);
   }
 
   @SuppressWarnings("java:S6213")

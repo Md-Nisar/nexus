@@ -18,6 +18,7 @@ import com.example.nexus.identity.application.service.SecureEventService;
 import com.example.nexus.identity.domain.AuthEvent;
 import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.rbac.application.port.out.RbacAuditEvent;
+import com.example.nexus.rbac.application.port.out.RoleAuditEvent;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.HashMap;
 import java.util.Map;
@@ -43,6 +44,7 @@ class RbacAuthEventAdapterTest {
   private static final UUID TARGET_USER_ID = UUID.randomUUID();
   private static final UUID ROLE_ID = UUID.randomUUID();
   private static final UUID ACTOR_USER_ID = UUID.randomUUID();
+  private static final UUID PERMISSION_ID = UUID.randomUUID();
 
   private SecureEventService secureEventService;
   private UuidGenerator uuidGenerator;
@@ -398,6 +400,251 @@ class RbacAuthEventAdapterTest {
 
     double count =
         meterRegistry.get("nexus.rbac.audit_write_failed").tag("operation", "deny").counter().count();
+    assertThat(count).isEqualTo(1.0);
+  }
+
+  // ---------------------------------------------------------------------
+  // US-015 AC12: RoleAuditEvent overload (recordRoleCreated / recordRolePermissionGranted /
+  // recordRolePermissionRevoked)
+  // ---------------------------------------------------------------------
+
+  @Test
+  void should_mapAllFieldsCorrectly_when_recordRoleCreatedCalled() {
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-create", "test-agent");
+    RoleAuditEvent event =
+        new RoleAuditEvent(TENANT_ID, ROLE_ID, "Billing Manager", null, null, ACTOR_USER_ID, ctx);
+
+    adapter.recordRoleCreated(event);
+
+    AuthEvent captured = captureRecordedEvent();
+    assertThat(captured.getId()).isEqualTo(GENERATED_ID);
+    assertThat(captured.getEventType()).isEqualTo("ROLE_CREATED");
+    assertThat(captured.getOutcome()).isEqualTo("SUCCESS");
+    // Load-bearing (design §6.1/§6.3): these events have no subject user, so user_id stays NULL
+    // rather than being set to the actor — never "for consistency" with the assign/revoke events.
+    assertThat(captured.getUserId()).isNull();
+    assertThat(captured.getTenantId()).isEqualTo(TENANT_ID);
+    assertThat(captured.getIpAddress()).isEqualTo("127.0.0.1");
+    assertThat(captured.getUserAgent()).isEqualTo("test-agent");
+
+    JsonNode metadata = objectMapper.readTree(captured.getMetadata());
+    assertThat(metadata.get("traceId").asString()).isEqualTo("trace-create");
+    assertThat(metadata.get("roleId").asString()).isEqualTo(ROLE_ID.toString());
+    assertThat(metadata.get("roleName").asString()).isEqualTo("Billing Manager");
+    assertThat(metadata.get("createdBy").asString()).isEqualTo(ACTOR_USER_ID.toString());
+  }
+
+  @Test
+  void should_omitPermissionFieldKeys_when_roleCreatedEventHasNullPermissionFields() {
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-create-omit", "test-agent");
+    RoleAuditEvent event =
+        new RoleAuditEvent(TENANT_ID, ROLE_ID, "Billing Manager", null, null, ACTOR_USER_ID, ctx);
+
+    adapter.recordRoleCreated(event);
+
+    AuthEvent captured = captureRecordedEvent();
+    JsonNode metadata = objectMapper.readTree(captured.getMetadata());
+    assertThat(metadata.has("permissionId")).isFalse();
+    assertThat(metadata.has("permissionName")).isFalse();
+    // never a JSON null either
+    assertThat(metadata.toString()).doesNotContain("null");
+  }
+
+  @Test
+  void should_mapAllFieldsCorrectly_when_recordRolePermissionGrantedCalled() {
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-grant", "test-agent");
+    RoleAuditEvent event =
+        new RoleAuditEvent(
+            TENANT_ID, ROLE_ID, "Billing Manager", PERMISSION_ID, "user:read", ACTOR_USER_ID, ctx);
+
+    adapter.recordRolePermissionGranted(event);
+
+    AuthEvent captured = captureRecordedEvent();
+    assertThat(captured.getEventType()).isEqualTo("ROLE_PERMISSION_GRANTED");
+    assertThat(captured.getOutcome()).isEqualTo("SUCCESS");
+    assertThat(captured.getUserId()).isNull();
+    assertThat(captured.getTenantId()).isEqualTo(TENANT_ID);
+
+    JsonNode metadata = objectMapper.readTree(captured.getMetadata());
+    assertThat(metadata.get("traceId").asString()).isEqualTo("trace-grant");
+    assertThat(metadata.get("roleId").asString()).isEqualTo(ROLE_ID.toString());
+    assertThat(metadata.get("roleName").asString()).isEqualTo("Billing Manager");
+    assertThat(metadata.get("permissionId").asString()).isEqualTo(PERMISSION_ID.toString());
+    assertThat(metadata.get("permissionName").asString()).isEqualTo("user:read");
+    assertThat(metadata.get("grantedBy").asString()).isEqualTo(ACTOR_USER_ID.toString());
+    assertThat(metadata.has("revokedBy")).isFalse();
+    assertThat(metadata.has("createdBy")).isFalse();
+  }
+
+  @Test
+  void should_mapAllFieldsCorrectly_when_recordRolePermissionRevokedCalled() {
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-revoke", "test-agent");
+    RoleAuditEvent event =
+        new RoleAuditEvent(
+            TENANT_ID, ROLE_ID, "Billing Manager", PERMISSION_ID, "user:read", ACTOR_USER_ID, ctx);
+
+    adapter.recordRolePermissionRevoked(event);
+
+    AuthEvent captured = captureRecordedEvent();
+    assertThat(captured.getEventType()).isEqualTo("ROLE_PERMISSION_REVOKED");
+    assertThat(captured.getOutcome()).isEqualTo("SUCCESS");
+    assertThat(captured.getUserId()).isNull();
+
+    JsonNode metadata = objectMapper.readTree(captured.getMetadata());
+    assertThat(metadata.get("permissionId").asString()).isEqualTo(PERMISSION_ID.toString());
+    assertThat(metadata.get("permissionName").asString()).isEqualTo("user:read");
+    assertThat(metadata.get("revokedBy").asString()).isEqualTo(ACTOR_USER_ID.toString());
+    assertThat(metadata.has("grantedBy")).isFalse();
+  }
+
+  /**
+   * Adversarial corpus for the tenant-controlled {@code roleName}/{@code permissionName} pair
+   * (threat model T-T8): quotes, backslashes, control characters, and the two Unicode line
+   * terminators U+2028/U+2029 that {@code \p{Cntrl}} does not cover.
+   */
+  static Stream<Arguments> adversarialRoleAndPermissionNames() {
+    return Stream.of(
+        Arguments.of("quote", "Billing\"Manager"),
+        Arguments.of("backslash", "Billing\\Manager"),
+        Arguments.of("controlChar", "Billing" + (char) 0 + "Manager"),
+        Arguments.of("lineSeparatorU2028", "Billing Manager"),
+        Arguments.of("paragraphSeparatorU2029", "Billing Manager"));
+  }
+
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("adversarialRoleAndPermissionNames")
+  void should_escapeAdversarialRoleAndPermissionName_when_metadataSerialised(
+      String label, String value) {
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-adv-role", "agent");
+    RoleAuditEvent event = new RoleAuditEvent(TENANT_ID, ROLE_ID, value, PERMISSION_ID, value, ACTOR_USER_ID, ctx);
+
+    adapter.recordRolePermissionGranted(event);
+
+    AuthEvent captured = captureRecordedEvent();
+    // Must round-trip as valid JSON with both fields preserved as plain string values — never
+    // interpreted as JSON structure.
+    JsonNode metadata = objectMapper.readTree(captured.getMetadata());
+    assertThat(metadata.get("roleName").isString()).isTrue();
+    assertThat(metadata.get("roleName").asString()).isEqualTo(value);
+    assertThat(metadata.get("permissionName").isString()).isTrue();
+    assertThat(metadata.get("permissionName").asString()).isEqualTo(value);
+    // The real traceId must survive untouched regardless of what roleName/permissionName try to
+    // inject.
+    assertThat(metadata.get("traceId").asString()).isEqualTo("trace-adv-role");
+  }
+
+  @Test
+  void should_notPropagateException_when_secureEventServiceThrowsOnCreateRole() {
+    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
+    RoleAuditEvent event =
+        new RoleAuditEvent(TENANT_ID, ROLE_ID, "Billing Manager", null, null, ACTOR_USER_ID, ctx);
+
+    assertThatCode(() -> adapter.recordRoleCreated(event)).doesNotThrowAnyException();
+  }
+
+  @Test
+  void should_incrementAuditWriteFailedCounterWithCreateRoleTag_when_recordRoleCreatedFails() {
+    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
+    RoleAuditEvent event =
+        new RoleAuditEvent(TENANT_ID, ROLE_ID, "Billing Manager", null, null, ACTOR_USER_ID, ctx);
+
+    adapter.recordRoleCreated(event);
+
+    double count =
+        meterRegistry
+            .get("nexus.rbac.audit_write_failed")
+            .tag("operation", "createRole")
+            .counter()
+            .count();
+    assertThat(count).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_notPropagateException_when_secureEventServiceThrowsOnGrantPermission() {
+    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
+    RoleAuditEvent event =
+        new RoleAuditEvent(
+            TENANT_ID, ROLE_ID, "Billing Manager", PERMISSION_ID, "user:read", ACTOR_USER_ID, ctx);
+
+    assertThatCode(() -> adapter.recordRolePermissionGranted(event)).doesNotThrowAnyException();
+  }
+
+  @Test
+  void should_incrementAuditWriteFailedCounterWithGrantPermissionTag_when_recordRolePermissionGrantedFails() {
+    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
+    RoleAuditEvent event =
+        new RoleAuditEvent(
+            TENANT_ID, ROLE_ID, "Billing Manager", PERMISSION_ID, "user:read", ACTOR_USER_ID, ctx);
+
+    adapter.recordRolePermissionGranted(event);
+
+    double count =
+        meterRegistry
+            .get("nexus.rbac.audit_write_failed")
+            .tag("operation", "grantPermission")
+            .counter()
+            .count();
+    assertThat(count).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_logErrorWithLostAuditMarker_when_secureEventServiceThrowsOnGrantPermission() {
+    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
+    RoleAuditEvent event =
+        new RoleAuditEvent(
+            TENANT_ID, ROLE_ID, "Billing Manager", PERMISSION_ID, "user:read", ACTOR_USER_ID, ctx);
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      adapter.recordRolePermissionGranted(event);
+
+      var errorEvents =
+          appender.list.stream().filter(e -> e.getLevel() == Level.ERROR).toList();
+      assertThat(errorEvents).hasSize(1);
+      Map<String, Object> keyValues = keyValueMap(errorEvents.get(0));
+      assertThat(keyValues)
+          .containsEntry("event", "RBAC_AUDIT_WRITE_LOST")
+          .containsEntry("tenantId", TENANT_ID)
+          .containsEntry("roleId", ROLE_ID)
+          .containsEntry("actorUserId", ACTOR_USER_ID)
+          .containsEntry("traceId", "trace-fail");
+    } finally {
+      stopLogCapture(appender);
+    }
+  }
+
+  @Test
+  void should_notPropagateException_when_secureEventServiceThrowsOnRevokePermission() {
+    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
+    RoleAuditEvent event =
+        new RoleAuditEvent(
+            TENANT_ID, ROLE_ID, "Billing Manager", PERMISSION_ID, "user:read", ACTOR_USER_ID, ctx);
+
+    assertThatCode(() -> adapter.recordRolePermissionRevoked(event)).doesNotThrowAnyException();
+  }
+
+  @Test
+  void should_incrementAuditWriteFailedCounterWithRevokePermissionTag_when_recordRolePermissionRevokedFails() {
+    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
+    RoleAuditEvent event =
+        new RoleAuditEvent(
+            TENANT_ID, ROLE_ID, "Billing Manager", PERMISSION_ID, "user:read", ACTOR_USER_ID, ctx);
+
+    adapter.recordRolePermissionRevoked(event);
+
+    double count =
+        meterRegistry
+            .get("nexus.rbac.audit_write_failed")
+            .tag("operation", "revokePermission")
+            .counter()
+            .count();
     assertThat(count).isEqualTo(1.0);
   }
 

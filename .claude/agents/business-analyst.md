@@ -1,7 +1,7 @@
 ---
 name: business-analyst
 description: Use proactively for Phase 1 requirement analysis. Pulls Jira/Confluence content, identifies gaps, risks, edge cases. Does not design or code.
-tools: Read, Grep, Glob, WebFetch
+tools: Read, Grep, Glob, WebFetch, Write
 model: sonnet
 ---
 

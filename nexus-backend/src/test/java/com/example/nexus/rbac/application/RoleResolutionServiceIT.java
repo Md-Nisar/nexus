@@ -59,13 +59,16 @@ class RoleResolutionServiceIT {
   @Test
   void should_resolveAllSevenPermissions_when_userHasTenantAdminRole() {
     User user = seedUser("role-res-admin");
-    assignRole(user.getId(), TENANT_ADMIN_ROLE_ID);
+    UserRole assignment = assignRole(user.getId(), TENANT_ADMIN_ROLE_ID);
 
     ResolvedPermissions resolved =
         roleResolutionService.resolve(user.getId(), BOOTSTRAP_TENANT_ID);
 
     assertThat(resolved.roles()).containsExactly("TENANT_ADMIN");
     assertThat(resolved.permissions()).containsExactlyInAnyOrderElementsOf(ALL_SEEDED_PERMISSIONS);
+    // Bootstrap tenant's admin-assignment count is a shared-schema invariant other *IT rely on
+    // (e.g. LastAdminLockoutIT) — this test must not leave a stray active TENANT_ADMIN row behind.
+    revoke(assignment);
   }
 
   @Test
@@ -107,8 +110,8 @@ class RoleResolutionServiceIT {
   @Test
   void should_deduplicatePermissions_when_userHasBothSeededRoles() {
     User user = seedUser("role-res-both");
-    assignRole(user.getId(), TENANT_ADMIN_ROLE_ID);
-    assignRole(user.getId(), MEMBER_ROLE_ID);
+    UserRole adminAssignment = assignRole(user.getId(), TENANT_ADMIN_ROLE_ID);
+    UserRole memberAssignment = assignRole(user.getId(), MEMBER_ROLE_ID);
 
     ResolvedPermissions resolved =
         roleResolutionService.resolve(user.getId(), BOOTSTRAP_TENANT_ID);
@@ -116,6 +119,10 @@ class RoleResolutionServiceIT {
     assertThat(resolved.roles()).containsExactlyInAnyOrder("TENANT_ADMIN", "MEMBER");
     // user:read is granted by both roles — must appear once, not twice.
     assertThat(resolved.permissions()).containsExactlyInAnyOrderElementsOf(ALL_SEEDED_PERMISSIONS);
+    // Bootstrap tenant's admin-assignment count is a shared-schema invariant other *IT rely on
+    // (e.g. LastAdminLockoutIT) — this test must not leave stray active rows behind.
+    revoke(adminAssignment);
+    revoke(memberAssignment);
   }
 
   /**

@@ -9,6 +9,8 @@ import java.util.UUID;
 import lombok.AccessLevel;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
+import org.hibernate.annotations.Generated;
+import org.hibernate.generator.EventType;
 
 /**
  * A tenant-scoped, named collection of permissions. No {@code @Version}: the schema defines no
@@ -38,6 +40,13 @@ public class Role {
   @Column(name = "is_system_role", nullable = false)
   private boolean systemRole;
 
+  /**
+   * DB DEFAULT CURRENT_TIMESTAMP(6); never written by this entity. {@code @Generated} makes
+   * Hibernate re-SELECT the DB-computed value immediately after INSERT so this entity's own
+   * in-memory field reflects it without a separate re-fetch. Mirrors {@link
+   * UserRole#getActiveKey()}'s identical rationale.
+   */
+  @Generated(event = EventType.INSERT)
   @Column(name = "created_at", insertable = false, updatable = false)
   private Instant createdAt;
 

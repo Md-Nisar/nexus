@@ -1,10 +1,6 @@
 package com.example.nexus.rbac.interfaces.rest;
 
-import com.example.nexus.common.domain.FieldValidationException;
 import com.example.nexus.common.domain.RequestContext;
-import com.example.nexus.common.security.AuthenticatedRequestDetails;
-import com.example.nexus.common.security.DenialReason;
-import com.example.nexus.common.security.InsufficientPermissionException;
 import com.example.nexus.common.security.RequiresPermission;
 import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
@@ -20,8 +16,6 @@ import jakarta.validation.Valid;
 import java.net.URI;
 import java.util.List;
 import java.util.UUID;
-import java.util.regex.Pattern;
-import org.slf4j.MDC;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -39,10 +33,12 @@ import org.springframework.web.bind.annotation.RestController;
  * First controller in the {@code rbac} bounded context: assign, list, and revoke a user's role
  * assignments within the caller's own tenant (US-012, 03-design.md §4.1/§8).
  *
- * <p><b>The only place in this request path that touches {@link Authentication} (T-E10/R-10).</b>
- * Every handler unwraps it into a plain {@link RoleChangeActor} immediately and passes only that
- * plus plain {@link UUID}s and a {@link RequestContext} into {@link RoleAssignmentService} — never
- * {@code Authentication}, never {@code java.security.Principal}, never the raw details {@code Map}.
+ * <p><b>The only place in this request path that touches {@link Authentication} (T-E10/R-10),
+ * alongside {@link RoleController} and {@link PermissionController} (US-015, D4).</b> Every
+ * handler unwraps it into a plain {@link RoleChangeActor} via {@link
+ * RbacControllerSupport#resolveActor} and passes only that plus plain {@link UUID}s and a {@link
+ * RequestContext} into {@link RoleAssignmentService} — never {@code Authentication}, never {@code
+ * java.security.Principal}, never the raw details {@code Map}.
  *
  * <p><b>Every handler is {@code public} and non-{@code final} (T-E11).</b> {@code
  * UserProfileController#me()} — the nearest in-repo template — is package-private, which per
@@ -66,10 +62,6 @@ public class UserRoleController {
   private static final String USER_WRITE = "user:write";
   private static final String USER_READ = "user:read";
   private static final String PATH_PARAM_USER_ID = "userId";
-
-  private static final Pattern CANONICAL_UUID =
-      Pattern.compile(
-          "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
 
   private final RoleAssignmentService roleAssignmentService;
 
@@ -104,12 +96,13 @@ public class UserRoleController {
       @Valid @RequestBody AssignRoleRequest request,
       Authentication authentication,
       HttpServletRequest httpRequest) {
-    RoleChangeActor actor = resolveActor(authentication, USER_WRITE);
-    UUID targetUserId = parsePathUuid(userId, PATH_PARAM_USER_ID);
-    UUID roleId = parsePathUuid(request.roleId(), "roleId");
+    RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, USER_WRITE);
+    UUID targetUserId = RbacControllerSupport.parsePathUuid(userId, PATH_PARAM_USER_ID);
+    UUID roleId = RbacControllerSupport.parsePathUuid(request.roleId(), "roleId");
 
     ActiveRoleAssignment assignment =
-        roleAssignmentService.assign(actor, targetUserId, roleId, requestContext(httpRequest));
+        roleAssignmentService.assign(
+            actor, targetUserId, roleId, RbacControllerSupport.requestContext(httpRequest));
 
     return ResponseEntity.created(locationUri(userId, request.roleId())).body(toResponse(assignment));
   }
@@ -130,8 +123,8 @@ public class UserRoleController {
   @ApiResponse(responseCode = "404", description = "User not found")
   public RoleAssignmentListResponse listRoles(
       @PathVariable String userId, Authentication authentication) {
-    RoleChangeActor actor = resolveActor(authentication, USER_READ);
-    UUID targetUserId = parsePathUuid(userId, PATH_PARAM_USER_ID);
+    RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, USER_READ);
+    UUID targetUserId = RbacControllerSupport.parsePathUuid(userId, PATH_PARAM_USER_ID);
 
     List<RoleAssignmentResponse> data =
         roleAssignmentService.listActive(actor, targetUserId).stream()
@@ -162,64 +155,12 @@ public class UserRoleController {
       @PathVariable String roleId,
       Authentication authentication,
       HttpServletRequest httpRequest) {
-    RoleChangeActor actor = resolveActor(authentication, USER_WRITE);
-    UUID targetUserId = parsePathUuid(userId, PATH_PARAM_USER_ID);
-    UUID parsedRoleId = parsePathUuid(roleId, "roleId");
+    RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, USER_WRITE);
+    UUID targetUserId = RbacControllerSupport.parsePathUuid(userId, PATH_PARAM_USER_ID);
+    UUID parsedRoleId = RbacControllerSupport.parsePathUuid(roleId, "roleId");
 
-    roleAssignmentService.revoke(actor, targetUserId, parsedRoleId, requestContext(httpRequest));
-  }
-
-  /**
-   * Unwraps {@code authentication} into a {@link RoleChangeActor}. Tenant provenance is delegated
-   * to {@link AuthenticatedRequestDetails#fromAuthentication}, which already fails closed
-   * (malformed details → {@code MALFORMED_AUTHENTICATION}; blank/absent tenant → {@code
-   * MISSING_TENANT}).
-   *
-   * <p><b>Principal provenance must fail closed too (T-S4).</b> {@code
-   * authentication.getPrincipal()} is not guaranteed by any compile-time contract to be a
-   * parseable UUID string. A null, non-{@code String}, or non-UUID principal must not be allowed
-   * to throw an unhandled {@code ClassCastException}/{@code IllegalArgumentException} that falls
-   * through to the generic 500 handler — it must throw {@link InsufficientPermissionException}
-   * with {@link DenialReason#MALFORMED_AUTHENTICATION} instead.
-   */
-  private RoleChangeActor resolveActor(Authentication authentication, String requiredPermission) {
-    AuthenticatedRequestDetails details =
-        AuthenticatedRequestDetails.fromAuthentication(authentication, requiredPermission);
-
-    if (!(authentication.getPrincipal() instanceof String principalId)) {
-      throw new InsufficientPermissionException(
-          requiredPermission, DenialReason.MALFORMED_AUTHENTICATION);
-    }
-    UUID actorUserId;
-    try {
-      actorUserId = UUID.fromString(principalId);
-    } catch (IllegalArgumentException e) {
-      throw new InsufficientPermissionException(
-          requiredPermission, DenialReason.MALFORMED_AUTHENTICATION);
-    }
-    UUID tenantId;
-    try {
-      tenantId = UUID.fromString(details.tenantId());
-    } catch (IllegalArgumentException e) {
-      // Distinct from the principal-parse failure above (03-design.md §4.1, §8.4 row 4): an
-      // unparseable tenantId is MISSING_TENANT, not MALFORMED_AUTHENTICATION.
-      throw new InsufficientPermissionException(requiredPermission, DenialReason.MISSING_TENANT);
-    }
-    return new RoleChangeActor(actorUserId, tenantId);
-  }
-
-  /**
-   * Validates {@code value} as a canonical-UUID-shaped string and parses it, in that order (D15).
-   * A malformed value throws {@link FieldValidationException}, which {@code
-   * GlobalExceptionHandler#handleFieldValidation} already maps to 400 with a {@code details[]}
-   * entry naming {@code field} — never a raw {@code UUID.fromString} failure reaching an
-   * unhandled-exception path.
-   */
-  private UUID parsePathUuid(String value, String field) {
-    if (value == null || !CANONICAL_UUID.matcher(value).matches()) {
-      throw new FieldValidationException("VALIDATION_FAILED", field, "must be a canonical UUID");
-    }
-    return UUID.fromString(value);
+    roleAssignmentService.revoke(
+        actor, targetUserId, parsedRoleId, RbacControllerSupport.requestContext(httpRequest));
   }
 
   private static URI locationUri(String userId, String roleId) {
@@ -233,13 +174,5 @@ public class UserRoleController {
         assignment.roleName(),
         assignment.assignedAt(),
         assignment.assignedBy() == null ? null : assignment.assignedBy().toString());
-  }
-
-  /**
-   * Constructs a {@link RequestContext} from the HTTP request, mirroring {@code
-   * RegistrationController#requestContext} exactly (client IP, MDC trace ID, User-Agent header).
-   */
-  private RequestContext requestContext(HttpServletRequest req) {
-    return RequestContext.of(req.getRemoteAddr(), MDC.get("traceId"), req.getHeader("User-Agent"));
   }
 }

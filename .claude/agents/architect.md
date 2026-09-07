@@ -1,7 +1,7 @@
 ---
 name: architect
 description: Use for Phase 2 impact analysis and Phase 3 solution design. Produces Technical Design Documents with diagrams, contracts, and data models. Never writes implementation code.
-tools: Read, Grep, Glob, WebFetch
+tools: Read, Grep, Glob, WebFetch, Write
 model: opus
 ---
 

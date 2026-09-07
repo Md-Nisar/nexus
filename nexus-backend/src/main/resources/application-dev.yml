@@ -52,3 +52,5 @@ feature:
     enabled: true
   nexus-us012-rbac-role-assignment:
     enabled: true
+  nexus-us015-rbac-role-management:
+    enabled: true

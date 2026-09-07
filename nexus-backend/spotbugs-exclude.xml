@@ -129,4 +129,27 @@
         <Class name="com.example.nexus.identity.infrastructure.audit.RbacAuthEventAdapter" />
         <Bug pattern="EI_EXPOSE_REP2" />
     </Match>
+    <!--
+      US-015 T-003: JpaRoleManagementAdapter constructor-injects the Spring-managed singleton
+      repository beans (JpaRoleRepository, JpaRolePermissionRepository, JpaPermissionRepository)
+      and IdGenerator, storing them directly, per this project's constructor-injection-only
+      convention (CLAUDE.md). Same rationale as the other repository/port exclusions above: a
+      Spring Data repository is a data-access factory, not a value object, with no sensible
+      defensive copy, and it is a singleton never mutated after context startup.
+    -->
+    <Match>
+        <Class name="com.example.nexus.rbac.infrastructure.persistence.JpaRoleManagementAdapter" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
+    <!--
+      US-015 T-002: RoleManagementService constructor-injects the Spring-managed singleton
+      MeterRegistry bean and stores it directly. Same rationale as GlobalExceptionHandler and
+      RbacAuthEventAdapter above: MeterRegistry is a metrics registry/factory, not a value object,
+      with no sensible defensive copy, and it is a Spring singleton never mutated after context
+      startup.
+    -->
+    <Match>
+        <Class name="com.example.nexus.rbac.application.RoleManagementService" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
 </FindBugsFilter>

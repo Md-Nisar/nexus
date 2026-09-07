@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -14,9 +16,11 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import javax.sql.DataSource;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentMatchers;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.boot.health.contributor.Status;
@@ -42,6 +46,38 @@ class RbacDbPrivilegeHealthIndicatorTest {
 
   private RbacDbPrivilegeHealthIndicator indicator() {
     return new RbacDbPrivilegeHealthIndicator(dataSource);
+  }
+
+  /**
+   * US-015 D9: the indicator now unconditionally queries {@code roles}/{@code role_permissions}
+   * findings on every call, in addition to the existing {@code user_roles} queries. Rather than
+   * touch every existing {@code user_roles}-only test to stub those additional queries, any
+   * {@code prepareStatement} call not more specifically stubbed by a test falls back here to "no
+   * grant found" (count 0) — the correct default for a table nobody is deliberately over-granting
+   * in that test.
+   */
+  @BeforeEach
+  void defaultNoAdditionalGrants() throws SQLException {
+    PreparedStatement defaultStatement = mock(PreparedStatement.class);
+    ResultSet defaultResultSet = mock(ResultSet.class);
+    lenient().when(connection.prepareStatement(anyString())).thenReturn(defaultStatement);
+    lenient().when(defaultStatement.executeQuery()).thenReturn(defaultResultSet);
+    lenient().when(defaultResultSet.next()).thenReturn(true);
+    lenient().when(defaultResultSet.getInt(1)).thenReturn(0);
+  }
+
+  /**
+   * Stubs a {@code roles}/{@code role_permissions} grant query identified by a substring unique
+   * to its SQL text (the table name and privilege-type clause are always literal, per US-015 D9,
+   * precisely so each table's checks can be targeted independently in a test like this).
+   */
+  private void givenAdditionalGrant(String sqlSubstring, int count) throws SQLException {
+    PreparedStatement statement = mock(PreparedStatement.class);
+    ResultSet resultSet = mock(ResultSet.class);
+    when(connection.prepareStatement(contains(sqlSubstring))).thenReturn(statement);
+    when(statement.executeQuery()).thenReturn(resultSet);
+    when(resultSet.next()).thenReturn(true);
+    when(resultSet.getInt(1)).thenReturn(count);
   }
 
   private void givenConnectedAs(String currentUser) throws SQLException {
@@ -192,5 +228,130 @@ class RbacDbPrivilegeHealthIndicatorTest {
     verify(tablePrivilegeStatement, never()).executeUpdate();
     verify(globalPrivilegeStatement, never()).executeUpdate();
     verify(currentUserStatement, never()).execute(anyString());
+  }
+
+  // --- US-015 D9: roles ---
+
+  @Test
+  void should_report_up_when_roles_table_has_no_update_or_delete_grant() throws SQLException {
+    givenConnectedAs("nexus_app@%");
+
+    var health = indicator().health();
+
+    assertThat(health.getStatus()).isEqualTo(Status.UP);
+  }
+
+  @Test
+  void should_report_down_when_roles_has_table_scoped_update_grant() throws SQLException {
+    givenConnectedAs("app_user@%");
+    givenAdditionalGrant("TABLE_NAME = 'roles' AND PRIVILEGE_TYPE IN ('UPDATE')", 1);
+
+    var health = indicator().health();
+
+    assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+    assertThat(health.getDetails()).containsEntry("rolesHasTableScopedUpdateGrant", true);
+  }
+
+  /** Proves the {@code COLUMN_PRIVILEGES} leg is load-bearing: table-scoped stays clean. */
+  @Test
+  void should_report_down_when_roles_has_column_scoped_update_grant() throws SQLException {
+    givenConnectedAs("app_user@%");
+    givenAdditionalGrant(
+        "COLUMN_PRIVILEGES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'roles'", 1);
+
+    var health = indicator().health();
+
+    assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+    assertThat(health.getDetails()).containsEntry("rolesHasColumnScopedUpdateGrant", true);
+    assertThat(health.getDetails()).containsEntry("rolesHasTableScopedUpdateGrant", false);
+  }
+
+  @Test
+  void should_report_down_when_roles_has_delete_grant() throws SQLException {
+    givenConnectedAs("app_user@%");
+    givenAdditionalGrant(
+        "TABLE_NAME = 'roles' AND PRIVILEGE_TYPE IN ('DELETE', 'ALL PRIVILEGES')", 1);
+
+    var health = indicator().health();
+
+    assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+    assertThat(health.getDetails()).containsEntry("rolesHasTableDeleteGrant", true);
+  }
+
+  /** Exercises the global (rather than table-scoped) leg reused from {@code user_roles}. */
+  @Test
+  void should_report_down_when_roles_has_all_privileges_grant() throws SQLException {
+    givenConnectedAs("app_user@%");
+    givenGlobalPrivilegeCount(1);
+
+    var health = indicator().health();
+
+    assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+    assertThat(health.getDetails()).containsEntry("rolesHasGlobalDeleteGrant", true);
+  }
+
+  // --- US-015 D9: role_permissions ---
+
+  /**
+   * Trap-guard (03-design.md §9.5): {@code role_permissions} intentionally grants {@code SELECT},
+   * {@code INSERT} and {@code DELETE} — a copy-paste of the {@code user_roles}/{@code roles}
+   * DELETE-or-ALL-PRIVILEGES check onto this table would make the indicator permanently DOWN in
+   * production. Asserts both the resulting status and, structurally, that no query for a
+   * {@code DELETE} grant on {@code role_permissions} is ever issued.
+   */
+  @Test
+  void should_report_up_when_role_permissions_has_select_insert_and_delete_grants_only()
+      throws SQLException {
+    givenConnectedAs("nexus_app@%");
+
+    var health = indicator().health();
+
+    assertThat(health.getStatus()).isEqualTo(Status.UP);
+    verify(connection, never())
+        .prepareStatement(
+            ArgumentMatchers.argThat(
+                sql -> sql != null && sql.contains("role_permissions") && sql.contains("DELETE")));
+  }
+
+  @Test
+  void should_report_down_when_role_permissions_has_table_scoped_update_grant()
+      throws SQLException {
+    givenConnectedAs("app_user@%");
+    givenAdditionalGrant("TABLE_NAME = 'role_permissions' AND PRIVILEGE_TYPE IN ('UPDATE')", 1);
+
+    var health = indicator().health();
+
+    assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+    assertThat(health.getDetails()).containsEntry("rolePermissionsHasTableScopedUpdateGrant", true);
+  }
+
+  @Test
+  void should_report_down_when_role_permissions_has_column_scoped_update_grant()
+      throws SQLException {
+    givenConnectedAs("app_user@%");
+    givenAdditionalGrant(
+        "COLUMN_PRIVILEGES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'role_permissions'",
+        1);
+
+    var health = indicator().health();
+
+    assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+    assertThat(health.getDetails())
+        .containsEntry("rolePermissionsHasColumnScopedUpdateGrant", true);
+    assertThat(health.getDetails())
+        .containsEntry("rolePermissionsHasTableScopedUpdateGrant", false);
+  }
+
+  @Test
+  void should_report_down_when_role_permissions_has_all_privileges_grant() throws SQLException {
+    givenConnectedAs("app_user@%");
+    givenAdditionalGrant(
+        "TABLE_NAME = 'role_permissions' AND PRIVILEGE_TYPE IN ('ALL PRIVILEGES')", 1);
+
+    var health = indicator().health();
+
+    assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+    assertThat(health.getDetails())
+        .containsEntry("rolePermissionsHasTableAllPrivilegesGrant", true);
   }
 }

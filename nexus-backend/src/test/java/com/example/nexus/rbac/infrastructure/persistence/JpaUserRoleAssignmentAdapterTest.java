@@ -241,4 +241,15 @@ class JpaUserRoleAssignmentAdapterTest {
 
     assertThat(adapter.revoke(userRoleId, revokedAt)).isZero();
   }
+
+  @Test
+  void should_delegateToRepository_when_findingActiveUserIdsForRole() {
+    UUID user1 = UUID.randomUUID();
+    UUID user2 = UUID.randomUUID();
+    when(userRoleRepository.findActiveUserIdsByRole(roleId)).thenReturn(List.of(user1, user2));
+
+    List<UUID> result = adapter.findActiveUserIdsForRole(roleId);
+
+    assertThat(result).containsExactly(user1, user2);
+  }
 }

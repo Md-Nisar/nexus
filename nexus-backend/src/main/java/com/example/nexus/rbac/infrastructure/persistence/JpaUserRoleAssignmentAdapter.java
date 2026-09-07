@@ -98,4 +98,9 @@ public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
   public int revoke(UUID userRoleId, Instant revokedAt) {
     return userRoleRepository.revokeById(userRoleId, revokedAt);
   }
+
+  @Override
+  public List<UUID> findActiveUserIdsForRole(UUID roleId) {
+    return userRoleRepository.findActiveUserIdsByRole(roleId);
+  }
 }
