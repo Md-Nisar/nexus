@@ -102,12 +102,14 @@ class RegisterAtomicityIT {
   @Test
   void should_recordNoUserAndNoRegisterEvent_when_postAuditRollbackOccurs() {
     String email = "audit-r2-" + UUID.randomUUID() + "@example.com";
+    UUID[] capturedEventId = new UUID[1];
 
     // Delegate to the real repository (genuine INSERT, visible within the still-open
     // transaction) then throw -- proves rollback of an already-persisted row, not merely
     // "an exception happened somewhere in the method".
     doAnswer(invocation -> {
       AuthEvent event = invocation.getArgument(0);
+      capturedEventId[0] = event.getId();
       authEventRepository.save(event);
       throw new RuntimeException("simulated post-audit failure");
     }).when(authEventPort).record(any(AuthEvent.class));
@@ -124,9 +126,11 @@ class RegisterAtomicityIT {
         .as("T-R2: no user row must exist when the post-audit transaction rolls back")
         .isFalse();
 
-    boolean registerRowExists = authEventRepository.findAll().stream()
-        .anyMatch(e -> "REGISTER".equals(e.getEventType()));
-    assertThat(registerRowExists)
+    // Scoped to this test's own event id -- auth_events is a shared, append-only table across
+    // the whole *IT run, and other tests legitimately commit real REGISTER rows; a table-wide
+    // scan for "any REGISTER row" would false-positive on those unrelated, already-committed rows.
+    boolean thisRegisterRowExists = authEventRepository.findById(capturedEventId[0]).isPresent();
+    assertThat(thisRegisterRowExists)
         .as("T-R2: no REGISTER audit row must survive the rollback, even though it was "
             + "physically inserted mid-transaction before the forced failure")
         .isFalse();

@@ -181,6 +181,14 @@ public interface JpaUserRoleRepository extends JpaRepository<UserRole, UUID> {
   int revokeById(@Param("id") UUID id, @Param("revokedAt") java.time.Instant revokedAt);
 
   /**
+   * RC-6 — every user id holding an ACTIVE (non-revoked) assignment of {@code roleId}. Backs
+   * {@link com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort#findActiveUserIdsForRole}
+   * — see that method's Javadoc for why this is deliberately not tenant-scoped.
+   */
+  @Query("SELECT ur.userId FROM UserRole ur WHERE ur.roleId = :roleId AND ur.revokedAt IS NULL")
+  List<UUID> findActiveUserIdsByRole(@Param("roleId") UUID roleId);
+
+  /**
    * Health-check support only (T-015 / {@code 03b-threat-model.md} T-D4) — the zero-active-admins
    * detection control. Returns the tenantId of every tenant that has a seeded role named {@code
    * roleName} (matched case-insensitively — {@code roles.name}'s collation makes {@code

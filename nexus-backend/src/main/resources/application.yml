@@ -212,4 +212,9 @@ feature:
     # threat (T-E1), so a config flip is the fastest kill switch if a bypass is ever found
     # post-deploy. Enabled per-env via application-{profile}.yml.
     enabled: false
+  nexus-us015-rbac-role-management:
+    # Defaults off; AC11 is the platform's only control against the mint side of the M-3
+    # self-escalation chain (03-design.md §10), so a config flip is the fastest kill switch if a
+    # bypass is ever found post-deploy. Enabled per-env via application-{profile}.yml.
+    enabled: false
 

@@ -92,7 +92,7 @@ class RbacDbPrivilegeHealthIndicatorIT {
       assertThat(health.getStatus()).isEqualTo(Status.DOWN);
       assertThat(health.getDetails()).containsEntry("isRoot", true);
       assertThat(warnMessages(appender))
-          .anyMatch(message -> message.contains("user_roles DB privilege drift detected"));
+          .anyMatch(message -> message.contains("rbac DB privilege drift detected"));
     } finally {
       stopLogCapture(appender);
     }
@@ -114,7 +114,7 @@ class RbacDbPrivilegeHealthIndicatorIT {
       assertThat(health.getDetails()).containsEntry("isRoot", false);
       assertThat(health.getDetails()).containsEntry("hasTableDeleteGrant", true);
       assertThat(warnMessages(appender))
-          .anyMatch(message -> message.contains("user_roles DB privilege drift detected"));
+          .anyMatch(message -> message.contains("rbac DB privilege drift detected"));
     } finally {
       stopLogCapture(appender);
     }

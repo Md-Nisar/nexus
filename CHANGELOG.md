@@ -7,6 +7,28 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ## [Unreleased]
 
+### Added — US-015 (Enable role and role-permission management API)
+
+**Backend**
+- Two new controllers in the `rbac` bounded context: `RoleController` (`POST`/`GET /api/v1/roles`, `GET`/`POST /api/v1/roles/{roleId}/permissions`, `DELETE /api/v1/roles/{roleId}/permissions/{permissionId}`) and `PermissionController` (`GET /api/v1/permissions`) — gated by `@RequiresPermission("role:write"/"role:read")`, plus service-layer tenant-isolation (AC8), system-role immutability (AC7), and dangerous-permission admin-gating (AC11) guards.
+- `RoleManagementService` — the sole enforcement point for AC1/AC3/AC4/AC7/AC8/AC9/AC11; new outbound port `RoleManagementPort`, implemented by `JpaRoleManagementAdapter`.
+- `RbacControllerSupport` (D4) — the `resolveActor`/`parsePathUuid`/`requestContext` fail-closed helper extracted from `UserRoleController` (US-012) and shared across all 8 RBAC endpoints, migrated behaviour-preservingly (verified via `UserRoleControllerTest`/`RoleAssignmentSecurityIT` staying unmodified).
+- `RBAC_003` (409, system-role immutability), `RBAC_005` (409, duplicate role-permission), `RBAC_006` (409, duplicate role name), `RBAC_007` (409, reserved role name — RC-1), `RBAC_008` (409, per-tenant role limit — RC-4) — five new domain exceptions with static-literal messages. Full register of all 8 `RBAC_*` codes now lives in `SECURITY.md` §3.1 (closes F4 — the missing-registry root cause).
+- `nexus.rbac.max-roles-per-tenant` (default 500, RC-4) — hard-enforced, externally configurable per-tenant role cap.
+- Three new `AuthEventType` constants (`ROLE_CREATED`, `ROLE_PERMISSION_GRANTED`, `ROLE_PERMISSION_REVOKED`) for AC12's audit trail; the latter two admitted to the `PRIORITY` retry-buffer lane (6 → 8 members), `ROLE_CREATED` deliberately kept `STANDARD` (unbounded, caller-controlled uniqueness, zero privilege consequence on its own).
+- **RC-7** — an unconditional `nexus.rbac.self_role_assignment` counter added to US-012's `RoleAssignmentService.assign()` (purely additive: no signature, return-type, or authorization-outcome change), composed at alert time with the existing `nexus.rbac.dangerous_permission_granted` counter to detect the actual R-3 propagate-side exploitation pattern, not just its precondition. Both counters carry a `tenantId` tag (Phase 7 security-review fix) so the composed alert can actually correlate per tenant in PromQL — previously neither was tenant-tagged and the "for the same tenant" composition was unenforceable.
+- Three new ArchUnit rules (D8): `@RequiresPermission` methods/declaring classes must be public and non-`final` (Spring AOP/CGLIB cannot proxy either otherwise — a silent, undetectable bypass); `RoleManagementService` must never call `UserRoleAssignmentPort#findActiveAssignmentViews`, the port's non-locking read (RC-5a) — each independently verified to fail on the condition it guards against.
+- `RbacDbPrivilegeHealthIndicator` (D9) generalised from `user_roles`-only to a per-table expectation set covering `roles`/`role_permissions`, including a `COLUMN_PRIVILEGES` leg (a column-scoped grant produces no `TABLE_PRIVILEGES` row and would otherwise pass a table-only check).
+- Stale JaCoCo exclusion on `*.rbac.infrastructure.persistence` removed (D10) — coverage passed without new tests once measured.
+- New feature flag `feature.nexus-us015-rbac-role-management.enabled`, default `false` (`true` in `dev`/`test`) — AC11 is the platform's only control against the mint side of the M-3 escalation chain, so this is the fastest kill switch if a bypass is found. **Flag-off is not a privilege rollback** — custom roles/permissions granted while live remain live domain data; see the new runbook.
+- No new Flyway migration — `V5__rbac_schema.sql` already carried every column/index/constraint this story needed.
+- New `docs/features/US-015/runbook.md` and `monitoring.md` — incident procedures (including the corrected ~30-minute AC10 staleness window, RC-2, and the D16 rollback/remediation sequence with its DBA-SQL fallback) and the full metrics/alerts/dashboard reference.
+- **Three pre-existing, unrelated bugs found and fixed while closing out the full IT suite (Phase 8):** `Role.java` was missing `@Generated(event = INSERT)` on `createdAt`, so `POST /roles`'s post-insert re-read returned the same managed (pre-flush) entity instead of the DB-assigned timestamp — `createdAt` came back `null` on every role creation (this story's own bug, T-003). `RoleResolutionServiceIT` (US-010) left stray active `TENANT_ADMIN` assignments in the shared bootstrap tenant with no cleanup, breaking `LastAdminLockoutIT`'s baseline-zero precondition. `RegisterAtomicityIT` (US-008) asserted "no `REGISTER` audit row exists anywhere in the shared table" instead of checking its own event, guaranteed to false-positive against other tests' legitimate rows — rescoped to the specific event id. None of the three are this story's own code; all three were latent until this was the first task to run the complete, non-`-DskipITs` suite end-to-end.
+- 1244/1244 backend tests passing (960 unit + 284 integration); JaCoCo coverage checks met; SpotBugs 0 bugs.
+
+**Frontend**
+- None — zero frontend impact (no client yet calls this endpoint family).
+
 ### Added — US-013 (Implement Angular permission guard and directive)
 
 **Frontend**

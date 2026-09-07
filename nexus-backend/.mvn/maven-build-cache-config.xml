@@ -5,7 +5,7 @@
 
     <configuration>
         <!-- turn cache on -->
-        <enabled>true</enabled>
+        <enabled>false</enabled>
         <hashAlgorithm>SHA-256</hashAlgorithm>
         <validateXml>true</validateXml>
 

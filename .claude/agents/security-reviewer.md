@@ -1,7 +1,7 @@
 ---
 name: security-reviewer
 description: Use for Phase 3 threat modeling and Phase 7 security audit. Reviews designs with STRIDE and code against OWASP Top 10. Hostile-mindset reviewer.
-tools: Read, Grep, Glob, Bash
+tools: Read, Grep, Glob, Bash, Write
 model: opus
 ---
 

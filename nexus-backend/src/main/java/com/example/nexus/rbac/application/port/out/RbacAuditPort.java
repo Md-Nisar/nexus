@@ -3,18 +3,21 @@ package com.example.nexus.rbac.application.port.out;
 import com.example.nexus.common.security.DenialReason;
 
 /**
- * Outbound audit port for RBAC authorization changes (03-design.md §4.5). Implemented by {@code
- * identity.infrastructure.audit.RbacAuthEventAdapter}, which delegates to {@code
+ * Outbound audit port for RBAC authorization changes (03-design.md §4.5, §6.2). Implemented by
+ * {@code identity.infrastructure.audit.RbacAuthEventAdapter}, which delegates to {@code
  * SecureEventService} ({@code REQUIRES_NEW}) so {@code rbac} gets audit durability for free without
  * importing {@code identity}.
  *
  * <p><b>Contract (restating {@code AuthEventPort.record}'s guarantee): implementations MUST NEVER
  * throw and MUST NOT block.</b> On failure they must swallow their own failures — buffering for
- * bounded backed-off retry, or logging and continuing — and never propagate to the caller. Callers
- * invoke {@link #recordRoleAssigned} and {@link #recordRoleRevoked} after commit (or, absent an
- * active transaction, inline as a best-effort fallback); {@link #recordRoleAssignmentDenied} is
- * invoked inline, pre-throw, before the caller's transaction commits or rolls back — see its own
- * Javadoc. No caller handles exceptions from any of the three.
+ * bounded backed-off retry, or logging and continuing — and never propagate to the caller.
+ *
+ * <p><b>Five methods are invoked post-commit</b> ({@link #recordRoleAssigned}, {@link
+ * #recordRoleRevoked}, {@link #recordRoleCreated}, {@link #recordRolePermissionGranted}, {@link
+ * #recordRolePermissionRevoked}) — or, absent an active transaction, inline as a best-effort
+ * fallback. <b>One method is the exception</b>: {@link #recordRoleAssignmentDenied} is invoked
+ * inline, pre-throw, before the caller's transaction commits or rolls back — see its own Javadoc.
+ * No caller handles exceptions from any of the six.
  */
 public interface RbacAuditPort {
 
@@ -37,4 +40,23 @@ public interface RbacAuditPort {
    * holder rather than the {@code user:write} holders this event type is scoped to.
    */
   void recordRoleAssignmentDenied(RbacAuditEvent event, DenialReason reason);
+
+  /**
+   * Records a successful role creation (AC12). Must never throw or block. Invoked post-commit;
+   * {@code event.permissionId()}/{@code event.permissionName()} are {@code null} — a freshly
+   * created role carries no permissions.
+   */
+  void recordRoleCreated(RoleAuditEvent event);
+
+  /**
+   * Records a successful role-permission grant (AC12). Must never throw or block. Invoked
+   * post-commit.
+   */
+  void recordRolePermissionGranted(RoleAuditEvent event);
+
+  /**
+   * Records a successful role-permission revocation (AC12). Must never throw or block. Invoked
+   * post-commit.
+   */
+  void recordRolePermissionRevoked(RoleAuditEvent event);
 }

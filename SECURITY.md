@@ -105,6 +105,19 @@ Note the human-readable text is under `detail` (the RFC 7807 field every Nexus e
 
 See `GuardedTestController` (`src/test/java/.../support/web/`) for a working, minimal usage example, and `TenantAwarePermissionEvaluatorTest` / `RequiresPermissionMockMvcTest` for the full behavioral contract (fail-closed on malformed authentication, tenant-presence guard, etc.).
 
+**RBAC error code register.** Every `RBAC_*` code in use, so the next story can look up the next free number instead of grepping for one (this register's absence was the root cause of an AC9 error code going unassigned at US-015's Gate 1 — F4).
+
+| Code | Status | Meaning | Owning story |
+|---|---|---|---|
+| `RBAC_001` | Active | 403 — caller authenticated but lacks the specific `@RequiresPermission` permission | US-011 |
+| `RBAC_002` | Active | 409 — revocation blocked because it would leave the tenant with zero active `TENANT_ADMIN` assignments (last-admin lockout) | US-012 |
+| `RBAC_003` | Active | 409 — write attempted against a system role (`is_system_role = TRUE`); system roles are immutable | US-015 |
+| `RBAC_004` | Active | 409 — duplicate active user-role assignment | US-012 |
+| `RBAC_005` | Active | 409 — duplicate role-permission attachment | US-015 |
+| `RBAC_006` | Active | 409 — duplicate role name within the tenant | US-015 |
+| `RBAC_007` | Active | 409 — role name is reserved for a system role | US-015 |
+| `RBAC_008` | Active | 409 — tenant has reached its configured role limit (`nexus.rbac.max-roles-per-tenant`) | US-015 |
+
 ## 4. Input validation & output encoding
 
 - Validate at the controller boundary (Bean Validation); re-validate security-sensitive operations at the service layer. Reject oversized inputs. Allowlist over blocklist.

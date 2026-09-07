@@ -1,11 +1,17 @@
 package com.example.nexus.architecture;
 
+import static com.tngtech.archunit.core.domain.properties.CanBeAnnotated.Predicates.annotatedWith;
+import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
+import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.methods;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noMethods;
 
+import com.example.nexus.common.security.RequiresPermission;
 import com.example.nexus.identity.infrastructure.web.JwtAuthenticationFilter;
+import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.domain.JavaClass;
+import com.tngtech.archunit.core.domain.JavaModifier;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
@@ -14,6 +20,7 @@ import com.tngtech.archunit.library.GeneralCodingRules;
 import java.security.Principal;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import org.springframework.security.core.Authentication;
 import org.junit.jupiter.api.Tag;
 
@@ -138,6 +145,56 @@ class HexagonalArchitectureTest {
                             + "Map both stay outside the existing Spring-Security-package ArchUnit "
                             + "rule while reintroducing raw authentication data into this layer")
                     .allowEmptyShould(true);
+
+    // US-015 D8: @RequiresPermission is enforced via Spring AOP/CGLIB proxying, which silently
+    // no-ops on a non-public or final method/declaring-class — no error, no log, no failing test
+    // (SECURITY.md §3.1). US-015 quadruples this context's annotated-handler count and its
+    // handlers guard the platform's role-definition surface.
+    @ArchTest
+    static final ArchRule requires_permission_methods_must_be_public_and_non_final =
+            methods().that().areAnnotatedWith(RequiresPermission.class)
+                    .should().bePublic()
+                    .andShould().notHaveModifier(JavaModifier.FINAL)
+                    .because("Spring AOP cannot proxy a non-public or final method, so "
+                            + "@RequiresPermission is SILENTLY never enforced on one — no error, "
+                            + "no log, no failing test (SECURITY.md §3.1). US-015 quadruples this "
+                            + "context's annotated-handler count and its handlers guard the "
+                            + "platform's role-definition surface.")
+                    .allowEmptyShould(true);
+
+    @ArchTest
+    static final ArchRule requires_permission_declaring_classes_must_not_be_final =
+            classes().that().containAnyMethodsThat(annotatedWith(RequiresPermission.class))
+                    .should().notHaveModifier(JavaModifier.FINAL)
+                    .because("CGLIB cannot subclass a final class, so every @RequiresPermission "
+                            + "on it is silently unenforced for the same reason as the "
+                            + "method-level rule above.")
+                    .allowEmptyShould(true);
+
+    // US-015 RC-5a (03b-threat-model.md T-E14): RoleManagementService has UserRoleAssignmentPort
+    // injected for exactly one reason: AC11's hasActiveAdminAssignment (Q11, the fresh, locking
+    // read). findActiveAssignmentViews is the port's OTHER, non-locking read, built for a
+    // different caller's field-redaction decision, and has no legitimate use here — there is no
+    // target user in this story's flows. This rule turns that mistake into a build failure
+    // instead of a code-review-only expectation.
+    @ArchTest
+    static final ArchRule role_management_service_must_not_call_the_non_locking_admin_read =
+            noClasses().that().haveSimpleName("RoleManagementService")
+                    .should().callMethod(
+                            UserRoleAssignmentPort.class,
+                            "findActiveAssignmentViews",
+                            UUID.class,
+                            UUID.class)
+                    .because("RC-5a (03b-threat-model.md T-E14). RoleManagementService has "
+                            + "UserRoleAssignmentPort injected for exactly one reason: AC11's "
+                            + "hasActiveAdminAssignment (Q11, the fresh, locking read). "
+                            + "findActiveAssignmentViews is the port's OTHER, non-locking read, "
+                            + "built for a different caller's field-redaction decision, and has "
+                            + "no legitimate use here — there is no target user in this story's "
+                            + "flows. The realistic F1 failure is not calling a private helper on "
+                            + "another service; it is reaching for the wrong method on a port "
+                            + "that is already injected. This rule turns that mistake into a "
+                            + "build failure instead of a code-review-only expectation.");
 
     @ArchTest
     static final ArchRule no_field_injection =

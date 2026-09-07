@@ -30,6 +30,8 @@ import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
 import com.example.nexus.rbac.domain.LastAdminRoleException;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
@@ -67,6 +69,7 @@ class RoleAssignmentServiceTest {
   @Mock private RbacAuditPort rbacAuditPort;
   @Mock private PermissionCachePort permissionCachePort;
 
+  private SimpleMeterRegistry meterRegistry;
   private RoleAssignmentService service;
 
   private UUID actorId;
@@ -79,9 +82,11 @@ class RoleAssignmentServiceTest {
 
   @BeforeEach
   void setUp() {
+    meterRegistry = new SimpleMeterRegistry();
     service =
         new RoleAssignmentService(
-            userRoleAssignmentPort, userDirectoryPort, rbacAuditPort, permissionCachePort);
+            userRoleAssignmentPort, userDirectoryPort, rbacAuditPort, permissionCachePort,
+            meterRegistry);
 
     actorId = UUID.randomUUID();
     tenantId = UUID.randomUUID();
@@ -426,6 +431,96 @@ class RoleAssignmentServiceTest {
       verify(rbacAuditPort).recordRoleAssigned(any());
     } finally {
       TransactionSynchronizationManager.clearSynchronization();
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // RC-7 (T-005): nexus.rbac.self_role_assignment — unconditional exploitation-side signal
+  // ---------------------------------------------------------------------------------------
+
+  /**
+   * 03-design.md §9.2/§10.2 (RC-7): unconditional, no dangerous-permission lookup. Proves the
+   * counter fires whenever {@code targetUserId == actor.userId()} AND that {@code assign()}'s
+   * outcome is unchanged -- same successful result as the non-self happy path.
+   */
+  @Test
+  void should_incrementSelfRoleAssignmentCounter_andStillSucceed_when_actorAssignsRoleToSelf() {
+    Role role = memberRole();
+    Instant assignedAt = Instant.now();
+    UUID userRoleId = UUID.randomUUID();
+    ActiveRoleAssignment view =
+        new ActiveRoleAssignment(actorId, roleId, "MEMBER", assignedAt, actorId);
+
+    when(userDirectoryPort.findTenantId(actorId)).thenReturn(Optional.of(tenantId));
+    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(userRoleAssignmentPort.hasActiveAssignment(actorId, roleId)).thenReturn(false);
+    when(userRoleAssignmentPort.assign(actorId, roleId, tenantId, actorId))
+        .thenReturn(userRoleId);
+    when(userRoleAssignmentPort.findActiveAssignmentView(actorId, roleId, tenantId))
+        .thenReturn(Optional.of(view));
+
+    ActiveRoleAssignment result = service.assign(actor, actorId, roleId, ctx);
+
+    assertThat(result).isEqualTo(view);
+    Counter counter = meterRegistry.find("nexus.rbac.self_role_assignment").counter();
+    assertThat(counter).isNotNull();
+    assertThat(counter.count()).isEqualTo(1.0);
+  }
+
+  /** Complements the test above: a non-self assignment must never increment the counter. */
+  @Test
+  void should_notIncrementSelfRoleAssignmentCounter_when_targetIsDifferentUser() {
+    Role role = memberRole();
+    Instant assignedAt = Instant.now();
+    ActiveRoleAssignment view =
+        new ActiveRoleAssignment(targetUserId, roleId, "MEMBER", assignedAt, actorId);
+
+    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
+    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
+    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
+        .thenReturn(UUID.randomUUID());
+    when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
+        .thenReturn(Optional.of(view));
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    assertThat(meterRegistry.find("nexus.rbac.self_role_assignment").counter()).isNull();
+  }
+
+  /**
+   * The counter must be accompanied by a WARN log (design §9.2), mirroring the file's existing
+   * {@code RBAC_LAST_ADMIN_REVOCATION_BLOCKED} structured-WARN convention.
+   */
+  @Test
+  void should_logWarnWithSelfRoleAssignmentMarker_when_actorAssignsRoleToSelf() {
+    Role role = memberRole();
+    Instant assignedAt = Instant.now();
+    ActiveRoleAssignment view =
+        new ActiveRoleAssignment(actorId, roleId, "MEMBER", assignedAt, actorId);
+
+    when(userDirectoryPort.findTenantId(actorId)).thenReturn(Optional.of(tenantId));
+    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(userRoleAssignmentPort.hasActiveAssignment(actorId, roleId)).thenReturn(false);
+    when(userRoleAssignmentPort.assign(actorId, roleId, tenantId, actorId))
+        .thenReturn(UUID.randomUUID());
+    when(userRoleAssignmentPort.findActiveAssignmentView(actorId, roleId, tenantId))
+        .thenReturn(Optional.of(view));
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      service.assign(actor, actorId, roleId, ctx);
+
+      var warnEvents = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
+      assertThat(warnEvents).hasSize(1);
+      Map<String, Object> keyValues = keyValueMap(warnEvents.get(0));
+      assertThat(keyValues)
+          .containsEntry("event", "RBAC_SELF_ROLE_ASSIGNMENT")
+          .containsEntry("tenantId", tenantId)
+          .containsEntry("targetUserId", actorId)
+          .containsEntry("roleId", roleId);
+    } finally {
+      stopLogCapture(appender);
     }
   }
 

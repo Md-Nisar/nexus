@@ -80,6 +80,18 @@ public interface UserRoleAssignmentPort {
   UUID assign(UUID userId, UUID roleId, UUID tenantId, UUID assignedBy);
 
   /**
+   * RC-6 — reverse lookup: the ids of every user holding an ACTIVE (non-revoked) assignment of
+   * {@code roleId}. Deliberately NOT tenant-scoped: the role id alone already pins the tenant
+   * ({@code roles.tenant_id}), so an additional parameter would be redundant plumbing for this
+   * lookup's one caller.
+   *
+   * <p>Needed only for the D16 remediation runbook path (03b-threat-model.md RC-6) — this story's
+   * own runtime flows never call it. Read-only, no locking: this is a DBA/ops-triggered lookup,
+   * not a hot path contended with the M1/M5 locking reads above.
+   */
+  List<UUID> findActiveUserIdsForRole(UUID roleId);
+
+  /**
    * M6 — targeted single-column soft delete. {@code revokedAt} must be the caller's app-side
    * clamped instant (never earlier than the assignment's {@code assignedAt} — see {@link
    * ActiveAssignmentRef}), since this codebase's pinned Hibernate version rejects a DB-side {@code
