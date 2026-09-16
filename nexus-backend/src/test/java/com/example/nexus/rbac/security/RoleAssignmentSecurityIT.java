@@ -83,6 +83,10 @@ class RoleAssignmentSecurityIT {
       UUID.fromString("019f6839-1802-7000-8000-000000000003");
   private static final UUID USER_WRITE_PERMISSION_ID =
       UUID.fromString("019f6839-1803-7000-8000-000000000004");
+  // Dangerous per RbacDangerousPermissions.NAMES -- used by the T-S7 freshness-on-the-privilege-
+  // path extension below to construct a role that is privileged WITHOUT being named TENANT_ADMIN.
+  private static final UUID ROLE_WRITE_PERMISSION_ID =
+      UUID.fromString("019f6839-1805-7000-8000-000000000006");
 
   @Value("${local.server.port}")
   private int port;
@@ -300,6 +304,59 @@ class RoleAssignmentSecurityIT {
         .as("a JWT minted while the caller was an active TENANT_ADMIN must NOT still be honored"
             + " as admin once that assignment is revoked out-of-band -- AC8's guard must be a"
             + " live DB read, never trust the JWT's own claims (T-E7)")
+        .isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
+    assertDenialReasonIncrementedByOne("user:write", "NOT_TENANT_ADMIN", before);
+  }
+
+  /**
+   * US-016 T-017 (03-design.md §11.3, T-S7): the same proof as {@link
+   * #should_return403WithNotTenantAdmin_when_staleJwtStillClaimsAdminAfterOutOfBandRevocation()}
+   * above, but for the <b>privilege-based</b> branch of the gate rather than the name-match
+   * branch -- the target role here is never named {@code TENANT_ADMIN}; it is privileged solely
+   * because it carries a {@code RbacDangerousPermissions} member ({@code role:write}). This
+   * proves {@link com.example.nexus.rbac.application.RoleAssignmentService#assign}'s
+   * privilege-based path ALSO performs a live (M5, locking) DB read and never trusts the JWT's
+   * own {@code permissions[]} claim, even though the caller's stale token was minted while they
+   * genuinely held an active {@code TENANT_ADMIN} assignment.
+   */
+  @Test
+  void should_return403WithNotTenantAdmin_when_staleJwtStillClaimsAdminAfterOutOfBandRevocation_forDangerousCustomRoleAssign() {
+    UUID tenantD2 = uuidGenerator.newId();
+    Role adminRole = seedRole(tenantD2, "TENANT_ADMIN", "stale-jwt-priv");
+    grantPermission(adminRole.getId(), USER_WRITE_PERMISSION_ID);
+    User admin = seedUser(tenantD2, "stale-jwt-priv-admin");
+    UserRole assignment = seedActiveAssignment(tenantD2, adminRole.getId(), admin.getId(), admin.getId());
+
+    // Minted WHILE admin genuinely holds an active TENANT_ADMIN assignment -- same as the
+    // name-match test above.
+    String staleToken = mintToken(admin);
+
+    // Out-of-band revocation, identical mechanism to the name-match test above.
+    int[] affectedHolder = new int[1];
+    new org.springframework.transaction.support.TransactionTemplate(transactionManager)
+        .executeWithoutResult(
+            status ->
+                affectedHolder[0] =
+                    userRoleRepository.revokeById(assignment.getId(), java.time.Instant.now()));
+    int affected = affectedHolder[0];
+    assertThat(affected).as("the out-of-band revoke itself must succeed").isEqualTo(1);
+
+    // The target role: privileged via the DANGEROUS-PERMISSION branch, deliberately NOT named
+    // TENANT_ADMIN, so a name-match short-circuit could never account for this denial.
+    Role dangerousRole = seedRole(tenantD2, "CUSTOM-DANGEROUS", "stale-jwt-priv");
+    grantPermission(dangerousRole.getId(), ROLE_WRITE_PERMISSION_ID);
+    User target = seedUser(tenantD2, "stale-jwt-priv-target");
+    double before = permissionDeniedCount("user:write", "NOT_TENANT_ADMIN");
+
+    // Same still-valid, unexpired token as the name-match test's technique.
+    ResponseEntity<Map> resp = postAssign(staleToken, target.getId(), dangerousRole.getId());
+
+    assertThat(resp.getStatusCode())
+        .as("a JWT minted while the caller was an active TENANT_ADMIN must NOT still be honored"
+            + " as admin, on the PRIVILEGE-BASED branch of the gate either, once that assignment"
+            + " is revoked out-of-band -- the guard must be a live DB read, never trust the JWT's"
+            + " own claims (T-S7)")
         .isEqualTo(HttpStatus.FORBIDDEN);
     assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
     assertDenialReasonIncrementedByOne("user:write", "NOT_TENANT_ADMIN", before);

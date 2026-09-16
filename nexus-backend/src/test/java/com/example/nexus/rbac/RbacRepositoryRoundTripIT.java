@@ -183,6 +183,78 @@ class RbacRepositoryRoundTripIT {
         .isInstanceOf(DataIntegrityViolationException.class);
   }
 
+  /**
+   * Gap identified in Phase 8 test-validate (US-016 T-005 / D16): {@code
+   * JpaRoleRepository.findPermissionNamesByRole} (M7, the comma-join JPQL form A-6 mandates
+   * because {@code Role} has no mapped association to {@code RolePermission}) was previously
+   * exercised only via mocked adapter-delegation unit tests and via SQL-capture assertions that
+   * check for the ABSENCE of locking clauses -- nothing proved the query's actual RESULT is
+   * correct against real MySQL. This seeds three permissions on one role and confirms the
+   * comma-join returns exactly those three names, with no duplication and no cross-join fan-out
+   * from a second, unrelated role's permissions.
+   */
+  @Test
+  void should_returnDistinctPermissionNames_when_roleHasMultiplePermissionsAttached() {
+    Role role =
+        roleRepository.save(
+            new Role(
+                uuidGenerator.newId(),
+                uuidGenerator.newId(),
+                "RT-M7-ROLE-" + UUID.randomUUID(),
+                null,
+                false));
+    Permission p1 =
+        permissionRepository.save(
+            new Permission(uuidGenerator.newId(), "rt:m7-a-" + UUID.randomUUID(), "m7 perm a"));
+    Permission p2 =
+        permissionRepository.save(
+            new Permission(uuidGenerator.newId(), "rt:m7-b-" + UUID.randomUUID(), "m7 perm b"));
+    Permission p3 =
+        permissionRepository.save(
+            new Permission(uuidGenerator.newId(), "rt:m7-c-" + UUID.randomUUID(), "m7 perm c"));
+    rolePermissionRepository.save(new RolePermission(role.getId(), p1.getId()));
+    rolePermissionRepository.save(new RolePermission(role.getId(), p2.getId()));
+    rolePermissionRepository.save(new RolePermission(role.getId(), p3.getId()));
+
+    // An unrelated role/permission pairing must not leak into the result -- the WHERE
+    // rp.id.roleId = :roleId predicate, not incidental non-overlap, must be what excludes it.
+    Role otherRole =
+        roleRepository.save(
+            new Role(
+                uuidGenerator.newId(),
+                uuidGenerator.newId(),
+                "RT-M7-OTHER-" + UUID.randomUUID(),
+                null,
+                false));
+    Permission otherPermission =
+        permissionRepository.save(
+            new Permission(uuidGenerator.newId(), "rt:m7-other-" + UUID.randomUUID(), "other"));
+    rolePermissionRepository.save(new RolePermission(otherRole.getId(), otherPermission.getId()));
+
+    assertThat(roleRepository.findPermissionNamesByRole(role.getId()))
+        .containsExactlyInAnyOrder(p1.getName(), p2.getName(), p3.getName());
+  }
+
+  /**
+   * Companion to the above: Edge Case 1 (03-design.md §4.1) -- a role with zero attached
+   * permissions must yield an empty list, not null and not an error, from the real comma-join
+   * against MySQL (previously only asserted via a mocked port in {@code
+   * RoleAssignmentServiceTest}).
+   */
+  @Test
+  void should_returnEmptyList_when_roleHasNoPermissionsAttached() {
+    Role role =
+        roleRepository.save(
+            new Role(
+                uuidGenerator.newId(),
+                uuidGenerator.newId(),
+                "RT-M7-EMPTY-ROLE-" + UUID.randomUUID(),
+                null,
+                false));
+
+    assertThat(roleRepository.findPermissionNamesByRole(role.getId())).isEmpty();
+  }
+
   private User seedUser(String tag) {
     String email = "rt-" + tag + "-" + UUID.randomUUID() + "@example.com";
     String hmac = "hmac-" + UUID.randomUUID().toString().replace("-", "");

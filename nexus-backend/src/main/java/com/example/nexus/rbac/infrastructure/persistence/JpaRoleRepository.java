@@ -1,6 +1,8 @@
 package com.example.nexus.rbac.infrastructure.persistence;
 
+import com.example.nexus.rbac.domain.Permission;
 import com.example.nexus.rbac.domain.Role;
+import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.domain.RoleView;
 import java.util.List;
 import java.util.Optional;
@@ -51,6 +53,22 @@ public interface JpaRoleRepository extends JpaRepository<Role, UUID> {
    */
   @Query("SELECT r.id FROM Role r WHERE r.tenantId = :tenantId AND r.name = :name")
   Optional<UUID> findIdByTenantIdAndName(@Param("tenantId") UUID tenantId, @Param("name") String name);
+
+  /**
+   * M7 (US-016 D16, RC-12) — the names of every permission attached to {@code roleId}. Hosted
+   * here, not on {@code JpaRolePermissionRepository}, so {@link JpaUserRoleAssignmentAdapter} can
+   * read permission names without gaining any dependency on the repository that holds write
+   * access over {@code role_permissions} (03-design.md §4.4/§4.5, T-T13). Two-entity comma-join JPQL —
+   * {@link Role} has no mapped association to {@link RolePermission} — never native SQL, so
+   * Hibernate's auto-applied {@code UuidV7Converter} handles {@code UUID} <-> {@code BINARY(16)}
+   * for both the predicate and the bind parameter. No {@code @Lock} (MC-1): {@code nexus_app}
+   * holds SELECT only on {@code permissions}. No {@code ORDER BY}: the caller treats the result
+   * as a set.
+   */
+  @Query(
+      "SELECT p.name FROM RolePermission rp, Permission p "
+          + "WHERE rp.id.permissionId = p.id AND rp.id.roleId = :roleId")
+  List<String> findPermissionNamesByRole(@Param("roleId") UUID roleId);
 
   /**
    * Q12 — RC-4's per-tenant role cap check. Served by {@code uq_roles_tenant_name}'s leftmost

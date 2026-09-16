@@ -1,9 +1,12 @@
 package com.example.nexus.rbac;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.nexus.TestcontainersConfiguration;
 import com.example.nexus.common.domain.RequestContext;
+import com.example.nexus.common.security.DenialReason;
+import com.example.nexus.common.security.InsufficientPermissionException;
 import com.example.nexus.identity.domain.EmailCipher;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
@@ -17,12 +20,15 @@ import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import java.nio.ByteBuffer;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * US-015 T-010, RC-7 (03-design.md §9.2/§10.2; 03b-threat-model.md T-E16): the {@code
@@ -49,6 +55,7 @@ class RoleAssignmentEscalationIT {
   @Autowired private JpaUserRepository userRepository;
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private MeterRegistry meterRegistry;
+  @Autowired private JdbcTemplate jdbc;
 
   // ── (a) any self-assignment increments the counter, regardless of permissions ──────────
 
@@ -70,11 +77,35 @@ class RoleAssignmentEscalationIT {
         .isEqualTo(before + 1.0);
   }
 
-  // ── (b) composed T-E16 scenario: admin attaches a dangerous permission, then a non-admin ──
-  // ── self-assigns that role -- both counters increment and the assignment still succeeds ───
+  // ── (b) T-016: formerly the T-E16 escalation PoC -- now its closure proof ──────────────────
 
+  /**
+   * US-016 T-016 (03-design.md §11.3; §4.2's corrected M-3/T-E9 note): proves the T-E16-direct-path
+   * and T-E17 closure. An admin attaches a dangerous permission ({@code role:write}) to a custom
+   * role -- the mint side, unchanged by this story, still fires {@code
+   * nexus.rbac.dangerous_permission_granted} exactly as before (asserted below). A non-admin then
+   * attempts to self-assign that now-dangerous role: the unified privilege-based gate (D4) denies
+   * it with 403 {@code NOT_TENANT_ADMIN}, the denial is durably audited with {@code
+   * operation="assign"} in its {@code ROLE_ASSIGNMENT_DENIED} metadata (D17), and {@code
+   * nexus.rbac.self_role_assignment} does NOT increment -- it only fires from the post-commit
+   * success path, which this denial never reaches.
+   *
+   * <p><b>Explicitly NOT evidence for T-E21</b> (the attach-after-assign residual, US-016 D13):
+   * here the dangerous permission is attached to the role BEFORE the self-assign is attempted, so
+   * the gate evaluates against an already-dangerous role at assign time -- T-E16's direct
+   * propagate path. T-E21 is the opposite ordering (a non-admin self-assigns a BENIGN role first,
+   * and an admin only makes it dangerous afterward, with no gate re-evaluation at that later
+   * moment) and remains open by design; its own standing evidence is US-016 T-018.
+   *
+   * <p>Formerly {@code
+   * should_incrementBothCountersAndSucceed_when_adminAttachesDangerousPermissionAndNonAdminSelfAssigns}
+   * -- this test used to assert the vulnerability itself (both counters incremented AND the
+   * self-assignment succeeded). Inverted here, not deleted, per US-015's "replace, never delete"
+   * discipline applied to a test rather than to prose: this remains the epic's only executable
+   * record of what the vulnerability was, and now proves it is closed.
+   */
   @Test
-  void should_incrementBothCountersAndSucceed_when_adminAttachesDangerousPermissionAndNonAdminSelfAssigns() {
+  void should_denyAndAudit_when_nonAdminSelfAssignsANowDangerousRole() {
     UUID tenantId = uuidGenerator.newId();
     Role adminRole = seedRole("ADMIN", tenantId, "TENANT_ADMIN");
     User adminUser = seedUser("admin", tenantId);
@@ -92,23 +123,37 @@ class RoleAssignmentEscalationIT {
         .as("nexus.rbac.dangerous_permission_granted{permission=role:write} must increment")
         .isEqualTo(dangerousBefore + 1.0);
 
-    // A non-admin user self-assigns the now-dangerous custom role. AC8 does NOT block this --
-    // it matches only the role NAME "TENANT_ADMIN", and this custom role isn't named that
-    // (the exact T-E16 gap this counter exists to give operators a signal for).
+    // A non-admin user attempts to self-assign the now-dangerous custom role. Before US-016 the
+    // name-only AC8 match let this through; the unified privilege-based gate (D4) now denies it
+    // just like a literally-named TENANT_ADMIN grant would be.
     User nonAdminUser = seedUser("non-admin", tenantId);
     UUID nonAdminUserId = nonAdminUser.getId();
     RoleChangeActor nonAdminActor = new RoleChangeActor(nonAdminUserId, tenantId);
-    double selfAssignBefore = selfRoleAssignmentCount(tenantId);
+    double selfAssignBefore = selfRoleAssignmentCount(tenantId, "true", "true");
+    RequestContext ctx = requestContext();
 
-    roleAssignmentService.assign(
-        nonAdminActor, nonAdminUserId, customRole.getId(), requestContext());
+    assertThatThrownBy(
+            () ->
+                roleAssignmentService.assign(
+                    nonAdminActor, nonAdminUserId, customRole.getId(), ctx))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .satisfies(
+            e ->
+                assertThat(((InsufficientPermissionException) e).getReason())
+                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
 
-    assertThat(selfRoleAssignmentCount(tenantId))
-        .as("nexus.rbac.self_role_assignment must increment on the non-admin's self-assignment "
-            + "of the now-dangerous role")
-        .isEqualTo(selfAssignBefore + 1.0);
-    // The assignment itself must have SUCCEEDED (no exception thrown above) -- AC8's name-only
-    // match never fires for a role not literally named TENANT_ADMIN.
+    assertThat(selfRoleAssignmentCount(tenantId, "true", "true"))
+        .as("a DENIED self-assignment must never increment nexus.rbac.self_role_assignment -- "
+            + "the counter only fires from the post-commit success path")
+        .isEqualTo(selfAssignBefore);
+
+    Map<String, Object> deniedRow = findLatestDenialAuditRow(nonAdminUserId);
+    assertThat(deniedRow.get("reason")).isEqualTo("NOT_TENANT_ADMIN");
+    assertThat(deniedRow.get("operation"))
+        .as("D17: the durable denial row must carry operation=\"assign\" for this self-assign "
+            + "attempt")
+        .isEqualTo("assign");
+    assertThat(deniedRow.get("trace_id")).isEqualTo(ctx.traceId());
   }
 
   // ── Fixtures / helpers ───────────────────────────────────────────────────────────────────
@@ -154,6 +199,20 @@ class RoleAssignmentEscalationIT {
     return counter != null ? counter.count() : 0.0;
   }
 
+  // T-016: self_role_assignment now carries privileged/callerIsAdmin tags too (T-010/D15) --
+  // an absence proof must match the FULL tag set the scenario would have produced had it
+  // succeeded, not just tenantId, to be unambiguous (03-design.md §11.3 risk callout).
+  private double selfRoleAssignmentCount(UUID tenantId, String privileged, String callerIsAdmin) {
+    Counter counter =
+        meterRegistry
+            .find("nexus.rbac.self_role_assignment")
+            .tag("tenantId", tenantId.toString())
+            .tag("privileged", privileged)
+            .tag("callerIsAdmin", callerIsAdmin)
+            .counter();
+    return counter != null ? counter.count() : 0.0;
+  }
+
   private double dangerousPermissionGrantedCount(UUID tenantId, String permission) {
     Counter counter =
         meterRegistry
@@ -162,5 +221,27 @@ class RoleAssignmentEscalationIT {
             .tag("tenantId", tenantId.toString())
             .counter();
     return counter != null ? counter.count() : 0.0;
+  }
+
+  /**
+   * D17: reads the durable {@code ROLE_ASSIGNMENT_DENIED} row's {@code reason}/{@code
+   * operation}/{@code traceId} metadata fields, mirroring {@code
+   * RoleAssignmentAuditIT#findLatestDenialAuditRow}.
+   */
+  private Map<String, Object> findLatestDenialAuditRow(UUID targetUserId) {
+    return jdbc.queryForMap(
+        "SELECT JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.reason')) AS reason, "
+            + "JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.operation')) AS operation, "
+            + "JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.traceId')) AS trace_id "
+            + "FROM auth_events WHERE user_id = ? AND event_type = 'ROLE_ASSIGNMENT_DENIED' "
+            + "ORDER BY created_at DESC LIMIT 1",
+        toBytes(targetUserId));
+  }
+
+  private static byte[] toBytes(UUID uuid) {
+    ByteBuffer buf = ByteBuffer.allocate(16);
+    buf.putLong(uuid.getMostSignificantBits());
+    buf.putLong(uuid.getLeastSignificantBits());
+    return buf.array();
   }
 }

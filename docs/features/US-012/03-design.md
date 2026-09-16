@@ -1363,3 +1363,57 @@ C:\entomo\ai\nexus\nexus-backend\src\test\java\com\example\nexus\identity\domain
 ```
 
 **Explicitly unchanged (vs. `02-impact.md`'s file list):** `rbac/domain/UserRole.java` (§5.4), `db/migration/*` (§5.1), `nexus-database/mysql/init/02-grants-post-schema.sql` (§5.5, subject to O-1), and every file under `nexus-frontend/` (`02-impact.md` §1.6 — which also sidesteps the known npm-Windows `@emnapi` lockfile-prune trap entirely).
+
+---
+
+## Amendment (2026-09-13) — US-016 privilege-based role-change gate: AC5's reachable population, and the ≥1-admin invariant
+
+_Added during US-016 implementation (EPIC-002, `feature/US-016`, task T-020) as required by `docs/features/US-016/03-design.md` §6.4 and §12.2 items 3–4. Following the append-only precedent this repo uses for shipped design docs and ADRs (see ADR-0013's "Amendment (2026-07-22)" section, and ADR-0001's append-only rule), **nothing above this line is edited** — §3.2's sequence diagram, §4's responsibility boundary, §5.2's M1, §7's error table, the Gate 1 Resolutions as applied throughout, and every decision and rationale in this document stand exactly as originally accepted. What follows records a change in what one of them now *reaches*; it changes none of them._
+
+### Scope — the two anchors this single amendment serves
+
+This document is append-only, so neither anchor can carry the amendment in place. This section **is** the dated amendment for both:
+
+1. **§3.2 `DELETE /api/v1/users/{userId}/roles/{roleId}` — AC5 lockout guard**, and every in-document restatement of AC5's actor-agnostic reach (§4's responsibility boundary sentence, §5.2's M1, and the error-table row `| 11 | **AC5** — target is the tenant's only active TENANT_ADMIN | 409 | RBAC_002 | …`).
+2. **Gate 1 Resolution 5** — cited throughout this document as **"Res. 5"**: the resolution that settled the AC5 lockout guard as *tenant-wide and actor-agnostic, not self-revocation-only*, and directed that AC5's "self-revocation" title be corrected in the story text. It is referenced here in §6.5's `/breakdown` bullet and in §12's open item **O-6**. Its canonical text lives in `docs/features/US-012/01-requirements.md` §11 (the table's fifth row, labelled there by its open-question number `3 (R7)` — the "Res. 5" citations in this document number the table by position). **That file is not edited by US-016 either**; this section is the record for the resolution.
+
+### What US-016 changed
+
+US-016 (`docs/features/US-016/`, ADR-0017 `docs/adr/0017-privilege-based-role-assignment-gate.md`) generalises AC8's "only an active `TENANT_ADMIN` may grant `TENANT_ADMIN`" rule into a **privilege-based gate applied to both `assign()` and `revoke()`**. A role is *privileged* if it is literally named `TENANT_ADMIN` **or** it carries any permission in `RbacDangerousPermissions.NAMES`. `revoke()`, which under US-012 had **no** authorization gate beyond `user:write` + tenant equality, now runs that gate before the AC5 check (`RoleAssignmentService.revoke`, US-016 design §6.2 / §7.2).
+
+The AC5 guard itself is **unchanged code**. Its condition is still `nameMatch && lockedActiveAdminIds.size() <= 1 && lockedActiveAdminIds.contains(ref.id())`, it still performs **no actor/target comparison**, and its documented actor-agnostic property holds exactly as Res. 5 states it. What changed is only the set of situations that can *reach* it.
+
+### 1. The narrowing — AC5's reachable population is now self-revocation only
+
+**After US-016, the AC5 branch is reachable only when `targetUserId == actor.userId()`.**
+
+*Proof (US-016 design §6.4).* To reach the guard, control must first have passed the privilege gate, which runs before it. So the caller holds an active assignment of the tenant's `TENANT_ADMIN` role — verified by M5 under `PESSIMISTIC_READ` with predicate `userId = caller AND roleId = adminRoleId AND tenantId = actor.tenantId() AND revokedAt IS NULL`. On the name-match path `adminRoleId == role.getId()`. M1's predicate is M5's minus the `userId` restriction, so the caller's own assignment row is necessarily an element of `lockedActiveAdminIds`, and that set is non-empty. `size() <= 1` therefore means the set is exactly `{the caller's own assignment}`; the guard additionally requires `contains(ref.id())`, so `ref` **is** the caller's own assignment. ∎
+
+*Isolation-level dependency, stated rather than assumed (US-016 RC-9.2).* The step "no other admin row can appear between M1 and M5" holds because of M1's **next-key/gap lock over the `role_id = adminRoleId` range under REPEATABLE READ**, and by nothing else. Under READ COMMITTED there are no gap locks and the word *structurally* would be too strong (the security outcome would be unchanged — still a 409). MySQL's default is `REPEATABLE-READ` and nothing in this codebase pins it, so US-016 adds mechanical control **MC-6** to assert it.
+
+*Operational consequence, already applied.* `RBAC_002` on `TENANT_ADMIN` now means "**the tenant's sole admin tried to remove their own admin role**" — a self-service offboarding mistake, not a third-party action. A **non-admin** attempting the same revoke now receives **403 before this 409**. `docs/features/US-012/monitoring.md` §2 (`nexus_rbac_tenant_lockout_blocked`) and §5 (`RBAC_LAST_ADMIN_REVOCATION_BLOCKED`) carry this, and the first triage question there changes from "which process revoked the other admins?" to "is this an offboarding gap for the last admin?".
+
+### 2. The strengthening — the ≥1-admin invariant is now enforced earlier and more strongly, and AC5 is **not** dead code
+
+Recording only the narrowing would misrepresent the change as a loss of coverage and would invite a future reader to delete the guard. The opposite is true:
+
+**The ≥1-active-admin invariant is now enforced *more* strongly than under US-012, by a different and earlier mechanism.** Because a caller must already be an active admin to reach the revoke path for a `TENANT_ADMIN` role at all, and because the caller's own row is always inside M1's locked set, **no sequence of revocations can take a tenant below one admin**: the last remaining admin is always the actor, and the actor cannot self-revoke. Under US-012, AC5 was the *only* thing standing between a tenant and lockout, and it had to hold against any `user:write` holder (the exposure recorded in this document's own open item **O-5**). After US-016 the gate is the primary enforcement and AC5 is the second line. **O-5 is thereby closed by US-016** — its recommended "US-015-era AC symmetric to AC8" is what US-016 shipped, generalised beyond role name.
+
+**AC5 is retained deliberately and must not be removed.** Explicitly, for the avoidance of a future "this is unreachable, delete it" refactor:
+
+- It is **not** dead code. It is the guard of last resort if the gate is ever weakened, reordered, or bypassed by a **new call path** that does not go through `RoleAssignmentService.revoke` — precisely the class of regression that a narrowed-but-present guard exists to absorb.
+- Its **unit test is retained too**, as a guard-*shape* proof: US-016 keeps the "different admin revoking" case (renamed to `…_differentAdminRevoking_syntheticStateSeeDesign64`, citing US-016 design §6.4) because it is the only mechanical proof that the guard performs no actor/target comparison, even though that state is no longer reachable in production.
+- `RbacZeroActiveAdminsHealthIndicator` is likewise unchanged and still required: it detects a zero-admin tenant arising from **any** cause, including a raw-SQL path that bypasses this API entirely.
+
+**Res. 5 is not reversed.** The resolution said the guard is tenant-wide and actor-agnostic, and it still is — as written, as coded, and as tested. This amendment narrows the set of *inputs that can reach* it; it does not re-litigate the resolution, and AC5's title correction directed by Res. 5 (dropping the "self-revocation" framing) still stands for the reason Res. 5 gave, namely that the guard's *shape* is actor-agnostic regardless of which inputs currently reach it.
+
+### Residual, carried forward
+
+The narrowing applies only to the literally-named `TENANT_ADMIN` role. A **custom** role carrying `user:write` is now privilege-*gated* by US-016 but is still not lockout-*protected* by AC5, and `RbacZeroActiveAdminsHealthIndicator` cannot see it either (its query is name-based). Tracked as US-016 **RES-3** and as the EPIC-002 Gate-1 #8 follow-on; this document's O-5 closure above does not cover it.
+
+### References
+
+- `docs/features/US-016/03-design.md` — §6.1–§6.4 (the gate, its ordering, and the §6.4 proof), §7.2 (the pinned lock order), §7.5 (the composed lock-hold measurement), §9.3 (the US-012 monitoring edits), §12.2 items 3–4 (this amendment)
+- `docs/adr/0017-privilege-based-role-assignment-gate.md` — the accepted decision record
+- `docs/features/US-012/monitoring.md` — §1, §2 and §5, amended 2026-09-13 in the same change
+- `docs/features/US-012/01-requirements.md` §11 — Gate 1 Resolution 5, unedited; this section is its amendment record

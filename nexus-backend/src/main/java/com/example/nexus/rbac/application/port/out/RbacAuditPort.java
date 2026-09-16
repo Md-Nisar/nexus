@@ -38,8 +38,17 @@ public interface RbacAuditPort {
    * or the 404s, and never from a read path — an "assignment denied" event for a read is a
    * semantic mislabel, and would also widen the emitting population to every {@code user:read}
    * holder rather than the {@code user:write} holders this event type is scoped to.
+   *
+   * @param operation the verb being denied, {@code "assign"} or {@code "revoke"} — persisted in
+   *     the durable audit metadata (03-design.md D17/RC-13) so assign-side and revoke-side denials
+   *     are discriminable in {@code auth_events}. <b>This parameter and the
+   *     {@code nexus.rbac.audit_write_failed{operation="deny"}} metric tag are deliberately
+   *     different axes and MUST NOT be unified or confused</b>: the metric tag identifies which of
+   *     this port's methods failed to write (fixed at {@code "deny"} here, so no existing dashboard
+   *     breaks), while this parameter identifies which caller verb produced the denial being
+   *     recorded.
    */
-  void recordRoleAssignmentDenied(RbacAuditEvent event, DenialReason reason);
+  void recordRoleAssignmentDenied(RbacAuditEvent event, DenialReason reason, String operation);
 
   /**
    * Records a successful role creation (AC12). Must never throw or block. Invoked post-commit;

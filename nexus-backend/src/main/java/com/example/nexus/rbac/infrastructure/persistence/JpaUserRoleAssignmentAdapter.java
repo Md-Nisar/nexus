@@ -7,6 +7,7 @@ import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
 import com.example.nexus.rbac.domain.IdGenerator;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.UserRole;
+import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -18,7 +19,11 @@ import org.springframework.stereotype.Component;
  * Adapter for {@link UserRoleAssignmentPort}, backed by {@link JpaUserRoleRepository} (M1–M6) and
  * {@link JpaRoleRepository}. Purely mechanical: this layer does not resolve {@code TENANT_ADMIN}
  * by any hardcoded literal — that resolution (matching a role by name case-insensitively within a
- * tenant) happens in the service layer, per 03-design.md §5.2's R-9 discipline.
+ * tenant) happens in the service layer, per 03-design.md §5.2's R-9 discipline. The same
+ * discipline now also covers dangerous permission names — this layer never hardcodes a check
+ * against {@code RbacDangerousPermissions.NAMES} either. This adapter holds no write capability
+ * over {@code role_permissions} and must not acquire one: its permission read (M7) is hosted on
+ * {@link JpaRoleRepository} precisely so that it cannot (03-design.md D16, T-T13).
  */
 @Component
 public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
@@ -48,7 +53,19 @@ public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
 
   @Override
   public boolean hasActiveAdminAssignment(UUID userId, UUID roleId, UUID tenantId) {
-    return !userRoleRepository.lockActiveAdminAssignment(userId, roleId, tenantId).isEmpty();
+    // M5 is now a native query (03-design.md §7.2 step 1 / MC-5): it does not go through the
+    // entity-mapped UuidV7Converter on bind, so the UUID -> BINARY(16) conversion is done here
+    // explicitly, matching ADR-0005's big-endian layout.
+    return !userRoleRepository
+        .lockActiveAdminAssignment(toBytes(userId), toBytes(roleId), toBytes(tenantId))
+        .isEmpty();
+  }
+
+  private static byte[] toBytes(UUID uuid) {
+    ByteBuffer buf = ByteBuffer.allocate(16);
+    buf.putLong(uuid.getMostSignificantBits());
+    buf.putLong(uuid.getLeastSignificantBits());
+    return buf.array();
   }
 
   @Override
@@ -92,6 +109,16 @@ public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
     } catch (DataIntegrityViolationException e) {
       throw new DuplicateRoleAssignmentException();
     }
+  }
+
+  @Override
+  public List<String> findPermissionNamesForRole(UUID roleId) {
+    return roleRepository.findPermissionNamesByRole(roleId);
+  }
+
+  @Override
+  public Optional<UUID> findRoleIdByName(UUID tenantId, String name) {
+    return roleRepository.findIdByTenantIdAndName(tenantId, name);
   }
 
   @Override

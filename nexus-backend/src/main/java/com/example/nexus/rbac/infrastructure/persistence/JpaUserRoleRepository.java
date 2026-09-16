@@ -142,22 +142,39 @@ public interface JpaUserRoleRepository extends JpaRepository<UserRole, UUID> {
       @Param("userId") UUID userId, @Param("roleId") UUID roleId, @Param("tenantId") UUID tenantId);
 
   /**
-   * M5 — AC8's live-admin check on the CALLER. MUST be a LOCKING read (PESSIMISTIC_READ, renders
-   * {@code FOR SHARE}), never a plain COUNT: a non-locking read is a REPEATABLE-READ snapshot that
-   * can miss a concurrent revocation of the caller's own admin assignment (a real, if narrow,
-   * race). Returns entities (not a scalar) because {@code @Lock} on a COUNT projection is
-   * implementation-defined under JPA — the adapter should only ever inspect {@code .size()} /
-   * {@code .isEmpty()}, never mutate these.
+   * M5 — AC8's live-admin check on the CALLER. MUST be a LOCKING read (renders {@code FOR SHARE}
+   * directly in this native query, since Spring Data JPA does not support combining {@code @Lock}
+   * with {@code nativeQuery = true}), never a plain COUNT: a non-locking read is a
+   * REPEATABLE-READ snapshot that can miss a concurrent revocation of the caller's own admin
+   * assignment (a real, if narrow, race). Returns entities (not a scalar) because a locking read
+   * on a COUNT projection is implementation-defined under JPA — the adapter should only ever
+   * inspect {@code .size()} / {@code .isEmpty()}, never mutate these.
+   *
+   * <p><b>Native, with an explicit {@code FORCE INDEX} (MC-5, RC-9.1, 03-design.md §7.2 step
+   * 1):</b> the JPQL equivalent let MySQL's optimizer choose {@code fk_user_roles_user} over
+   * {@code fk_user_roles_role} for this predicate, which breaks D2's containment proof — M1's X
+   * lock (driven by {@code fk_user_roles_role}) no longer provably covers every record this read
+   * requests. Forcing the same index M1 uses makes containment exact again, empirically confirmed
+   * by {@code LastAdminLockoutIT#should_driveBothM1AndM5OffTheRoleIndex_when_explainingCapturedLockingReads}.
+   * Bind parameters are {@code byte[]}, not {@code UUID}: native queries do not go through the
+   * entity-mapped {@code UuidV7Converter} on the way IN, so the adapter converts explicitly (see
+   * {@code JpaUserRoleAssignmentAdapter#hasActiveAdminAssignment}). The result set ({@code SELECT
+   * *}, matching every {@link UserRole}-mapped column) is unaffected — the converter still applies
+   * on the way OUT when Hibernate hydrates the returned entities.
    */
-  @Lock(LockModeType.PESSIMISTIC_READ)
   @Query(
-      """
-      SELECT ur FROM UserRole ur
-      WHERE ur.userId = :userId AND ur.roleId = :roleId
-        AND ur.tenantId = :tenantId AND ur.revokedAt IS NULL
-      """)
+      value =
+          """
+          SELECT * FROM user_roles FORCE INDEX (fk_user_roles_role)
+          WHERE user_id = :userId AND role_id = :roleId
+            AND tenant_id = :tenantId AND revoked_at IS NULL
+          FOR SHARE
+          """,
+      nativeQuery = true)
   List<UserRole> lockActiveAdminAssignment(
-      @Param("userId") UUID userId, @Param("roleId") UUID roleId, @Param("tenantId") UUID tenantId);
+      @Param("userId") byte[] userId,
+      @Param("roleId") byte[] roleId,
+      @Param("tenantId") byte[] tenantId);
 
   /**
    * M6 — the revocation write. MUST be exactly this shape: a bulk single-column JPQL UPDATE, never

@@ -105,8 +105,12 @@ class JpaUserRoleAssignmentAdapterTest {
 
   @Test
   void should_returnTrue_when_lockActiveAdminAssignmentReturnsNonEmptyList() {
+    // M5 is now a native query taking byte[] (03-design.md §7.2 step 1 / MC-5) -- byte[] has no
+    // content equals(), so argument matching uses any(byte[].class) rather than the converted
+    // literal (this test pins the true/false mapping, not the exact byte content).
     UserRole row = mock(UserRole.class);
-    when(userRoleRepository.lockActiveAdminAssignment(userId, roleId, tenantId))
+    when(userRoleRepository.lockActiveAdminAssignment(
+            any(byte[].class), any(byte[].class), any(byte[].class)))
         .thenReturn(List.of(row));
 
     assertThat(adapter.hasActiveAdminAssignment(userId, roleId, tenantId)).isTrue();
@@ -114,7 +118,8 @@ class JpaUserRoleAssignmentAdapterTest {
 
   @Test
   void should_returnFalse_when_lockActiveAdminAssignmentReturnsEmptyList() {
-    when(userRoleRepository.lockActiveAdminAssignment(userId, roleId, tenantId))
+    when(userRoleRepository.lockActiveAdminAssignment(
+            any(byte[].class), any(byte[].class), any(byte[].class)))
         .thenReturn(List.of());
 
     assertThat(adapter.hasActiveAdminAssignment(userId, roleId, tenantId)).isFalse();
@@ -218,6 +223,43 @@ class JpaUserRoleAssignmentAdapterTest {
     assertThatThrownBy(() -> adapter.assign(userId, roleId, tenantId, assignedBy))
         .isInstanceOf(DuplicateRoleAssignmentException.class)
         .hasFieldOrPropertyWithValue("code", "RBAC_004");
+  }
+
+  @Test
+  void should_delegateToRoleRepository_when_findingPermissionNamesForRole() {
+    when(roleRepository.findPermissionNamesByRole(roleId))
+        .thenReturn(List.of("user:write", "role:write"));
+
+    List<String> result = adapter.findPermissionNamesForRole(roleId);
+
+    assertThat(result).containsExactly("user:write", "role:write");
+    verify(roleRepository).findPermissionNamesByRole(roleId);
+  }
+
+  @Test
+  void should_returnEmptyList_when_roleHasNoPermissions() {
+    when(roleRepository.findPermissionNamesByRole(roleId)).thenReturn(List.of());
+
+    assertThat(adapter.findPermissionNamesForRole(roleId)).isEmpty();
+  }
+
+  @Test
+  void should_delegateToRoleRepositoryFindIdByTenantIdAndName_when_findingRoleIdByName() {
+    when(roleRepository.findIdByTenantIdAndName(tenantId, "TENANT_ADMIN"))
+        .thenReturn(Optional.of(roleId));
+
+    Optional<UUID> result = adapter.findRoleIdByName(tenantId, "TENANT_ADMIN");
+
+    assertThat(result).contains(roleId);
+    verify(roleRepository).findIdByTenantIdAndName(tenantId, "TENANT_ADMIN");
+  }
+
+  @Test
+  void should_returnEmpty_when_roleIdByNameNotFound() {
+    when(roleRepository.findIdByTenantIdAndName(tenantId, "TENANT_ADMIN"))
+        .thenReturn(Optional.empty());
+
+    assertThat(adapter.findRoleIdByName(tenantId, "TENANT_ADMIN")).isEmpty();
   }
 
   @Test

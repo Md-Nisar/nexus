@@ -16,6 +16,7 @@ import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
 import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.application.port.out.PermissionCachePort;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
+import com.example.nexus.rbac.application.port.out.RoleChangeThrottlePort;
 import com.example.nexus.rbac.application.port.out.UserDirectoryPort;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
@@ -75,6 +76,7 @@ class RoleAssignmentCacheIT {
   @Autowired private UserDirectoryPort userDirectoryPort;
   @Autowired private RbacAuditPort rbacAuditPort;
   @Autowired private PermissionCachePort permissionCachePort;
+  @Autowired private RoleChangeThrottlePort throttlePort;
   @Autowired private JpaUserRepository userRepository;
   @Autowired private JpaRoleRepository roleRepository;
   @Autowired private JpaUserRoleRepository userRoleRepository;
@@ -88,6 +90,12 @@ class RoleAssignmentCacheIT {
 
   @Value("${nexus.rbac.permission-cache-ttl-seconds:900}")
   private long ttlSeconds;
+
+  @Value("${nexus.rbac.denial-throttle.max-denials}")
+  private int maxDenials;
+
+  @Value("${nexus.rbac.denial-throttle.window-seconds}")
+  private int windowSeconds;
 
   // ── Scenario 1: successful assign evicts both real keys ──────────────
 
@@ -158,7 +166,8 @@ class RoleAssignmentCacheIT {
         new RedisPermissionCacheAdapter(brokenTemplate, keyPrefix, ttlSeconds);
     RoleAssignmentService service =
         new RoleAssignmentService(
-            userRoleAssignmentPort, userDirectoryPort, rbacAuditPort, brokenCache, meterRegistry);
+            userRoleAssignmentPort, userDirectoryPort, rbacAuditPort, brokenCache, meterRegistry,
+            throttlePort, maxDenials, windowSeconds);
     return new RoleAssignmentServiceWithBrokenCache(service, brokenFactory);
   }
 

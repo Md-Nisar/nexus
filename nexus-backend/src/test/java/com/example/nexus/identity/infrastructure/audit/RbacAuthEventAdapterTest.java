@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
@@ -137,7 +138,7 @@ class RbacAuthEventAdapterTest {
     RbacAuditEvent event =
         new RbacAuditEvent(TENANT_ID, TARGET_USER_ID, ROLE_ID, "TENANT_ADMIN", ACTOR_USER_ID, ctx);
 
-    adapter.recordRoleAssignmentDenied(event, DenialReason.CROSS_TENANT_TARGET);
+    adapter.recordRoleAssignmentDenied(event, DenialReason.CROSS_TENANT_TARGET, "assign");
 
     AuthEvent captured = captureRecordedEvent();
     assertThat(captured.getId()).isEqualTo(GENERATED_ID);
@@ -153,6 +154,7 @@ class RbacAuthEventAdapterTest {
     assertThat(metadata.get("roleId").asString()).isEqualTo(ROLE_ID.toString());
     assertThat(metadata.get("roleName").asString()).isEqualTo("TENANT_ADMIN");
     assertThat(metadata.get("reason").asString()).isEqualTo("CROSS_TENANT_TARGET");
+    assertThat(metadata.get("operation").asString()).isEqualTo("assign");
     assertThat(metadata.get("attemptedBy").asString()).isEqualTo(ACTOR_USER_ID.toString());
     assertThat(metadata.has("assignedBy")).isFalse();
     assertThat(metadata.has("revokedBy")).isFalse();
@@ -177,7 +179,7 @@ class RbacAuthEventAdapterTest {
     RbacAuditEvent event =
         new RbacAuditEvent(TENANT_ID, TARGET_USER_ID, ROLE_ID, "TENANT_ADMIN", ACTOR_USER_ID, ctx);
 
-    adapter.recordRoleAssignmentDenied(event, null);
+    adapter.recordRoleAssignmentDenied(event, null, "assign");
 
     AuthEvent captured = captureRecordedEvent();
     assertThat(captured.getEventType()).isEqualTo("ROLE_ASSIGNMENT_DENIED");
@@ -197,7 +199,7 @@ class RbacAuthEventAdapterTest {
     RbacAuditEvent event =
         new RbacAuditEvent(TENANT_ID, TARGET_USER_ID, ROLE_ID, null, ACTOR_USER_ID, ctx);
 
-    adapter.recordRoleAssignmentDenied(event, DenialReason.CROSS_TENANT_TARGET);
+    adapter.recordRoleAssignmentDenied(event, DenialReason.CROSS_TENANT_TARGET, "assign");
 
     AuthEvent captured = captureRecordedEvent();
     JsonNode metadata = objectMapper.readTree(captured.getMetadata());
@@ -224,7 +226,7 @@ class RbacAuthEventAdapterTest {
     RbacAuditEvent event =
         new RbacAuditEvent(TENANT_ID, TARGET_USER_ID, ROLE_ID, forgedRoleName, ACTOR_USER_ID, ctx);
 
-    adapter.recordRoleAssignmentDenied(event, DenialReason.CROSS_TENANT_TARGET);
+    adapter.recordRoleAssignmentDenied(event, DenialReason.CROSS_TENANT_TARGET, "assign");
 
     AuthEvent captured = captureRecordedEvent();
     JsonNode metadata = objectMapper.readTree(captured.getMetadata());
@@ -385,22 +387,74 @@ class RbacAuthEventAdapterTest {
     RbacAuditEvent event =
         new RbacAuditEvent(TENANT_ID, TARGET_USER_ID, ROLE_ID, "TENANT_ADMIN", ACTOR_USER_ID, ctx);
 
-    assertThatCode(() -> adapter.recordRoleAssignmentDenied(event, DenialReason.CROSS_TENANT_TARGET))
+    assertThatCode(
+            () -> adapter.recordRoleAssignmentDenied(event, DenialReason.CROSS_TENANT_TARGET, "assign"))
         .doesNotThrowAnyException();
   }
 
-  @Test
-  void should_incrementAuditWriteFailedCounterWithDenyTag_when_recordRoleAssignmentDeniedFails() {
+  /**
+   * Proves the metric tag stays fixed at {@code "deny"} regardless of which verb was denied
+   * (03-design.md §12.2 item 11) — the metric tag and the {@code operation} metadata field are
+   * deliberately different axes and must not be unified.
+   */
+  @ParameterizedTest
+  @ValueSource(strings = {"assign", "revoke"})
+  void should_incrementAuditWriteFailedCounterWithDenyTag_when_recordRoleAssignmentDeniedFails(
+      String operation) {
     doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
     RbacAuditEvent event =
         new RbacAuditEvent(TENANT_ID, TARGET_USER_ID, ROLE_ID, "TENANT_ADMIN", ACTOR_USER_ID, ctx);
 
-    adapter.recordRoleAssignmentDenied(event, DenialReason.CROSS_TENANT_TARGET);
+    adapter.recordRoleAssignmentDenied(event, DenialReason.CROSS_TENANT_TARGET, operation);
 
     double count =
         meterRegistry.get("nexus.rbac.audit_write_failed").tag("operation", "deny").counter().count();
     assertThat(count).isEqualTo(1.0);
+  }
+
+  /**
+   * D17/RC-13 (03-design.md §4.9): {@code operation} is persisted in the denial's metadata,
+   * positioned after {@code reason} (key-ordering matters for the same last-duplicate-key-wins
+   * reasoning as {@link #should_keepRealReason_when_roleNameAttemptsDuplicateKeyInjectionOfReason}).
+   */
+  @ParameterizedTest
+  @ValueSource(strings = {"assign", "revoke"})
+  void should_includeOperationAfterReason_when_operationPresent(String operation) {
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-op", "agent");
+    RbacAuditEvent event =
+        new RbacAuditEvent(TENANT_ID, TARGET_USER_ID, ROLE_ID, "TENANT_ADMIN", ACTOR_USER_ID, ctx);
+
+    adapter.recordRoleAssignmentDenied(event, DenialReason.CROSS_TENANT_TARGET, operation);
+
+    AuthEvent captured = captureRecordedEvent();
+    JsonNode metadata = objectMapper.readTree(captured.getMetadata());
+    assertThat(metadata.get("operation").asString()).isEqualTo(operation);
+    String raw = captured.getMetadata();
+    assertThat(raw.indexOf("\"reason\"")).isLessThan(raw.indexOf("\"operation\""));
+  }
+
+  /**
+   * US-016 T-004/T-007: the port parameter is a plain, nullable {@code String}, so this omit-path
+   * is exercised defensively here even though no current or planned call site in {@code
+   * RoleAssignmentService} passes {@code null} for {@code operation} (every T-008 call site
+   * passes a literal {@code "assign"} or {@code "revoke"}) — the same convention as {@link
+   * #should_omitReasonKey_when_deniedEventReasonIsNull}.
+   */
+  @Test
+  void should_omitOperationKey_when_deniedEventOperationIsNull() {
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-op-absent", "agent");
+    RbacAuditEvent event =
+        new RbacAuditEvent(TENANT_ID, TARGET_USER_ID, ROLE_ID, "TENANT_ADMIN", ACTOR_USER_ID, ctx);
+
+    adapter.recordRoleAssignmentDenied(event, DenialReason.CROSS_TENANT_TARGET, null);
+
+    AuthEvent captured = captureRecordedEvent();
+    JsonNode metadata = objectMapper.readTree(captured.getMetadata());
+    assertThat(metadata.has("operation")).isFalse();
+    // never a JSON null either
+    assertThat(metadata.toString()).doesNotContain("null");
+    assertThat(metadata.get("attemptedBy").asString()).isEqualTo(ACTOR_USER_ID.toString());
   }
 
   // ---------------------------------------------------------------------
@@ -412,7 +466,7 @@ class RbacAuthEventAdapterTest {
   void should_mapAllFieldsCorrectly_when_recordRoleCreatedCalled() {
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-create", "test-agent");
     RoleAuditEvent event =
-        new RoleAuditEvent(TENANT_ID, ROLE_ID, "Billing Manager", null, null, ACTOR_USER_ID, ctx);
+        new RoleAuditEvent(TENANT_ID, ROLE_ID, "Billing Manager", null, null, ACTOR_USER_ID, ctx, null);
 
     adapter.recordRoleCreated(event);
 
@@ -438,7 +492,7 @@ class RbacAuthEventAdapterTest {
   void should_omitPermissionFieldKeys_when_roleCreatedEventHasNullPermissionFields() {
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-create-omit", "test-agent");
     RoleAuditEvent event =
-        new RoleAuditEvent(TENANT_ID, ROLE_ID, "Billing Manager", null, null, ACTOR_USER_ID, ctx);
+        new RoleAuditEvent(TENANT_ID, ROLE_ID, "Billing Manager", null, null, ACTOR_USER_ID, ctx, null);
 
     adapter.recordRoleCreated(event);
 
@@ -455,7 +509,14 @@ class RbacAuthEventAdapterTest {
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-grant", "test-agent");
     RoleAuditEvent event =
         new RoleAuditEvent(
-            TENANT_ID, ROLE_ID, "Billing Manager", PERMISSION_ID, "user:read", ACTOR_USER_ID, ctx);
+            TENANT_ID,
+            ROLE_ID,
+            "Billing Manager",
+            PERMISSION_ID,
+            "user:read",
+            ACTOR_USER_ID,
+            ctx,
+            null);
 
     adapter.recordRolePermissionGranted(event);
 
@@ -476,12 +537,56 @@ class RbacAuthEventAdapterTest {
     assertThat(metadata.has("createdBy")).isFalse();
   }
 
+  /**
+   * D13 (03-design.md §4.7): {@code holderCount} is populated only on the dangerous-attach path
+   * and is persisted after {@code permissionName} in the metadata key order.
+   */
+  @Test
+  void should_includeHolderCountAfterPermissionName_when_dangerousAttachHasHolders() {
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-holder-count", "test-agent");
+    RoleAuditEvent event =
+        new RoleAuditEvent(
+            TENANT_ID, ROLE_ID, "Billing Manager", PERMISSION_ID, "user:write", ACTOR_USER_ID, ctx, 3);
+
+    adapter.recordRolePermissionGranted(event);
+
+    AuthEvent captured = captureRecordedEvent();
+    JsonNode metadata = objectMapper.readTree(captured.getMetadata());
+    assertThat(metadata.get("holderCount").asInt()).isEqualTo(3);
+    String raw = captured.getMetadata();
+    assertThat(raw.indexOf("\"permissionName\"")).isLessThan(raw.indexOf("\"holderCount\""));
+  }
+
+  @Test
+  void should_omitHolderCountKey_when_roleAuditEventHolderCountIsNull() {
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-holder-count-absent", "test-agent");
+    RoleAuditEvent event =
+        new RoleAuditEvent(
+            TENANT_ID, ROLE_ID, "Billing Manager", PERMISSION_ID, "user:write", ACTOR_USER_ID, ctx, null);
+
+    adapter.recordRolePermissionGranted(event);
+
+    AuthEvent captured = captureRecordedEvent();
+    JsonNode metadata = objectMapper.readTree(captured.getMetadata());
+    assertThat(metadata.has("holderCount")).isFalse();
+    // never a JSON null either
+    assertThat(metadata.toString()).doesNotContain("null");
+    assertThat(metadata.get("grantedBy").asString()).isEqualTo(ACTOR_USER_ID.toString());
+  }
+
   @Test
   void should_mapAllFieldsCorrectly_when_recordRolePermissionRevokedCalled() {
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-revoke", "test-agent");
     RoleAuditEvent event =
         new RoleAuditEvent(
-            TENANT_ID, ROLE_ID, "Billing Manager", PERMISSION_ID, "user:read", ACTOR_USER_ID, ctx);
+            TENANT_ID,
+            ROLE_ID,
+            "Billing Manager",
+            PERMISSION_ID,
+            "user:read",
+            ACTOR_USER_ID,
+            ctx,
+            null);
 
     adapter.recordRolePermissionRevoked(event);
 
@@ -516,7 +621,9 @@ class RbacAuthEventAdapterTest {
   void should_escapeAdversarialRoleAndPermissionName_when_metadataSerialised(
       String label, String value) {
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-adv-role", "agent");
-    RoleAuditEvent event = new RoleAuditEvent(TENANT_ID, ROLE_ID, value, PERMISSION_ID, value, ACTOR_USER_ID, ctx);
+    RoleAuditEvent event =
+        new RoleAuditEvent(
+            TENANT_ID, ROLE_ID, value, PERMISSION_ID, value, ACTOR_USER_ID, ctx, null);
 
     adapter.recordRolePermissionGranted(event);
 
@@ -538,7 +645,7 @@ class RbacAuthEventAdapterTest {
     doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
     RoleAuditEvent event =
-        new RoleAuditEvent(TENANT_ID, ROLE_ID, "Billing Manager", null, null, ACTOR_USER_ID, ctx);
+        new RoleAuditEvent(TENANT_ID, ROLE_ID, "Billing Manager", null, null, ACTOR_USER_ID, ctx, null);
 
     assertThatCode(() -> adapter.recordRoleCreated(event)).doesNotThrowAnyException();
   }
@@ -548,7 +655,7 @@ class RbacAuthEventAdapterTest {
     doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
     RoleAuditEvent event =
-        new RoleAuditEvent(TENANT_ID, ROLE_ID, "Billing Manager", null, null, ACTOR_USER_ID, ctx);
+        new RoleAuditEvent(TENANT_ID, ROLE_ID, "Billing Manager", null, null, ACTOR_USER_ID, ctx, null);
 
     adapter.recordRoleCreated(event);
 
@@ -567,7 +674,14 @@ class RbacAuthEventAdapterTest {
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
     RoleAuditEvent event =
         new RoleAuditEvent(
-            TENANT_ID, ROLE_ID, "Billing Manager", PERMISSION_ID, "user:read", ACTOR_USER_ID, ctx);
+            TENANT_ID,
+            ROLE_ID,
+            "Billing Manager",
+            PERMISSION_ID,
+            "user:read",
+            ACTOR_USER_ID,
+            ctx,
+            null);
 
     assertThatCode(() -> adapter.recordRolePermissionGranted(event)).doesNotThrowAnyException();
   }
@@ -578,7 +692,14 @@ class RbacAuthEventAdapterTest {
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
     RoleAuditEvent event =
         new RoleAuditEvent(
-            TENANT_ID, ROLE_ID, "Billing Manager", PERMISSION_ID, "user:read", ACTOR_USER_ID, ctx);
+            TENANT_ID,
+            ROLE_ID,
+            "Billing Manager",
+            PERMISSION_ID,
+            "user:read",
+            ACTOR_USER_ID,
+            ctx,
+            null);
 
     adapter.recordRolePermissionGranted(event);
 
@@ -597,7 +718,14 @@ class RbacAuthEventAdapterTest {
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
     RoleAuditEvent event =
         new RoleAuditEvent(
-            TENANT_ID, ROLE_ID, "Billing Manager", PERMISSION_ID, "user:read", ACTOR_USER_ID, ctx);
+            TENANT_ID,
+            ROLE_ID,
+            "Billing Manager",
+            PERMISSION_ID,
+            "user:read",
+            ACTOR_USER_ID,
+            ctx,
+            null);
 
     ListAppender<ILoggingEvent> appender = startLogCapture();
     try {
@@ -624,7 +752,14 @@ class RbacAuthEventAdapterTest {
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
     RoleAuditEvent event =
         new RoleAuditEvent(
-            TENANT_ID, ROLE_ID, "Billing Manager", PERMISSION_ID, "user:read", ACTOR_USER_ID, ctx);
+            TENANT_ID,
+            ROLE_ID,
+            "Billing Manager",
+            PERMISSION_ID,
+            "user:read",
+            ACTOR_USER_ID,
+            ctx,
+            null);
 
     assertThatCode(() -> adapter.recordRolePermissionRevoked(event)).doesNotThrowAnyException();
   }
@@ -635,7 +770,14 @@ class RbacAuthEventAdapterTest {
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
     RoleAuditEvent event =
         new RoleAuditEvent(
-            TENANT_ID, ROLE_ID, "Billing Manager", PERMISSION_ID, "user:read", ACTOR_USER_ID, ctx);
+            TENANT_ID,
+            ROLE_ID,
+            "Billing Manager",
+            PERMISSION_ID,
+            "user:read",
+            ACTOR_USER_ID,
+            ctx,
+            null);
 
     adapter.recordRolePermissionRevoked(event);
 

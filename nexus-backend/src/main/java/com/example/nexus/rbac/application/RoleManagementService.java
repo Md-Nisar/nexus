@@ -114,7 +114,14 @@ public class RoleManagementService {
         () -> {
           rbacAuditPort.recordRoleCreated(
               new RoleAuditEvent(
-                  actor.tenantId(), view.id(), view.name(), null, null, actor.userId(), ctx));
+                  actor.tenantId(),
+                  view.id(),
+                  view.name(),
+                  null,
+                  null,
+                  actor.userId(),
+                  ctx,
+                  null));
           log.atInfo()
               .addKeyValue(LOG_KEY_EVENT, "ROLE_CREATED")
               .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
@@ -144,6 +151,15 @@ public class RoleManagementService {
    * AC4, AC7, AC8, AC11, AC12. The story's security-critical path, in the §8.6-pinned order:
    * tenant resolution (404/403) &rarr; AC7 (409) &rarr; permission existence (404) &rarr; AC11
    * (403, dangerous permissions only) &rarr; AC4's duplicate pre-check (409) &rarr; insert.
+   *
+   * <p><b>D13 / RC-8 (T-E21, US-016):</b> on the dangerous-permission path only, after the insert
+   * this method counts how many users actively hold {@code roleId} at that moment via {@link
+   * UserRoleAssignmentPort#findActiveUserIdsForRole} and carries the count on the {@code
+   * ROLE_PERMISSION_GRANTED} audit event, a WARN marker, and a bounded metric bucket. This is a
+   * <b>signal, not a gate</b> — attaching a dangerous permission to a role with existing holders
+   * is a legitimate administrative action and is never blocked here. Removing this signal
+   * silently reopens T-E21's mass-escalation blind spot (03-design.md §4.7, D13); do not delete
+   * it without re-opening that note.
    */
   @Transactional
   public PermissionView attachPermission(
@@ -167,6 +183,13 @@ public class RoleManagementService {
     }
     roleManagementPort.attachPermission(role.id(), permissionId);
 
+    // D13 / RC-8 (T-E21): count the users this attach silently escalates. Dangerous path only —
+    // no cost on the ordinary attach. M9 is UserRoleAssignmentPort.findActiveUserIdsForRole,
+    // shipped by US-015 RC-6 for the remediation runbook; this is its first runtime caller. Signal,
+    // not a gate — removing it silently reopens T-E21's mass-escalation blind spot.
+    Integer holderCount =
+        dangerous ? userRoleAssignmentPort.findActiveUserIdsForRole(role.id()).size() : null;
+
     registerPostCommitSideEffects(
         () -> {
           rbacAuditPort.recordRolePermissionGranted(
@@ -177,21 +200,40 @@ public class RoleManagementService {
                   permission.id(),
                   permission.name(),
                   actor.userId(),
-                  ctx));
-          log.atInfo()
-              .addKeyValue(LOG_KEY_EVENT, "ROLE_PERMISSION_GRANTED")
-              .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
-              .addKeyValue(LOG_KEY_ROLE_ID, role.id())
-              .addKeyValue(LOG_KEY_ROLE_NAME, role.name())
-              .addKeyValue(LOG_KEY_PERMISSION_ID, permission.id())
-              .addKeyValue(LOG_KEY_PERMISSION_NAME, permission.name())
-              .addKeyValue("dangerous", dangerous)
-              .addKeyValue("grantedBy", actor.userId())
-              .log("Role permission granted");
+                  ctx,
+                  holderCount));
+          var infoBuilder =
+              log.atInfo()
+                  .addKeyValue(LOG_KEY_EVENT, "ROLE_PERMISSION_GRANTED")
+                  .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+                  .addKeyValue(LOG_KEY_ROLE_ID, role.id())
+                  .addKeyValue(LOG_KEY_ROLE_NAME, role.name())
+                  .addKeyValue(LOG_KEY_PERMISSION_ID, permission.id())
+                  .addKeyValue(LOG_KEY_PERMISSION_NAME, permission.name())
+                  .addKeyValue("dangerous", dangerous)
+                  .addKeyValue("grantedBy", actor.userId());
+          if (holderCount != null) {
+            infoBuilder = infoBuilder.addKeyValue("holderCount", holderCount);
+          }
+          infoBuilder.log("Role permission granted");
+
+          if (dangerous && holderCount > 0) {
+            log.atWarn()
+                .addKeyValue(LOG_KEY_EVENT, "RBAC_DANGEROUS_PERMISSION_GRANTED_TO_EXISTING_HOLDERS")
+                .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+                .addKeyValue(LOG_KEY_ROLE_ID, role.id())
+                .addKeyValue(LOG_KEY_ROLE_NAME, role.name())
+                .addKeyValue(LOG_KEY_PERMISSION_ID, permission.id())
+                .addKeyValue(LOG_KEY_PERMISSION_NAME, permission.name())
+                .addKeyValue("grantedBy", actor.userId())
+                .addKeyValue("holderCount", holderCount)
+                .log("Dangerous permission granted to a role with existing active holders");
+          }
           if (dangerous) {
             Counter.builder("nexus.rbac.dangerous_permission_granted")
                 .tag("permission", permission.name())
                 .tag("tenantId", actor.tenantId().toString())
+                .tag("holders", holderCountBucket(holderCount))
                 .register(meterRegistry)
                 .increment();
           }
@@ -233,7 +275,8 @@ public class RoleManagementService {
                   permissionId,
                   permissionName,
                   actor.userId(),
-                  ctx));
+                  ctx,
+                  null));
           log.atInfo()
               .addKeyValue(LOG_KEY_EVENT, "ROLE_PERMISSION_REVOKED")
               .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
@@ -309,6 +352,24 @@ public class RoleManagementService {
           .log("Blocked dangerous-permission attach by a non-admin caller");
       throw new InsufficientPermissionException(ROLE_WRITE, DenialReason.NOT_TENANT_ADMIN);
     }
+  }
+
+  /**
+   * D13 bucket for {@code nexus.rbac.dangerous_permission_granted}'s {@code holders} tag —
+   * bounded cardinality (four values), never the raw count, which is unbounded (03-design.md
+   * §4.7).
+   */
+  private static String holderCountBucket(int holderCount) {
+    if (holderCount == 0) {
+      return "0";
+    }
+    if (holderCount == 1) {
+      return "1";
+    }
+    if (holderCount <= 10) {
+      return "2-10";
+    }
+    return ">10";
   }
 
   /**

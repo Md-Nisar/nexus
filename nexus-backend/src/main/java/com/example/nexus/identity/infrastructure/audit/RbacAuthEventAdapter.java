@@ -68,23 +68,36 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
 
   @Override
   public void recordRoleAssigned(RbacAuditEvent event) {
-    record(event, AuthEventType.ROLE_ASSIGNED, "SUCCESS", "assignedBy", "assign", null);
+    record(event, AuthEventType.ROLE_ASSIGNED, "SUCCESS", "assignedBy", "assign", null, null);
   }
 
   @Override
   public void recordRoleRevoked(RbacAuditEvent event) {
-    record(event, AuthEventType.ROLE_REVOKED, "SUCCESS", "revokedBy", "revoke", null);
+    record(event, AuthEventType.ROLE_REVOKED, "SUCCESS", "revokedBy", "revoke", null, null);
   }
 
+  /**
+   * Persists {@code operation} ({@code "assign"} or {@code "revoke"}) into the denial's audit
+   * metadata via {@link #buildMetadataJson(RbacAuditEvent, String, String, String)} (03-design.md
+   * §4.9, D17/RC-13). <b>Deliberately excluded from the {@code
+   * nexus.rbac.audit_write_failed{operation="deny"}} metric tag</b>, which keeps receiving the
+   * fixed {@code "deny"} literal passed to {@link #record(RbacAuditEvent, AuthEventType, String,
+   * String, String, String, String)}'s own {@code operation} parameter regardless of which verb
+   * was denied: the metric tag and this metadata field are deliberately different axes — the tag
+   * identifies which of this adapter's port methods failed to write (fixed at {@code "deny"} here,
+   * so no existing dashboard breaks), while the metadata field identifies which caller verb
+   * produced the denial being recorded — and MUST NOT be unified or confused.
+   */
   @Override
-  public void recordRoleAssignmentDenied(RbacAuditEvent event, DenialReason reason) {
+  public void recordRoleAssignmentDenied(RbacAuditEvent event, DenialReason reason, String operation) {
     record(
         event,
         AuthEventType.ROLE_ASSIGNMENT_DENIED,
         "DENIED",
         "attemptedBy",
         "deny",
-        reason != null ? reason.name() : null);
+        reason != null ? reason.name() : null,
+        operation);
   }
 
   /**
@@ -153,7 +166,8 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
    * Builds the ordered metadata map for a {@link RoleAuditEvent} and serialises it to JSON. Keys
    * are omitted entirely when their value is {@code null} — never emitted as a JSON {@code null}
    * (03-design.md §6.3). Key order: {@code traceId}, {@code roleId}, {@code roleName}, {@code
-   * permissionId}, {@code permissionName}, {@code <actorFieldName>}.
+   * permissionId}, {@code permissionName}, {@code holderCount} (D13, dangerous-attach only),
+   * {@code <actorFieldName>}.
    */
   private String buildMetadataJson(RoleAuditEvent event, String actorFieldName) {
     Map<String, Object> metadata = new LinkedHashMap<>();
@@ -173,6 +187,9 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
     if (event.permissionName() != null) {
       metadata.put("permissionName", event.permissionName());
     }
+    if (event.holderCount() != null) {
+      metadata.put("holderCount", event.holderCount());
+    }
     if (event.actorUserId() != null) {
       metadata.put(actorFieldName, event.actorUserId().toString());
     }
@@ -186,12 +203,13 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
       String outcome,
       String actorFieldName,
       String operation,
-      String reasonName) {
+      String reasonName,
+      String deniedOperation) {
     try {
       // Metadata JSON is built and serialised BEFORE any transaction/port call (T-R3 mitigation
       // #3): a JsonProcessingException is caught here, before SecureEventService's REQUIRES_NEW
       // transaction ever opens.
-      String metadata = buildMetadataJson(event, actorFieldName, reasonName);
+      String metadata = buildMetadataJson(event, actorFieldName, reasonName, deniedOperation);
 
       AuthEvent authEvent =
           new AuthEvent(uuidGenerator.newId(), eventType, outcome)
@@ -222,9 +240,12 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
 
   /**
    * Builds the ordered metadata map and serialises it to JSON. Keys are omitted entirely when
-   * their value is {@code null} — never emitted as a JSON {@code null} (03-design.md §6.3).
+   * their value is {@code null} — never emitted as a JSON {@code null} (03-design.md §6.3). Key
+   * order: {@code traceId}, {@code roleId}, {@code roleName}, {@code reason}, {@code operation}
+   * (D17), {@code <actorFieldName>}.
    */
-  private String buildMetadataJson(RbacAuditEvent event, String actorFieldName, String reasonName) {
+  private String buildMetadataJson(
+      RbacAuditEvent event, String actorFieldName, String reasonName, String operation) {
     Map<String, Object> metadata = new LinkedHashMap<>();
     String traceId = event.requestContext() != null ? event.requestContext().traceId() : null;
     if (traceId != null) {
@@ -238,6 +259,9 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
     }
     if (reasonName != null) {
       metadata.put("reason", reasonName);
+    }
+    if (operation != null) {
+      metadata.put("operation", operation);
     }
     if (event.actorUserId() != null) {
       metadata.put(actorFieldName, event.actorUserId().toString());
