@@ -19,6 +19,14 @@ import java.util.UUID;
  *
  * <p>{@code permissionId}/{@code permissionName} are {@code null} only for {@code ROLE_CREATED} —
  * a freshly created role carries no permissions. They are populated for both grant and revoke.
+ *
+ * <p>{@code holderCount} (03-design.md §4.7 / D13) is populated <b>only</b> on the
+ * dangerous-attach path of {@code RoleManagementService.attachPermission} — the count of users
+ * who actively hold the role at the moment a dangerous permission is attached to it (T-E21's
+ * mint-side signal). {@code null} in every other case — {@code createRole}, {@code
+ * detachPermission}, and every non-dangerous {@code attachPermission} — and therefore omitted
+ * from the durable audit metadata by {@code RbacAuthEventAdapter}'s existing omit-when-null
+ * convention (never serialised as a JSON {@code null}).
  */
 public record RoleAuditEvent(
     UUID tenantId,
@@ -27,4 +35,5 @@ public record RoleAuditEvent(
     UUID permissionId,
     String permissionName,
     UUID actorUserId,
-    RequestContext requestContext) {}
+    RequestContext requestContext,
+    Integer holderCount) {}

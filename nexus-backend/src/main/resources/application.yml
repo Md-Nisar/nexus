@@ -141,6 +141,15 @@ nexus:
     # changing without any (re-)assignment (a future US-015 concern). The JWT itself (re-issued at
     # login/refresh) remains the actual enforcement authority.
     permission-cache-ttl-seconds: ${NEXUS_RBAC_PERMISSION_CACHE_TTL_SECONDS:900}
+    # Denial throttle for the privileged role-change gate (US-016 D14/RC-10). Bounds the cost of
+    # repeated authorization denials on assign()/revoke(); it is not an authorization control and
+    # must never be able to permit anything. No `enabled` flag (D10) — set max-denials very high
+    # to effectively disable it.
+    denial-throttle:
+      max-denials: ${NEXUS_RBAC_DENIAL_THROTTLE_MAX_DENIALS:5}
+      # Matches nexus.security.rate-limit.ip-window-seconds (line 191) so operators reason about
+      # one window length platform-wide.
+      window-seconds: ${NEXUS_RBAC_DENIAL_THROTTLE_WINDOW_SECONDS:60}
   identity:
     # --- Encryption ---
     encryption:

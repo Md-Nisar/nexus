@@ -32,6 +32,7 @@ import com.example.nexus.rbac.domain.SystemRoleImmutableException;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -212,7 +213,7 @@ class RoleManagementServiceTest {
 
     verify(rbacAuditPort)
         .recordRoleCreated(
-            new RoleAuditEvent(tenantId, newRoleId, "Support", null, null, actorId, ctx));
+            new RoleAuditEvent(tenantId, newRoleId, "Support", null, null, actorId, ctx, null));
     assertThat(meterRegistry.find("nexus.rbac.dangerous_permission_granted").counter()).isNull();
   }
 
@@ -299,6 +300,7 @@ class RoleManagementServiceTest {
     assertThat(result).isEqualTo(permission);
     verify(roleManagementPort).attachPermission(roleId, permissionId);
     verifyNoInteractions(userRoleAssignmentPort);
+    verify(userRoleAssignmentPort, never()).findActiveUserIdsForRole(any());
   }
 
   @Test
@@ -463,6 +465,7 @@ class RoleManagementServiceTest {
 
     verify(userRoleAssignmentPort, never()).hasActiveAdminAssignment(any(), any(), any());
     verify(roleManagementPort, never()).attachPermission(any(), any());
+    verify(userRoleAssignmentPort, never()).findActiveUserIdsForRole(any());
   }
 
   @Test
@@ -497,6 +500,8 @@ class RoleManagementServiceTest {
     // F1/T-E14 defense in depth: the forbidden non-locking shortcut is never reached.
     verify(userRoleAssignmentPort, never()).findActiveAssignmentViews(any(), any());
     verify(roleManagementPort, never()).attachPermission(any(), any());
+    // D13: the AC11 denial path never reaches the insert, so it must never query holder count.
+    verify(userRoleAssignmentPort, never()).findActiveUserIdsForRole(any());
   }
 
   @Test
@@ -529,8 +534,9 @@ class RoleManagementServiceTest {
         .isInstanceOf(DuplicateRolePermissionException.class);
   }
 
+  /** D13 zero-holder boundary: no existing holders means no escalation, so no WARN either. */
   @Test
-  void should_recordAuditWithDangerousFlagTrue_when_dangerousPermissionGranted() {
+  void should_recordZeroHolderCountAndNoWarn_when_dangerousAttachHasNoActiveHolders() {
     RoleView role = customRole(tenantId);
     PermissionView permission = dangerousPermission();
     UUID adminRoleId = UUID.randomUUID();
@@ -541,6 +547,7 @@ class RoleManagementServiceTest {
     when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
         .thenReturn(true);
     when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
+    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId)).thenReturn(List.of());
 
     ListAppender<ILoggingEvent> appender = startLogCapture();
     try {
@@ -549,16 +556,152 @@ class RoleManagementServiceTest {
       verify(rbacAuditPort)
           .recordRolePermissionGranted(
               new RoleAuditEvent(
-                  tenantId, roleId, role.name(), permissionId, "role:write", actorId, ctx));
+                  tenantId, roleId, role.name(), permissionId, "role:write", actorId, ctx, 0));
 
       var infoEvents = appender.list.stream().filter(e -> e.getLevel() == Level.INFO).toList();
       assertThat(infoEvents).hasSize(1);
       assertThat(keyValueMap(infoEvents.get(0)))
           .containsEntry("event", "ROLE_PERMISSION_GRANTED")
-          .containsEntry("dangerous", true);
+          .containsEntry("dangerous", true)
+          .containsEntry("holderCount", 0);
+
+      var warnEvents = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
+      assertThat(warnEvents).isEmpty();
     } finally {
       stopLogCapture(appender);
     }
+
+    Counter counter =
+        meterRegistry.find("nexus.rbac.dangerous_permission_granted").tag("holders", "0").counter();
+    assertThat(counter).isNotNull();
+  }
+
+  /** D13 one-holder boundary: the alertable WARN fires as soon as a single holder exists. */
+  @Test
+  void should_recordHolderCountOneAndWarn_when_dangerousAttachHasOneActiveHolder() {
+    RoleView role = customRole(tenantId);
+    PermissionView permission = dangerousPermission();
+    UUID adminRoleId = UUID.randomUUID();
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
+    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
+        .thenReturn(Optional.of(adminRoleId));
+    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
+        .thenReturn(true);
+    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
+    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId))
+        .thenReturn(List.of(UUID.randomUUID()));
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      service.attachPermission(actor, roleId, permissionId, ctx);
+
+      verify(rbacAuditPort)
+          .recordRolePermissionGranted(
+              new RoleAuditEvent(
+                  tenantId, roleId, role.name(), permissionId, "role:write", actorId, ctx, 1));
+
+      var warnEvents = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
+      assertThat(warnEvents).hasSize(1);
+      assertThat(keyValueMap(warnEvents.get(0)))
+          .containsEntry("event", "RBAC_DANGEROUS_PERMISSION_GRANTED_TO_EXISTING_HOLDERS")
+          .containsEntry("holderCount", 1)
+          .containsEntry("grantedBy", actorId);
+    } finally {
+      stopLogCapture(appender);
+    }
+
+    Counter counter =
+        meterRegistry.find("nexus.rbac.dangerous_permission_granted").tag("holders", "1").counter();
+    assertThat(counter).isNotNull();
+  }
+
+  /** D13 mid-bucket boundary: 5 holders lands in the "2-10" bucket, still WARN-worthy. */
+  @Test
+  void should_recordHolderCountAndBucket2To10AndWarn_when_dangerousAttachHasFiveActiveHolders() {
+    RoleView role = customRole(tenantId);
+    PermissionView permission = dangerousPermission();
+    UUID adminRoleId = UUID.randomUUID();
+    List<UUID> holders = List.of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
+        UUID.randomUUID(), UUID.randomUUID());
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
+    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
+        .thenReturn(Optional.of(adminRoleId));
+    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
+        .thenReturn(true);
+    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
+    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId)).thenReturn(holders);
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      service.attachPermission(actor, roleId, permissionId, ctx);
+
+      verify(rbacAuditPort)
+          .recordRolePermissionGranted(
+              new RoleAuditEvent(
+                  tenantId, roleId, role.name(), permissionId, "role:write", actorId, ctx, 5));
+
+      var warnEvents = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
+      assertThat(warnEvents).hasSize(1);
+      assertThat(keyValueMap(warnEvents.get(0)))
+          .containsEntry("event", "RBAC_DANGEROUS_PERMISSION_GRANTED_TO_EXISTING_HOLDERS")
+          .containsEntry("holderCount", 5);
+    } finally {
+      stopLogCapture(appender);
+    }
+
+    Counter counter =
+        meterRegistry
+            .find("nexus.rbac.dangerous_permission_granted")
+            .tag("holders", "2-10")
+            .counter();
+    assertThat(counter).isNotNull();
+  }
+
+  /** D13 top boundary: 50 holders lands in the ">10" bucket, never the raw count. */
+  @Test
+  void should_recordHolderCountAndBucketOver10AndWarn_when_dangerousAttachHasFiftyActiveHolders() {
+    RoleView role = customRole(tenantId);
+    PermissionView permission = dangerousPermission();
+    UUID adminRoleId = UUID.randomUUID();
+    List<UUID> holders = new ArrayList<>();
+    for (int i = 0; i < 50; i++) {
+      holders.add(UUID.randomUUID());
+    }
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
+    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
+        .thenReturn(Optional.of(adminRoleId));
+    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
+        .thenReturn(true);
+    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
+    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId)).thenReturn(holders);
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      service.attachPermission(actor, roleId, permissionId, ctx);
+
+      verify(rbacAuditPort)
+          .recordRolePermissionGranted(
+              new RoleAuditEvent(
+                  tenantId, roleId, role.name(), permissionId, "role:write", actorId, ctx, 50));
+
+      var warnEvents = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
+      assertThat(warnEvents).hasSize(1);
+      assertThat(keyValueMap(warnEvents.get(0)))
+          .containsEntry("event", "RBAC_DANGEROUS_PERMISSION_GRANTED_TO_EXISTING_HOLDERS")
+          .containsEntry("holderCount", 50);
+    } finally {
+      stopLogCapture(appender);
+    }
+
+    Counter counter =
+        meterRegistry
+            .find("nexus.rbac.dangerous_permission_granted")
+            .tag("holders", ">10")
+            .counter();
+    assertThat(counter).isNotNull();
   }
 
   @Test
@@ -698,7 +841,7 @@ class RoleManagementServiceTest {
     verify(rbacAuditPort)
         .recordRolePermissionRevoked(
             new RoleAuditEvent(
-                tenantId, roleId, role.name(), permissionId, "user:read", actorId, ctx));
+                tenantId, roleId, role.name(), permissionId, "user:read", actorId, ctx, null));
   }
 
   @Test

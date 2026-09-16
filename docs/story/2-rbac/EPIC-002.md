@@ -750,6 +750,64 @@ US-009 seeds exactly two roles per tenant (`TENANT_ADMIN`, `MEMBER`) via migrati
 
 ---
 
+### US-016 — Gate role assignment/revocation by actual privileges, not role name
+
+| TYPE | PRIORITY | STORY POINTS | EPIC LINK | SPRINT | ASSIGNEE |
+|------|----------|--------------|-----------|--------|----------|
+| Feature | High — hard expiry at Epic 3 kickoff | _(unestimated — pending Gate 1)_ | EPIC-002: RBAC Foundation | _(unscheduled — must land before Epic 3 kickoff)_ | _(Tech lead assigns)_ |
+
+### User Story
+As a platform security owner,
+I want role assignment and revocation (`RoleAssignmentService.assign()`/`revoke()`) to check the *privileges* a role actually confers, not just whether its name matches `TENANT_ADMIN`,
+So that a custom role built via US-015 and later renamed, or any role a `TENANT_ADMIN` grants dangerous permissions to, is gated the same way the seeded `TENANT_ADMIN` role is.
+
+### Background / Context
+This story closes the "propagate" half of a privilege-escalation chain that US-015 deliberately left open as an accepted residual risk (RES-1 / R-3, D15 condition C3, `docs/features/US-015/03-design.md` §10, `03b-threat-model.md` §4.5). US-015 closed the "mint" side: attaching a dangerous permission (`role:write`, `user:write`, `tenant:write`) to *any* role now requires the caller to hold an active `TENANT_ADMIN` assignment (AC11).
+
+What remains open, confirmed live in `RoleAssignmentService.java` (M-3 / T-E9 notes on `assign()`/`revoke()` respectively): both methods still gate the `TENANT_ADMIN` grant/revoke path by matching the target role's *name*, not by whether the role being assigned actually carries admin-equivalent privileges. A role named anything other than `TENANT_ADMIN` that has been granted `role:write`/`user:write`/`tenant:write` (a legitimate, admin-gated action per US-015 AC11) can then be assigned to — or have `TENANT_ADMIN` stripped by — any `user:write` holder through the ordinary, non-admin-gated path.
+
+**Hard expiry:** Epic 3 makes attaching dangerous permissions to custom roles a routine, expected admin action, which invalidates the premise that exploitation is rare/detectable. Per D15's risk-acceptance record, this story becomes P0 the first time the `nexus.rbac.dangerous_permission_granted` compensating-control alert fires in any environment, and must in any case be re-reviewed by 2026-11-27 or at Epic 3 kickoff, whichever is earlier.
+
+**Gate 1 note:** requirements analysis (`docs/features/US-016/01-requirements.md`) resolved the story's three self-flagged open questions: (1) the gate reuses `RbacDangerousPermissions.NAMES` unchanged; (2) `revoke()` gets the **identical** privilege-based gate as `assign()` — not a documentation-only "review" — per the threat model's own conclusion that fixing only `assign()` is worse than fixing neither; (3) the `nexus.rbac.self_role_assignment` counter/composed page-alert is retained but reinterpreted as a post-release canary on the gate itself, not a live-exploit signal. Gate 1 also found that this story requires **a new ADR** before/alongside design, per the explicit precedent set in US-015's own design document (§0) for expanding `assign()`/`revoke()`'s shipped authorization contract. Out of scope: any backfill/remediation of assignments made during the US-015→US-016 exposure window (forward-only fix; a one-off exposure audit is a tracked follow-up action, not story scope), and extending AC5's last-admin-lockout mechanism to custom admin-equivalent roles (a distinct mechanism — tracked as a follow-on risk, not built here).
+
+### Acceptance Criteria — Gate 1 resolved (`docs/features/US-016/01-requirements.md`)
+| # | Criterion | Notes |
+|---|-----------|-------|
+| 1 | `assign()` denies granting a role that carries any of `role:write`/`user:write`/`tenant:write` unless the caller holds an active `TENANT_ADMIN` assignment | Extends the existing name-match check to a privilege-check. Permission set resolved at Gate 1: reuse `RbacDangerousPermissions.NAMES` unchanged; reuse the same `hasActiveAdminAssignment` mechanism and a Q7-shaped dangerous-permission lookup per the design's own forward note |
+| 2 | `revoke()` gets the **identical** privilege-based gate as `assign()` | Resolved at Gate 1 (no longer just a "review"): symmetric gate required — fixing only `assign()` would leave a worse, asymmetric admin-stripping hole per the threat model |
+| 3 | The `nexus.rbac.self_role_assignment` counter (US-015 RC-7) is retained, reinterpreted as a post-release canary on this gate rather than a live-exploit signal | Resolved at Gate 1; exact alert-routing change is a design/Gate-2 detail |
+
+### Dependencies
+- Blocked by: US-015 (defines the dangerous-permission set and the `hasActiveAdminAssignment` mechanism this story extends) — **satisfied**, merged
+- Should land before: Epic 3 kickoff (hard expiry on the R-3 risk acceptance this story resolves)
+- New: requires a dedicated ADR alongside Phase 3 design (Gate 1 finding — see Gate 1 note above)
+
+### Risks
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|-----------|
+| **[US-016 shipped, 2026-09-16]** RES-1(b) (attach-after-assign propagate path, T-E21) survives this story — a `user:write` holder can still be silently escalated when an administrator later attaches a dangerous permission to their own self-assigned, then-benign custom role. `revoke()`/T-E17 admin-stripping and `assign()`/T-E16's *direct* propagate path are closed | Med | **Med** (down from Critical now D13's detective signal is live — no longer "not yet prioritized") | D13 ships in this story: holder-count WARN + `nexus.rbac.dangerous_permission_granted{holders}` counter on `attachPermission` (`docs/features/US-016/03-design.md` §4.7). Detective, not preventive. Owner (Md Nisar Ahmed, inherited from US-015 Gate 2) reviews by 2026-11-27 or at Epic 3 kickoff, whichever is earlier — expiry unchanged, transferred per design §12.3 |
+| AC5-style last-admin-lockout protection does not extend to custom admin-equivalent roles (Gate 1 finding, explicitly out of scope here) | Low | Med | Tracked as a follow-on risk/backlog entry by the story owner, not built in this story |
+
+### Out of Scope (Gate 1 resolved)
+- Backfill/remediation of assignments made during the US-015→US-016 exposure window — forward-only fix; a one-off exposure audit is a tracked follow-up action outside story scope
+- Extending AC5's last-admin-lockout mechanism to custom admin-equivalent roles — a distinct mechanism, tracked as a follow-on risk
+- Exact `DenialReason` value(s) and self-assignment/AC8 precedence ordering — deferred to Phase 3 design with recommended defaults recorded in the requirements doc
+
+### Validation note
+Verified against current code (`nexus-backend/src/main/java/com/example/nexus/rbac/application/RoleAssignmentService.java`) and `docs/features/US-015/03-design.md` §10 / `03b-threat-model.md` §4.5 on 2026-09-09: the described gap is real and unresolved, the story is correctly scoped as US-015's D15/C3 successor, and its sole blocking dependency (US-015) has merged. Full requirements/impact scoping is deferred to this story's own Gate 1, per its explicit DRAFT status.
+
+### Implementation Status (2026-09-16)
+Gate 2 (`docs/features/US-016/03-design.md`, `03b-threat-model.md` — conditional pass, all required changes discharged per design §14) and Gate 3 (`docs/features/US-016/04-tasks.md`, 23 tasks) are both complete and approved. All 18 code tasks (T-001–T-018) and the four documentation tasks (T-019 ADR-0017, T-020 US-012 monitoring amendment, T-021 US-015 monitoring/threat-model correction, T-022 US-016 `monitoring.md`/`runbook.md`) are implemented, independently re-verified against the shipped code, and reported.
+
+**Closure is partial, not full — recorded precisely so this entry is never misread as "R-3 resolved":**
+- **T-E9 / T-E17 (revoke-side admin stripping): closed outright.** `revoke()` now carries the identical privilege-based gate as `assign()`.
+- **T-E16 (propagate-side self-escalation via `assign()`): closed for the direct propagate path only.** The attach-after-assign sequence (self-assign a benign custom role, then have an administrator later attach a dangerous permission to it) is **not** covered by this gate — no race, no collusion, no gate evaluation applies to that sequence, by design — and survives as **US-016 RES-1(b) / T-E21**, mitigated (not closed) by D13's holder-count detective signal (`docs/features/US-016/03-design.md` §4.7, §12.3).
+- RES-1(b) carries forward US-015's original owner (Md Nisar Ahmed), the 2026-11-27 review date, and the Epic-3-kickoff hard expiry, unchanged.
+
+**Outstanding before this story is fully landed:** Phase 8 (`/test-validate`) has not yet run. The staging soak that produces the measured p50/p95/p99 lock-hold baseline (`docs/features/US-016/monitoring.md` §4, currently marked `⚠ PENDING`) and the staging execution of the exposure-audit SQL (`runbook.md` §6, currently validated only against a local Docker/Flyway MySQL instance, explicitly labeled as such) are both still pending. `/review`, `/security-review`, `/test-validate`, and `/pre-pr-check` have not yet been run.
+
+---
+
 ## Recommended Sprint Order
 
 | Sprint | Stories | Points | Notes |
@@ -757,6 +815,7 @@ US-009 seeds exactly two roles per tenant (`TENANT_ADMIN`, `MEMBER`) via migrati
 | Sprint 3 | US-009, US-010 | 11 | Schema + JWT population; foundation before enforcement (US-009 revised 5→8 pts at Gate 1) |
 | Sprint 4 | US-011, US-012, US-014 | 13 | Enforcement + assignment API + audit; Epic 3 gate met |
 | Sprint 5 | US-013, US-015 | 12 | Frontend guards + role/permission management API; non-gating, can parallel-stream with Epic 3 start |
+| Sprint 6 | US-016 | _(TBD at Gate 1)_ | Closes the D15/R-3 residual risk from US-015; hard deadline before Epic 3 kickoff, not just "recommended" |
 
 ## Open Decisions
 
@@ -767,3 +826,6 @@ _Resolved during feasibility review (see updates above), plus forward-tracked en
 3. **ADR-0013** (RBAC model + permission naming convention) — corrected from "ADR-003" in the original draft, which collides with the existing `0003-flyway-schema-migrations.md`; 0013 is the next free number in `docs/adr/`. **RESOLVED: Accepted.** `docs/adr/0013-rbac-data-model-and-enforcement-contract.md` covers the permission naming convention, the `active_key` generated-column technique (US-009), the `InsufficientPermissionException` approach (US-011), and the cache-fan-out default (US-015). Sprint 3 gate cleared.
 4. **Epic-3 entry criterion — controller-must-be-annotated ArchUnit rule (deferred from US-011)** — **OPEN — gates Epic 3 kickoff.** US-011 (`@RequiresPermission` enforcement) deliberately deferred the ArchUnit rule requiring every `@RestController` method to carry `@RequiresPermission` or an explicit `@PublicEndpoint` opt-out — there are no protected production controllers yet, and today's `identity` auth endpoints are legitimately `permitAll`/unguarded (design `docs/features/US-011/03-design.md` §B8; threat model `docs/features/US-011/03b-threat-model.md` finding T-03, verdict Condition 3). **The first protected controller in Epic 3 (Tenant Management) cannot merge until all three of the following exist:** (a) the ArchUnit rule itself — every `@RestController` method must carry `@RequiresPermission` or `@PublicEndpoint`; (b) the `@PublicEndpoint` opt-out annotation/convention; (c) a same-class self-invocation lint/ArchUnit check flagging direct calls to `@RequiresPermission` methods (folded in per threat-model Condition 4/T-05, so both deferred method-security gaps close together). Tracked here, not built in US-011 — see US-011 task `docs/features/US-011/04-tasks.md` T-011.
 5. **Epic-3 entry criterion — `CrossTenantPermissionIT` as a merge-blocking CI gate (T-010, US-011)** — **RESOLVED — gate is live, confirmed in CI, not just documented intent.** `CrossTenantPermissionIT` (`com.example.nexus.rbac.security`, written under US-011 T-014) is the epic's only end-to-end proof of the Critical no-cross-tenant-privilege-escalation property — both its 403-denial and 200-positive-control tests are green. It runs automatically in the `backend-build` job's `mvn verify` (Failsafe's default `*IT`-suffix convention picks it up; no per-test CI configuration exists or is needed), and `backend-build` is already a required status check on `main` (branch protection: `strict: true`, `enforce_admins: true` — confirmed live via the GitHub API, not just `nexus-scripts/setup-branch-protection.sh`'s committed intent). No CI workflow or branch-protection changes were needed for T-010 — both already satisfied the "hard gate" requirement before this task started; the workflow file now carries an inline comment naming this test so a future `-DskipITs` or test-exclusion change can't silently weaken it. **Distinct from item 4 above** (the deferred ArchUnit `@RequiresPermission`-coverage rule, still **OPEN**): both are Epic-3 entry criteria, but this one is closed.
+6. **US-016 successor story (D15 condition C3, US-015 Gate 2)** — **RESOLVED: filed and now formally tracked in this epic.** `docs/story/2-rbac/US-016.md` was filed pre-merge per US-015's threat model requirement that a named successor exist before that story merged; US-015 has since merged (`76470e2`). US-016 is added above as a full epic entry and to the sprint order (Sprint 6). It remains a **DRAFT stub pending its own Gate 1** — deliberately not pre-scoped, per D15/C3's own reasoning — and is a **hard, date-bound entry criterion for Epic 3 kickoff** (review by 2026-11-27 or Epic 3 kickoff, whichever is earlier), distinct from item 4's ArchUnit gate. Epic point total remains unrevised pending US-016's Gate-1 estimate.
+7. **RES-3 successor story (US-016 Gate 1 #8, merge-checklist item)** — **RESOLVED: filed and now formally tracked in this epic.** `docs/story/2-rbac/US-017.md` — "Extend last-admin lockout protection to admin-equivalent custom roles" — is filed pre-merge per US-016's own threat-model/design merge checklist (`docs/features/US-016/03-design.md` §12.2 item 14, §12.3 RES-3, §14), following the US-016 stub precedent in item 6 above. It is a **DRAFT stub pending its own Gate 1**, deliberately not pre-scoped, and is paired with RES-9 (US-016 §12.3) as one Epic-3 question — see US-017's Background section. Not a hard date-bound gate the way item 6 is; US-016's design records RES-3 as Med severity, accepted out of scope, with the backlog story's existence (not its completion) being the merge blocker for US-016 itself.
+8. **RES-10 backlog observation (US-016 §12.3, T-D12)** — **RESOLVED: filed as an observation, not a story.** `RoleAssignmentService.assign(TENANT_ADMIN)` (S-lock on the caller's row, then an insert-intention lock in the `role_id = adminRoleId` gap) and `revoke(TENANT_ADMIN)` (M1's next-key range lock) can cycle under a mixed concurrent workload — pre-existing, **unrelated to and unchanged by US-016**. Recorded so that a future harness-C or production lock-wait failure under mixed `assign`/`revoke(TENANT_ADMIN)` traffic is not misattributed to this story. No successor story is filed for this item — it is deliberately **not a fix commitment**, per US-016 design §12.3 RES-10 ("Accepted as inherited... Filed as a separate backlog observation, not a US-016 fix"). Named in US-016's own `03-design.md` §7.2 property 3 and in `LastAdminLockoutIT`'s harness-C Javadoc.

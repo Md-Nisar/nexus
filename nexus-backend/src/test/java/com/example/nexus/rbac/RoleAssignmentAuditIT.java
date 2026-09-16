@@ -339,6 +339,44 @@ class RoleAssignmentAuditIT {
         .as("T1 fires before the role is ever resolved -- roleName must be absent")
         .isNull();
     assertThat(row.get("trace_id")).isEqualTo(ctx.traceId());
+    assertThat(row.get("operation"))
+        .as("D17: an assign()-side denial must carry operation=\"assign\" in its metadata")
+        .isEqualTo("assign");
+  }
+
+  // ── US-016 T-016 (D17): the revoke-side counterpart of the assertion above -- completes ────
+  // ── the operation metadata chain for both verbs, using the same T1 cross-tenant shape ─────
+
+  @Test
+  void should_writeRoleAssignmentDeniedRow_when_revokeFailsWithCrossTenantTarget() {
+    UUID actorTenantId = uuidGenerator.newId();
+    UUID targetTenantId = uuidGenerator.newId();
+    User actorUser = seedUser("audit-denied-revoke-actor", actorTenantId);
+    User target = seedUser("audit-denied-revoke-target", targetTenantId);
+    Role role = seedRole("AUDIT-DENIED-REVOKE", actorTenantId);
+    RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), actorTenantId);
+    RequestContext ctx = requestContext();
+
+    assertThatThrownBy(
+            () -> roleAssignmentService.revoke(actor, target.getId(), role.getId(), ctx))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .satisfies(
+            e ->
+                assertThat(((InsufficientPermissionException) e).getReason())
+                    .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+
+    assertThat(countAuditRows(target.getId(), "ROLE_ASSIGNMENT_DENIED"))
+        .as("the revoke-side denial row must survive TX1's rollback")
+        .isEqualTo(1);
+    assertThat(countAuditRows(target.getId(), "ROLE_REVOKED"))
+        .as("a denial must never be miscategorised as a successful revocation")
+        .isZero();
+
+    Map<String, Object> row = findLatestDenialAuditRow(target.getId());
+    assertThat(row.get("reason")).isEqualTo("CROSS_TENANT_TARGET");
+    assertThat(row.get("operation"))
+        .as("D17: a revoke()-side denial must carry operation=\"revoke\" in its metadata")
+        .isEqualTo("revoke");
   }
 
   @Test
@@ -665,7 +703,8 @@ class RoleAssignmentAuditIT {
             + "JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.roleName')) AS role_name, "
             + "JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.reason')) AS reason, "
             + "JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.attemptedBy')) AS attempted_by, "
-            + "JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.traceId')) AS trace_id "
+            + "JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.traceId')) AS trace_id, "
+            + "JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.operation')) AS operation "
             + "FROM auth_events WHERE user_id = ? AND event_type = 'ROLE_ASSIGNMENT_DENIED' "
             + "ORDER BY created_at DESC LIMIT 1",
         toBytes(targetUserId));

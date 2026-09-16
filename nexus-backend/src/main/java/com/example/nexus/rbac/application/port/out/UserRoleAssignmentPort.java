@@ -80,14 +80,44 @@ public interface UserRoleAssignmentPort {
   UUID assign(UUID userId, UUID roleId, UUID tenantId, UUID assignedBy);
 
   /**
+   * M7 — the names of every permission attached to {@code roleId}. Bounded at
+   * |permissions| = 7 by the fixed catalogue (V5__rbac_schema.sql:107-114).
+   *
+   * <p><b>PRECONDITION (T-I13 / RC-12.4): {@code roleId} MUST already have been tenant-verified
+   * by the caller. This method performs NO tenant check</b> — unlike most methods on this port it
+   * takes a bare role id. {@code RoleAssignmentService} satisfies this by calling
+   * {@code resolveRoleInTenant} two statements earlier; any new caller must do the same.
+   *
+   * <p>Deliberately returns NAMES, not a boolean and not a PermissionView projection: the
+   * "which permissions are dangerous" policy lives in rbac.domain.RbacDangerousPermissions and
+   * MUST NOT cross this port in either direction — not hardcoded in the adapter (R-9 discipline)
+   * and not passed in as a parameter either.
+   *
+   * <p>MUST be a plain, NON-LOCKING read and MUST NEVER be annotated {@code @Lock}: it touches
+   * {@code permissions}, on which {@code nexus_app} holds {@code SELECT} only, so a locking read
+   * would be rejected in production and would pass every Testcontainers IT (03-design.md D5).
+   */
+  List<String> findPermissionNamesForRole(UUID roleId);
+
+  /**
+   * M8 — resolves this tenant's role id by {@code (tenantId, name)}. Same contract as
+   * {@code RoleManagementPort#findRoleIdByName} and backed by the SAME repository method, so there
+   * is exactly one query and one index-discipline site: a plain {@code r.name = :name} predicate
+   * relying on {@code utf8mb4_0900_ai_ci}, never {@code UPPER()}, so {@code uq_roles_tenant_name}
+   * is used as an index. Empty ⇒ the caller MUST fail closed (R-10 / T-E18).
+   */
+  Optional<UUID> findRoleIdByName(UUID tenantId, String name);
+
+  /**
    * RC-6 — reverse lookup: the ids of every user holding an ACTIVE (non-revoked) assignment of
    * {@code roleId}. Deliberately NOT tenant-scoped: the role id alone already pins the tenant
    * ({@code roles.tenant_id}), so an additional parameter would be redundant plumbing for this
    * lookup's one caller.
    *
-   * <p>Needed only for the D16 remediation runbook path (03b-threat-model.md RC-6) — this story's
-   * own runtime flows never call it. Read-only, no locking: this is a DBA/ops-triggered lookup,
-   * not a hot path contended with the M1/M5 locking reads above.
+   * <p>Needed for the D16 remediation runbook path (03b-threat-model.md RC-6); as of US-016
+   * (D13), also called at runtime by {@code RoleManagementService.attachPermission} on the
+   * dangerous-permission-grant path. Read-only, no locking: not a hot path contended with the
+   * M1/M5 locking reads above.
    */
   List<UUID> findActiveUserIdsForRole(UUID roleId);
 
