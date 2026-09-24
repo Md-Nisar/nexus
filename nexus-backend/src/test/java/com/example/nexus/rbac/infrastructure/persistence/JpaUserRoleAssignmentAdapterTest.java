@@ -8,11 +8,13 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.ActiveAssignmentRef;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
 import com.example.nexus.rbac.domain.IdGenerator;
 import com.example.nexus.rbac.domain.Role;
+import com.example.nexus.rbac.domain.RolePermissionName;
 import com.example.nexus.rbac.domain.UserRole;
 import java.time.Instant;
 import java.util.List;
@@ -126,28 +128,69 @@ class JpaUserRoleAssignmentAdapterTest {
   }
 
   @Test
-  void should_mapLockedRowsToTheirIds_when_lockingActiveAssignmentIds() {
-    UUID rowId1 = UUID.randomUUID();
-    UUID rowId2 = UUID.randomUUID();
-    UserRole row1 = new UserRole(rowId1, userId, roleId, tenantId, assignedBy);
-    UserRole row2 = new UserRole(rowId2, UUID.randomUUID(), roleId, tenantId, assignedBy);
-    when(userRoleRepository.lockActiveAssignmentsByRole(tenantId, roleId))
-        .thenReturn(List.of(row1, row2));
+  void should_delegateToRoleRepository_when_findingPermissionNamesForTenantRoles() {
+    RolePermissionName pair = new RolePermissionName(roleId, "role:write");
+    when(roleRepository.findPermissionNamesByTenantRoles(tenantId)).thenReturn(List.of(pair));
 
-    List<UUID> result = adapter.lockActiveAssignmentIds(tenantId, roleId);
+    List<RolePermissionName> result = adapter.findPermissionNamesForTenantRoles(tenantId);
 
-    assertThat(result).containsExactly(rowId1, rowId2);
+    assertThat(result).containsExactly(pair);
+    verify(roleRepository).findPermissionNamesByTenantRoles(tenantId);
   }
 
   @Test
-  void should_delegateWithTenantThenRoleArgumentOrder_when_lockingActiveAssignmentIds() {
-    // Pins the M1 argument order: a transposition of (tenantId, roleId) would compile fine but
-    // silently scope the lock to the wrong tenant/role pair (R-3/T-D3).
-    when(userRoleRepository.lockActiveAssignmentsByRole(any(), any())).thenReturn(List.of());
+  void should_mapEntitiesToIdsOnlyHolders_when_lockingActiveAssignmentHolders() {
+    // M11 is native (MC-C fix), like M5b: the repository returns entities, and the adapter must
+    // map them down to ActiveAssignmentHolder (ids only, including roleId per H-1) before they
+    // escape this adapter.
+    UUID assignmentId = UUID.randomUUID();
+    List<UUID> roleIds = List.of(roleId);
+    UserRole row = mock(UserRole.class);
+    when(row.getId()).thenReturn(assignmentId);
+    when(row.getUserId()).thenReturn(userId);
+    when(row.getRoleId()).thenReturn(roleId);
+    when(userRoleRepository.lockActiveAssignmentHoldersByRoles(any(), any(byte[].class)))
+        .thenReturn(List.of(row));
 
-    adapter.lockActiveAssignmentIds(tenantId, roleId);
+    List<ActiveAssignmentHolder> result = adapter.lockActiveAssignmentHolders(tenantId, roleIds);
 
-    verify(userRoleRepository).lockActiveAssignmentsByRole(tenantId, roleId);
+    assertThat(result).containsExactly(new ActiveAssignmentHolder(assignmentId, userId, roleId));
+  }
+
+  @Test
+  void should_returnTrue_when_lockActiveAssignmentOfAnyRoleReturnsNonEmptyList() {
+    UserRole row = mock(UserRole.class);
+    when(userRoleRepository.lockActiveAssignmentOfAnyRole(
+            any(byte[].class), any(), any(byte[].class)))
+        .thenReturn(List.of(row));
+
+    boolean result = adapter.hasActiveAssignmentOfAnyRole(userId, List.of(roleId), tenantId);
+
+    assertThat(result).isTrue();
+  }
+
+  @Test
+  void should_returnFalse_when_lockActiveAssignmentOfAnyRoleReturnsEmptyList() {
+    when(userRoleRepository.lockActiveAssignmentOfAnyRole(
+            any(byte[].class), any(), any(byte[].class)))
+        .thenReturn(List.of());
+
+    boolean result = adapter.hasActiveAssignmentOfAnyRole(userId, List.of(roleId), tenantId);
+
+    assertThat(result).isFalse();
+  }
+
+  @Test
+  void should_delegateToUserRoleRepository_when_findingPermissionNamesForActiveAssignmentsOfUser() {
+    RolePermissionName pair = new RolePermissionName(roleId, "user:write");
+    when(userRoleRepository.findPermissionNamesForActiveAssignmentsOfUser(userId, tenantId))
+        .thenReturn(List.of(pair));
+
+    List<RolePermissionName> result =
+        adapter.findPermissionNamesForActiveAssignmentsOfUser(userId, tenantId);
+
+    assertThat(result).containsExactly(pair);
+    verify(userRoleRepository).findPermissionNamesForActiveAssignmentsOfUser(userId, tenantId);
   }
 
   @Test

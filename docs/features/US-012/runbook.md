@@ -29,18 +29,101 @@ If either grant is missing, widened incorrectly, or the connection has drifted t
 
 ## 2. `RbacZeroActiveAdminsHealthIndicator` firing (`rbacZeroActiveAdmins` DOWN)
 
-This means one or more tenants have **zero active `TENANT_ADMIN` assignments** — the tenant is locked out of any `user:write`-gated action (including this very API), and no one in that tenant can self-service a fix.
+**Widened by US-017 (FR-2) — read this section as current, not the original T-015 shape.** This means one or more tenants have **zero active holders of any admin-equivalent role** — the literally-named `TENANT_ADMIN`, **or** a custom role carrying any of `role:write`/`user:write`/`tenant:write` — so the tenant is locked out of any `user:write`-gated action (including this very API), and no one in that tenant can self-service a fix.
 
-**There is no self-service recovery path via the API by design.** `RoleAssignmentService.assign` requires the caller to already hold an active `TENANT_ADMIN` assignment before granting `TENANT_ADMIN` to anyone else (AC8) — that is precisely the control this incident means has (for some reason) resulted in zero admins. A tenant in this state cannot use `POST /api/v1/users/{userId}/roles` to fix itself: every caller in that tenant will get `403 NOT_TENANT_ADMIN`.
+**There is no self-service recovery path via the API by design.** `RoleAssignmentService.assign` requires the caller to already hold an active admin-equivalent assignment before granting a privileged role to anyone else — that is precisely the control this incident means has (for some reason) resulted in zero holders. A tenant in this state cannot use `POST /api/v1/users/{userId}/roles` to fix itself: every caller in that tenant will get `403 NOT_TENANT_ADMIN`.
 
 **What to actually do:**
 
-1. Check `/actuator/health`'s `rbacZeroActiveAdmins` detail for the affected `tenantIds`.
-2. Confirm the finding directly: `SELECT tenant_id, COUNT(*) FROM user_roles ur JOIN roles r ON ur.role_id = r.id WHERE r.name = 'TENANT_ADMIN' AND ur.revoked_at IS NULL AND ur.tenant_id = '<tenant>' GROUP BY tenant_id;` — expect zero rows for the affected tenant.
-3. Determine how this happened before touching anything: was it a legitimate but reckless self-revocation chain (a bug in this feature would be a *different* incident — check `nexus_rbac_tenant_lockout_blocked`/`RBAC_002` history first; if that alert fired and was correctly blocking attempts, this DOWN state predates this feature or came from a path that bypasses it), a bulk/offline data operation, or a support action gone wrong.
-4. **Recovery requires a direct, `nexus_app`-privileged DB intervention or a support escalation process** — there is no UI or API-level fix. This is a deliberate consequence of the design (AC8 has no bootstrap/break-glass path in this story) and should be treated as such, not as a bug to route back to engineering as a defect against this API. Concretely, recovery is an `INSERT` of a new active `user_roles` row for a real, already-existing user in that tenant, assigning them the tenant's `TENANT_ADMIN` role id, done by whoever holds production DB write access (this is intentionally **not** something the on-call engineer should do unilaterally from a personal DB session — follow your team's existing production-data-change approval process for a manual insert of this kind, since it is functionally a privilege grant).
+1. **Fixed (US-017): the health detail no longer carries the affected `tenantIds` — it never has since M-1 replaced the list with a count.** Get the affected tenant ids from the **`RBAC_LAST_ADMIN_REVOCATION_BLOCKED`/zero-active-admins WARN log lines** instead (`docs/features/US-012/monitoring.md` §3/§5: the health indicator itself logs `tenant(s) with zero active caller-qualifying holders detected: tenantIds={}` on the transition to DOWN — that WARN, not the actuator response, is where the ids live). `/actuator/health`'s `rbacZeroActiveAdmins` detail gives you only `affectedTenantCount` and the free-text `issue` — useful to confirm *that* something is wrong and roughly how widely, not *which* tenant.
+2. **Confirm the finding directly, using the caller-qualifying form of the query (ALL three dangerous permissions, not any one of them), not the literal-name-only form this step used before US-017, and not the ANY-based form an earlier revision of this runbook used before `06-code-review.md` H-1 (2026-09-24):**
+   ```sql
+   SELECT tenant_id, COUNT(*) AS active_caller_qualifying_holders
+   FROM user_roles ur
+   JOIN roles r ON ur.role_id = r.id
+   WHERE ur.revoked_at IS NULL
+     AND ur.tenant_id = UUID_TO_BIN('<tenant>')
+     AND (
+       r.name = 'TENANT_ADMIN'
+       OR (
+         SELECT COUNT(DISTINCT p.name) FROM role_permissions rp
+         JOIN permissions p ON p.id = rp.permission_id
+         WHERE rp.role_id = r.id
+           AND p.name IN ('role:write', 'user:write', 'tenant:write')
+       ) = 3
+     )
+   GROUP BY tenant_id;
+   ```
+   Expect **zero rows** for the affected tenant. **`WHERE r.name = 'TENANT_ADMIN'` alone is now wrong** — post-US-017 widening, a tenant can be legitimately zeroed-out on a custom caller-qualifying role while still holding an unrelated, un-zeroed literal `TENANT_ADMIN` role (or vice versa); the literal-name-only form will both miss real incidents and false-positive on healthy tenants. **The `OR EXISTS (... IN (...))` (ANY) form is also now wrong** (H-1): a role carrying only one or two of the three dangerous permissions is not caller-qualifying and must not be counted here — using ANY instead of `COUNT(DISTINCT) = 3` would make this confirmation query disagree with what the health indicator and the lockout guard actually protect.
+3. Determine how this happened before touching anything: was it a legitimate but reckless self-revocation chain (a bug in this feature would be a *different* incident — check `nexus_rbac_tenant_lockout_blocked`/`RBAC_002` and, since US-017, `nexus_rbac_last_admin_lockout_blocked` history first; if either alert fired and was correctly blocking attempts, this DOWN state predates this feature or came from a path that bypasses it), a bulk/offline data operation, or a support action gone wrong. **If a remediation ticket or written acceptance already exists for this tenant from the pre-deploy forensic sweep (below), start there** — this may be a known, already-triaged finding, not a new incident.
+4. **Recovery requires a direct, `nexus_app`-privileged DB intervention or a support escalation process** — there is no UI or API-level fix. This is a deliberate consequence of the design (there is no bootstrap/break-glass path in this story or in US-017) and should be treated as such, not as a bug to route back to engineering as a defect against this API. Concretely, recovery is an `INSERT` of a new active `user_roles` row for a real, already-existing user in that tenant, assigning them an admin-equivalent role id (the tenant's `TENANT_ADMIN` role, or another admin-equivalent role already provisioned for that tenant), done by whoever holds production DB write access (this is intentionally **not** something the on-call engineer should do unilaterally from a personal DB session — follow your team's existing production-data-change approval process for a manual insert of this kind, since it is functionally a privilege grant).
 5. After remediation, confirm `rbacZeroActiveAdmins` returns to UP, and confirm with the tenant that the newly-designated admin can now perform `user:write` actions normally.
-6. This is the kind of finding worth a retro: if it recurs, it may indicate `03-design.md`'s O-5 residual (a non-admin `user:write` holder revoking one of *two* admins one at a time, each individually passing the "not the last one" check) is now reachable — currently accepted as unreachable pre-US-015, but worth re-checking if a tenant has custom roles with `user:write`.
+6. **First-class since US-017, not speculative:** a non-admin `user:write` holder revoking one of *two or more* admin-equivalent holders one at a time, each individually passing the "not the last one" check, is exactly the scenario FR-1's tenant-wide distinct-holder guard now closes — including for custom roles carrying `role:write`/`user:write`/`tenant:write`, not only the literal `TENANT_ADMIN`. If this DOWN condition recurs on a *custom* admin-equivalent role with a very large holder population, cross-check `nexus.rbac.admin_equivalent_lock_set_size`'s p99 (`docs/features/US-016/monitoring.md` §4) and US-016's **RES-1(b)** (the attach-after-assign pre-positioning primitive, `docs/features/US-017/03-design.md` §12.3) — a widely-held role becoming dangerous is the most likely way a tenant accumulates that large a population in the first place.
+7. **Expect a DOWN on first deploy of US-017's FR-2 in any environment where either `feature.nexus-us012-rbac-role-assignment` or `feature.nexus-us015-rbac-role-management` was ever `true` (`docs/features/US-017/03-design.md` §10.3 step 3).** FR-2 widens what this indicator can see; a tenant that was silently zeroed out on a custom admin-equivalent role **before** US-016's privilege gate existed (when `revoke()` had no admin check at all) becomes visible on FR-2's very first poll. **If the pre-deploy forensic sweep below was run and this tenant already carries a remediation ticket or written acceptance, this DOWN is expected — triage it as "known, already accepted," not as a regression in new code.** If it carries neither, treat it as a new incident and follow steps 1–5 above.
+
+---
+
+### Pre-deployment forensic sweep (RC-21, US-017) — run once, before flipping either feature flag `true` in production
+
+**Why this exists.** FR-2 (the widened health indicator above) is *detection*. The population it can newly see may **already be zeroed** by the time FR-2 first runs — and that population may not be innocent: **before US-016's privilege gate shipped, `revoke()` had no admin check at all**, so a historical zeroing of a custom admin-equivalent role could have been performed by any `user:write` holder, not only an administrator making an offboarding mistake. Detection without attribution just produces a list; this sweep produces attribution, evidence, and a required action per `docs/features/US-017/03-design.md` §10.3 step 3 and `03b-threat-model.md` RC-21. Per US-015 RC-6's discipline, this is executable DBA SQL — an operator cannot invoke a Java port method.
+
+**Scope: run in every environment where either `feature.nexus-us012-rbac-role-assignment.enabled` or `feature.nexus-us015-rbac-role-management.enabled` has ever been `true`** — dev, test, and staging, not production alone. Production's flags are `false`, so the population most likely to already exist is in the lower environments.
+
+**Step 1 (DBA) — detect tenants with a caller-qualifying role but zero active holders, right now:**
+
+```sql
+SELECT BIN_TO_UUID(a.tenant_id) AS tenant_id
+FROM (
+    SELECT DISTINCT r.tenant_id
+    FROM roles r
+    WHERE r.name = 'TENANT_ADMIN'
+       OR (
+            SELECT COUNT(DISTINCT p.name) FROM role_permissions rp
+            JOIN permissions p ON p.id = rp.permission_id
+            WHERE rp.role_id = r.id
+              AND p.name IN ('role:write', 'user:write', 'tenant:write')
+          ) = 3
+) a
+LEFT JOIN (
+    SELECT DISTINCT r.tenant_id
+    FROM roles r
+    JOIN user_roles ur ON ur.role_id = r.id AND ur.tenant_id = r.tenant_id AND ur.revoked_at IS NULL
+    WHERE r.name = 'TENANT_ADMIN'
+       OR (
+            SELECT COUNT(DISTINCT p.name) FROM role_permissions rp
+            JOIN permissions p ON p.id = rp.permission_id
+            WHERE rp.role_id = r.id
+              AND p.name IN ('role:write', 'user:write', 'tenant:write')
+          ) = 3
+) b ON b.tenant_id = a.tenant_id
+WHERE b.tenant_id IS NULL;
+```
+
+This is `03-design.md` §8.2's own tenant-set predicate, translated into raw SQL against the shipped schema (`roles`, `role_permissions`, `permissions`, `user_roles`) — the same "tenants with a caller-qualifying role" minus "tenants with an active caller-qualifying holder" logic the widened health indicator runs internally. **Re-scoped from ANY (`OR EXISTS ... IN (...)`) to ALL (`COUNT(DISTINCT ...) = 3`) per `06-code-review.md` H-1 (2026-09-24)** — a role carrying only one or two of the three dangerous permissions is not caller-qualifying and must not be counted here; using ANY would find a different, wrong population than what the shipped health indicator and lockout guard actually protect.
+
+**Step 2 (DBA) — for each `tenant_id` from step 1, attribution: every `ROLE_REVOKED` event ever recorded for that tenant, in order, so the revocation(s) that took it to zero (and who performed them) can be identified — a point-in-time query against `auth_events`, not a comparison against the tenant's current admin set** (per US-016 RC-13's discipline that a current-set comparison produces false negatives on the escalation case — the actor may since have become an admin themselves):
+
+```sql
+SELECT
+    BIN_TO_UUID(ae.id)                                       AS event_id,
+    ae.created_at,
+    BIN_TO_UUID(ae.user_id)                                  AS revoked_user_id,
+    JSON_UNQUOTE(JSON_EXTRACT(ae.metadata, '$.revokedBy'))   AS revoked_by_user_id,
+    JSON_UNQUOTE(JSON_EXTRACT(ae.metadata, '$.roleId'))      AS role_id,
+    JSON_UNQUOTE(JSON_EXTRACT(ae.metadata, '$.roleName'))    AS role_name
+FROM auth_events ae
+WHERE ae.tenant_id  = UUID_TO_BIN(?)     -- one tenant_id from step 1
+  AND ae.event_type = 'ROLE_REVOKED'
+ORDER BY ae.created_at;
+```
+
+Read the output in order: the revocation(s) nearest the point the tenant's admin-equivalent holder count reached zero, and `revoked_by_user_id`, are the attribution this sweep exists to produce. `auth_events` is append-only and unfiltered by feature-flag era, so this query surfaces revocations from **before** US-016's gate existed just as readily as after.
+
+**Step 3 — retain the output as dated evidence.** Save the full result of **both** queries above (the affected-tenant list from step 1, and the per-tenant attribution from step 2), dated, per `docs/features/US-017/03-design.md` §9.4's retention mandate (**≥ 1 year**, `docs/observability-standards.md`: "Retention: minimum 1 year"). The widened indicator begins reporting this same population on its very first poll after deploy; this dated "before" snapshot is the only way to distinguish a pre-existing, already-triaged tenant from a genuinely new incident (step 6 above).
+
+**Step 4 — a stated action, per affected tenant, before the production deploy step.** For every tenant identified in step 1: either open a remediation ticket with a DBA owner, **or** obtain and record written acceptance that no action will be taken. **Do not proceed to production deploy (`03-design.md` §10.3 step 5) with an affected tenant that has neither** — an unowned finding at that point becomes an unowned page for a condition the team already knew about, which is the fastest way to train operators to ignore this indicator.
+
+**Verification status of this SQL:** written and reviewed against the shipped schema (`V2__identity_schema.sql`'s `auth_events`, `V5__rbac_schema.sql`'s `roles`/`role_permissions`/`permissions`/`user_roles`) and the shipped audit adapter (`RbacAuthEventAdapter`'s `ROLE_REVOKED` metadata shape: `traceId`, `roleId`, `roleName`, `revokedBy`). **Not yet executed against a real staging database** — that execution, and recording its result here or in the deployment record, is required before this sub-item's Definition of Done is satisfied.
 
 ---
 

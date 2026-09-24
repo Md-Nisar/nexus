@@ -1,18 +1,25 @@
 package com.example.nexus.rbac.infrastructure.persistence;
 
+import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
+import com.example.nexus.rbac.domain.RolePermissionName;
 import com.example.nexus.rbac.domain.UserRole;
-import jakarta.persistence.LockModeType;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
-/** Spring Data JPA repository for the {@link UserRole} aggregate. */
-public interface JpaUserRoleRepository extends JpaRepository<UserRole, UUID> {
+/**
+ * Spring Data JPA repository for the {@link UserRole} aggregate. Additionally implements {@link
+ * ZeroAdminTenantReader} (US-017 D25) so {@code RbacZeroActiveAdminsHealthIndicator} can depend on
+ * a narrow read-only surface instead of this repository's full {@code save}/{@code delete}
+ * capability — zero query changes, zero behaviour change (T-T14/RC-22.4).
+ */
+public interface JpaUserRoleRepository
+    extends JpaRepository<UserRole, UUID>, ZeroAdminTenantReader {
 
   /**
    * Names of all active (non-revoked) roles assigned to a user within a tenant. JPQL (not native
@@ -58,23 +65,96 @@ public interface JpaUserRoleRepository extends JpaRepository<UserRole, UUID> {
       @Param("userId") UUID userId, @Param("tenantId") UUID tenantId);
 
   /**
-   * M1 — locks (PESSIMISTIC_WRITE) the tenant's active assignments of a given role (AC5 lockout
-   * guard). Single-table, driven by {@code roleId} (the FK-indexed column) — NEVER driven by
-   * {@code tenantId} as the primary predicate, which is unindexed and would scan/lock the whole
-   * table. {@code tenantId} stays as a residual defense-in-depth filter only. No join with {@code
-   * Role} — this is what keeps the lock scope confined to one tenant's rows and avoids locking a
-   * {@code Role} row at all.
+   * M11 (US-017 D6) — locks (PESSIMISTIC_WRITE) and returns the (assignmentId, userId) pair for
+   * every ACTIVE assignment of ANY role in {@code roleIds} within {@code tenantId}. Supersedes and
+   * REPLACES the removed M1 {@code lockActiveAssignmentsByRole} — a singleton {@code roleIds} is a
+   * strict superset of M1's one-role lock.
+   *
+   * <p>Driven off {@code roleId} (fk_user_roles_role) as an IN-list range — NEVER {@code
+   * tenantId} as the primary predicate — and NO join with {@code Role}: joining would widen the
+   * lock beyond {@code user_roles} (lock-scope discipline inherited verbatim from M1). {@code
+   * tenantId} remains a residual defense-in-depth predicate (T-S1).
+   *
+   * <p>{@code roleIds} MUST be sorted ASCENDING by the caller, by <b>unsigned byte-wise order of
+   * the 16-byte representation</b> matching MySQL's {@code BINARY(16)} comparison — NOT {@link
+   * UUID#compareTo}, which compares {@code mostSigBits} as a SIGNED long (D6's deadlock-freedom
+   * argument; MC-E asserts this exact comparator).
+   *
+   * <p>Returns ids only, never entities — the caller must not be able to load-mutate-save a
+   * {@link UserRole}.
+   *
+   * <p><b>Native, with an explicit {@code FORCE INDEX} (MC-C, D8):</b> the JPQL/{@code @Lock} form
+   * this method originally used let MySQL's optimizer fall back to a full table scan ({@code key =
+   * NULL}) at larger {@code roleIds} IN-list cardinalities (empirically confirmed reproducible,
+   * deterministic, in isolation — not a cross-test statistics artifact — via {@code
+   * LastAdminLockoutIT#should_pinKeyToFkUserRolesRole_acrossInListCardinalities_forM11AndM5b_MCC}
+   * at size 25), which breaks D8's containment proof exactly as M5's own Javadoc describes for the
+   * analogous JPQL-vs-native problem. Spring Data JPA does not support combining {@code @Lock}
+   * with {@code nativeQuery = true} (same constraint as M5/M5b), so {@code FOR UPDATE} is rendered
+   * directly instead of {@code PESSIMISTIC_WRITE}. Bind parameters are {@code byte[]}, not {@code
+   * UUID} — native queries bypass the entity-mapped {@code UuidV7Converter} on the way in, same as
+   * M5/M5b. Returns full entities at the JPA layer (like M5b) but the adapter maps them down to
+   * {@link ActiveAssignmentHolder} before they escape the persistence boundary, preserving the
+   * "ids only" contract above.
    */
-  @Lock(LockModeType.PESSIMISTIC_WRITE)
+  @Query(
+      value =
+          """
+          SELECT * FROM user_roles FORCE INDEX (fk_user_roles_role)
+          WHERE role_id IN (:roleIds) AND tenant_id = :tenantId AND revoked_at IS NULL
+          FOR UPDATE
+          """,
+      nativeQuery = true)
+  List<UserRole> lockActiveAssignmentHoldersByRoles(
+      @Param("roleIds") Collection<byte[]> roleIds, @Param("tenantId") byte[] tenantId);
+
+  /**
+   * M5b (US-017 D8) — generalises M5 ({@link #lockActiveAdminAssignment}) from one {@code roleId}
+   * to a set. Same non-negotiable contract: native, {@code FOR SHARE}, {@code FORCE INDEX
+   * (fk_user_roles_role)} so every index record it requests is inside M11's X region (D8's
+   * containment proof; MC-C). Bind parameters are {@code byte[]}, not {@code UUID} — same reason
+   * as {@link #lockActiveAdminAssignment}.
+   *
+   * <p>An EMPTY {@code roleIds} means the caller has no way to qualify: the caller MUST fail
+   * closed and MUST NOT call this method at all (R-10 / T-E18 precedent).
+   */
+  @Query(
+      value =
+          """
+          SELECT * FROM user_roles FORCE INDEX (fk_user_roles_role)
+          WHERE user_id = :userId AND role_id IN (:roleIds)
+            AND tenant_id = :tenantId AND revoked_at IS NULL
+          FOR SHARE
+          """,
+      nativeQuery = true)
+  List<UserRole> lockActiveAssignmentOfAnyRole(
+      @Param("userId") byte[] userId,
+      @Param("roleIds") Collection<byte[]> roleIds,
+      @Param("tenantId") byte[] tenantId);
+
+  /**
+   * M12 (US-017 D24) — every (roleId, permissionName) pair for the roles of the CALLER'S OWN
+   * active assignments in one tenant. Sibling of M7, keyed by USER rather than by role.
+   *
+   * <p>Exists solely to give the self-assignment bypass canary a derivation that shares NO INPUT
+   * with the gate. MUST be driven off {@code fk_user_roles_user} — a different index, a different
+   * statement and a different scoping from M10 (tenant-scoped, driven off {@code r.tenantId}). An
+   * over-broad M10 therefore cannot silence the canary that exists to notice it (T-E29). MUST NOT
+   * reuse M10's query or delegate to it.
+   *
+   * <p>MUST be a plain, NON-LOCKING read, and MUST NEVER be used for an authorization decision —
+   * the gate's only determination is M5b, a fresh locking read (T-E7). MC-G asserts this negative
+   * on both verbs.
+   */
   @Query(
       """
-      SELECT ur FROM UserRole ur
-      WHERE ur.roleId = :roleId
-        AND ur.tenantId = :tenantId
-        AND ur.revokedAt IS NULL
+      SELECT new com.example.nexus.rbac.domain.RolePermissionName(rp.id.roleId, p.name)
+      FROM UserRole ur, RolePermission rp, Permission p
+      WHERE ur.roleId = rp.id.roleId AND rp.id.permissionId = p.id
+        AND ur.userId = :userId AND ur.tenantId = :tenantId AND ur.revokedAt IS NULL
       """)
-  List<UserRole> lockActiveAssignmentsByRole(
-      @Param("tenantId") UUID tenantId, @Param("roleId") UUID roleId);
+  List<RolePermissionName> findPermissionNamesForActiveAssignmentsOfUser(
+      @Param("userId") UUID userId, @Param("tenantId") UUID tenantId);
 
   /**
    * M2 — duplicate-active pre-check (AC1). Deliberately NO tenant predicate: must mirror the
@@ -152,10 +232,10 @@ public interface JpaUserRoleRepository extends JpaRepository<UserRole, UUID> {
    *
    * <p><b>Native, with an explicit {@code FORCE INDEX} (MC-5, RC-9.1, 03-design.md §7.2 step
    * 1):</b> the JPQL equivalent let MySQL's optimizer choose {@code fk_user_roles_user} over
-   * {@code fk_user_roles_role} for this predicate, which breaks D2's containment proof — M1's X
+   * {@code fk_user_roles_role} for this predicate, which breaks D8's containment proof — M11's X
    * lock (driven by {@code fk_user_roles_role}) no longer provably covers every record this read
-   * requests. Forcing the same index M1 uses makes containment exact again, empirically confirmed
-   * by {@code LastAdminLockoutIT#should_driveBothM1AndM5OffTheRoleIndex_when_explainingCapturedLockingReads}.
+   * requests. Forcing the same index M11 uses makes containment exact again, empirically confirmed
+   * by {@code LastAdminLockoutIT#should_driveBothM11AndM5OffTheRoleIndex_when_explainingCapturedLockingReads}.
    * Bind parameters are {@code byte[]}, not {@code UUID}: native queries do not go through the
    * entity-mapped {@code UuidV7Converter} on the way IN, so the adapter converts explicitly (see
    * {@code JpaUserRoleAssignmentAdapter#hasActiveAdminAssignment}). The result set ({@code SELECT
@@ -206,30 +286,59 @@ public interface JpaUserRoleRepository extends JpaRepository<UserRole, UUID> {
   List<UUID> findActiveUserIdsByRole(@Param("roleId") UUID roleId);
 
   /**
-   * Health-check support only (T-015 / {@code 03b-threat-model.md} T-D4) — the zero-active-admins
-   * detection control. Returns the tenantId of every tenant that has a seeded role named {@code
-   * roleName} (matched case-insensitively — {@code roles.name}'s collation makes {@code
-   * uq_roles_tenant_name} case-insensitive, see {@link com.example.nexus.rbac.domain.RbacRoleNames})
-   * but currently has zero active (non-revoked) assignments of it.
+   * FR-2 (a) (US-017 D10, D11, D12; re-scoped by 06-code-review.md H-1, 2026-09-24) —
+   * health-check support only, {@link ZeroAdminTenantReader}'s driving set: tenants with AT LEAST
+   * ONE <b>caller-qualifying</b> role (literal {@code adminRoleName}, or a role carrying ALL of
+   * {@code dangerousNames} — {@code dangerousNamesCount} is {@code dangerousNames.size()}, passed
+   * explicitly since JPQL's {@code SIZE()} only applies to a persistent collection association,
+   * not a bind parameter). {@code COUNT(DISTINCT p.name)} mirrors {@code
+   * RbacDangerousPermissions#carriesAll}'s per-name, duplicate-safe semantics — never a raw row
+   * count, which could over-count a role holding the same permission via more than one row. A
+   * tenant with no caller-qualifying role at all is deliberately invisible here — this is the
+   * DRIVING SET (D11). Names are supplied by the caller from {@code rbac.domain} (D12) — never
+   * hardcoded here.
    *
-   * <p>A non-empty result is the AC5-bypass signal this control exists to surface: unlike the
-   * service-layer lockout guard (M1/{@code RoleAssignmentService}), which only prevents the
-   * <em>next</em> revocation from zeroing a tenant out, this catches an already-zeroed tenant from
-   * <b>any</b> cause — a bug, a future grant change, a role-name casing mismatch, or a raw-SQL
-   * path that bypassed the application entirely.
-   *
-   * <p>Read-only, no locking — this runs on a health-check cadence, not a hot path, and must never
-   * contend with the M1/M5 locking reads above. JPQL, not native SQL, for the same {@code
-   * UuidV7Converter} ({@code UUID}<->{@code BINARY(16)}) reason as every other query here.
+   * <p>Carries the {@code ur.tenantId = r.tenantId}/{@code rp.id.roleId = r.id} cross-check
+   * discipline this repository's other queries carry (T-S1). Read-only, no locking — this runs on
+   * a health-check cadence, not a hot path, and must never contend with the M11/M5b locking reads
+   * above. JPQL, not native SQL, for the same {@code UuidV7Converter} reason as every other query
+   * here.
    */
+  @Override
   @Query(
       """
-      SELECT r.tenantId FROM Role r
-      WHERE UPPER(r.name) = UPPER(:roleName)
-        AND NOT EXISTS (
-          SELECT 1 FROM UserRole ur
-          WHERE ur.roleId = r.id AND ur.tenantId = r.tenantId AND ur.revokedAt IS NULL
-        )
+      SELECT DISTINCT r.tenantId FROM Role r
+      WHERE r.name = :adminRoleName
+         OR (SELECT COUNT(DISTINCT p.name) FROM RolePermission rp, Permission p
+             WHERE rp.id.roleId = r.id AND rp.id.permissionId = p.id
+               AND p.name IN :dangerousNames) = :dangerousNamesCount
       """)
-  List<UUID> findTenantsWithZeroActiveAssignmentsForRole(@Param("roleName") String roleName);
+  List<UUID> findTenantsWithAFullyAdminEquivalentRole(
+      @Param("adminRoleName") String adminRoleName,
+      @Param("dangerousNames") Collection<String> dangerousNames,
+      @Param("dangerousNamesCount") long dangerousNamesCount);
+
+  /**
+   * FR-2 (b) (US-017 D10, D11, D12; re-scoped by 06-code-review.md H-1, 2026-09-24) — tenants with
+   * AT LEAST ONE active holder of some caller-qualifying role. Differenced against {@link
+   * #findTenantsWithAFullyAdminEquivalentRole} in Java, not one correlated {@code
+   * HAVING}/{@code GROUP BY} statement: the tenant-level question ("does *some* caller-qualifying
+   * role have holders") is not equivalent to a role-level {@code NOT EXISTS} once a tenant can
+   * have more than one caller-qualifying role, and two flat queries are directly unit-testable
+   * with mocks.
+   */
+  @Override
+  @Query(
+      """
+      SELECT DISTINCT r.tenantId FROM Role r, UserRole ur
+      WHERE ur.roleId = r.id AND ur.tenantId = r.tenantId AND ur.revokedAt IS NULL
+        AND (r.name = :adminRoleName
+             OR (SELECT COUNT(DISTINCT p.name) FROM RolePermission rp, Permission p
+                 WHERE rp.id.roleId = r.id AND rp.id.permissionId = p.id
+                   AND p.name IN :dangerousNames) = :dangerousNamesCount)
+      """)
+  List<UUID> findTenantsWithActiveFullyAdminEquivalentHolders(
+      @Param("adminRoleName") String adminRoleName,
+      @Param("dangerousNames") Collection<String> dangerousNames,
+      @Param("dangerousNamesCount") long dangerousNamesCount);
 }

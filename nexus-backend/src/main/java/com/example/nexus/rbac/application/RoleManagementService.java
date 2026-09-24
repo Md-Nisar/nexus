@@ -10,6 +10,7 @@ import com.example.nexus.rbac.application.port.out.RoleManagementPort;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.domain.DuplicateRolePermissionException;
 import com.example.nexus.rbac.domain.PermissionView;
+import com.example.nexus.rbac.domain.RbacAdminEquivalence;
 import com.example.nexus.rbac.domain.RbacDangerousPermissions;
 import com.example.nexus.rbac.domain.RbacRoleNames;
 import com.example.nexus.rbac.domain.ReservedRoleNameException;
@@ -160,6 +161,15 @@ public class RoleManagementService {
    * is a legitimate administrative action and is never blocked here. Removing this signal
    * silently reopens T-E21's mass-escalation blind spot (03-design.md §4.7, D13); do not delete
    * it without re-opening that note.
+   *
+   * <p><b>D22 (RC-15.3, threat model T-E27):</b> also on the dangerous path only, after the
+   * attach, one bounded M7 read decides whether this is the exact attach that tips the role from
+   * not-fully-admin-equivalent to fully-admin-equivalent (the holder-count signal above answers
+   * "how many users did this silently escalate?"; this one answers "did this role just become
+   * caller-qualifying?"). When it does, this emits WARN {@code
+   * RBAC_ROLE_BECAME_FULLY_ADMIN_EQUIVALENT} and increments {@code
+   * nexus.rbac.role_became_fully_admin_equivalent{holders}}. Computed in memory against the
+   * permission set minus the one just attached — never a second query — to keep this at one read.
    */
   @Transactional
   public PermissionView attachPermission(
@@ -175,7 +185,12 @@ public class RoleManagementService {
 
     boolean dangerous = RbacDangerousPermissions.contains(permission.name());
     if (dangerous) {
-      verifyCallerIsActiveTenantAdmin(actor, role, permission);
+      verifyCallerIsActiveTenantAdmin(
+          actor,
+          role,
+          permission,
+          "RBAC_DANGEROUS_PERMISSION_ATTACH_BLOCKED",
+          "Blocked dangerous-permission attach by a non-admin caller");
     }
 
     if (roleManagementPort.hasPermission(role.id(), permissionId)) {
@@ -189,6 +204,10 @@ public class RoleManagementService {
     // not a gate — removing it silently reopens T-E21's mass-escalation blind spot.
     Integer holderCount =
         dangerous ? userRoleAssignmentPort.findActiveUserIdsForRole(role.id()).size() : null;
+
+    // D22 (RC-15.3): dangerous path only, one bounded M7 read to detect the exact attach that
+    // tips the role from not-fully-admin-equivalent to fully-admin-equivalent.
+    boolean becameFullyAdminEquivalent = dangerous && becameFullyAdminEquivalent(role, permission);
 
     registerPostCommitSideEffects(
         () -> {
@@ -237,20 +256,53 @@ public class RoleManagementService {
                 .register(meterRegistry)
                 .increment();
           }
+          if (becameFullyAdminEquivalent) {
+            log.atWarn()
+                .addKeyValue(LOG_KEY_EVENT, "RBAC_ROLE_BECAME_FULLY_ADMIN_EQUIVALENT")
+                .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+                .addKeyValue(LOG_KEY_ROLE_ID, role.id())
+                .addKeyValue(LOG_KEY_ROLE_NAME, role.name())
+                .addKeyValue("holderCount", holderCount)
+                .addKeyValue("grantedBy", actor.userId())
+                .log("Role became fully admin-equivalent");
+            Counter.builder("nexus.rbac.role_became_fully_admin_equivalent")
+                .tag("holders", holderCountBucket(holderCount))
+                .register(meterRegistry)
+                .increment();
+          }
         });
 
     return permission;
   }
 
   /**
-   * AC5, AC7, AC8, AC12. No AC11 gate — detaching a permission reduces privilege, a deliberate
-   * asymmetry with {@link #attachPermission}.
+   * AC5, AC7, AC8, AC12. <b>D13 (ADR-0018):</b> detaching a dangerous permission does not merely
+   * reduce privilege, it can flip a role out of admin-equivalence, which is an input to a security
+   * guard ({@link RoleAssignmentService}'s widened lockout) — so the asymmetry with {@link
+   * #attachPermission} that used to hold here is no longer safe and is closed. Gate order:
+   * {@link #resolveRoleInTenant} (404/403) &rarr; {@link #requireMutableRole} (409) &rarr; {@link
+   * #verifyCallerIsActiveTenantAdmin}, when the permission exists and is dangerous (403) &rarr;
+   * the delete (0 rows &rArr; 404). <b>One stated behavioural narrowing:</b> a non-admin detaching
+   * a dangerous permission that is not attached to the role now receives 403 where it previously
+   * received 404 — this removes an attachment-existence oracle rather than creating one.
    */
   @Transactional
   public void detachPermission(
       RoleChangeActor actor, UUID roleId, UUID permissionId, RequestContext ctx) {
     RoleView role = resolveRoleInTenant(roleId, actor, ROLE_WRITE);
     requireMutableRole(role);
+
+    // D13: moved above the delete so this one read serves both the gate below and the audit's
+    // permissionName, at no added statement cost on the ordinary (non-dangerous) path.
+    Optional<PermissionView> permission = roleManagementPort.findPermission(permissionId);
+    if (permission.isPresent() && RbacDangerousPermissions.contains(permission.get().name())) {
+      verifyCallerIsActiveTenantAdmin(
+          actor,
+          role,
+          permission.get(),
+          "RBAC_DANGEROUS_PERMISSION_DETACH_BLOCKED",
+          "Blocked dangerous-permission detach by a non-admin caller");
+    }
 
     int affectedRows = roleManagementPort.detachPermission(role.id(), permissionId);
     if (affectedRows == 0) {
@@ -260,10 +312,7 @@ public class RoleManagementService {
           "ROLE_PERMISSION_NOT_FOUND", "This permission is not attached to this role");
     }
 
-    // Enrichment only, not a gate: Q9's affected-row count above IS the existence gate (§8.6).
-    // This read exists solely so the audit event and log carry permissionName, per AC12.
-    String permissionName =
-        roleManagementPort.findPermission(permissionId).map(PermissionView::name).orElse(null);
+    String permissionName = permission.map(PermissionView::name).orElse(null);
 
     registerPostCommitSideEffects(
         () -> {
@@ -322,7 +371,10 @@ public class RoleManagementService {
 
   /**
    * AC11's dangerous-permission admin gate (F1/T-E14, RC-5a) — {@code Q3 -> Q11}, both fresh
-   * reads inside this write transaction. MUST NOT be replaced by {@code
+   * reads inside this write transaction. <b>Shared, unchanged, by {@link #attachPermission} and,
+   * since D13, {@link #detachPermission}</b> — same read, same {@link DenialReason}, same 403
+   * shape; only the WARN's event name and message differ per caller, via {@code blockedEvent}/
+   * {@code blockedLogMessage}. MUST NOT be replaced by {@code
    * RoleAssignmentService.callerHoldsActiveTenantAdmin}'s shape (that helper is deliberately
    * non-locking — it only decides whether to redact one response field, not whether to authorize
    * a mutation) and MUST NOT call {@link UserRoleAssignmentPort#findActiveAssignmentViews} (this
@@ -331,27 +383,47 @@ public class RoleManagementService {
    * {@code void}, not {@code boolean}, by design: a caller cannot ignore a thrown exception the
    * way it could ignore an unchecked boolean return value.
    */
-  private void verifyCallerIsActiveTenantAdmin(RoleChangeActor actor, RoleView role, PermissionView permission) {
+  private void verifyCallerIsActiveTenantAdmin(
+      RoleChangeActor actor,
+      RoleView role,
+      PermissionView permission,
+      String blockedEvent,
+      String blockedLogMessage) {
     Optional<UUID> adminRoleId =
         roleManagementPort.findRoleIdByName(actor.tenantId(), RbacRoleNames.TENANT_ADMIN);
-    // Empty ⇒ fail closed (R-10): a tenant with no seeded TENANT_ADMIN role cannot attach a
-    // dangerous permission at all. Short-circuits before hasActiveAdminAssignment is ever called.
+    // Empty ⇒ fail closed (R-10): a tenant with no seeded TENANT_ADMIN role cannot attach or
+    // detach a dangerous permission at all. Short-circuits before hasActiveAdminAssignment is
+    // ever called.
     boolean isActiveAdmin =
         adminRoleId.isPresent()
             && userRoleAssignmentPort.hasActiveAdminAssignment(
                 actor.userId(), adminRoleId.get(), actor.tenantId());
     if (!isActiveAdmin) {
       log.atWarn()
-          .addKeyValue(LOG_KEY_EVENT, "RBAC_DANGEROUS_PERMISSION_ATTACH_BLOCKED")
+          .addKeyValue(LOG_KEY_EVENT, blockedEvent)
           .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
           .addKeyValue(LOG_KEY_ROLE_ID, role.id())
           .addKeyValue(LOG_KEY_ROLE_NAME, role.name())
           .addKeyValue(LOG_KEY_PERMISSION_ID, permission.id())
           .addKeyValue(LOG_KEY_PERMISSION_NAME, permission.name())
           .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
-          .log("Blocked dangerous-permission attach by a non-admin caller");
+          .log(blockedLogMessage);
       throw new InsufficientPermissionException(ROLE_WRITE, DenialReason.NOT_TENANT_ADMIN);
     }
+  }
+
+  /**
+   * D22 (RC-15.3): {@code true} iff attaching {@code justAttached} to {@code role} is the exact
+   * attach that tips it from not-fully-admin-equivalent to fully-admin-equivalent. The "before"
+   * state is derived in memory from the "after" state minus the permission just attached, never a
+   * second query — the M7 read below is the only one this incurs (03-design.md §4.7 risk note).
+   */
+  private boolean becameFullyAdminEquivalent(RoleView role, PermissionView justAttached) {
+    List<String> namesAfterAttach = userRoleAssignmentPort.findPermissionNamesForRole(role.id());
+    List<String> namesBeforeAttach =
+        namesAfterAttach.stream().filter(name -> !name.equals(justAttached.name())).toList();
+    return !RbacAdminEquivalence.isFullyAdminEquivalent(role.name(), namesBeforeAttach)
+        && RbacAdminEquivalence.isFullyAdminEquivalent(role.name(), namesAfterAttach);
   }
 
   /**

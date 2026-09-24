@@ -3,6 +3,7 @@ package com.example.nexus.rbac.infrastructure.persistence;
 import com.example.nexus.rbac.domain.Permission;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermission;
+import com.example.nexus.rbac.domain.RolePermissionName;
 import com.example.nexus.rbac.domain.RoleView;
 import java.util.List;
 import java.util.Optional;
@@ -75,4 +76,32 @@ public interface JpaRoleRepository extends JpaRepository<Role, UUID> {
    * prefix — same index as Q1, no new cost (03-design.md §5.2).
    */
   long countByTenantId(UUID tenantId);
+
+  /**
+   * M10 (US-017 D3, D4) — every (roleId, permissionName) pair for the roles of ONE tenant.
+   * Bounded at {@code nexus.rbac.max-roles-per-tenant} (default 500) x |permissions| = 7.
+   *
+   * <p>Deliberately returns NAMES paired with role ids, not a verdict and not a filtered set: the
+   * ANY/ALL policy lives in {@code rbac.domain.RbacAdminEquivalence} and MUST NOT cross this port
+   * in either direction — not hardcoded in the adapter and NOT passed in as a {@code
+   * Set<String>} parameter either (ADR-0017 D2, upheld by ADR-0018 D3).
+   *
+   * <p>MUST be a plain, NON-LOCKING read and MUST NEVER be annotated {@code @Lock}: it touches
+   * {@code permissions}, on which {@code nexus_app} holds SELECT only (MC-A). Comma-join JPQL,
+   * never native SQL, so {@code UuidV7Converter} handles {@code UUID} <-> {@code BINARY(16)}. No
+   * {@code ORDER BY} — the caller builds sets. Driven by {@code uq_roles_tenant_name}'s leftmost
+   * {@code tenant_id} prefix into {@code pk_role_permissions}'s leftmost {@code role_id} prefix
+   * into {@code permissions}' PK: indexed end to end, no new index.
+   *
+   * <p><b>Roles with zero attached permissions do not appear in this result.</b> That is correct
+   * and deliberate: such a role is admin-equivalent only if it is literally named {@code
+   * TENANT_ADMIN}, and that half is answered by M8, not M10 (D9).
+   */
+  @Query(
+      """
+      SELECT new com.example.nexus.rbac.domain.RolePermissionName(rp.id.roleId, p.name)
+      FROM Role r, RolePermission rp, Permission p
+      WHERE rp.id.roleId = r.id AND rp.id.permissionId = p.id AND r.tenantId = :tenantId
+      """)
+  List<RolePermissionName> findPermissionNamesByTenantRoles(@Param("tenantId") UUID tenantId);
 }
