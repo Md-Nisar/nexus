@@ -71,5 +71,10 @@
   "env": {
     "JAVA_TOOL_OPTIONS": "-Dfile.encoding=UTF-8",
     "MAVEN_OPTS": "-Xmx2g"
+  },
+  "modelSettings": {
+    "sonnet": {
+      "effortLevel": "high"
+    }
   }
 }

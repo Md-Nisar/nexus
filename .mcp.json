@@ -14,14 +14,14 @@
       "env": {
         "SONARQUBE_URL": "https://sonarcloud.io",
         "SONARQUBE_ORG": "md-nisar",
-        "SONARQUBE_TOKEN": "${SONAR_READ_TOKEN}"
+        "SONARQUBE_TOKEN": ""
       }
     },
     "github": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-github"],
       "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_READ_TOKEN}"
+        "GITHUB_PERSONAL_ACCESS_TOKEN": ""
       }
     }
   }
