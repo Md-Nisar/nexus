@@ -236,8 +236,8 @@ Every non-trivial change follows this model. It is enforced by approval gates (h
 | # | Step | Command | Agent | Output | Gate |
 |---|------|---------|-------|--------|------|
 | 5 | Implement (per task, test-first) | `/implement <ID> <TASK>` | backend/frontend-engineer | code + tests | per-task plan-mode approval |
-| 6 | Code review | `/review` | code-reviewer (read-only) | `06-code-review.md` | `APPROVE` |
-| 7 | Security review | `/security-review` | security-reviewer (read-only) | `07-security-review.md` | no Blockers |
+| 6 | Code review | `/review` | code-reviewer (review-only, no code edits) | `06-code-review.md` | `APPROVE` |
+| 7 | Security review | `/security-review` | security-reviewer (review-only, no code edits) | `07-security-review.md` | no Blockers |
 | 8 | Test validation | `/test-validate` | qa-engineer | `08-test-audit.md` | coverage gates green |
 | 9 | Documentation | `/docs` | — | `09-technical.md` | — |
 | 10 | Release prep | `/release-prep` | release-manager | `10-release/` | verdict `READY` |
@@ -269,4 +269,4 @@ git config core.hooksPath .githooks     # enable the pre-push gate
 
 ## AI-assisted workflow
 
-This repo is configured for Claude Code (`.claude/`): the operating model above as slash commands, per-role sub-agents (review agents are read-only), standards/workflow skills, and the enforcement hooks in `.claude/settings.json`. Map and conventions: `CLAUDE.md`; full `.claude` layout: `.claude/README.md`.
+This repo is configured for Claude Code (`.claude/`): the operating model above as slash commands, per-role sub-agents (review agents are instructed not to edit code; they still have `Bash`, so this is a prompt rule, not a tool restriction), standards/workflow skills, and the enforcement hooks in `.claude/settings.json`. Behaviour: `CLAUDE.md`; map, constraints and commands: `PROJECT.md`; full `.claude` layout: `.claude/README.md`.

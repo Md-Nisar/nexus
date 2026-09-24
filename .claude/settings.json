@@ -22,7 +22,13 @@
       "Read(~/.ssh/**)",
       "Read(~/.aws/**)",
       "Edit(./.env*)",
-      "Edit(./**/application-prod.*)"
+      "Edit(./**/application-prod.*)",
+      "Edit(./.github/**)",
+      "Edit(./.githooks/**)",
+      "Edit(./nexus-scripts/**)",
+      "Edit(./.claude/settings.json)",
+      "Edit(./.claude/hooks/**)",
+      "Edit(./.mcp.json)"
     ]
   },
   "hooks": {
@@ -62,7 +68,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-tests.mjs\""
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-tests.mjs\"",
+            "timeout": 660
           }
         ]
       }

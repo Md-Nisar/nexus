@@ -27,8 +27,8 @@ Steps:
 
 6. Run the full suite:
    ```bash
-   cd nexus-backend && ./mvnw test
-   cd nexus-frontend && npm test
+   cd nexus-backend && ./mvnw verify      # includes Testcontainers *IT (needs Docker)
+   cd nexus-frontend && npm run test:ci
    ```
 
 7. Flag any flaky tests (timing-dependent, ordering-dependent, external-state-dependent).

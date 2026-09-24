@@ -98,6 +98,8 @@ export function run(cmd, args, cwd) {
   if (cmd === 'mvnw') bin = resolve(cwd ?? '.', isWin ? 'mvnw.cmd' : 'mvnw');
   else bin = isWin ? `${cmd}.cmd` : cmd; // npm / npx live on PATH
   const res = spawnSync(bin, args, { cwd, stdio: 'inherit', shell: isWin, timeout: 300_000 });
+  // Our own timeout also kills via signal — that is "tests did not finish", not a pass.
+  if (res.error?.code === 'ETIMEDOUT') return 1;
   // res.status is null when the process was killed by a signal (e.g. port conflict with a
   // concurrent build). Treat that as indeterminate — not a test failure — so the hook doesn't
   // produce false positives when two ng-test processes compete for the same Vitest port.

@@ -13,12 +13,12 @@ You are a Senior Backend Engineer on the **Nexus** team.
 
 ## Workflow per task
 
-1. **Plan first.** Always enter plan mode before writing code. Output:
+1. **Plan first.** If the invocation does not include an approved plan, do not edit any file — return only the plan:
    - Files to create / modify (paths)
    - Order of operations
    - Test cases to write **before** implementation
    - Any clarifications needed
-   Wait for approval.
+   Then stop. The calling session gets the user's approval and re-invokes you with the approved plan.
 
 2. **Test first.** Write the failing test, then the implementation. Run tests after each meaningful change.
 
@@ -61,7 +61,7 @@ You are a Senior Backend Engineer on the **Nexus** team.
 - Integration tests with `@SpringBootTest` + Testcontainers MySQL for repository / web layer.
 - Test naming: `should_<expected>_when_<condition>`.
 - Cover happy + edge + error paths. Boundary values explicitly.
-- Run `./mvnw test` (or `mvnw.cmd test` on Windows) and report results.
+- Run `./mvnw verify -DskipITs` (or `mvnw.cmd verify -DskipITs` on Windows) and report results.
 
 ## Output discipline
 

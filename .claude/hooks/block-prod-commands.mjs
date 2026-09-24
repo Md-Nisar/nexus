@@ -8,9 +8,14 @@ import { readStdin, commandBeingRun, deny, allow } from './_hooklib.mjs';
 const DANGER = [
   { name: 'recursive root delete', re: /\brm\s+-[a-z]*r[a-z]*f?\s+(\/|~|\$HOME|\.\.)(\s|$)/ },
   { name: 'force push', re: /\bgit\s+push\b.*(--force|-f)\b/ },
+  // settings.json denies `git push` by prefix; this catches option-prefixed forms (`git -C . push`).
+  { name: 'git push', re: /\bgit\s+(?:-C\s+\S+\s+|-c\s+\S+\s+|--?[\w-]+(?:=\S+)?\s+)*push\b/ },
+  // Read(./.env) deny covers the Read tool only; block shell access to env secrets files too.
+  { name: 'env secrets file access', re: /(?:^|[\s'"=<>/])\.env(?:\.(?!example\b)[\w-]+)?(?=$|[\s'"|;&<>)])/ },
   { name: 'hard reset', re: /\bgit\s+reset\s+--hard\b/ },
   { name: 'history rewrite push', re: /\bgit\s+push\b.*--force-with-lease.*\b(main|master)\b/ },
-  { name: 'drop/truncate database', re: /\b(DROP\s+(DATABASE|SCHEMA|TABLE)|TRUNCATE)\b/i },
+  // Only when sent to a SQL client — grepping migrations for "DROP TABLE" is fine.
+  { name: 'drop/truncate database', re: /\b(mysql|mariadb|psql|sqlcmd)\b.*\b(DROP\s+(DATABASE|SCHEMA|TABLE)|TRUNCATE)\b/i },
   { name: 'production profile run', re: /SPRING_PROFILES_ACTIVE\s*=\s*prod\b/ },
   { name: 'maven deploy', re: /\bmvn(w)?(\.cmd)?\s+.*\bdeploy\b/ },
   { name: 'pipe-to-shell install', re: /\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(ba)?sh\b/ },
@@ -18,7 +23,8 @@ const DANGER = [
   { name: 'disk overwrite', re: /\bdd\s+if=.*of=\/dev\/|\bmkfs\b/ },
   { name: 'fork bomb', re: /:\(\)\s*\{.*\};:/ },
   { name: 'world-writable root', re: /\bchmod\s+-R?\s*777\s+\// },
-  { name: 'power state change', re: /\b(shutdown|reboot|halt|poweroff)\b/ },
+  // Command position only — `grep -r shutdown` (Spring graceful shutdown) is fine.
+  { name: 'power state change', re: /(?:^|[;&|(]\s*|\bsudo\s+)(shutdown|reboot|halt|poweroff)\b/ },
 ];
 
 const input = await readStdin();

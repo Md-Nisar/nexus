@@ -3,7 +3,7 @@ description: Phase 2 — Codebase impact analysis. Produces 02-impact.md.
 argument-hint: <FEATURE-ID>
 ---
 
-Use the **architect** sub-agent in plan mode (read-only) to analyze codebase impact for `$1`.
+Use the **architect** sub-agent to analyze codebase impact for `$1`. It must not modify code — its only write is the output artifact.
 
 Prerequisites:
 - `docs/features/$1/01-requirements.md` must exist and be approved.

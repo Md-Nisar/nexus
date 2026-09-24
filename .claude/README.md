@@ -8,7 +8,7 @@ This directory configures Claude Code for the Nexus project. Everything here is 
 .claude/
 ├── settings.json          # Permissions, hooks, env (committed team config)
 ├── settings.local.json    # Your local overrides — gitignored
-├── agents/                # Sub-agents — each runs in its own context (review agents read-only)
+├── agents/                # Sub-agents — each runs in its own context (review agents: no code edits, by instruction)
 │   ├── business-analyst.md   architect.md       backend-engineer.md   frontend-engineer.md
 │   └── code-reviewer.md      security-reviewer.md  qa-engineer.md     release-manager.md
 ├── commands/              # Slash commands
@@ -17,11 +17,13 @@ This directory configures Claude Code for the Nexus project. Everything here is 
 │   ├── security-review.md # /security-review [ID]  ← ad-hoc diff security audit
 │   ├── analyze-story.md  impact-analysis.md  design.md  breakdown.md   # plan phases 1–4
 │   ├── implement.md  review.md  test-validate.md  docs.md  release-prep.md  retro.md  # action phases 5–11
-│   ├── security-scan.md   # /security-scan <ID>    ← story-bound Phase 7 (writes 07-security-review.md)
+│   ├── security-scan.md   # /security-scan <ID>    ← alias of /security-review with a required ID
+│   ├── sonar-triage.md  sonar-fix.md               # Sonar triage (read-only) and approved-fix branch
 │   └── userstory-plan.md  userstory-action.md      # batch runners for each half
 ├── skills/                # Standards skills + workflow skills
-│   ├── spring-boot-standards/  angular-standards/  api-design/   # standards (auto-loaded by topic)
-│   └── feature-discovery/      pr-checklist/                     # workflow procedures
+│   ├── spring-boot-standards/  angular-standards/  api-design/  design-system/   # standards (auto-loaded by topic)
+│   ├── angular-developer/  angular-new-app/        # vendored from angular/skills (skills-lock.json)
+│   └── feature-discovery/  pr-checklist/  pr-authoring/  sonar-triage/  sonar-safe-fix/   # workflow procedures
 └── hooks/                 # Cross-platform Node hooks wired into settings.json
     ├── _hooklib.mjs            # shared helpers
     ├── block-prod-commands.mjs # PreToolUse(Bash) — block destructive/prod commands

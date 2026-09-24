@@ -15,23 +15,23 @@ Routing:
 
 ## Workflow
 
-### Step 1 — Plan mode (mandatory)
+### Step 1 — Plan (mandatory)
 
-Engineer agent enters plan mode and produces:
+Sub-agents cannot enter plan mode or wait for the user, so the gate is held by **this** session. Invoke the engineer agent with *"plan only — do not edit files"*; it returns:
 - List of files to create / modify (with paths)
 - Order of operations
 - **Test cases to write FIRST** (specific test names)
 - Any clarifications needed
 - Dependencies on other tasks
 
-**Stop and wait for explicit user approval.** Do not write code.
+Present the plan to the user. **Stop and wait for explicit user approval.** Do not invoke the agent for implementation until approved.
 
 ### Step 2 — Implementation (after approval)
 
-Rules:
+Re-invoke the engineer agent with the approved plan included verbatim. Rules:
 - Write the failing tests FIRST.
 - Then implement to make them pass.
-- Follow conventions in `CLAUDE.md` and the engineer agent's spec.
+- Follow conventions in `PROJECT.md`, the standards skills, and the engineer agent's spec.
 - Production-quality only — no placeholders, no `TODO`, no `FIXME`.
 - Structured logging at boundaries.
 - Explicit error handling.
@@ -41,7 +41,7 @@ Rules:
 
 ### Step 3 — Verification
 
-- Run the full test suite for the affected side: `./mvnw test` and/or `npm test`.
+- Run the full test suite for the affected side: `./mvnw verify -DskipITs` and/or `npm run test:ci`.
 - Run `npm run build` if frontend changes — confirm no strict-template errors.
 - Print diff summary to chat.
 - Print test results.

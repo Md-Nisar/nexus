@@ -12,8 +12,11 @@ Steps:
 2. Create branch `ai/sonar-<rule-slug>` off the current `main`.
 3. Apply the minimal fixes. Do not touch tests, build files, or config.
 4. Run the full verification suite from `reference/verification.md`.
-5. Commit and open a PR using the pr-authoring template.
-6. Stop. Do not merge and do not enable auto-merge - report the PR URL.
+5. Commit using the pr-authoring template and write the PR body to a file.
+   `git push` is denied for Claude sessions (`.claude/settings.json`), so do not
+   attempt to push or open the PR yourself.
+6. Stop. Give the user the exact `git push -u origin <branch>` and
+   `gh pr create --body-file <file> ...` commands to run. Never merge or enable auto-merge.
 
 If verification fails at any point, revert and report what happened rather
 than attempting a workaround.

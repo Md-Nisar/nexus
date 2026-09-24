@@ -23,8 +23,9 @@ const frontendDir = resolve(repoRoot, 'nexus-frontend');
  * and show zero failures/errors. Used to skip a redundant Maven re-run when a Bash-tool
  * Maven invocation just completed successfully — avoids the Windows file-lock race where
  * a second Maven JVM contends with the first JVM's lingering handles on target/.
+ * Reports older than the newest source change (`sourceChangedAt`) describe stale code.
  */
-function isFreshGreen(cwd, maxAgeSeconds = 600) {
+function isFreshGreen(cwd, sourceChangedAt, maxAgeSeconds = 600) {
   try {
     const dir = resolve(cwd, 'target', 'surefire-reports');
     const xmls = readdirSync(dir).filter((f) => f.endsWith('.xml'));
@@ -34,6 +35,8 @@ function isFreshGreen(cwd, maxAgeSeconds = 600) {
     const mostRecent = Math.max(...xmls.map((f) => statSync(join(dir, f)).mtimeMs));
     // If the most recent report is older than our threshold, no fresh run occurred.
     if (now - mostRecent > maxAgeSeconds * 1000) return false;
+    // Source edited after the last run → the green reports do not cover the current code.
+    if (sourceChangedAt > mostRecent) return false;
     // Check only reports written within the last 10 minutes relative to the anchor —
     // this covers a full Maven test run while ignoring stale IT reports from earlier
     // sessions (e.g. a previous `mvn verify` with Docker that left *IT.xml files behind).
@@ -57,13 +60,27 @@ const input = await readStdin();
 // Avoid re-trigger loops: if we already ran as part of this stop, do nothing.
 if (input?.stop_hook_active) process.exit(0);
 
-const sides = new Set(changedFiles().map(side).filter(Boolean));
+const changed = changedFiles();
+const sides = new Set(changed.map(side).filter(Boolean));
 if (sides.size === 0) process.exit(0);
+
+/** Newest mtime among changed files on one side (porcelain paths are repo-root relative). */
+function latestChange(which) {
+  let latest = 0;
+  for (const f of changed.filter((p) => side(p) === which)) {
+    try {
+      latest = Math.max(latest, statSync(resolve(repoRoot, f)).mtimeMs);
+    } catch {
+      latest = Infinity; // unresolvable path (e.g. rename) → never trust stale reports
+    }
+  }
+  return latest;
+}
 
 const failures = [];
 
 if (sides.has('backend')) {
-  if (isFreshGreen(backendDir)) {
+  if (isFreshGreen(backendDir, latestChange('backend'))) {
     console.log('\n[stop-hook] Backend: recent surefire reports are green — skipping re-run.');
   } else {
     console.log('\n[stop-hook] Backend source changed — running unit tests (skipping ITs)...');

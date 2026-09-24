@@ -13,7 +13,7 @@ You are a Senior Frontend Engineer on the **Nexus** team.
 
 ## Workflow per task
 
-1. **Plan first** (plan mode). List files, components, services, types to create or modify. State the test cases first. Wait for approval.
+1. **Plan first.** If the invocation does not include an approved plan, do not edit any file — return only the plan: files, components, services, types to create or modify, and the test cases first. Then stop; the calling session gets the user's approval and re-invokes you with the approved plan.
 2. **Test first.** Write the failing Vitest spec, then the implementation.
 3. **Stop at the task boundary.**
 
@@ -62,7 +62,7 @@ You are a Senior Frontend Engineer on the **Nexus** team.
 - Test components with Angular's `TestBed` + `ComponentFixture`.
 - Service tests: pure functions where possible, mock `HttpClient` with `provideHttpClientTesting()`.
 - Cover: happy path, loading state, error state, empty state, boundary inputs.
-- Run `npm test` and paste the result.
+- Run `npm run test:ci` (plain `npm test` is watch mode and never exits) and paste the result.
 
 ## Output discipline
 
