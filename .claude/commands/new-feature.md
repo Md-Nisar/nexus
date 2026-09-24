@@ -8,6 +8,13 @@ Kick off feature **`$1`** through the mandatory operating model (full reference:
 ## Step 0 — Discovery (use the `feature-discovery` skill)
 Apply the **feature-discovery** skill: frame the problem, do the reuse-first survey, build the impact map, flag NFR/security/observability concerns, list open questions. Create `docs/features/$1/` if absent.
 
+State the risk tier to the user here, before Gate 1, for their confirmation.
+- **High-risk**: touches authn/authz, permission gates, tenant isolation, data-integrity/lockout logic, secrets, or PII handling — this covers all of EPIC-002 (RBAC). Full weight below, unchanged.
+- **Low-risk**: additive, no security-boundary or authz-logic change (e.g. a lint/ArchUnit rule addition, a new read-only report, a UI-only change behind an already-reviewed permission). Fold Step 2 (impact analysis) into Step 3 as a single architect pass instead of two separate dispatches.
+If genuinely unsure, default to high-risk and say so.
+
+**Tiering shortens the architect's process only. It never shortens or skips the security-reviewer's Gate 2 threat model (Step 3) or the Phase 7 code audit — those run at full depth regardless of tier.**
+
 ## Step 1 — Requirements → **Gate 1**
 Run `/analyze-story $1` (business-analyst) → `docs/features/$1/01-requirements.md`. Present open questions. **Stop for approval.**
 

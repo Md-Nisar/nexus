@@ -13,6 +13,7 @@ import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RolePermission;
+import com.example.nexus.rbac.domain.RolePermissionId;
 import com.example.nexus.rbac.domain.UserRole;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
@@ -343,6 +344,80 @@ class RolePermissionSecurityIT {
         .isEqualTo(HttpStatus.FORBIDDEN);
     assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
     assertDenialReasonIncrementedByOne("role:write", "NOT_TENANT_ADMIN", before);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // 07-security-review.md L-3: D13's detach gate (RoleManagementService.java:295-305) has only
+  // unit-test (mocked) coverage. These three cases prove the gate at the HTTP boundary --
+  // structurally modelled on the Scenario 9 tests above (role:write-only caller, no active
+  // TENANT_ADMIN, denial-reason metric assertion).
+  // ═══════════════════════════════════════════════════════════════════
+
+  @Test
+  void should_return403AndLeaveRowIntact_when_nonAdminDetachesADangerousPermission() {
+    UUID tenantId = uuidGenerator.newId();
+    User caller = seedUserWithRoleWritePermission(tenantId, "l3-dang-caller");
+    Role targetRole = seedRole(tenantId, "l3-dang-target");
+    grantPermission(targetRole.getId(), ROLE_WRITE_PERMISSION_ID);
+    String token = mintToken(caller);
+    double before = permissionDeniedCount("role:write", "NOT_TENANT_ADMIN");
+
+    ResponseEntity<Map> resp = deleteDetach(token, targetRole.getId(), ROLE_WRITE_PERMISSION_ID);
+
+    assertThat(resp.getStatusCode())
+        .as("a role:write-only non-admin caller must be denied on a dangerous-permission detach")
+        .isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
+    assertDenialReasonIncrementedByOne("role:write", "NOT_TENANT_ADMIN", before);
+    assertThat(
+            rolePermissionRepository.existsById(
+                new RolePermissionId(targetRole.getId(), ROLE_WRITE_PERMISSION_ID)))
+        .as("the denied detach must not have removed the role_permissions row")
+        .isTrue();
+  }
+
+  /**
+   * T-I14: a non-admin detaching a dangerous permission that was never attached to the role must
+   * still 403 (the gate runs before the delete's affected-rows check), never a 404 that would let
+   * a non-admin distinguish "attached" from "never attached" on a dangerous permission.
+   */
+  @Test
+  void should_return403NotFound_when_nonAdminDetachesADangerousPermissionNeverAttached() {
+    UUID tenantId = uuidGenerator.newId();
+    User caller = seedUserWithRoleWritePermission(tenantId, "l3-never-caller");
+    Role targetRole = seedRole(tenantId, "l3-never-target");
+    String token = mintToken(caller);
+    double before = permissionDeniedCount("role:write", "NOT_TENANT_ADMIN");
+
+    ResponseEntity<Map> resp = deleteDetach(token, targetRole.getId(), ROLE_WRITE_PERMISSION_ID);
+
+    assertThat(resp.getStatusCode())
+        .as("must 403, not 404 -- a non-admin must not be able to use the response code to"
+            + " discover whether a dangerous permission is attached")
+        .isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
+    assertDenialReasonIncrementedByOne("role:write", "NOT_TENANT_ADMIN", before);
+  }
+
+  @Test
+  void should_return204_when_nonAdminRoleWriteHolderDetachesAnOrdinaryPermission() {
+    UUID tenantId = uuidGenerator.newId();
+    User caller = seedUserWithRoleWritePermission(tenantId, "l3-ord-caller");
+    Role targetRole = seedRole(tenantId, "l3-ord-target");
+    grantPermission(targetRole.getId(), ROLE_READ_PERMISSION_ID);
+    String token = mintToken(caller);
+
+    ResponseEntity<Map> resp = deleteDetach(token, targetRole.getId(), ROLE_READ_PERMISSION_ID);
+
+    assertThat(resp.getStatusCode())
+        .as("detaching an ordinary, non-dangerous permission never routes through the AC11 gate --"
+            + " a plain role:write holder may do this without an active TENANT_ADMIN assignment")
+        .isEqualTo(HttpStatus.NO_CONTENT);
+    assertThat(
+            rolePermissionRepository.existsById(
+                new RolePermissionId(targetRole.getId(), ROLE_READ_PERMISSION_ID)))
+        .as("the row must actually be gone, not merely reported as gone")
+        .isFalse();
   }
 
   // ── Shared seeding helpers ───────────────────────────────────────────

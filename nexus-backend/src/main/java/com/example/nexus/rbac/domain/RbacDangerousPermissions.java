@@ -1,5 +1,6 @@
 package com.example.nexus.rbac.domain;
 
+import java.util.Collection;
 import java.util.Set;
 
 /**
@@ -21,6 +22,40 @@ public final class RbacDangerousPermissions {
       return false;
     }
     return NAMES.stream().anyMatch(name -> name.equalsIgnoreCase(permissionName));
+  }
+
+  /**
+   * {@code true} iff at least one element of {@code permissionNames} case-insensitively matches a
+   * member of {@link #NAMES} (US-017 D1, RC-18.1). {@code null}/empty ⇒ {@code false}.
+   */
+  public static boolean carriesAny(Collection<String> permissionNames) {
+    if (permissionNames == null || permissionNames.isEmpty()) {
+      return false;
+    }
+    return permissionNames.stream().anyMatch(RbacDangerousPermissions::contains);
+  }
+
+  /**
+   * {@code true} iff {@code permissionNames} case-insensitively covers ALL THREE of {@link
+   * #NAMES} (US-017 D1, RC-18.1). {@code null}/empty ⇒ {@code false}.
+   *
+   * <p><b>MUST be a per-name, case-insensitive {@code anyMatch}</b> — for each of the three names
+   * independently, does the collection contain a case-insensitive match? <b>Never a count</b>
+   * (e.g. {@code filter(...).count() >= 3}), which returns {@code true} for {@code
+   * ["user:write","user:write","user:write"]} — it fails open on the caller-side predicate, which
+   * is the one direction that must never fail open (03-design.md §4.1). <b>Never {@code
+   * containsAll}</b> — that is case-sensitive: it fails closed, but silently, and would deny a
+   * legitimate case-variant like {@code "Role:Write"}. Null-tolerant, mirroring the shipped
+   * null-safe {@link #contains(String)}: a {@code null} element in {@code permissionNames} is
+   * simply never a case-insensitive match for any of the three names.
+   */
+  public static boolean carriesAll(Collection<String> permissionNames) {
+    if (permissionNames == null || permissionNames.isEmpty()) {
+      return false;
+    }
+    return NAMES.stream()
+        .allMatch(
+            name -> permissionNames.stream().anyMatch(name::equalsIgnoreCase));
   }
 
   private RbacDangerousPermissions() {}

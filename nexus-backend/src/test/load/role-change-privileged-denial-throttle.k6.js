@@ -9,15 +9,26 @@
  * the privileged-gate denial path at volume — exactly the T-D10/T-D11 cost-amplification finding
  * D14 was added to bound (03b-threat-model.md RC-10).
  *
+ * US-017 D7 update (Phase 8 test-coverage audit): both scenarios below grant the literally-named
+ * `TENANT_ADMIN` role, i.e. the NAME-MATCH branch of `assign()`'s privileged path -- which, as of
+ * US-017 D7 (RES-10/RES-19), now acquires the SAME tenant-wide M11 `SELECT ... FOR UPDATE` lock
+ * BEFORE the caller gate on `assign()` too, not only on `revoke()` as this script originally
+ * assumed when it was written under US-016 (there is no separate revoke scenario in this file --
+ * the DELETE verb was never in scope here; only the POST/assign side is exercised). Every denied
+ * request in the pre-throttle phase therefore now pays for M11 + M5b + the audit write, on BOTH
+ * actors, which is exactly the RES-19 residual (a pre-authorization tenant-wide X lock, bounded
+ * only by D14) this script is now the load-side proof for.
+ *
  * What D14 changes under this load, and what this script is watching for:
  *   - Before the actor crosses `nexus.rbac.denial-throttle.max-denials` denials in the current
- *     `…window-seconds` window, EVERY denied request is "expensive": M8 + M5 (a locking read),
- *     a nested REQUIRES_NEW audit INSERT, a WARN log line and two counter increments
- *     (`nexus.rbac.privileged_role_change_blocked`, and on revoke() the composed D18 lock-hold
- *     timer never applies here since these are the NAME-MATCH TENANT_ADMIN grant/strip path,
- *     which DOES take the M1 X-lock ahead of the gate on revoke -- see the revoke scenario below).
+ *     `…window-seconds` window, EVERY denied request is "expensive": M11 (the tenant-wide lock,
+ *     new on this path per D7) + M8 + M5b (a locking read), a nested REQUIRES_NEW audit INSERT, a
+ *     WARN log line and three counter/timer increments (`nexus.rbac.privileged_role_change_blocked`,
+ *     `nexus.rbac.privileged_revoke_lock_hold{operation="assign",outcome="denied"}` -- the D7
+ *     first-class series, despite the metric's pre-US-017 name -- and the denial-throttle counter
+ *     below).
  *   - Once throttled, `requireNotThrottled` (03-design.md §6.1 check 3.5) short-circuits to a 403
- *     BEFORE M1/M7/M8/M5, the audit write and the metric -- a single in-memory map lookup. The
+ *     BEFORE M11/M8/M5b, the audit write and the metrics -- a single in-memory map lookup. The
  *     HTTP status code is identical (403 RBAC_001) in both phases, so this script cannot and does
  *     not assert on status-code shape alone; it watches for the LATENCY/THROUGHPUT signature of
  *     the transition (§9.2's own account of what "bounds cost" means operationally), pulled from
@@ -44,10 +55,14 @@
  *   - nexus.rbac.privileged_role_change_blocked{operation="assign",matchedOn="ROLE_NAME"} --
  *     must stop climbing once `max-denials` is reached for actor A (the gate itself is no longer
  *     reached past the throttle) while actor B's own series keeps climbing independently.
+ *   - nexus.rbac.privileged_revoke_lock_hold{operation="assign",outcome="denied"} (D7, US-017) --
+ *     its count must track the blocked-counter above 1:1 up to the throttle point, then flatten
+ *     identically; its p95/p99 duration is the direct RES-19 cost-per-denial signal for the
+ *     pre-gate M11 lock on `assign()`, which did not exist before US-017.
  *   - nexus.rbac.denial_throttled{operation="assign"} -- must start climbing exactly where the
  *     blocked-counter's climb for actor A flattens.
  *   - hikaricp_connections_pending / *_acquire_seconds -- must NOT show a sustained rise (the
- *     whole point of check 3.5's placement ahead of M1/M7/M8/M5 and the audit write).
+ *     whole point of check 3.5's placement ahead of M11/M8/M5b and the audit write).
  *   - nexus.rbac.audit_write_failed{operation="deny"} -- must stay at 0.
  *
  * Pass/fail here is informational, not a build gate: 403 on every request is the CORRECT outcome

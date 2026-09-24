@@ -726,6 +726,114 @@ class RoleManagementServiceTest {
   }
 
   // ---------------------------------------------------------------------------------------
+  // attachPermission() -- D22 threshold-crossing signal (RC-15.3)
+  // ---------------------------------------------------------------------------------------
+
+  /** D22: the third dangerous permission tips the role from ANY-two to ALL-three -- fires. */
+  @Test
+  void should_emitRoleBecameFullyAdminEquivalentWarnAndCounter_when_thirdDangerousPermissionAttached() {
+    RoleView role = customRole(tenantId);
+    PermissionView permission = dangerousPermission(); // "role:write"
+    UUID adminRoleId = UUID.randomUUID();
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
+    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
+        .thenReturn(Optional.of(adminRoleId));
+    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
+        .thenReturn(true);
+    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
+    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId))
+        .thenReturn(List.of(UUID.randomUUID()));
+    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
+        .thenReturn(List.of("role:write", "user:write", "tenant:write"));
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      service.attachPermission(actor, roleId, permissionId, ctx);
+
+      var warnEvents =
+          appender.list.stream()
+              .filter(e -> e.getLevel() == Level.WARN)
+              .filter(
+                  e ->
+                      "RBAC_ROLE_BECAME_FULLY_ADMIN_EQUIVALENT"
+                          .equals(keyValueMap(e).get("event")))
+              .toList();
+      assertThat(warnEvents).hasSize(1);
+      assertThat(keyValueMap(warnEvents.get(0)))
+          .containsEntry("tenantId", tenantId)
+          .containsEntry("roleId", roleId)
+          .containsEntry("roleName", role.name())
+          .containsEntry("holderCount", 1)
+          .containsEntry("grantedBy", actorId);
+    } finally {
+      stopLogCapture(appender);
+    }
+
+    Counter counter =
+        meterRegistry
+            .find("nexus.rbac.role_became_fully_admin_equivalent")
+            .tag("holders", "1")
+            .counter();
+    assertThat(counter).isNotNull();
+    assertThat(counter.count()).isEqualTo(1.0);
+  }
+
+  /** D22 negative: two of three dangerous permissions held after the attach -- must not fire. */
+  @Test
+  void should_notEmitRoleBecameFullyAdminEquivalentSignal_when_attachKeepsRoleBelowThreshold() {
+    RoleView role = customRole(tenantId);
+    PermissionView permission = dangerousPermission(); // "role:write"
+    UUID adminRoleId = UUID.randomUUID();
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
+    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
+        .thenReturn(Optional.of(adminRoleId));
+    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
+        .thenReturn(true);
+    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
+    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId)).thenReturn(List.of());
+    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
+        .thenReturn(List.of("role:write", "user:write"));
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      service.attachPermission(actor, roleId, permissionId, ctx);
+
+      var warnEvents =
+          appender.list.stream()
+              .filter(e -> e.getLevel() == Level.WARN)
+              .filter(
+                  e ->
+                      "RBAC_ROLE_BECAME_FULLY_ADMIN_EQUIVALENT"
+                          .equals(keyValueMap(e).get("event")))
+              .toList();
+      assertThat(warnEvents).isEmpty();
+    } finally {
+      stopLogCapture(appender);
+    }
+
+    assertThat(meterRegistry.find("nexus.rbac.role_became_fully_admin_equivalent").counter())
+        .isNull();
+  }
+
+  /** D22 negative: a non-dangerous attach never runs the M7 read or the signal at all. */
+  @Test
+  void should_notEmitRoleBecameFullyAdminEquivalentSignal_when_permissionIsNotDangerous() {
+    RoleView role = customRole(tenantId);
+    PermissionView permission = benignPermission();
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
+    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
+
+    service.attachPermission(actor, roleId, permissionId, ctx);
+
+    verify(userRoleAssignmentPort, never()).findPermissionNamesForRole(any());
+    assertThat(meterRegistry.find("nexus.rbac.role_became_fully_admin_equivalent").counter())
+        .isNull();
+  }
+
+  // ---------------------------------------------------------------------------------------
   // detachPermission() -- AC5, AC7, AC8, AC12
   // ---------------------------------------------------------------------------------------
 
@@ -809,21 +917,77 @@ class RoleManagementServiceTest {
         .isInstanceOf(ResourceNotFoundException.class)
         .hasFieldOrPropertyWithValue("code", "ROLE_PERMISSION_NOT_FOUND");
 
-    verify(roleManagementPort, never()).findPermission(any());
+    // D13: findPermission now runs unconditionally (moved above the delete to serve the gate
+    // too), unlike before when it was enrichment-only and reached only after a nonzero delete.
+    verify(roleManagementPort).findPermission(permissionId);
     verifyNoInteractions(rbacAuditPort);
   }
 
-  /** Deliberate asymmetry (§3.3): detaching a dangerous permission has NO AC11 gate. */
+  /** D13: detaching a dangerous permission now gates like attach -- non-admin gets 403, no write. */
   @Test
-  void should_notGateOnAc11_when_detachingDangerousPermission() {
+  void should_throwNotTenantAdminAndNotWrite_when_detachingDangerousPermissionAsNonAdmin() {
     RoleView role = customRole(tenantId);
+    PermissionView permission = dangerousPermission();
+    UUID adminRoleId = UUID.randomUUID();
     when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
+    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
+        .thenReturn(Optional.of(adminRoleId));
+    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
+        .thenReturn(false);
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      assertThatThrownBy(() -> service.detachPermission(actor, roleId, permissionId, ctx))
+          .isInstanceOf(InsufficientPermissionException.class)
+          .satisfies(
+              e ->
+                  assertThat(((InsufficientPermissionException) e).getReason())
+                      .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
+
+      var warnEvents = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
+      assertThat(warnEvents).hasSize(1);
+      assertThat(keyValueMap(warnEvents.get(0)))
+          .containsEntry("event", "RBAC_DANGEROUS_PERMISSION_DETACH_BLOCKED");
+    } finally {
+      stopLogCapture(appender);
+    }
+
+    verify(roleManagementPort, never()).detachPermission(any(), any());
+    verifyNoInteractions(rbacAuditPort);
+  }
+
+  /** D13: an active admin can still detach a dangerous permission -- the gate isn't a ban. */
+  @Test
+  void should_detachDangerousPermission_when_callerIsActiveAdmin() {
+    RoleView role = customRole(tenantId);
+    PermissionView permission = dangerousPermission();
+    UUID adminRoleId = UUID.randomUUID();
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
+    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
+        .thenReturn(Optional.of(adminRoleId));
+    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
+        .thenReturn(true);
     when(roleManagementPort.detachPermission(roleId, permissionId)).thenReturn(1);
-    when(roleManagementPort.findPermission(permissionId))
-        .thenReturn(Optional.of(dangerousPermission()));
 
     service.detachPermission(actor, roleId, permissionId, ctx);
 
+    verify(roleManagementPort).detachPermission(roleId, permissionId);
+  }
+
+  /** D13 negative case: the gate must not over-fire on an ordinary (non-dangerous) permission. */
+  @Test
+  void should_detachOrdinaryPermissionWithoutGate_when_nonAdminCaller() {
+    RoleView role = customRole(tenantId);
+    PermissionView permission = benignPermission();
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
+    when(roleManagementPort.detachPermission(roleId, permissionId)).thenReturn(1);
+
+    service.detachPermission(actor, roleId, permissionId, ctx);
+
+    verify(roleManagementPort).detachPermission(roleId, permissionId);
     verify(roleManagementPort, never()).findRoleIdByName(any(), any());
     verifyNoInteractions(userRoleAssignmentPort);
   }

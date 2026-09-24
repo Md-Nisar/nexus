@@ -1,8 +1,10 @@
 package com.example.nexus.rbac.application.port.out;
 
+import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.ActiveAssignmentRef;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.Role;
+import com.example.nexus.rbac.domain.RolePermissionName;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -42,14 +44,87 @@ public interface UserRoleAssignmentPort {
   boolean hasActiveAdminAssignment(UUID userId, UUID roleId, UUID tenantId);
 
   /**
-   * M1 — locks ({@code PESSIMISTIC_WRITE}) and returns the ids of every active assignment of
-   * {@code roleId} within {@code tenantId}. Returns ids only, never entities — the caller must not
-   * be able to load-mutate-save a {@link com.example.nexus.rbac.domain.UserRole}. Must be called
-   * inside an active transaction. The adapter must scope the lock by {@code role_id} as the driving
-   * predicate, never by {@code tenant_id} — driving on {@code tenant_id} would scan/lock the whole
-   * table instead of just this tenant's rows for this role.
+   * M10 (US-017 D3) — every (roleId, permissionName) pair for the roles of ONE tenant. Bounded at
+   * nexus.rbac.max-roles-per-tenant (default 500) x |permissions| = 7.
+   *
+   * <p>Deliberately returns NAMES paired with role ids, not a verdict and not a filtered set: the
+   * ANY/ALL policy lives in rbac.domain.RbacAdminEquivalence and MUST NOT cross this port in either
+   * direction — not hardcoded in the adapter and NOT passed in as a Set<String> parameter either
+   * (ADR-0017 D2, upheld by ADR-0018 D3). A future "pushForFilter(Set<String> dangerousNames)"
+   * variant would violate that rule and requires an ADR that argues against it explicitly.
+   *
+   * <p>MUST be a plain, NON-LOCKING read and MUST NEVER be annotated @Lock: it touches
+   * `permissions`, on which nexus_app holds SELECT only (MC-A).
    */
-  List<UUID> lockActiveAssignmentIds(UUID tenantId, UUID roleId);
+  List<RolePermissionName> findPermissionNamesForTenantRoles(UUID tenantId);
+
+  /**
+   * M11 (US-017 D6) — locks (PESSIMISTIC_WRITE) and returns the (assignmentId, userId) pair for
+   * every ACTIVE assignment of ANY role in {@code roleIds} within {@code tenantId}. Supersedes and
+   * REPLACES M1 lockActiveAssignmentIds.
+   *
+   * <p>{@code roleIds} MUST be sorted ASCENDING by the caller — this is the deterministic
+   * acquisition order D6's deadlock-freedom argument rests on, and it is a contract of this method,
+   * not an implementation detail of one caller.
+   *
+   * <p>"ASCENDING" means <b>unsigned byte-wise order of the 16-byte representation</b>, matching
+   * MySQL's BINARY(16) comparison — NOT {@link java.util.UUID#compareTo}, which compares
+   * mostSigBits as a SIGNED long. The two coincide for every id in the system today (seeded ids
+   * have a clear high bit; UUIDv7 keeps it clear until ~year 6429), so a divergence would be
+   * latent, not live — which is exactly when it must be pinned. MC-E asserts THIS comparator; an
+   * MC-E that merely asserted "sorted" would pass under an ordering that does not match the
+   * database's and give false assurance about the one property D6 rests on.
+   *
+   * <p>The Java sort is belt-and-braces: the real guarantee is the PLAN. An ascending range scan on
+   * fk_user_roles_role acquires in index order regardless of IN-list order, so <b>plan stability
+   * across IN-list cardinalities is part of the claim</b>, not a fixture detail — MC-C asserts
+   * key = fk_user_roles_role for IN-lists of size 1, 2 and >= 20. A full-scan fallback would
+   * acquire in primary-key order and break the argument.
+   *
+   * <p>The adapter MUST drive off {@code role_id} (fk_user_roles_role) as an IN-list range, never
+   * {@code tenant_id}, and MUST NOT join {@code Role} — joining would widen the lock beyond
+   * user_roles. Tenant containment is therefore carried by two things together: the role-id set is
+   * tenant-derived by the caller, and {@code tenant_id} remains a residual predicate (T-S1).
+   *
+   * <p>Returns ids only, never entities — the caller must not be able to load-mutate-save a UserRole.
+   * Must be called inside an active transaction.
+   */
+  List<ActiveAssignmentHolder> lockActiveAssignmentHolders(UUID tenantId, List<UUID> roleIds);
+
+  /**
+   * M5b (US-017 D8) — generalises M5 from one roleId to a set. Same non-negotiable contract: a
+   * FRESH, LOCKING (PESSIMISTIC_READ / FOR SHARE) read, never a JWT claim (T-E7), never a plain
+   * non-locking read. MUST keep FORCE INDEX (fk_user_roles_role) so that every index record it
+   * requests is inside M11's X region (ADR-0018 D4's containment proof; MC-C).
+   *
+   * <p>An EMPTY {@code roleIds} means the caller has no way to qualify: the caller MUST fail closed
+   * and MUST NOT call this method at all (R-10 / T-E18 precedent).
+   *
+   * <p>Carried verbatim from M5 (US-017 editorial correction): the adapter MUST inspect only
+   * {@code .isEmpty()} / {@code .size()} on the returned rows and MUST NEVER mutate them. Returning
+   * managed entities from a locking read is a load-mutate-save hazard; the boolean is the contract,
+   * the entities are an implementation artefact.
+   */
+  boolean hasActiveAssignmentOfAnyRole(UUID userId, List<UUID> roleIds, UUID tenantId);
+
+  /**
+   * M12 (US-017 D24) — every (roleId, permissionName) pair for the roles of the CALLER'S OWN active
+   * assignments in one tenant. Sibling of M7, keyed by USER rather than by role.
+   *
+   * <p>Exists solely to give the bypass canary (D14/§9.3) a derivation that shares NO INPUT with the
+   * gate. It MUST be driven off fk_user_roles_user — a different index, a different statement and a
+   * different scoping from M10, which is tenant-scoped and driven off r.tenantId. An over-broad M10
+   * therefore cannot silence the canary that exists to notice it (threat model T-E29).
+   *
+   * <p>MUST be a plain, NON-LOCKING read, and MUST NEVER be used for an authorization decision — the
+   * gate's only determination is M5b, a fresh locking read (T-E7). MC-G asserts this negative on both
+   * verbs.
+   *
+   * <p>Like M10, returns NAMES paired with role ids: the ANY/ALL policy lives in
+   * rbac.domain.RbacAdminEquivalence and MUST NOT cross this port in either direction (ADR-0017 D2 /
+   * ADR-0018 D3, upheld — this method is the reason D3 did not have to be reopened to satisfy RC-17).
+   */
+  List<RolePermissionName> findPermissionNamesForActiveAssignmentsOfUser(UUID userId, UUID tenantId);
 
   /**
    * M3 — the active assignment to revoke; empty covers both "never assigned" and "already revoked"
@@ -57,7 +132,7 @@ public interface UserRoleAssignmentPort {
    *
    * <p>Returns a projection, deliberately not a managed {@link
    * com.example.nexus.rbac.domain.UserRole} entity, for the same "must not be mutable-and-saveable"
-   * reason as {@link #lockActiveAssignmentIds}: a managed entity on this path could be mutated and
+   * reason as {@link #lockActiveAssignmentHolders}: a managed entity on this path could be mutated and
    * re-saved in a way the least-privilege {@code nexus_app} DB grant then rejects.
    */
   Optional<ActiveAssignmentRef> findActiveAssignmentRef(UUID userId, UUID roleId, UUID tenantId);

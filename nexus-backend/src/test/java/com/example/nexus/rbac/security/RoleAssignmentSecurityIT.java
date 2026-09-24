@@ -87,6 +87,11 @@ class RoleAssignmentSecurityIT {
   // path extension below to construct a role that is privileged WITHOUT being named TENANT_ADMIN.
   private static final UUID ROLE_WRITE_PERMISSION_ID =
       UUID.fromString("019f6839-1805-7000-8000-000000000006");
+  // Dangerous per RbacDangerousPermissions.NAMES -- used by T-007(c)/(d) below to construct a
+  // caller who qualifies via RbacAdminEquivalence#isFullyAdminEquivalent (ALL three), never named
+  // TENANT_ADMIN.
+  private static final UUID TENANT_WRITE_PERMISSION_ID =
+      UUID.fromString("019f6839-1801-7000-8000-000000000002");
 
   @Value("${local.server.port}")
   private int port;
@@ -255,6 +260,63 @@ class RoleAssignmentSecurityIT {
   }
 
   /**
+   * US-017 D5/D8: {@code revoke()} shares the identical widened caller gate {@code assign()} is
+   * proven against above, but until now that sharing was only proven by {@code
+   * RoleAssignmentServiceTest} (mocked) -- no HTTP-level test exercised the DELETE verb's
+   * NOT_TENANT_ADMIN branch at all (the existing DELETE-verb coverage in this class only proves
+   * PERMISSION_ABSENT and a benign-role success path). The target here genuinely holds the active
+   * TENANT_ADMIN assignment being revoked, so a wrongly-permissive gate would actually strip the
+   * tenant's last administrator rather than merely failing an assertion.
+   */
+  @Test
+  void should_return403WithNotTenantAdmin_when_nonAdminHoldingUserWriteAttemptsToRevokeAnActiveTenantAdmin() {
+    UUID tenantF = uuidGenerator.newId();
+    User nonAdminWriter =
+        seedUserWithRole(tenantF, "revoke-esc-caller", "USER_WRITER", USER_WRITE_PERMISSION_ID);
+    Role tenantAdminRole = seedRole(tenantF, "TENANT_ADMIN", "revoke-esc");
+    User admin = seedUser(tenantF, "revoke-esc-target");
+    seedActiveAssignment(tenantF, tenantAdminRole.getId(), admin.getId(), admin.getId());
+    String token = mintToken(nonAdminWriter);
+    double before = permissionDeniedCount("user:write", "NOT_TENANT_ADMIN");
+
+    ResponseEntity<Map> resp = deleteRole(token, admin.getId(), tenantAdminRole.getId());
+
+    assertThat(resp.getStatusCode())
+        .as("the widened caller gate must deny this at the controller boundary (403), never fall"
+            + " through to a 409 lockout or a silent 204 that would strip the tenant's last admin")
+        .isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
+    assertDenialReasonIncrementedByOne("user:write", "NOT_TENANT_ADMIN", before);
+  }
+
+  /**
+   * The positive half of the pair above: an actual active {@code TENANT_ADMIN} caller revoking a
+   * dangerous (but not literally-named-admin) custom role from a DIFFERENT user must succeed --
+   * without this, the 403 test above could pass for the wrong reason (e.g. a gate that denies
+   * every privileged revoke unconditionally).
+   */
+  @Test
+  void should_return204_when_activeTenantAdminRevokesADangerousCustomRoleFromAnotherUser() {
+    UUID tenantG = uuidGenerator.newId();
+    Role tenantAdminRole = seedRole(tenantG, "TENANT_ADMIN", "revoke-pos");
+    grantPermission(tenantAdminRole.getId(), USER_WRITE_PERMISSION_ID);
+    User admin = seedUser(tenantG, "revoke-pos-admin");
+    seedActiveAssignment(tenantG, tenantAdminRole.getId(), admin.getId(), admin.getId());
+    Role dangerousRole = seedRole(tenantG, "CUSTOM-DANGEROUS", "revoke-pos");
+    grantPermission(dangerousRole.getId(), ROLE_WRITE_PERMISSION_ID);
+    User target = seedUser(tenantG, "revoke-pos-target");
+    seedActiveAssignment(tenantG, dangerousRole.getId(), target.getId(), admin.getId());
+    String token = mintToken(admin);
+
+    ResponseEntity<Map> resp = deleteRole(token, target.getId(), dangerousRole.getId());
+
+    assertThat(resp.getStatusCode())
+        .as("a genuine active TENANT_ADMIN must still be able to revoke a dangerous custom role"
+            + " from someone else -- the widened gate must not be a de facto ban")
+        .isEqualTo(HttpStatus.NO_CONTENT);
+  }
+
+  /**
    * <b>The stale-JWT test -- the only test in this story that catches a claim-based (as opposed
    * to live-DB-read) implementation of AC8.</b> Mints a valid JWT for a user who, at mint time,
    * holds an active {@code TENANT_ADMIN} assignment (so the JWT's own {@code permissions[]} claim
@@ -360,6 +422,108 @@ class RoleAssignmentSecurityIT {
         .isEqualTo(HttpStatus.FORBIDDEN);
     assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
     assertDenialReasonIncrementedByOne("user:write", "NOT_TENANT_ADMIN", before);
+  }
+
+  /**
+   * US-017 T-007(c) (T-S8, 03-design.md §9.6): the same freshness proof as the two stale-JWT
+   * tests above, but for the OTHER caller-gate branch M5b adds — a caller who qualifies via
+   * holding a role carrying ALL THREE dangerous permissions ({@code role:write}, {@code
+   * user:write}, {@code tenant:write}) rather than the literal {@code TENANT_ADMIN} name.
+   * Revoking the literal role only (the two tests above) would leave this predicate genuinely
+   * untested (design §9.6/T-S8's own note): {@code
+   * RoleAssignmentService#requireCallerHoldsAdminEquivalentRole}'s SECOND branch ({@code
+   * callerHoldsFullyAdminEquivalent}) has never been exercised end-to-end against a stale token
+   * until this test.
+   */
+  @Test
+  void should_return403WithNotTenantAdmin_when_staleJwtStillClaimsAdminAfterOutOfBandRevocation_forCallerQualifyingViaAllThreeDangerousPermissions() {
+    UUID tenantD3 = uuidGenerator.newId();
+    // Deliberately NOT named TENANT_ADMIN -- qualifies the caller ONLY via the ALL-three
+    // dangerous-permission branch of M5b (RbacAdminEquivalence#isFullyAdminEquivalent).
+    Role allThreeRole = seedRole(tenantD3, "ALL-THREE-CUSTOM", "stale-jwt-all3");
+    grantPermission(allThreeRole.getId(), USER_WRITE_PERMISSION_ID);
+    grantPermission(allThreeRole.getId(), ROLE_WRITE_PERMISSION_ID);
+    grantPermission(allThreeRole.getId(), TENANT_WRITE_PERMISSION_ID);
+    User caller = seedUser(tenantD3, "stale-jwt-all3-caller");
+    UserRole assignment =
+        seedActiveAssignment(tenantD3, allThreeRole.getId(), caller.getId(), caller.getId());
+
+    // Minted WHILE caller genuinely holds the ALL-three role -- permissions[] legitimately
+    // contains user:write (among the other two) at this instant.
+    String staleToken = mintToken(caller);
+
+    // Out-of-band revocation, identical mechanism to the tests above.
+    int[] affectedHolder = new int[1];
+    new org.springframework.transaction.support.TransactionTemplate(transactionManager)
+        .executeWithoutResult(
+            status ->
+                affectedHolder[0] =
+                    userRoleRepository.revokeById(assignment.getId(), java.time.Instant.now()));
+    int affected = affectedHolder[0];
+    assertThat(affected).as("the out-of-band revoke itself must succeed").isEqualTo(1);
+
+    // Target the literal TENANT_ADMIN role -- the single most sensitive operation this branch
+    // could otherwise mint.
+    Role adminRole = seedRole(tenantD3, "TENANT_ADMIN", "stale-jwt-all3");
+    User target = seedUser(tenantD3, "stale-jwt-all3-target");
+    double before = permissionDeniedCount("user:write", "NOT_TENANT_ADMIN");
+
+    // Same still-valid, unexpired token as the other stale-JWT tests' technique.
+    ResponseEntity<Map> resp = postAssign(staleToken, target.getId(), adminRole.getId());
+
+    assertThat(resp.getStatusCode())
+        .as("a JWT minted while the caller genuinely qualified via ALL THREE dangerous"
+            + " permissions must NOT still be honored once that assignment is revoked"
+            + " out-of-band -- M5b's ALL-three branch must ALSO be a live DB read, never trust"
+            + " the JWT's own claims (T-S8)")
+        .isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
+    assertDenialReasonIncrementedByOne("user:write", "NOT_TENANT_ADMIN", before);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // US-017 T-007(d) (§9.3's mandatory acceptance test, explicitly NOT optional): the re-derived
+  // canary must NOT trip as false for a legitimate privileged self-assignment
+  // ═══════════════════════════════════════════════════════════════════
+
+  /**
+   * US-017 D24/RC-17, §9.3 (04-tasks.md T-007(d)): a fully admin-equivalent, non-{@code
+   * TENANT_ADMIN}-named caller self-assigns the literal {@code TENANT_ADMIN} role. This is
+   * exactly the legitimate operation the re-derived canary ({@code
+   * RoleAssignmentService#callerHoldsActiveAdminEquivalentRole}, M12-sourced) exists to NOT page
+   * on: asserts {@code nexus.rbac.self_role_assignment{tenantId, privileged="true",
+   * callerIsAdmin="true"}} increments by exactly one, and that the page-severity {@code
+   * callerIsAdmin="false"} series for this SAME tenant does not move at all.
+   */
+  @Test
+  void should_notTripCanaryAsFalse_when_fullyAdminEquivalentNonNamedCallerSelfAssignsTenantAdmin() {
+    UUID tenantK = uuidGenerator.newId();
+    Role allThreeRole = seedRole(tenantK, "CANARY-ALL-THREE", "canary");
+    grantPermission(allThreeRole.getId(), USER_WRITE_PERMISSION_ID);
+    grantPermission(allThreeRole.getId(), ROLE_WRITE_PERMISSION_ID);
+    grantPermission(allThreeRole.getId(), TENANT_WRITE_PERMISSION_ID);
+    User caller = seedUser(tenantK, "canary-caller");
+    seedActiveAssignment(tenantK, allThreeRole.getId(), caller.getId(), caller.getId());
+    String token = mintToken(caller);
+
+    Role adminRole = seedRole(tenantK, "TENANT_ADMIN", "canary");
+    double trueBefore = selfRoleAssignmentCount(tenantK, "true", "true");
+    double falseBefore = selfRoleAssignmentCount(tenantK, "true", "false");
+
+    ResponseEntity<Map> resp = postAssign(token, caller.getId(), adminRole.getId());
+
+    assertThat(resp.getStatusCode())
+        .as("the caller genuinely qualifies via ALL THREE dangerous permissions, so this"
+            + " self-assignment must succeed")
+        .isEqualTo(HttpStatus.CREATED);
+    assertThat(selfRoleAssignmentCount(tenantK, "true", "true") - trueBefore)
+        .as("the canary must correctly report callerIsAdmin=true for this legitimate"
+            + " self-assignment (§9.3's mandatory acceptance test)")
+        .isEqualTo(1.0);
+    assertThat(selfRoleAssignmentCount(tenantK, "true", "false") - falseBefore)
+        .as("the page-severity callerIsAdmin=\"false\" series must NOT trip for this tenant --"
+            + " that is the false positive the re-derivation exists to prevent")
+        .isEqualTo(0.0);
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -761,6 +925,23 @@ class RoleAssignmentSecurityIT {
             .find("nexus.rbac.permission_denied")
             .tag("permission", permission)
             .tag("reason", reason)
+            .counter();
+    return counter == null ? 0.0 : counter.count();
+  }
+
+  /**
+   * Reads the CURRENT value of {@code nexus.rbac.self_role_assignment{tenantId, privileged,
+   * callerIsAdmin}} — used by the T-007(d) canary acceptance test. Scoped by {@code tenantId} so
+   * this assertion is immune to any other tenant's self-assignments recorded elsewhere in this
+   * class's shared, cumulative {@link MeterRegistry}.
+   */
+  private double selfRoleAssignmentCount(UUID tenantId, String privileged, String callerIsAdmin) {
+    Counter counter =
+        meterRegistry
+            .find("nexus.rbac.self_role_assignment")
+            .tag("tenantId", tenantId.toString())
+            .tag("privileged", privileged)
+            .tag("callerIsAdmin", callerIsAdmin)
             .counter();
     return counter == null ? 0.0 : counter.count();
   }

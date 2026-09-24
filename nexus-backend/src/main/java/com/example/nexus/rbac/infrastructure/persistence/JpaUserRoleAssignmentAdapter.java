@@ -1,11 +1,13 @@
 package com.example.nexus.rbac.infrastructure.persistence;
 
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
+import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.ActiveAssignmentRef;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
 import com.example.nexus.rbac.domain.IdGenerator;
 import com.example.nexus.rbac.domain.Role;
+import com.example.nexus.rbac.domain.RolePermissionName;
 import com.example.nexus.rbac.domain.UserRole;
 import java.nio.ByteBuffer;
 import java.time.Instant;
@@ -16,14 +18,20 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 
 /**
- * Adapter for {@link UserRoleAssignmentPort}, backed by {@link JpaUserRoleRepository} (M1–M6) and
- * {@link JpaRoleRepository}. Purely mechanical: this layer does not resolve {@code TENANT_ADMIN}
- * by any hardcoded literal — that resolution (matching a role by name case-insensitively within a
- * tenant) happens in the service layer, per 03-design.md §5.2's R-9 discipline. The same
- * discipline now also covers dangerous permission names — this layer never hardcodes a check
- * against {@code RbacDangerousPermissions.NAMES} either. This adapter holds no write capability
- * over {@code role_permissions} and must not acquire one: its permission read (M7) is hosted on
- * {@link JpaRoleRepository} precisely so that it cannot (03-design.md D16, T-T13).
+ * Adapter for {@link UserRoleAssignmentPort}, backed by {@link JpaUserRoleRepository} (M2–M6,
+ * M11, M5b, M12) and {@link JpaRoleRepository} (M7, M10). Purely mechanical: this layer does not
+ * resolve {@code TENANT_ADMIN} by any hardcoded literal — that resolution (matching a role by name
+ * case-insensitively within a tenant) happens in the service layer, per 03-design.md §5.2's R-9
+ * discipline. The same discipline now also covers dangerous permission names — this layer never
+ * hardcodes a check against {@code RbacDangerousPermissions.NAMES} either. This adapter holds no
+ * write capability over {@code role_permissions} and must not acquire one: its permission reads
+ * (M7, and now the tenant-scoped M10) are hosted on {@link JpaRoleRepository} precisely so that it
+ * cannot (03-design.md D16, T-T13; extended to M10 by D4).
+ *
+ * <p><b>Zero new constructor dependencies (US-017 D4):</b> both repositories were already
+ * injected; M10 delegates to {@code roleRepository}, and M11/M5b/M12 delegate to {@code
+ * userRoleRepository}. {@code JpaRolePermissionRepository} is still not injected — ADR-0017 D2's
+ * second half is unweakened by this story.
  */
 @Component
 public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
@@ -69,10 +77,39 @@ public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
   }
 
   @Override
-  public List<UUID> lockActiveAssignmentIds(UUID tenantId, UUID roleId) {
-    return userRoleRepository.lockActiveAssignmentsByRole(tenantId, roleId).stream()
-        .map(UserRole::getId)
+  public List<RolePermissionName> findPermissionNamesForTenantRoles(UUID tenantId) {
+    return roleRepository.findPermissionNamesByTenantRoles(tenantId);
+  }
+
+  @Override
+  public List<ActiveAssignmentHolder> lockActiveAssignmentHolders(
+      UUID tenantId, List<UUID> roleIds) {
+    // M11 is native, like M5/M5b (03-design.md §7.2 step 1 / MC-C): the adapter converts the
+    // IN-list to byte[] explicitly and maps the returned entities down to id/userId-only records
+    // before they escape this adapter, preserving the repository method's "ids only, never
+    // entities" contract.
+    List<byte[]> roleIdBytes = roleIds.stream().map(JpaUserRoleAssignmentAdapter::toBytes).toList();
+    return userRoleRepository
+        .lockActiveAssignmentHoldersByRoles(roleIdBytes, toBytes(tenantId))
+        .stream()
+        .map(ur -> new ActiveAssignmentHolder(ur.getId(), ur.getUserId(), ur.getRoleId()))
         .toList();
+  }
+
+  @Override
+  public boolean hasActiveAssignmentOfAnyRole(UUID userId, List<UUID> roleIds, UUID tenantId) {
+    // M5b is native, like M5 (03-design.md §7.2 step 1 / MC-5): the adapter converts the IN-list
+    // to byte[] explicitly, reusing the existing toBytes helper — never re-implemented.
+    List<byte[]> roleIdBytes = roleIds.stream().map(JpaUserRoleAssignmentAdapter::toBytes).toList();
+    return !userRoleRepository
+        .lockActiveAssignmentOfAnyRole(toBytes(userId), roleIdBytes, toBytes(tenantId))
+        .isEmpty();
+  }
+
+  @Override
+  public List<RolePermissionName> findPermissionNamesForActiveAssignmentsOfUser(
+      UUID userId, UUID tenantId) {
+    return userRoleRepository.findPermissionNamesForActiveAssignmentsOfUser(userId, tenantId);
   }
 
   @Override
