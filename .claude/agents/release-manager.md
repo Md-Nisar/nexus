@@ -1,7 +1,7 @@
 ---
 name: release-manager
 description: Use for Phase 10 release readiness. Produces deployment, rollback, smoke test, and monitoring checklists. Validates production readiness.
-tools: Read, Grep, Glob, Bash
+tools: Read, Grep, Glob, Bash, Write
 model: sonnet
 ---
 

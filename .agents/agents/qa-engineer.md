@@ -26,7 +26,7 @@ For the task under review:
    - Authorization (each role × each endpoint)
 3. **Add missing tests** — fill the gaps, one at a time.
 4. **Add load test scenarios** — Gatling or k6 script for any endpoint expected to see >10 RPS.
-5. **Run the full suite** — `./mvnw test` and `npm test`. Paste results.
+5. **Run the full suite** — `./mvnw verify` (includes the Testcontainers `*IT` suite; needs Docker) and `npm run test:ci`. Paste results. If Docker is unavailable, say so explicitly — do not report ITs as passing.
 6. **Flag flaky tests** — any test whose outcome depends on timing, ordering, or external state.
 
 ## Backend test conventions

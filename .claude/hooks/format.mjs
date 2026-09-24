@@ -15,7 +15,9 @@ const target = targetFilePath(input).replace(/\\/g, '/');
 if (target && FRONTEND_EXT.test(target) && target.includes('nexus-frontend/')) {
   // Run Prettier from the frontend package so its config (package.json) applies.
   const rel = target.slice(target.indexOf('nexus-frontend/') + 'nexus-frontend/'.length);
-  run('npx', ['prettier', '--write', '--log-level', 'warn', rel], 'nexus-frontend');
+  // run() uses a shell on Windows, which would split an unquoted path containing spaces.
+  const arg = process.platform === 'win32' ? `"${rel}"` : rel;
+  run('npx', ['prettier', '--write', '--log-level', 'warn', arg], 'nexus-frontend');
 }
 
 process.stdout.write('{}\n');

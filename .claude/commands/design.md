@@ -7,7 +7,7 @@ Phase 3 has two steps. Run them sequentially.
 
 ## Step A — Design (architect agent)
 
-Use the **architect** sub-agent in plan mode.
+Use the **architect** sub-agent. It must not modify code — its only write is the design document.
 
 Prerequisites:
 - `docs/features/$1/01-requirements.md` (approved)

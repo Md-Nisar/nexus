@@ -15,10 +15,10 @@ Steps:
 
 2. Cross-reference against:
    - `docs/features/$1/03-design.md`
-   - `CLAUDE.md`
+   - `PROJECT.md` (key constraints) and the relevant standards skills (`spring-boot-standards`, `angular-standards`, `api-design`, `design-system`)
    - `docs/coding-standards.md` (if present)
 
-3. Produce a structured review per the code-reviewer agent's output format. Save to `docs/features/$1/06-code-review.md`.
+3. Produce a structured review per the code-reviewer agent's output format. The agent has no Write tool — this session saves its report to `docs/features/$1/06-code-review.md`.
 
 4. Print the summary section to chat: counts by severity + verdict (`APPROVE` / `APPROVE WITH NITS` / `CHANGES REQUESTED`).
 

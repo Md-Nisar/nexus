@@ -4,13 +4,13 @@
       "type": "stdio",
       "command": "npx",
       "args": [
-        "@playwright/mcp@latest"
+        "@playwright/mcp@0.0.82"
       ],
       "env": {}
     },
     "sonarqube": {
       "command": "npx",
-      "args": ["-y", "sonarqube-mcp-server@latest"],
+      "args": ["-y", "sonarqube-mcp-server@1.10.21"],
       "env": {
         "SONARQUBE_URL": "https://sonarcloud.io",
         "SONARQUBE_ORG": "md-nisar",
@@ -19,7 +19,7 @@
     },
     "github": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "args": ["-y", "@modelcontextprotocol/server-github@2025.4.8"],
       "env": {
         "GITHUB_PERSONAL_ACCESS_TOKEN": ""
       }

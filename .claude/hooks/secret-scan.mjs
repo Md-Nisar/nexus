@@ -22,10 +22,16 @@ const SECRET_PATTERNS = [
 ];
 
 // Skip anything that is obviously a placeholder / example, not a real secret.
-const PLACEHOLDER = /(EXAMPLE|PLACEHOLDER|CHANGEME|CHANGE_ME|YOUR[_-]|XXXX|\.\.\.|\$\{|<[a-z-]+>|redacted|dummy|sample|test)/i;
+// Whole-word markers only, so e.g. "latest" or a trailing "// test" comment is not an escape hatch.
+const PLACEHOLDER = /(\b(?:EXAMPLE|PLACEHOLDER|CHANGEME|CHANGE_ME|redacted|dummy|sample)\b|YOUR[_-]|XXXX|\$\{|<[a-z-]+>)/i;
+
+// Test sources legitimately build PEM headers and fixture passwords; token-format rules still apply.
+const TEST_SOURCE = /(\/src\/test\/|\.(spec|test)\.ts$)/;
+const TEST_EXEMPT = new Set(['Private key block', 'Hardcoded credential']);
 
 const input = await readStdin();
 const filePath = targetFilePath(input);
+const isTestSource = TEST_SOURCE.test(filePath.replace(/\\/g, '/'));
 
 // 1) Protected files must never be written by the agent.
 const blocked = blockedTargetPath(filePath);
@@ -43,6 +49,7 @@ if (text) {
   for (const line of text.split('\n')) {
     if (PLACEHOLDER.test(line)) continue;
     for (const { name, re } of SECRET_PATTERNS) {
+      if (isTestSource && TEST_EXEMPT.has(name)) continue;
       if (re.test(line)) {
         deny(
           input,
