@@ -8,7 +8,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>4.1.0</version>
+        <version>4.1.1</version>
         <relativePath/>
     </parent>
 
@@ -37,6 +37,10 @@
         <pmd.plugin.version>3.27.0</pmd.plugin.version>
         <dependency-check.version>12.1.0</dependency-check.version>
         <jjwt.version>0.12.6</jjwt.version>
+
+        <!-- Overrides Boot 4.1.1's managed Tomcat (11.0.24) for CVE-2026-65905 / CVE-2026-65637 (CVSS 9.8).
+             Remove once the Boot parent manages 11.0.26 or later. -->
+        <tomcat.version>11.0.26</tomcat.version>
 
         <!-- SonarCloud configuration -->
         <sonar.organization>Md-Nisar</sonar.organization>
@@ -159,7 +163,7 @@
         <dependency>
             <groupId>org.bouncycastle</groupId>
             <artifactId>bcprov-jdk18on</artifactId>
-            <version>1.84</version>
+            <version>1.86</version>
         </dependency>
 
         <!-- UUIDv7 time-ordered primary keys — MIT, pinned, no BC transitive dep (see ADR-0005) -->
