@@ -13,8 +13,8 @@ Reference: [ADR 0004](../../../docs/adr/0004-angular-material-design-system.md)
 All Material usage is encapsulated in `src/app/shared/ui/`. Feature components import only from there.
 
 ```ts
-// ✅ Correct
-import { NxButton, NxCard } from '@shared/ui';
+// ✅ Correct (relative import of the barrel — there is no path alias)
+import { NxButton, NxCard } from '../../shared/ui';
 
 // ❌ Wrong
 import { MatButtonModule } from '@angular/material/button';
@@ -60,6 +60,7 @@ All visual values (colour, spacing, radius, type, motion) come from `src/styles/
 
 | Selector | Source | Wraps | Notes |
 |----------|--------|-------|-------|
+| `<nx-badge>` | `shared/ui/badge` | _(token-native)_ | semantic status label; `BadgeVariant` colour variants |
 | `<nx-button>` | `shared/ui/button` | _(token-native; `MatIcon` only)_ | variants: `primary/secondary/tertiary/danger/ghost`; sizes: `sm/md/lg`; `loading` input |
 | `<nx-card>` | `shared/ui/card` | `MatCard` | elevations: `raised/flat/outlined`; `[slot=header-actions]` + `[slot=actions]` |
 | `<nx-input>` | `shared/ui/input` | `MatInput` + `MatFormField` | CVA — works with `formControl` / `ngModel`; `prefixIcon`, `suffixIcon`, `hint`, `error` |
@@ -71,7 +72,7 @@ All visual values (colour, spacing, radius, type, motion) come from `src/styles/
 | `<nx-error-state>` | `shared/ui/error-state` | `MatIcon` + `MatButton` | `retry` output; `showRetry` input; `role=alert` |
 
 All components:
-- `standalone: true`, `ChangeDetectionStrategy.OnPush`
+- Standalone and OnPush — both are Angular 22 defaults, so **do not** set `standalone: true` or `changeDetection` in the decorator (`nexus-frontend/ANGULAR_STANDARDS.md`)
 - Inputs declared with `input()` / `input.required()` functions (not decorators)
 - Outputs declared with `output()` functions
 - `data-testid` attribute on the root interactive element
@@ -79,13 +80,12 @@ All components:
 ## Writing a new `shared/ui` component
 
 1. Create `src/app/shared/ui/<name>/<name>.ts` + `.scss` + `.spec.ts`
-2. The component selector must be `nx-<name>` with `standalone: true` and `OnPush`
+2. The component selector must be `nx-<name>` (no `standalone`/`changeDetection` in the decorator — defaults)
 3. Import only from `@angular/material/*` and `@angular/cdk/*` — never from feature modules
 4. Never use raw values in SCSS; always `var(--nx-*)` tokens
 5. Add to `shared/ui/index.ts` barrel
 6. Write a spec covering all component inputs + outputs and accessibility attributes
 7. Add a preview card in `shared/ui/preview/design-system.html`
-8. Re-run DesignSync (`/design-sync`) to push the update to Claude Design
 
 ## Forbidden patterns
 

@@ -1,5 +1,9 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "env": {
+    "JAVA_TOOL_OPTIONS": "-Dfile.encoding=UTF-8",
+    "MAVEN_OPTS": "-Xmx2g"
+  },
   "permissions": {
     "allow": [
       "Bash(*)",
@@ -75,13 +79,16 @@
       }
     ]
   },
-  "env": {
-    "JAVA_TOOL_OPTIONS": "-Dfile.encoding=UTF-8",
-    "MAVEN_OPTS": "-Xmx2g"
-  },
-  "modelSettings": {
-    "sonnet": {
-      "effortLevel": "high"
-    }
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true,
+    "frontend-design@claude-plugins-official": true,
+    "code-review@claude-plugins-official": true,
+    "code-simplifier@claude-plugins-official": true,
+    "playwright@claude-plugins-official": true,
+    "github@claude-plugins-official": true,
+    "claude-md-management@claude-plugins-official": true,
+    "feature-dev@claude-plugins-official": true,
+    "security-guidance@claude-plugins-official": true,
+    "claude-code-setup@claude-plugins-official": true
   }
 }

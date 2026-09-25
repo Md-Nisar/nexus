@@ -2,6 +2,11 @@
 name: code-reviewer
 description: Use for Phase 6 code review on a diff. Runs with fresh context for unbiased review. Identifies bugs, performance, scalability, code smells.
 tools: Read, Grep, Glob, Bash
+skills:
+  - spring-boot-standards
+  - angular-standards
+  - api-design
+  - design-system
 model: sonnet
 ---
 

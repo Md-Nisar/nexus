@@ -54,7 +54,7 @@ public ResponseEntity<UserResponse> create(@Valid @RequestBody CreateUserRequest
 
 - Repositories extend `JpaRepository<Entity, ID>`.
 - **No business logic in repositories.** Custom queries via `@Query` only for read-only projection.
-- Add indexes via `@Table(indexes = ...)` for any column used in WHERE / ORDER BY / JOIN.
+- Add an index (in the Flyway migration, not `@Table(indexes = ...)`) for any column used in WHERE / ORDER BY / JOIN.
 - **Eager fetching is opt-in.** Default to lazy. Use explicit fetch joins where needed.
 - Use `@Version` for optimistic locking on entities subject to concurrent writes.
 - Schema management: **Flyway owns the schema** (`ddl-auto=validate`, see ADR 0003). Migrations live in `src/main/resources/db/migration` as `V<N>__<description>.sql` — append-only, never edit an applied migration.
@@ -78,24 +78,18 @@ public ResponseEntity<UserResponse> create(@Valid @RequestBody CreateUserRequest
 ## Error handling
 
 - Throw **domain exceptions**, not generic `RuntimeException`.
-- Centralise mapping in a `@RestControllerAdvice`:
+- Mapping is centralised in `common/web/GlobalExceptionHandler` (`@RestControllerAdvice`). Add a handler there; do not create a new advice or error DTO. Every handler returns a Spring `ProblemDetail` (wrapped in `ResponseEntity` only when it must set a header such as `Retry-After`) built with the private `problem(status, code, message)` helper, which adds the `code` and `traceId` properties:
 
 ```java
-@RestControllerAdvice
-class GlobalExceptionHandler {
-    @ExceptionHandler(UserNotFoundException.class)
-    ResponseEntity<ErrorResponse> handle(UserNotFoundException e) {
-        return ResponseEntity.status(NOT_FOUND).body(
-            new ErrorResponse("USER_NOT_FOUND", e.getMessage(), MDC.get("traceId"))
-        );
-    }
+@ExceptionHandler(ResourceNotFoundException.class)
+ProblemDetail handleNotFound(ResourceNotFoundException e) {
+    logHandledException(e, LEVEL_DEBUG, e.code());
+    return problem(HttpStatus.NOT_FOUND, e.code(), e.getMessage());
 }
 ```
 
-- Standard error shape:
-  ```json
-  { "code": "USER_NOT_FOUND", "message": "...", "traceId": "..." }
-  ```
+- Prefer extending an existing domain exception base (`ResourceNotFoundException`, `ConflictException`, `DomainException`, …) so no new handler is needed.
+- Error shape and field list: see the `api-design` skill → Error format.
 - Never expose stack traces in production responses.
 
 ## Logging
@@ -108,7 +102,7 @@ class GlobalExceptionHandler {
 - Log at boundaries: entry to use case, exit, errors.
 - **Never log:** passwords, tokens, full PII, full request bodies, secrets.
 - Mask emails, partial-mask IDs in logs.
-- MDC for `traceId`, `userId`, `tenantId` — set in a filter, cleared in a finally block.
+- MDC for `correlationId`, `userId`, `tenantId` — set in a filter, cleared in a finally block. `CorrelationIdFilter` owns `correlationId` (from/to the `X-Correlation-Id` header); `traceId` is a deprecated alias of it — don't use it in new code.
 
 ## Security
 
@@ -116,8 +110,7 @@ class GlobalExceptionHandler {
   ```java
   http.authorizeHttpRequests(auth -> auth.anyRequest().authenticated());
   ```
-- `@PreAuthorize` on service methods that need authorization (if auth module exists).
-- Method-level permission checks use `@RequiresPermission("resource:action")` — see `SECURITY.md` §3.1 for the usage pattern, the `RBAC_001` response shape, and the **Spring AOP self-invocation caveat** (annotated methods called from within the same bean are silently unenforced).
+- Method-level permission checks use `@RequiresPermission("resource:action")` — not raw `@PreAuthorize` — see `SECURITY.md` §3.1 for the usage pattern, the `RBAC_001` response shape, and the **Spring AOP self-invocation caveat** (annotated methods called from within the same bean are silently unenforced).
 - Object-level checks for IDOR — never trust the client-provided owner ID.
 - Use `SecureRandom`, never `Math.random`, for any security-sensitive randomness.
 - Bean validation is **not** a security boundary. Always validate again at the service layer for sensitive operations.

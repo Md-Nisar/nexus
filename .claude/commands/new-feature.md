@@ -33,7 +33,7 @@ Run `/design $1` (architect + security-reviewer) → `docs/features/$1/03-design
 Run `/breakdown $1` (architect + engineers + qa-engineer) → `docs/features/$1/04-tasks.md`: sequenced tasks with dependencies, acceptance criteria, test plan, risk. **Stop for approval.**
 
 ## Handoff
-After Gate 3, direct the user to implementation: `/implement $1 <TASK-ID>` per task (test-first, plan-mode gate), then `/review`, `/security-review`, `/test-validate`, `/pre-pr-check` before the PR. `/userstory-action $1` runs that half as a batch.
+After Gate 3, direct the user to implementation: `/implement $1 <TASK-ID>` per task (test-first, plan-approval gate), then `/review`, `/security-review`, `/test-validate`, `/pre-pr-check` before the PR. `/userstory-action $1` runs that half as a batch.
 
 ## Rules
 - **No code, migrations, or frontend in the plan half.** Discovery/analysis/design/planning only.

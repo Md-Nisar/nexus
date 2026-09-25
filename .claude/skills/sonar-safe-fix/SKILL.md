@@ -16,7 +16,9 @@ Apply the smallest correct change, prove it did not break anything, stop.
 3. **Never edit** `pom.xml`, `package.json`, `package-lock.json`, `.github/**`,
    `.githooks/**`, `.claude/**`, `.agents/**`, `nexus-scripts/**`, or anything in `reference/forbidden-paths.md`.
 4. **One rule family per PR.** Mixing rules makes review harder, and review is
-   the actual safety mechanism.
+   the actual safety mechanism. CI (`check_guardrails.py`) also rejects a PR
+   touching more than **10 files** or **200 changed lines** — stop adding fixes
+   before either limit and leave the rest for the next PR.
 5. **Minimal diff.** No reformatting, no renaming, no drive-by improvements,
    no comment additions explaining the fix. The PR body explains the fix.
 6. **When unsure, skip.** A skipped issue costs nothing. A wrong fix costs

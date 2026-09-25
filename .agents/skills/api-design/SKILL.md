@@ -48,7 +48,7 @@ description: Use when designing or reviewing REST API endpoints for the Nexus pl
 - JSON body for POST / PUT / PATCH.
 - Required `Content-Type: application/json`.
 - Validate at the controller boundary with bean validation.
-- Reject unknown fields (`fail-on-unknown-properties=true`) — protects against typos and prevents silent feature drift.
+- *(Target — not yet configured)* Reject unknown fields (`fail-on-unknown-properties=true`) — protects against typos and prevents silent feature drift. Don't flag existing endpoints for this in review; raise it as a separate change.
 
 ### Responses
 
@@ -74,23 +74,28 @@ description: Use when designing or reviewing REST API endpoints for the Nexus pl
 
 ## Error format
 
-Standard shape for **every** non-2xx response:
+**Every** non-2xx response is an RFC 9457 `ProblemDetail` (`application/problem+json`) produced by `GlobalExceptionHandler` — never a custom error DTO:
 
 ```json
 {
-  "code": "USER_NOT_FOUND",
-  "message": "User does not exist or you do not have access.",
+  "type": "about:blank",
+  "title": "Bad Request",
+  "status": 400,
+  "detail": "Request validation failed.",
+  "instance": "/api/v1/users",
+  "code": "VALIDATION_FAILED",
   "traceId": "abc123-def456",
   "details": [
-    { "field": "email", "code": "INVALID_FORMAT", "message": "..." }
+    { "field": "email", "message": "must be a well-formed email address" }
   ]
 }
 ```
 
-- `code` is machine-readable, stable, SCREAMING_SNAKE_CASE.
-- `message` is human-readable; safe to display in UI (no internal details).
-- `traceId` matches the server-side log MDC traceId.
-- `details` only for validation errors with multiple field failures.
+- `code` is machine-readable, stable, SCREAMING_SNAKE_CASE (e.g. `VALIDATION_FAILED`, `RBAC_001`).
+- `detail` is human-readable; safe to display in UI (no internal details).
+- `traceId` is the request's correlation ID (MDC `correlationId`, echoed in the `X-Correlation-Id` response header).
+- `details` only for validation errors; each entry is `{ field, message }`.
+- Handlers may add specific extra properties (e.g. `requiredPermission` on `RBAC_001`).
 - **Never** include stack traces, SQL, internal IDs, or system file paths.
 
 ## Versioning
@@ -101,6 +106,8 @@ Standard shape for **every** non-2xx response:
 - Deprecation: `Deprecation: true` header + `Sunset` header with date.
 
 ## Idempotency
+
+*(Target — not yet implemented. Design new write endpoints so it can be added; don't flag existing endpoints for missing it.)*
 
 - All write endpoints should accept an `Idempotency-Key` header.
 - Server stores the key + response for a TTL (typically 24h).
@@ -123,17 +130,14 @@ Standard shape for **every** non-2xx response:
 
 ## Rate limiting
 
-- Public endpoints: rate-limited by IP and by token.
-- Headers on every response:
-  - `X-RateLimit-Limit`
-  - `X-RateLimit-Remaining`
-  - `X-RateLimit-Reset`
-- 429 includes `Retry-After`.
+- Public endpoints: rate-limited by IP and by token (today: login, via `LoginRateLimitFilter`).
+- 429 (and 423 account-locked) responses include `Retry-After` in seconds.
+- *(Target — not yet implemented)* `X-RateLimit-Limit` / `-Remaining` / `-Reset` headers on every response.
 
 ## Observability
 
-- Every request gets a `traceId`. Generated server-side if absent; propagated if present (`traceparent` header).
-- Log fields: `traceId`, `userId`, `tenantId`, `endpoint`, `status`, `durationMs`.
+- Every request gets a correlation ID (`CorrelationIdFilter`): propagated from the `X-Correlation-Id` request header if present, generated otherwise, and echoed on the response.
+- Log fields: `correlationId`, `userId`, `tenantId`, `endpoint`, `status`, `durationMs`.
 - Emit metrics: request count by status, p50/p95/p99 latency by endpoint.
 
 ## Documentation

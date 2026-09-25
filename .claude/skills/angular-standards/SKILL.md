@@ -11,7 +11,7 @@ This skill ensures all Angular code follows the project's standards.
 
 Before implementing or reviewing Angular code, read and follow:
 
-- `<frontend-project>/ANGULAR_STANDARDS.md`
+- `nexus-frontend/ANGULAR_STANDARDS.md`
 
 This document is the **authoritative source of truth** for:
 
@@ -33,11 +33,20 @@ This document is the **authoritative source of truth** for:
 
 When generating or reviewing Angular code:
 
-- Treat `<frontend-project>/ANGULAR_STANDARDS.md` as the primary source of truth.
+- Treat `nexus-frontend/ANGULAR_STANDARDS.md` as the primary source of truth.
 - Follow existing project conventions before introducing new patterns.
 - Keep changes minimal and consistent with the surrounding code.
 - Reuse existing components, services, utilities, and shared abstractions whenever possible.
 - Produce production-ready, maintainable, and strongly typed code.
 - Explain architectural trade-offs when introducing new patterns.
 
-If another Angular skill is applicable (for example, Forms, Signals, SSR, Migrations, Performance, or Testing), apply that guidance **in addition to** the standards defined in `<frontend-project>/ANGULAR_STANDARDS.md`.
+If another Angular skill is applicable (for example, Forms, Signals, SSR, Migrations, Performance, or Testing), apply that guidance **in addition to** the standards defined in `nexus-frontend/ANGULAR_STANDARDS.md`.
+
+## Precedence over the vendored Angular skills
+
+`angular-developer` and `angular-new-app` are generic upstream skills (pinned in `skills-lock.json`, do not edit). Use their references for API detail, but where they conflict with this project, the project wins:
+
+- **Styling:** Angular Material 3 via `shared/ui` + `--nx-*` tokens (`design-system` skill, ADR 0004) — not Tailwind.
+- **E2E:** Playwright (`npm run e2e`) — not Cypress.
+- **Verification:** the project gates (`npm run test:ci`, `npm run lint`, `npm run format:check`; `npm run build` before a PR) — not an `ng build` after every change.
+- **New apps:** Nexus is an existing workspace; never run `ng new` inside it.
