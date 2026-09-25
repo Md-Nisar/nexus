@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -202,6 +204,22 @@ class SecurityConfigWebTest {
         .andExpect(status().isUnauthorized())
         .andExpect(content().contentType("application/problem+json"))
         .andExpect(jsonPath("$.code").value("AUTH_003"));
+  }
+
+  // ── Oversized login body is rejected before it reaches the controller (DoS guard) ──
+
+  @Test
+  void oversized_login_body_returns_413_and_never_reaches_use_case() throws Exception {
+    // LoginRateLimitFilter.MAX_LOGIN_BODY_BYTES is 8_192; one byte over that must short-circuit
+    // with 413 before the filter chain (and therefore LoginUseCase) is ever reached.
+    byte[] oversizedBody = new byte[8_193];
+
+    mvc.perform(post("/api/v1/auth/login")
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(oversizedBody))
+        .andExpect(status().is(413));
+
+    verify(loginUseCase, never()).execute(any(), any(), any(), any());
   }
 
   // ── HTTP Basic is disabled — no WWW-Authenticate challenge ────────────────
