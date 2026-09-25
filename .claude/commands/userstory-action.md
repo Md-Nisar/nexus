@@ -10,7 +10,7 @@ Preconditions — these approved plan artifacts must exist (numbered convention,
 
 Delegate to the phase commands in order:
 
-1. `/implement $1 <TASK-ID>` — once per task in `04-tasks.md`, test-first, plan-mode gate per task (backend-engineer / frontend-engineer)
+1. `/implement $1 <TASK-ID>` — once per task in `04-tasks.md`, test-first, plan-approval gate per task (backend-engineer / frontend-engineer)
 2. `/review $1` → `06-code-review.md` (code-reviewer) — must reach `APPROVE` / `APPROVE WITH NITS`
 3. `/security-review $1` → `07-security-review.md` (security-reviewer) — no unresolved Blockers
 4. `/test-validate $1` → `08-test-audit.md` (qa-engineer) — coverage gates green

@@ -2,6 +2,9 @@
 name: backend-engineer
 description: Use for Phase 5 backend implementation tasks. Implements one task at a time, test-first, following Spring Boot 4 / Java 25 conventions.
 tools: Read, Edit, Write, Grep, Glob, Bash
+skills:
+  - spring-boot-standards
+  - api-design
 model: sonnet
 ---
 

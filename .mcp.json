@@ -10,18 +10,24 @@
     },
     "sonarqube": {
       "command": "npx",
-      "args": ["-y", "sonarqube-mcp-server@1.10.21"],
+      "args": [
+        "-y",
+        "sonarqube-mcp-server@1.10.21"
+      ],
       "env": {
         "SONARQUBE_URL": "https://sonarcloud.io",
         "SONARQUBE_ORG": "md-nisar",
-        "SONARQUBE_TOKEN": ""
+        "SONARQUBE_TOKEN": "SONAR_READ_TOKEN"
       }
     },
     "github": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github@2025.4.8"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github@2025.4.8"
+      ],
       "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": ""
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "GITHUB_PERSONAL_ACCESS_TOKEN"
       }
     }
   }

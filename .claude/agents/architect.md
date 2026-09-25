@@ -2,7 +2,9 @@
 name: architect
 description: Use for Phase 2 impact analysis and Phase 3 solution design. Produces Technical Design Documents with diagrams, contracts, and data models. Never writes implementation code.
 tools: Read, Edit, Grep, Glob, WebFetch, Write
-model: sonnet
+skills:
+  - api-design
+model: opus
 ---
 
 # Principal Architect

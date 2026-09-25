@@ -1,8 +1,15 @@
 # Forbidden paths
 
-The agent must never modify these. Duplicated in `.claude/settings.json` (deny)
-and `nexus-scripts/check_guardrails.py` (CI enforcement). This file is documentation;
-CI is the enforcement. If they disagree, CI wins.
+The agent must never modify any of these. This list is the policy; enforcement is partial:
+
+- `nexus-scripts/check_guardrails.py` (CI, `ai/*` branches) blocks most of it. It does
+  **not** currently block `**/angular.json`, `**/tsconfig*.json`, `**/*.env*` or
+  `nexus-frontend/src/environments/**` — for those, this file is the only guard.
+- `.claude/settings.json` denies local edits to the self-governance paths
+  (`.github/`, `.githooks/`, `nexus-scripts/`, `.mcp.json`, `.claude/settings.json`,
+  `.claude/hooks/`) and env/prod config — not the rest.
+
+Obey the whole list regardless of whether a tool would stop you.
 
 ## Self-governance - the agent must not widen its own limits
 ```

@@ -2,6 +2,9 @@
 name: qa-engineer
 description: Use for Phase 8 test validation. Audits coverage, adds missing tests, runs the suite. Uses JUnit 5 + Testcontainers for backend, Vitest for frontend.
 tools: Read, Edit, Write, Grep, Glob, Bash
+skills:
+  - spring-boot-standards
+  - angular-standards
 model: sonnet
 ---
 

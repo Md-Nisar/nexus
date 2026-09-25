@@ -1,5 +1,5 @@
 ---
-description: Phase 5 — Implement a single task, test-first, with plan-mode approval.
+description: Phase 5 — Implement a single task, test-first, with plan approval.
 argument-hint: <FEATURE-ID> <TASK-ID>
 ---
 
@@ -55,4 +55,4 @@ Re-invoke the engineer agent with the approved plan included verbatim. Rules:
 
 - **One task per invocation.** Do not slide into the next task.
 - **No green-lighting on red tests.**
-- **No bypassing the plan-mode gate.**
+- **No bypassing the plan-approval gate.**

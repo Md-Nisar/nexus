@@ -15,7 +15,7 @@ Turn a raw Sonar issue list into a ranked, decision-ready shortlist.
 
 ## Procedure
 
-1. **Fetch.** Prefer the `sonarcloud` MCP server. If unavailable, use
+1. **Fetch.** Prefer the `sonarqube` MCP server (`.mcp.json`). If unavailable, use
    `./nexus-scripts/fetch_sonar_issues.sh` (set `MAX_ISSUES` higher for triage).
    Default scope: branch `main`, `resolved=false`, `statuses=OPEN,CONFIRMED`.
 
