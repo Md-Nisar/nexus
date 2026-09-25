@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { AuthService } from '../auth.service';
@@ -35,8 +35,6 @@ import { NxInput, NxButton } from '../../../shared/ui';
  */
 @Component({
   selector: 'nx-forgot-password',
-  standalone: true,
-  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [ReactiveFormsModule, RouterLink, NxInput, NxButton],
   template: `
     <div class="forgot-password-container">

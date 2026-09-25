@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, input } from '@angular/core';
+import { Component, input } from '@angular/core';
 import { MatIconModule } from '@angular/material/icon';
 
 /**
@@ -77,7 +77,6 @@ import { MatIconModule } from '@angular/material/icon';
  */
 @Component({
   selector: 'nx-empty-state',
-  standalone: true,
   imports: [MatIconModule],
   template: `
     <div class="nx-empty-state" role="status" data-testid="nx-empty-state">
@@ -94,7 +93,6 @@ import { MatIconModule } from '@angular/material/icon';
     </div>
   `,
   styleUrl: './empty-state.scss',
-  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class NxEmptyState {
   /**

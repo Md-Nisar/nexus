@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { RouterLink, RouterOutlet } from '@angular/router';
 import { ThemeService } from './core/theme.service';
 
@@ -45,7 +45,6 @@ import { ThemeService } from './core/theme.service';
   imports: [RouterOutlet, RouterLink],
   templateUrl: './app.html',
   styleUrl: './app.scss',
-  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class App {
   /**

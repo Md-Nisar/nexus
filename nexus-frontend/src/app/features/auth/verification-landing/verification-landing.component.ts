@@ -1,11 +1,4 @@
-import {
-  ChangeDetectionStrategy,
-  Component,
-  OnInit,
-  computed,
-  inject,
-  signal,
-} from '@angular/core';
+import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { MatIconModule } from '@angular/material/icon';
@@ -31,11 +24,9 @@ import { ViewState, failure, loading, success } from '../../../shared/types/view
  */
 @Component({
   selector: 'app-verification-landing',
-  standalone: true,
   imports: [MatIconModule, RouterLink],
   templateUrl: './verification-landing.component.html',
   styleUrl: './verification-landing.component.scss',
-  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class VerificationLandingComponent implements OnInit {
   private readonly authService = inject(AuthService);

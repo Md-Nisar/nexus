@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, input, output } from '@angular/core';
+import { Component, input, output } from '@angular/core';
 import { MatIconModule } from '@angular/material/icon';
 
 /**
@@ -65,7 +65,6 @@ export type ButtonSize = 'sm' | 'md' | 'lg';
 
 @Component({
   selector: 'nx-button',
-  standalone: true,
   imports: [MatIconModule],
   host: {
     '[class.nx-btn-host--full-width]': 'fullWidth()',
@@ -93,7 +92,6 @@ export type ButtonSize = 'sm' | 'md' | 'lg';
     </button>
   `,
   styleUrl: './button.scss',
-  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class NxButton {
   /**

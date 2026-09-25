@@ -1,11 +1,4 @@
-import {
-  ChangeDetectionStrategy,
-  Component,
-  forwardRef,
-  input,
-  output,
-  signal,
-} from '@angular/core';
+import { Component, forwardRef, input, output, signal } from '@angular/core';
 import { ControlValueAccessor, NG_VALUE_ACCESSOR } from '@angular/forms';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatSelectModule } from '@angular/material/select';
@@ -106,7 +99,6 @@ export type SelectValue<T> = T | T[] | null;
  */
 @Component({
   selector: 'nx-select',
-  standalone: true,
   imports: [MatFormFieldModule, MatSelectModule],
   providers: [
     {
@@ -145,7 +137,6 @@ export type SelectValue<T> = T | T[] | null;
     </mat-form-field>
   `,
   styleUrl: './select.scss',
-  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class NxSelect<T = string> implements ControlValueAccessor {
   /**

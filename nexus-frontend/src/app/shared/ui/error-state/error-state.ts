@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, input, output } from '@angular/core';
+import { Component, input, output } from '@angular/core';
 import { MatIconModule } from '@angular/material/icon';
 import { MatButtonModule } from '@angular/material/button';
 
@@ -115,7 +115,6 @@ import { MatButtonModule } from '@angular/material/button';
  */
 @Component({
   selector: 'nx-error-state',
-  standalone: true,
   imports: [MatIconModule, MatButtonModule],
   template: `
     <div class="nx-error-state" role="alert" data-testid="nx-error-state">
@@ -138,7 +137,6 @@ import { MatButtonModule } from '@angular/material/button';
     </div>
   `,
   styleUrl: './error-state.scss',
-  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class NxErrorState {
   /**

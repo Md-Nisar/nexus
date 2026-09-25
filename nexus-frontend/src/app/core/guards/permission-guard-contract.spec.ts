@@ -15,10 +15,10 @@ import {
   AuthStoreStub,
 } from '../../shared/testing/auth.fixtures';
 
-@Component({ template: '', standalone: true })
+@Component({ template: '' })
 class StubGatedComponent {}
 
-@Component({ template: '', standalone: true })
+@Component({ template: '' })
 class StubAccessDeniedComponent {}
 
 /**

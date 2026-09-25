@@ -1,10 +1,4 @@
-import {
-  afterNextRender,
-  ChangeDetectionStrategy,
-  Component,
-  ElementRef,
-  viewChild,
-} from '@angular/core';
+import { afterNextRender, Component, ElementRef, viewChild } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { NxErrorState } from '../../ui';
 
@@ -33,9 +27,7 @@ import { NxErrorState } from '../../ui';
  */
 @Component({
   selector: 'nx-access-denied',
-  standalone: true,
   imports: [NxErrorState, RouterLink],
-  changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <main class="access-denied" data-testid="access-denied-root">
       <h1 #heading class="access-denied__heading" tabindex="-1" data-testid="access-denied-heading">

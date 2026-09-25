@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, input } from '@angular/core';
+import { Component, input } from '@angular/core';
 import { MatCardModule } from '@angular/material/card';
 
 /**
@@ -76,7 +76,6 @@ export type CardElevation = 'flat' | 'raised' | 'outlined';
 
 @Component({
   selector: 'nx-card',
-  standalone: true,
   imports: [MatCardModule],
   template: `
     <mat-card [class]="cardClass()" [attr.aria-label]="ariaLabel() || null" data-testid="nx-card">
@@ -102,7 +101,6 @@ export type CardElevation = 'flat' | 'raised' | 'outlined';
     </mat-card>
   `,
   styleUrl: './card.scss',
-  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class NxCard {
   /**
