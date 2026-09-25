@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, input, output } from '@angular/core';
+import { Component, input, output } from '@angular/core';
 import { MatTableModule } from '@angular/material/table';
 import { MatSortModule, Sort } from '@angular/material/sort';
 import { MatPaginatorModule, PageEvent } from '@angular/material/paginator';
@@ -162,7 +162,6 @@ export interface TableColumn {
 
 @Component({
   selector: 'nx-table',
-  standalone: true,
   imports: [MatTableModule, MatSortModule, MatPaginatorModule, MatProgressBarModule, NxBadge],
   template: `
     <div class="nx-table-wrapper" data-testid="nx-table">
@@ -233,7 +232,6 @@ export interface TableColumn {
     </div>
   `,
   styleUrl: './table.scss',
-  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class NxTable<T extends Record<string, unknown> = Record<string, unknown>> {
   /**

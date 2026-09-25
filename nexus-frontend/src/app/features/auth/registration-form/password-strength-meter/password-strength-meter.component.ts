@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
+import { Component, computed, input } from '@angular/core';
 
 /**
  * Strength labels corresponding to score tiers.
@@ -67,7 +67,6 @@ function computeScore(pw: string): number {
  */
 @Component({
   selector: 'app-password-strength-meter',
-  standalone: true,
   imports: [],
   template: `
     <div class="strength-meter" role="status" [attr.aria-label]="'Password strength: ' + label()">
@@ -112,7 +111,6 @@ function computeScore(pw: string): number {
       transition: color var(--nx-duration-base) var(--nx-easing-standard);
     }
   `,
-  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class PasswordStrengthMeterComponent {
   /**

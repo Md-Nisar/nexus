@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, input } from '@angular/core';
+import { Component, input } from '@angular/core';
 
 /**
  * Compact status badge for displaying semantic labels, tags, and state indicators.
@@ -61,7 +61,6 @@ export type BadgeVariant = 'success' | 'error' | 'warning' | 'neutral' | 'primar
 
 @Component({
   selector: 'nx-badge',
-  standalone: true,
   host: {
     '[class]': '"nx-badge nx-badge--" + variant()',
     role: 'status',
@@ -69,7 +68,6 @@ export type BadgeVariant = 'success' | 'error' | 'warning' | 'neutral' | 'primar
   },
   template: `<ng-content />`,
   styleUrl: './badge.scss',
-  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class NxBadge {
   /**

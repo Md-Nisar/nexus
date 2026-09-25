@@ -1,5 +1,5 @@
 import { httpResource } from '@angular/common/http';
-import { ChangeDetectionStrategy, Component, inject, signal } from '@angular/core';
+import { Component, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
 import { finalize } from 'rxjs';
 import { APP_CONFIG } from '../../core/config/app-config';
@@ -33,9 +33,7 @@ import { NxButton, NxToast } from '../../shared/ui';
  */
 @Component({
   selector: 'nx-dashboard',
-  standalone: true,
   imports: [NxButton],
-  changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <main class="dashboard" data-testid="dashboard-root">
       <h1>Dashboard</h1>

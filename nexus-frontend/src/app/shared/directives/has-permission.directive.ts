@@ -38,7 +38,6 @@ import { AuthStore } from '../../core/auth/auth.store';
  */
 @Directive({
   selector: '[appHasPermission]',
-  standalone: true,
 })
 export class HasPermissionDirective {
   private readonly authStore = inject(AuthStore);

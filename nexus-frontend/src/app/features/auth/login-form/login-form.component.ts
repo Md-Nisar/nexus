@@ -1,11 +1,4 @@
-import {
-  ChangeDetectionStrategy,
-  Component,
-  computed,
-  inject,
-  OnInit,
-  signal,
-} from '@angular/core';
+import { Component, computed, inject, OnInit, signal } from '@angular/core';
 import { FormGroup, FormControl, Validators, ReactiveFormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { NxButton, NxInput } from '../../../shared/ui';
@@ -24,8 +17,6 @@ import { AppError } from '../../../shared/types/app-error';
  */
 @Component({
   selector: 'nx-login-form',
-  standalone: true,
-  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [ReactiveFormsModule, RouterLink, NxInput, NxButton],
   template: `
     <div class="login-form-container">

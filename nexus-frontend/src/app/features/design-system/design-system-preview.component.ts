@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
+import { Component, computed, inject } from '@angular/core';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { MatIconModule } from '@angular/material/icon';
 import { ThemeService } from '../../core/theme.service';
@@ -20,7 +20,6 @@ import {
 
 @Component({
   selector: 'app-design-system-preview',
-  standalone: true,
   imports: [
     ReactiveFormsModule,
     MatIconModule,
@@ -35,7 +34,6 @@ import {
   ],
   templateUrl: './design-system-preview.component.html',
   styleUrl: './design-system-preview.component.scss',
-  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class DesignSystemPreviewComponent {
   private readonly toast = inject(NxToast);

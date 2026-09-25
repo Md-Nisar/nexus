@@ -7,7 +7,6 @@ import { AuthStore } from '../../core/auth/auth.store';
 import { createAuthStoreStub, AuthStoreStub } from '../testing/auth.fixtures';
 
 @Component({
-  standalone: true,
   imports: [HasPermissionDirective],
   template: `<span *appHasPermission="perm()" data-testid="guarded">Manage users</span>`,
 })
@@ -16,14 +15,12 @@ class HostComponent {
 }
 
 @Component({
-  standalone: true,
   imports: [HasPermissionDirective],
   template: `<span *appHasPermission="''" data-testid="guarded-empty">Empty permission</span>`,
 })
 class EmptyPermissionHostComponent {}
 
 @Component({
-  standalone: true,
   imports: [HasPermissionDirective],
   template: `
     <span *appHasPermission="'users:read'" data-testid="guarded-read">Manage users</span>

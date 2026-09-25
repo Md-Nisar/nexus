@@ -1,11 +1,4 @@
-import {
-  ChangeDetectionStrategy,
-  Component,
-  computed,
-  inject,
-  OnInit,
-  signal,
-} from '@angular/core';
+import { Component, computed, inject, OnInit, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { AuthService } from '../auth.service';
@@ -55,8 +48,6 @@ import { PasswordStrengthMeterComponent } from '../registration-form/password-st
  */
 @Component({
   selector: 'nx-reset-password',
-  standalone: true,
-  changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [ReactiveFormsModule, RouterLink, NxInput, NxButton, PasswordStrengthMeterComponent],
   template: `
     <div class="reset-password-container">

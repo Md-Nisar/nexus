@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, inject, signal } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { RouterLink } from '@angular/router';
@@ -24,7 +24,6 @@ import { NxInput, NxButton } from '../../../shared/ui';
  */
 @Component({
   selector: 'app-registration-form',
-  standalone: true,
   imports: [
     ReactiveFormsModule,
     RouterLink,
@@ -36,7 +35,6 @@ import { NxInput, NxButton } from '../../../shared/ui';
   ],
   templateUrl: './registration-form.component.html',
   styleUrl: './registration-form.component.scss',
-  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class RegistrationFormComponent {
   private readonly authService = inject(AuthService);

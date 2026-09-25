@@ -1,11 +1,4 @@
-import {
-  ChangeDetectionStrategy,
-  Component,
-  forwardRef,
-  input,
-  output,
-  signal,
-} from '@angular/core';
+import { Component, forwardRef, input, output, signal } from '@angular/core';
 import { ControlValueAccessor, NG_VALUE_ACCESSOR, ReactiveFormsModule } from '@angular/forms';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
@@ -66,7 +59,6 @@ import { MatIconModule } from '@angular/material/icon';
  */
 @Component({
   selector: 'nx-input',
-  standalone: true,
   imports: [MatFormFieldModule, MatInputModule, MatIconModule, ReactiveFormsModule],
   providers: [
     {
@@ -110,7 +102,6 @@ import { MatIconModule } from '@angular/material/icon';
     </mat-form-field>
   `,
   styleUrl: './input.scss',
-  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class NxInput implements ControlValueAccessor {
   /**

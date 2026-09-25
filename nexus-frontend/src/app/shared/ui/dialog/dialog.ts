@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, inject, Service, TemplateRef } from '@angular/core';
+import { Component, inject, Service, TemplateRef } from '@angular/core';
 import {
   MAT_DIALOG_DATA,
   MatDialog,
@@ -137,7 +137,6 @@ export interface DialogData {
  */
 @Component({
   selector: 'nx-dialog-shell',
-  standalone: true,
   imports: [MatDialogModule, MatButtonModule, MatIconModule],
   template: `
     <div
@@ -171,7 +170,6 @@ export interface DialogData {
     </div>
   `,
   styleUrl: './dialog.scss',
-  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class NxDialogShell {
   /**
