@@ -7,6 +7,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ## [Unreleased]
 
+### Added — k6 performance-testing foundation
+
+- New `nexus-test/performance-test/` k6 suite: reusable scenarios (`platform-health`, authenticated `user-profile`) kept separate from workload profiles (smoke, load, stress, spike, soak), centralised `BASE_URL`-driven configuration, per-scenario p95/p99 threshold builder (example values only — no SLAs), and JSON summaries in `results/`. See `nexus-test/README.md`.
+- New `Performance Smoke` workflow (`performance-smoke.yml`): builds and starts the backend inside the runner, waits for `/actuator/health/readiness`, runs the smoke tests and uploads the results.
+
 ### Added — US-015 (Enable role and role-permission management API)
 
 **Backend**

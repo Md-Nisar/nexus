@@ -15,6 +15,7 @@ C:\entomo\ai\nexus
 ├── 📁 nexus-frontend/      # Encapsulated Angular frontend
 ├── 📁 nexus-database/      # Dedicated data infrastructure (mysql/init)
 ├── 📁 nexus-scripts/       # Automation, CI/CD, and dev tooling
+├── 📁 nexus-test/          # System-level test suites (k6 performance tests)
 │
 ├── 📁 docs/
 │   ├── 📁 adr/             # Architecture Decision Records
@@ -80,6 +81,7 @@ Full containerized stack: `docker compose --profile full up -d`.
 
 - **Backend CI** (`backend-ci.yml`) — build, Checkstyle, unit + integration tests (Testcontainers), per-layer JaCoCo coverage gates (see [TESTING.md](docs/TESTING.md)), SpotBugs, ArchUnit; optional SonarQube job
 - **Frontend CI** (`frontend-ci.yml`) — format check, ESLint, Vitest with coverage, production build, Playwright E2E
+- **Performance Smoke** (`performance-smoke.yml`) — starts the backend in the runner and runs the k6 smoke tests (see [nexus-test/](nexus-test/README.md)); on PRs touching `nexus-test/performance-test/` and on demand
 - **PR Title** (`commit-lint.yml`) — Conventional Commit title check
 - **Security Scan** (`security.yml`, weekly) — OWASP Dependency-Check, npm audit, Trivy (vulns + secrets)
 
