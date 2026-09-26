@@ -11,7 +11,6 @@
       "Edit(**)"
     ],
     "deny": [
-      "Bash(git push:*)",
       "Bash(git reset --hard:*)",
       "Bash(rm -rf:*)",
       "Bash(sudo:*)",
@@ -30,7 +29,6 @@
       "Edit(./.github/**)",
       "Edit(./.githooks/**)",
       "Edit(./nexus-scripts/**)",
-      "Edit(./.claude/settings.json)",
       "Edit(./.claude/hooks/**)",
       "Edit(./.mcp.json)"
     ]
