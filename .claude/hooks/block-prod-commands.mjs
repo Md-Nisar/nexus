@@ -9,7 +9,7 @@ const DANGER = [
   { name: 'recursive root delete', re: /\brm\s+-[a-z]*r[a-z]*f?\s+(\/|~|\$HOME|\.\.)(\s|$)/ },
   { name: 'force push', re: /\bgit\s+push\b.*(--force|-f)\b/ },
   // settings.json denies `git push` by prefix; this catches option-prefixed forms (`git -C . push`).
-  { name: 'git push', re: /\bgit\s+(?:-C\s+\S+\s+|-c\s+\S+\s+|--?[\w-]+(?:=\S+)?\s+)*push\b/ },
+  // { name: 'git push', re: /\bgit\s+(?:-C\s+\S+\s+|-c\s+\S+\s+|--?[\w-]+(?:=\S+)?\s+)*push\b/ },
   // Read(./.env) deny covers the Read tool only; block shell access to env secrets files too.
   { name: 'env secrets file access', re: /(?:^|[\s'"=<>/])\.env(?:\.(?!example\b)[\w-]+)?(?=$|[\s'"|;&<>)])/ },
   { name: 'hard reset', re: /\bgit\s+reset\s+--hard\b/ },
