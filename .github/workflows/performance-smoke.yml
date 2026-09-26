@@ -1,0 +1,121 @@
+name: Performance Smoke
+
+# Starts nexus-backend inside the runner and runs the k6 smoke tests against it. The tests
+# themselves know nothing about GitHub Actions — this workflow only provides BASE_URL (and,
+# optionally, credentials). See nexus-test/README.md.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'nexus-test/performance-test/**'
+      - '.github/workflows/performance-smoke.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  performance-smoke:
+    name: performance-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      BASE_URL: http://localhost:1000
+      TEST_ENV: ci
+      K6_VERSION: v1.3.0
+      # sha256 of k6-v1.3.0-linux-amd64.tar.gz, from the release's k6-v1.3.0-checksums.txt
+      K6_SHA256: 84d26fc1f7bc03e02f2e016b3b1b20c032e05dfe461fca82de4e3a6ebe72ddbd
+      # Optional: set these repository secrets to also run the authenticated smoke test.
+      PERF_USER_EMAIL: ${{ secrets.PERF_USER_EMAIL }}
+      PERF_USER_PASSWORD: ${{ secrets.PERF_USER_PASSWORD }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: nexus-test/performance-test/package-lock.json
+
+      - name: Install k6
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/k6.tar.gz" \
+            "https://github.com/grafana/k6/releases/download/${K6_VERSION}/k6-${K6_VERSION}-linux-amd64.tar.gz"
+          echo "${K6_SHA256}  $RUNNER_TEMP/k6.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/k6.tar.gz" -C "$RUNNER_TEMP"
+          sudo mv "$RUNNER_TEMP/k6-${K6_VERSION}-linux-amd64/k6" /usr/local/bin/k6
+          k6 version
+
+      - name: Check and inspect performance tests
+        working-directory: nexus-test/performance-test
+        run: |
+          npm ci
+          npm run format:check
+          npm run inspect
+
+      # Quality gates are Backend CI's job; this build only needs a runnable jar.
+      - name: Build application
+        working-directory: nexus-backend
+        run: mvn -B package -DskipTests -Dcheckstyle.skip -Dspotbugs.skip -Djacoco.skip
+
+      - name: Start application
+        run: |
+          docker compose up -d --wait mysql redis
+          cd nexus-backend
+          SPRING_PROFILES_ACTIVE=dev nohup java -jar target/nexus-backend-*.jar \
+            > "$RUNNER_TEMP/nexus-backend.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/nexus-backend.pid"
+
+      - name: Wait for application readiness
+        working-directory: nexus-test/performance-test
+        run: npm run wait-for-ready -- 180
+
+      - name: Smoke test — platform health
+        working-directory: nexus-test/performance-test
+        env:
+          K6_WEB_DASHBOARD: 'true'
+          K6_WEB_DASHBOARD_EXPORT: results/smoke-platform-health.html
+        run: npm run test:smoke
+
+      - name: Smoke test — user profile (authenticated)
+        if: ${{ env.PERF_USER_EMAIL != '' }}
+        working-directory: nexus-test/performance-test
+        env:
+          K6_WEB_DASHBOARD: 'true'
+          K6_WEB_DASHBOARD_EXPORT: results/smoke-user-profile.html
+        run: npm run test:smoke:user-profile
+
+      - name: Collect application log
+        if: always()
+        run: cp "$RUNNER_TEMP/nexus-backend.log" nexus-test/performance-test/results/ || true
+
+      - name: Upload performance results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: performance-smoke-${{ github.sha }}
+          path: nexus-test/performance-test/results
+          retention-days: 30
+
+      - name: Clean up
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/nexus-backend.pid" ]; then kill "$(cat "$RUNNER_TEMP/nexus-backend.pid")" || true; fi
+          docker compose down -v
