@@ -41,8 +41,10 @@ Steps:
    └─ Documentation
    ```
 
-4. Save to `docs/features/$1/04-tasks.md`.
+4. If `01-requirements.md` marks the feature a hot path (peak > 10 RPS or on every request), include a load-test task under **Tests** that asserts its p95 latency budget. If it states no budget, send that back as a Gate 1 gap rather than inventing one.
 
-5. If the Atlassian MCP is connected, offer to create matching Jira sub-tasks under `$1`. Ask before creating.
+5. Save to `docs/features/$1/04-tasks.md`.
+
+6. If the Atlassian MCP is connected, offer to create matching Jira sub-tasks under `$1`. Ask before creating.
 
 Approval gate before `/implement $1 T-001`.

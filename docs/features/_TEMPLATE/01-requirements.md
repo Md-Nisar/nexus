@@ -7,6 +7,8 @@
 # <FEATURE-ID> — <Feature name>: Requirements
 
 **Status:** Draft · **Owner:** <name> · **Gate 1:** _pending approval_
+<!-- On approval, replace the Gate 1 value with: approved <YYYY-MM-DD> by <approver>
+     (checked by /pre-pr-check). -->
 
 ## Problem statement
 <!-- One or two sentences: user outcome + business rule. -->
@@ -25,7 +27,8 @@
 
 ## Non-functional requirements
 - Security / PII / tenancy:
-- Performance / scale (expected RPS, data volume):
+- Performance / scale — expected and peak RPS, p95 latency budget, data volume and growth:
+- Hot path (peak > 10 RPS, or on every request)? yes/no — **yes** requires a load-test task in `04-tasks.md`:
 - Observability (metrics, logs, audit events):
 
 ## Business rules & constraints

@@ -250,7 +250,7 @@ Every non-trivial change follows this model. It is enforced by approval gates (h
 - **Architecture + API/DB + security review before coding** — Step 3, Gate 2.
 - **Testing** — test-first in Step 5; coverage gates in `docs/TESTING.md` enforced at Step 8 and CI.
 - **Documentation** — Step 9 + update standards/ADRs when conventions change.
-- **PR requirements** — `/pre-pr-check` green + Definition of Done (`CONTRIBUTING.md`) + Conventional Commit title + ≥1 code-owner approval.
+- **PR requirements** — `/pre-pr-check` green (for a feature: gate records in `01`/`03`/`04` and artifacts `03b`, `06`–`09` present) + Definition of Done (`CONTRIBUTING.md`) + Conventional Commit title + ≥1 code-owner approval.
 
 ## How gates are enforced (4 layers)
 

@@ -120,6 +120,7 @@ The `code-reviewer` and `architect` agents enforce these; ArchUnit and CI enforc
 7. Every endpoint declares explicit authentication and authorization.
 8. Integration tests (`*IT`) use Testcontainers MySQL — never H2. H2 is permitted only for the no-Docker context smoke test (see docs/TESTING.md).
 9. No `any` in TypeScript; modern built-in control flow (`@if`/`@for`), not `*ngIf`/`*ngFor` — custom structural directives (e.g. `*appHasPermission`) remain permitted for cross-cutting concerns. *(ESLint-enforced)*
+10. Query methods on tenant-owned entities filter by tenant; exceptions are allowlisted with a reason and security sign-off. *(ArchUnit-enforced: `TenantIsolationArchitectureTest`)*
 
 ## When to write an ADR
 
