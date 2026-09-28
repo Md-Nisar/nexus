@@ -44,7 +44,7 @@ If another Angular skill is applicable (for example, Forms, Signals, SSR, Migrat
 
 ## Precedence over the vendored Angular skills
 
-`angular-developer` and `angular-new-app` are generic upstream skills (pinned in `skills-lock.json`, do not edit). Use their references for API detail, but where they conflict with this project, the project wins:
+`angular-developer` is a generic upstream skill (pinned in `skills-lock.json`, do not edit). Use their references for API detail, but where they conflict with this project, the project wins:
 
 - **Styling:** Angular Material 3 via `shared/ui` + `--nx-*` tokens (`design-system` skill, ADR 0004) — not Tailwind.
 - **E2E:** Playwright (`npm run e2e`) — not Cypress.

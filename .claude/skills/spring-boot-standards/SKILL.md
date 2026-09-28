@@ -115,6 +115,16 @@ ProblemDetail handleNotFound(ResourceNotFoundException e) {
 - Use `SecureRandom`, never `Math.random`, for any security-sensitive randomness.
 - Bean validation is **not** a security boundary. Always validate again at the service layer for sensitive operations.
 
+## Resilience (outbound calls)
+
+Every call that leaves the JVM — MySQL, Redis, SMTP, any HTTP client — must be bounded:
+
+- **Explicit timeouts** on connect and read, set in `application.yml`, never the library default (often infinite). Redis is `spring.data.redis.timeout`; SMTP needs `mail.smtp.connectiontimeout`/`timeout`/`writetimeout`.
+- **Failure mode is a design decision, per capability** — fail-open vs fail-closed is recorded in the design (see ADR 0016's per-capability table for Redis). Security decisions (authz, lockout, denylist) fail **closed**.
+- **Retries** only for idempotent operations, bounded (≤ 3 attempts, exponential backoff with jitter), and never inside a DB transaction. Non-idempotent writes need an idempotency key (`api-design` skill).
+- **No unbounded queues or buffers** in memory; a bounded buffer states what it drops and emits a metric when it does (ADR 0011 is the reference).
+- Add a circuit breaker only when a dependency failure would otherwise exhaust request threads — record the choice in the design, don't add one by default.
+
 ## Testing
 
 - **Unit:** plain JUnit 5 + Mockito. No Spring context.
