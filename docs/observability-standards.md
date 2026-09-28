@@ -159,6 +159,22 @@ Link from `docs/features/<FEATURE-ID>/monitoring.md`.
 
 ---
 
+## Service Level Objectives
+
+SLOs are the targets the per-feature p95 budgets in `01-requirements.md` roll up to. Measured monthly (30-day rolling) from the HTTP server metrics above; health and actuator endpoints excluded.
+
+| SLI | Default SLO | Measured as |
+|-----|-------------|-------------|
+| Availability | 99.9% | non-5xx responses ÷ all responses, authenticated API |
+| Latency — reads | p95 < 300 ms | `http.server.requests` histogram, `GET` |
+| Latency — writes | p95 < 500 ms | `http.server.requests` histogram, non-`GET` |
+
+These are **platform defaults until product sets contractual targets**. A feature may set a tighter budget in its `01-requirements.md`; a looser one needs an explicit Gate 1 decision.
+
+**Error budget:** 99.9% ≈ 43 min of unavailability per 30 days. When a service has spent its budget, the next release in that area is reliability work only, until the rolling window recovers. Burn-rate alerts (below) protect the budget; the p95-degradation alert protects the latency SLO.
+
+---
+
 ## Alerts
 
 ### Alert quality bar
@@ -178,6 +194,8 @@ Every alert must answer: "What broke, who does it affect, and what do I do?"
 | Alert | Threshold | Severity |
 |-------|-----------|----------|
 | Error rate spike | > 1% for 5 min | page |
+| Error-budget burn (fast) | 14.4× burn rate over 1 h (≈ 2% of monthly budget) | page |
+| Error-budget burn (slow) | 6× burn rate over 6 h (≈ 5% of monthly budget) | ticket |
 | Latency p95 degradation | > 2× baseline for 10 min | ticket |
 | DB connection pool exhausted | > 90% for 2 min | page |
 | Disk usage | > 80% | ticket |

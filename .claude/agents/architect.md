@@ -4,6 +4,9 @@ description: Use for Phase 2 impact analysis and Phase 3 solution design. Produc
 tools: Read, Edit, Grep, Glob, WebFetch, Write
 skills:
   - api-design
+  - spring-boot-standards
+  - angular-standards
+  - design-system
 model: opus
 ---
 

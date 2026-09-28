@@ -22,6 +22,8 @@ Apply **STRIDE** to each component and trust boundary in the design:
 - **D**enial of service — what's the cost amplification on an unauthenticated path?
 - **E**levation of privilege — can a regular user become admin?
 
+For every component that reads or writes tenant-owned data, add a **cross-tenant access** row: can a caller in tenant A read, modify, or enumerate tenant B's data (IDs in paths/bodies, unscoped queries, caches/Redis keys, async jobs, audit reads)? Name the tenant predicate or check that stops it.
+
 Output `docs/features/<FEATURE-ID>/03b-threat-model.md` with:
 - Component-by-component STRIDE table
 - Identified threats (with severity)
@@ -34,7 +36,7 @@ Output `docs/features/<FEATURE-ID>/03b-threat-model.md` with:
 Walk through every file changed. Check:
 
 1. **Authentication** — token validation, expiry, refresh handling, replay protection
-2. **Authorization** — every endpoint has explicit auth (`@PreAuthorize` or equivalent); object-level checks against IDOR; tenant isolation (if auth module exists)
+2. **Authorization** — every endpoint has explicit auth (`@PreAuthorize` or equivalent); object-level checks against IDOR; tenant isolation — tenant id comes from the token, never the request; any addition to `UNSCOPED_ALLOWLIST` in `TenantIsolationArchitectureTest` needs a stated reason and your explicit sign-off
 3. **Input validation** — bean validation on DTOs; size limits; sanitisation for any string rendered downstream
 4. **OWASP Top 10:**
    - A01 Broken Access Control

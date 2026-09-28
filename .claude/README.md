@@ -22,7 +22,7 @@ This directory configures Claude Code for the Nexus project. Everything here is 
 │   └── userstory-plan.md  userstory-action.md      # batch runners for each half
 ├── skills/                # Standards skills + workflow skills
 │   ├── spring-boot-standards/  angular-standards/  api-design/  design-system/   # standards (auto-loaded by topic)
-│   ├── angular-developer/  angular-new-app/        # vendored from angular/skills (skills-lock.json)
+│   ├── angular-developer/                          # vendored from angular/skills (skills-lock.json)
 │   └── feature-discovery/  pr-checklist/  pr-authoring/  sonar-triage/  sonar-safe-fix/   # workflow procedures
 └── hooks/                 # Cross-platform Node hooks wired into settings.json
     ├── _hooklib.mjs            # shared helpers
@@ -83,3 +83,5 @@ All artifacts land in `docs/features/<FEATURE-ID>/` using the **numbered convent
 - After every feature, run `/retro <FEATURE-ID>`. If new conventions emerged, update the relevant agent or skill files.
 - Treat agent and skill files as code: PR them, review them, keep them in sync with reality.
 - If a hook fires too often or not enough, tune it — hooks are leverage; bad hooks are friction.
+- Plugins `superpowers`, `feature-dev` and `frontend-design` are disabled in `settings.json` on purpose: the first two ship competing feature workflows that bypass `/new-feature`'s gates, and the third contradicts the `design-system` rules (ADR 0004). Don't re-enable them without changing the operating model.
+- New third-party skills are vendored, reviewed, and pinned by hash in `skills-lock.json` — a skill is instructions Claude follows, so treat it as a dependency.
