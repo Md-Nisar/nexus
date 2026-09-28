@@ -28,7 +28,7 @@
 ## Non-functional requirements
 - Security / PII / tenancy:
 - Performance / scale — expected and peak RPS, p95 latency budget, data volume and growth:
-- Hot path (peak > 10 RPS, or on every request)? yes/no — **yes** requires a load-test task in `04-tasks.md`:
+- Hot path (peak > 10 RPS, or on every request)? yes/no — **yes** requires a load test in the owning slice in `04-tasks.md`:
 - Observability (metrics, logs, audit events):
 
 ## Business rules & constraints

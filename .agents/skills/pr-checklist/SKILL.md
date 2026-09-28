@@ -58,6 +58,8 @@ for f in 03b-threat-model 06-code-review 07-security-review 08-test-audit 09-tec
 done
 ```
 
+If any record reads `by claude-agent:<name>` (an `/autonomous-feature` run), the PR body must contain the **Autonomous run (pilot)** gate table — otherwise **FAIL**: a PR must never imply human sign-off that did not happen.
+
 Stories merged before this check existed (US-001–US-017) are not re-checked; it applies to the feature the current branch changes.
 
 ## Definition of Done
