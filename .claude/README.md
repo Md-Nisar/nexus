@@ -13,6 +13,7 @@ This directory configures Claude Code for the Nexus project. Everything here is 
 │   └── code-reviewer.md      security-reviewer.md  qa-engineer.md     release-manager.md
 ├── commands/              # Slash commands
 │   ├── new-feature.md     # /new-feature <ID>      ← canonical front door (plan half + gates)
+│   ├── autonomous-feature.md # /autonomous-feature <ID> ← PILOT: unattended Phases 0–9 → draft PR (low/medium risk only)
 │   ├── pre-pr-check.md    # /pre-pr-check          ← run all local gates + DoD before a PR
 │   ├── security-review.md # /security-review [ID]  ← ad-hoc diff security audit
 │   ├── analyze-story.md  impact-analysis.md  design.md  breakdown.md   # plan phases 1–4
@@ -75,7 +76,7 @@ All artifacts land in `docs/features/<FEATURE-ID>/` using the **numbered convent
 
 - Each sub-agent has its own context — heavy exploration in a sub-agent keeps your main thread clean.
 - Run `/context` to check usage. Run `/compact` between major tasks if creeping toward limits.
-- Model tiering — **`opus`** where the agent's judgment is the last line of defense: `architect` (the design every later phase builds on; a flaw costs a revision loop with the security reviewer), `security-reviewer` (the adversarial backstop — it has caught real lock-scope and deadlock-proof defects on RBAC work; do not downgrade it without a deliberate, human-made edit), and `code-reviewer` (the fresh-context pass before merge). **`sonnet`** where output is closely specified and verified downstream: `backend-engineer` and `frontend-engineer` (implement an approved task, checked by tests, ArchUnit, CI and the opus reviewers; `/implement` escalates a task to `opus` when it is Complexity L or touches authz, locking or crypto), `qa-engineer` (coverage gates are mechanical), `business-analyst` (a human approves Gate 1) and `release-manager` (checklist-driven). Engineers run most often, so this split keeps per-story cost down where the review net is strongest.
+- Model tiering — **`opus`** where the agent's judgment is the last line of defense: `architect` (the design every later phase builds on; a flaw costs a revision loop with the security reviewer), `security-reviewer` (the adversarial backstop — it has caught real lock-scope and deadlock-proof defects on RBAC work; do not downgrade it without a deliberate, human-made edit), and `code-reviewer` (the fresh-context pass before merge). **`sonnet`** where output is closely specified and verified downstream: `backend-engineer` and `frontend-engineer` (implement an approved task, checked by tests, ArchUnit, CI and the opus reviewers; `/implement` escalates a task to `opus` when it touches authz, locking or crypto), `qa-engineer` (coverage gates are mechanical), `business-analyst` (a human approves Gate 1) and `release-manager` (checklist-driven). Engineers run most often, so this split keeps per-story cost down where the review net is strongest.
 - For a quick fix that doesn't need the full workflow: just talk to Claude directly. The workflow is for substantial features.
 
 ## Maintaining this directory

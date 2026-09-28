@@ -245,6 +245,8 @@ Every non-trivial change follows this model. It is enforced by approval gates (h
 
 `/userstory-plan` and `/userstory-action` run each half as a batch. Before any PR: **`/pre-pr-check`**.
 
+**Pilot — autonomous delivery.** `/autonomous-feature <ID>` runs Phases 0–9 unattended for **low/medium-risk** stories: agents hold Gates 2–3 and per-task plan approval (recorded as `claude-agent:<name>`), a human answers Gate 1 open questions and reviews the draft PR. High-risk stories stay on the human-gated flow above. Cloud setup: `docs/runbooks/cloud-agent-setup.md`.
+
 ### Requirements summary
 - **Discovery/analysis before coding** — Steps 0–2, reuse-first.
 - **Architecture + API/DB + security review before coding** — Step 3, Gate 2.

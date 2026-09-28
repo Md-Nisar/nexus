@@ -12,7 +12,7 @@ Routing:
 - If the task is backend, use the **backend-engineer** sub-agent.
 - If frontend, use **frontend-engineer**.
 - If it spans both, do backend first, then frontend, in separate sub-agent invocations.
-- **Model:** the engineer agents default to `sonnet`. Dispatch with `model: opus` (both plan and implementation calls) when the task in `04-tasks.md` is **Complexity: L**, or its Risks name authorization, locking/concurrency, or cryptography.
+- **Model:** the engineer agents default to `sonnet`. Dispatch with `model: opus` (both plan and implementation calls) when the task's Risks in `04-tasks.md` name authorization, locking/concurrency, or cryptography. Size alone does not escalate — tasks are sized to fit one agent run (`/breakdown`).
 
 ## Workflow
 
@@ -25,7 +25,7 @@ Sub-agents cannot enter plan mode or wait for the user, so the gate is held by *
 - Any clarifications needed
 - Dependencies on other tasks
 
-Present the plan to the user. **Stop and wait for explicit user approval.** Do not invoke the agent for implementation until approved.
+Present the plan to the user. **Stop and wait for explicit user approval.** Do not invoke the agent for implementation until approved. Under `/autonomous-feature` (pilot), the **code-reviewer** agent holds this gate instead — dispatch it with the plan, `03-design.md` and the task; implement only on its approval, and record it per that command.
 
 ### Step 2 — Implementation (after approval)
 
