@@ -12,6 +12,7 @@ Routing:
 - If the task is backend, use the **backend-engineer** sub-agent.
 - If frontend, use **frontend-engineer**.
 - If it spans both, do backend first, then frontend, in separate sub-agent invocations.
+- **Model:** the engineer agents default to `sonnet`. Dispatch with `model: opus` (both plan and implementation calls) when the task in `04-tasks.md` is **Complexity: L**, or its Risks name authorization, locking/concurrency, or cryptography.
 
 ## Workflow
 
