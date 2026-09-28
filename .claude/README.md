@@ -75,7 +75,7 @@ All artifacts land in `docs/features/<FEATURE-ID>/` using the **numbered convent
 
 - Each sub-agent has its own context — heavy exploration in a sub-agent keeps your main thread clean.
 - Run `/context` to check usage. Run `/compact` between major tasks if creeping toward limits.
-- `architect` defaults to `sonnet` (2026-09 retro: was `opus`, moved to cut plan-phase cost — its job is applying established patterns and writing contracts, not adversarial reasoning). `security-reviewer` remains `opus` — it is the epic's adversarial backstop and has caught real defects (lock-scope, deadlock-proof gaps) at that depth on RBAC work; do not downgrade it without a deliberate, human-made edit to `security-reviewer.md`. Engineers, reviewers, and QA are `sonnet`. Escalate `architect` to `opus` per story (edit its frontmatter, or override with `--model`) when a story is flagged security-critical.
+- Model tiering: `architect`, `security-reviewer`, `backend-engineer`, `frontend-engineer`, `code-reviewer` and `qa-engineer` run on `opus` (2026-09: moved up from `sonnet` for design, implementation, review and test depth). `business-analyst` and `release-manager` stay `sonnet`. `security-reviewer` is the epic's adversarial backstop and has caught real defects (lock-scope, deadlock-proof gaps) at that depth on RBAC work; do not downgrade it without a deliberate, human-made edit to `security-reviewer.md`. Opus costs more per run — override per invocation with `--model` for low-risk stories.
 - For a quick fix that doesn't need the full workflow: just talk to Claude directly. The workflow is for substantial features.
 
 ## Maintaining this directory

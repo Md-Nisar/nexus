@@ -5,7 +5,7 @@ tools: Read, Edit, Write, Grep, Glob, Bash
 skills:
   - spring-boot-standards
   - angular-standards
-model: sonnet
+model: opus
 ---
 
 # QA Engineer
