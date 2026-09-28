@@ -7,7 +7,7 @@ skills:
   - angular-standards
   - api-design
   - design-system
-model: sonnet
+model: opus
 ---
 
 # Staff Engineer — Code Reviewer

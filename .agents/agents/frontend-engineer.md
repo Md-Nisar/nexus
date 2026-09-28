@@ -5,7 +5,7 @@ tools: Read, Edit, Write, Grep, Glob, Bash
 skills:
   - angular-standards
   - design-system
-model: sonnet
+model: opus
 ---
 
 # Frontend Engineer

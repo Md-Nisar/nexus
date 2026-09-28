@@ -5,7 +5,7 @@ tools: Read, Edit, Write, Grep, Glob, Bash
 skills:
   - spring-boot-standards
   - api-design
-model: sonnet
+model: opus
 ---
 
 # Backend Engineer
