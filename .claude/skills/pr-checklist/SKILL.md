@@ -32,6 +32,34 @@ npm run build                  # production build (validates strict templates + 
 npm run e2e                    # if UI behavior changed (first run: npx playwright install chromium)
 ```
 
+## Feature artifacts & gate records
+
+Identify the feature from the diff (`docs/features/<ID>/` paths) or the branch name. No feature ID → a quick fix; skip this section and say so in the report.
+
+For a feature branch, every item below must be present — a missing one is a **FAIL**, not a warning:
+
+| Artifact | Required content |
+|---|---|
+| `01-requirements.md` | `**Gate 1:** approved <YYYY-MM-DD>` |
+| `03-design.md`, `03b-threat-model.md` | `**Gate 2:** approved <YYYY-MM-DD>` in `03-design.md` |
+| `04-tasks.md` | `**Gate 3:** approved <YYYY-MM-DD>` |
+| `06-code-review.md` | verdict `APPROVE` or `APPROVE WITH NITS` |
+| `07-security-review.md` | no open Blocker |
+| `08-test-audit.md` | present |
+| `09-technical.md` | present |
+
+```bash
+ID=<FEATURE-ID>; d=docs/features/$ID
+for n in 1:01-requirements 2:03-design 3:04-tasks; do
+  grep -qE "\*\*Gate ${n%%:*}:\*\* approved [0-9]{4}-[0-9]{2}-[0-9]{2}" "$d/${n#*:}.md" || echo "FAIL: Gate ${n%%:*} record"
+done
+for f in 03b-threat-model 06-code-review 07-security-review 08-test-audit 09-technical; do
+  [ -f "$d/$f.md" ] || echo "FAIL: missing $f.md"
+done
+```
+
+Stories merged before this check existed (US-001–US-017) are not re-checked; it applies to the feature the current branch changes.
+
 ## Definition of Done
 
 The canonical checklist is **`CONTRIBUTING.md` → Definition of Done** — read it and walk every item against the diff. This skill adds nothing to that list; it only automates the executable parts above.
