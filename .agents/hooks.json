@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .claude/hooks/block-prod-commands.mjs"
+            "command": "node ../.claude/hooks/block-prod-commands.mjs"
           }
         ]
       },
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .claude/hooks/secret-scan.mjs"
+            "command": "node ../.claude/hooks/secret-scan.mjs"
           }
         ]
       }
@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .claude/hooks/format.mjs"
+            "command": "node ../.claude/hooks/format.mjs"
           }
         ]
       }
@@ -34,7 +34,7 @@
     "Stop": [
       {
         "type": "command",
-        "command": "node .claude/hooks/run-tests.mjs"
+        "command": "node ../.claude/hooks/run-tests.mjs"
       }
     ]
   }
