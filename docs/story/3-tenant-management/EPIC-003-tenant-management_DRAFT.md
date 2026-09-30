@@ -7,7 +7,7 @@ STATUS:        DRAFT — rewritten 2026-09-30, pending Gate 1 on each story
 PRIORITY:      P0 (MVP slice) — later phases prioritised per story
 STORIES:       US-021 … US-044 (24 stories; 13 in MVP)
 BLOCKED BY:    EPIC-002 entry criteria (Open Decision #4 ArchUnit gate; US-016/US-017 merged),
-               US-018 (RBAC hardening)
+               US-018 (RBAC hardening — planned, not yet filed in docs/story/2-rbac/)
 RELATED:       US-019 / US-020 (RBAC UI) — role-assignment screens live there, not here
 BLOCKS:        Any customer-facing feature that stores tenant-owned data
 ```
@@ -79,7 +79,7 @@ BLOCKS:        Any customer-facing feature that stores tenant-owned data
 | Provisioning creates the tenant **plus its system roles** and **invites** the first admin by email | G4; Auth0 Organizations / Atlassian invitation pattern |
 | New **tenant-aware sign-in** story (tenant resolved from a slug) | G5 — without it the epic cannot onboard a second customer |
 | **Organisations deferred** to "Later" and redefined with membership | G6; research: keep one tenant level until a customer needs sub-units (§A.3) |
-| Implementation code removed; stories carry testable Given/When/Then criteria, dependencies and code anchors | G7, G12 |
+| Implementation code removed; stories carry testable Given/When/Then criteria and dependencies, and MVP stories carry code anchors | G7, G12 |
 | `FileStorageService` **cut**; logo is a validated HTTPS URL in MVP, upload later | G8 (CLAUDE.md §2 — nothing speculative) |
 | Suspension target tightened to **≤ 60 s**, and login/refresh also blocked | G9 |
 | Lifecycle gains **PENDING_DELETION** with a restore window; purge tied to ADR 0020 | G10; Entra 30-day soft delete, Atlassian 14-day, GitHub/AWS 90-day patterns |
@@ -170,7 +170,7 @@ start with `nexus-`, `docs/` or `src/`; bare `V*__*.sql` names are under
 | Concern | Current state | Code anchors |
 |---|---|---|
 | Bounded contexts | `identity`, `rbac`, `common`, `config`. **No tenant context.** | package tree |
-| Tenant entity | **None.** No `tenants` table. The bootstrap tenant `00000000-0000-7000-8000-000000000001` exists only as a literal on the seeded `roles` rows. | `nexus-backend/src/main/resources/db/migration/V5__rbac_schema.sql` (seed section); ADR 0014 D5 |
+| Tenant entity | **None.** No `tenants` table. The bootstrap tenant `00000000-0000-7000-8000-000000000001` exists only as a literal: on the seeded `roles` rows, in `application-dev.yml` / `application-test.yml`, and used by the dev-only `identity/infrastructure/seed/DevDataInitializer.java`. | `nexus-backend/src/main/resources/db/migration/V5__rbac_schema.sql` (seed section); ADR 0014 D5 |
 | Isolation model | **Pool** — shared schema, `tenant_id BINARY(16)` column, no FK. On `users` (NOT NULL, `UNIQUE (tenant_id, email_hmac)`), `roles` (NOT NULL, `UNIQUE (tenant_id, name)`), `user_roles` (NOT NULL), `auth_events` (NULL). `user_roles.tenant_id` is not constrained to match the user's or role's tenant. | `V2__identity_schema.sql`, `V5__rbac_schema.sql` |
 | Query scoping | Manual: tenant-scoped derived/JPQL queries plus service-level checks (`verifySameTenant`, `resolveRoleInTenant`). An ArchUnit rule requires tenant scoping on *declared* repository methods, with a 6-entry allowlist; **inherited `findById`/`findAll` and JPQL bodies are not checked** (stated in the test's own Javadoc). | `rbac/application/RoleAssignmentService.java`, `rbac/application/RoleManagementService.java`, `nexus-backend/src/test/java/com/example/nexus/architecture/TenantIsolationArchitectureTest.java` |
 | Tenant resolution (unauthenticated) | Controllers inject `@Value("${nexus.identity.default-tenant-id}")` and pass it to use cases. **Every self-registered user lands in the default tenant**, with **no role**. | `identity/interfaces/rest/RegistrationController.java`, `LoginController.java`, `PasswordResetController.java`; `identity/application/RegisterUserUseCase.java` |
@@ -178,7 +178,7 @@ start with `nexus-`, `docs/` or `src/`; bare `V*__*.sql` names are under
 | JWT | RS256; claims `sub`, `tenant_id`, `email_verified`, `roles`, `permissions`, `token_version`, `schema_version`, `jti`, `iat`, `exp`. **`verify()` does not require `tenant_id`** (null passes). Access-token TTL 900 s; no per-request user/tenant status check. | `identity/infrastructure/security/JwtRs256Service.java`; `nexus-backend/src/main/resources/application.yml` (`access-token-ttl-seconds: 900`) |
 | Authorisation | `@RequiresPermission` → `TenantAwarePermissionEvaluator` checks the permission is in the JWT `permissions` claim; no DB lookup per request. Seeded permissions: `tenant:read`, `tenant:write`, `user:read`, `user:write`, `role:read`, `role:write`, `audit:read`. `TENANT_ADMIN` holds all seven; `MEMBER` holds `user:read`. **No platform/super-admin concept.** | `common/security/RequiresPermission.java`, `common/security/TenantAwarePermissionEvaluator.java`, `V5__rbac_schema.sql`, `rbac/domain/RbacDangerousPermissions.java` |
 | Unused permissions | `tenant:read`, `tenant:write`, `audit:read` are seeded but no endpoint uses them. | every `@RequiresPermission` call site uses only `ROLE_READ`, `ROLE_WRITE`, `USER_READ` or `USER_WRITE` |
-| Redis keys | Permission cache is tenant-scoped (`…:rbac:permset:{tenantId}:{userId}`). Login/forgot/reset rate-limit keys are **not** tenant-scoped (`USER:{emailHmac}`, `IP:…`), so the same email in two tenants shares one lockout bucket. | `rbac/infrastructure/cache/RedisPermissionCacheAdapter.java`, `identity/infrastructure/web/LoginRateLimitFilter.java`, `identity/infrastructure/security/RedisRateLimitStore.java`; ADR 0016 D3 |
+| Redis keys | Permission cache is tenant-scoped (`…:rbac:permset:{tenantId}:{userId}`). Login/forgot/reset rate-limit keys are **not** tenant-scoped (`USER:{emailHmac}`, `IP:…`), so the same email in two tenants shares one bucket. The rate-limit store defaults to in-memory per instance (`nexus.security.rate-limit.store-type: memory`); Redis is optional. | `rbac/infrastructure/cache/RedisPermissionCacheAdapter.java`, `identity/infrastructure/web/LoginRateLimitFilter.java`, `identity/infrastructure/security/RedisRateLimitStore.java`; ADR 0016 D3 |
 | Quotas | Only `nexus.rbac.max-roles-per-tenant` (default 500). ADR 0019 (per-tenant fairness) is **Proposed**, all questions open. | `rbac/application/RoleManagementService.java`; `docs/adr/0019-tenant-fairness-and-quotas.md` |
 | Audit | One append-only table `auth_events` (nullable `tenant_id`, triggers block UPDATE/DELETE), written via `SecureEventService` (REQUIRES_NEW, ADR 0009) with a retry buffer (ADR 0011). Event types in `AuthEventType` — **no TENANT_\* events; no read API**. | `identity/application/service/SecureEventService.java`, `identity/domain/AuthEventType.java`, `identity/infrastructure/audit/AuthEventRetryBuffer.java` |
 | Users & invitations | Only `GET /api/v1/users/me` and `/api/v1/users/{userId}/roles`. No user list, no invitations, no SSO/SCIM. `UserStatus` = `PENDING, ACTIVE, LOCKED, DISABLED`; `DISABLED` is treated as terminal by self-service reset. | `identity/interfaces/rest/UserProfileController.java`, `rbac/interfaces/rest/UserRoleController.java`, `identity/domain/UserStatus.java`, `identity/domain/User.java` |
@@ -186,7 +186,7 @@ start with `nexus-`, `docs/` or `src/`; bare `V*__*.sql` names are under
 | Background jobs | Only the audit retry-buffer drain (`@Scheduled`) and async mail listeners; MDC (incl. `tenantId`) is propagated to async threads. No outbox, no tenant-aware jobs. | `identity/infrastructure/audit/AuthEventRetryBuffer.java`, `config/AsyncConfig.java`, `common/web/MdcTaskDecorator.java` |
 | File storage | **None.** | — |
 | Feature flags | Static properties + `@ConditionalOnProperty` per story (`feature.nexus-us0xx-…`); no per-tenant flags. | `nexus-backend/src/main/resources/application.yml` (`feature:` block) |
-| Data lifecycle | No export, deletion, or retention jobs. ADR 0020 is **Proposed**, all questions open. Append-only triggers on `auth_events` and `user_roles` will block naïve hard deletes. | `docs/adr/0020-tenant-data-lifecycle.md`, `V2__identity_schema.sql`, `V5__rbac_schema.sql` |
+| Data lifecycle | No export, deletion, or retention jobs. ADR 0020 is **Proposed**, all questions open. `auth_events` is append-only (UPDATE and DELETE blocked by triggers); `user_roles` blocks DELETE only (revocation is an UPDATE of `revoked_at`). Both will block naïve hard deletes. | `docs/adr/0020-tenant-data-lifecycle.md`, `V2__identity_schema.sql`, `V5__rbac_schema.sql` |
 | DB grants | Least-privilege `nexus_app` user, per-table grants in three places (ADR 0012/0014 follow-on rule: every new table adds its grants in the same story). | `nexus-database/mysql/init/02-grants-post-schema.sql`, `nexus-backend/src/test/resources/nexus-app-grants.sql`, prod runbook |
 | Frontend | Token in memory (`AuthStore` signal); `tenantId` available only via `currentUser()?.tenantId` from `/users/me`; no tenant context service; header in `app.html` shows only a wordmark and theme toggle; `permissionGuard` exists but no route uses it; no admin UI. | `nexus-frontend/src/app/core/auth/auth.store.ts`, `nexus-frontend/src/app/features/auth/auth.service.ts`, `nexus-frontend/src/app/shared/types/auth.ts`, `nexus-frontend/src/app/app.html`, `nexus-frontend/src/app/core/guards/permission.guard.ts`, `nexus-frontend/src/app/app.routes.ts` |
 | Config drift | ADR 0014 D5 specified a fallback for `default-tenant-id`; ADR 0015 D8 deliberately removed it for prod-safety, so `application.yml` has none and dev/test set it explicitly. Consistent with ADR 0015, not a bug. | `application.yml` (`default-tenant-id: ${NEXUS_IDENTITY_DEFAULT_TENANT_ID}`), `docs/adr/0015-us-009-threat-model-hardening.md` D8 |
@@ -241,8 +241,10 @@ Operator capabilities must never be reachable by a tenant admin (G3). Recommenda
 - Operator endpoints live under `/api/v1/platform/**`. They take the *target* tenant id from the
   path; the *caller's* tenant still comes from the token. This is an explicit, documented exception
   to the `docs/ARCHITECTURE.md` rule "tenant id comes from the auth token, never from request
-  body/path" and needs an ADR amendment plus a threat model (ADR 0013 D6 requires re-review for any
-  cross-tenant authority).
+  body/path" and needs an ADR recording that exception plus a threat model. ADR 0013 D6's
+  tenant-provenance invariant must additionally be re-reviewed **if** the design introduces any new
+  producer of `Authentication` details (e.g. a "target tenant" context); the recommended design does
+  not, keeping the target tenant as an ordinary path parameter.
 
 This mirrors GitHub Enterprise (enterprise owners are separate from org owners and get no org
 content by default) and AWS Organizations (management account separate from member accounts).
@@ -259,11 +261,12 @@ A filter after `JwtAuthenticationFilter` resolves the caller's tenant status fro
 non-active tenants. Login and refresh also check tenant status, because suspending must stop new
 sessions too (G9). Cache entries are deleted on every status change and have a short TTL.
 
-**G. Lifecycle — PENDING → ACTIVE ⇄ SUSPENDED → PENDING_DELETION → (restore | DELETED).**
+**G. Lifecycle — PENDING → ACTIVE (on first admin acceptance) ⇄ SUSPENDED; PENDING / ACTIVE /
+SUSPENDED → PENDING_DELETION → (restore | DELETED).**
 `PENDING_DELETION` blocks access like `SUSPENDED` but is restorable for a grace period
 (30 days proposed — Entra's 30-day user restore; Atlassian uses 14 days for managed accounts,
 GitHub 90 for repos/members, AWS 90 for closed accounts). Restore returns the tenant to `SUSPENDED`
-so an operator re-activates it deliberately. The purge
+(or `PENDING` if it was never activated) so an operator re-activates it deliberately. The purge
 into `DELETED` is gated on ADR 0020 decisions (US-039).
 
 **H. Audit — reuse `auth_events` via `SecureEventService`, add TENANT\_\* / MEMBER\_\* / INVITATION\_\* event types.**
@@ -361,9 +364,10 @@ rejected by the database instead of silently creating invisible tenants.
 4. **Given** a user in tenant A and a role in tenant B, **when** a `user_roles` row linking them is
    inserted directly in SQL, **then** it is rejected by a DB constraint (composite FK or trigger —
    chosen at Gate 2).
-5. **Given** the `nexus_app` user, **when** it runs the application's tenant queries, **then** it has
-   exactly the grants the design specifies in `02-grants-post-schema.sql`, `nexus-app-grants.sql`
-   and the prod runbook (no `DELETE` on `tenants` or `tenant_status_history`).
+5. **Given** the `nexus_app` user, **when** grants are inspected in `02-grants-post-schema.sql`,
+   `nexus-app-grants.sql` and the prod runbook, **then** all three list the same grants — proposed
+   `SELECT, INSERT, UPDATE` on `tenants` and `SELECT, INSERT` on `tenant_status_history`, with no
+   `DELETE` on either (final set confirmed at Gate 2).
 6. **Given** Testcontainers ITs, **when** the migration chain V1→latest runs, **then** it is green and
    Hibernate `ddl-auto=validate` passes.
 
@@ -387,12 +391,13 @@ malformed token.
 2. **Given** a repository whose entity has a `tenantId` field, **when** production code calls an
    inherited `findById`, `findAll`, `existsById` or `deleteById` on it outside an allowlisted
    adapter, **then** `TenantIsolationArchitectureTest` fails the build.
-3. **Given** the same email address registered in tenants A and B, **when** 10 failed logins are
-   made against tenant A, **then** tenant B's account for that email is neither rate-limited nor
-   locked (rate-limit keys include the tenant id).
+3. **Given** the login/forgot/reset rate-limit and lockout key builders, **when** unit-tested, **then**
+   every per-user key includes the tenant id (per-IP keys stay global). The end-to-end behaviour —
+   the same email in tenants A and B, 5 failed logins against A from one IP and a login to B from
+   a second IP, B unaffected — is asserted in US-027, the first story where two tenants can sign in.
 4. **Given** the existing 6-entry `UNSCOPED_ALLOWLIST`, **when** this story completes, **then** each
-   entry is either removed (method gains a tenant predicate) or re-justified in the PR with
-   security-reviewer sign-off.
+   entry either gains a tenant predicate and is removed, or carries an inline reason comment in the
+   test and is listed in the story's `07-security-review.md` as reviewed.
 5. **Given** every Redis key written by the application, **when** it holds tenant-owned data,
    **then** it contains the tenant id per ADR 0016 D3 (verified by a test enumerating key builders).
 
@@ -416,18 +421,23 @@ no tenant admin can escalate into cross-tenant control.
    `TENANT_ADMIN` or `MEMBER` role in any tenant.
 2. **Given** a tenant admin with `role:write`, **when** they call
    `POST /api/v1/roles/{roleId}/permissions` with a platform-scope permission, **then** the request
-   is rejected (403 or 422, code at Gate 2) and an audit event is recorded.
+   is rejected with 403 and an audit event is recorded; platform permissions are attached only by
+   migration seed, never through the API (`RoleManagementService` attach path rejects them).
 3. **Given** the seeded operator tenant, **when** it is inspected, **then** it holds
    `PLATFORM_OPERATOR` (both platform permissions) and `PLATFORM_SUPPORT` (`platform_tenant:read`)
-   system roles, and self-registration can never create users in it.
+   system roles plus its own `TENANT_ADMIN`, so further operators and support agents are invited and
+   deactivated with the ordinary US-028 / US-030 flows inside the operator tenant; self-registration
+   can never create users in it.
 4. **Given** a user holding `TENANT_ADMIN` in any customer tenant, **when** they call any
    `/api/v1/platform/**` endpoint, **then** they receive 403 `RBAC_001` (merge-blocking IT).
-5. **Given** the design, **when** Gate 2 completes, **then** an ADR amendment records the
-   `/api/v1/platform/**` path-tenant exception to the ARCHITECTURE.md rule and the ADR 0013 D6
-   re-review, and `RbacDangerousPermissions` includes the new permissions.
+5. **Given** the design, **when** Gate 2 completes, **then** an ADR records the `/api/v1/platform/**`
+   path-tenant exception to the `docs/ARCHITECTURE.md` rule, and the platform permissions live in
+   their own platform-scope set — **not** in `RbacDangerousPermissions.NAMES`, whose "carries all"
+   semantics drive the admin-equivalence check (ADR 0018) and the zero-admin health indicator and
+   would change for every tenant if extended.
 
 **Dependencies:** US-021. Decision D5 (how the first operator account is bootstrapped).
-**Code anchors:** `rbac/domain/RbacDangerousPermissions.java`, `rbac/application/RoleManagementService.java`,
+**Code anchors:** `rbac/domain/RbacDangerousPermissions.java`, `rbac/domain/RbacAdminEquivalence.java`, `rbac/application/RoleManagementService.java`,
 `common/security/TenantAwarePermissionEvaluator.java`, `docs/adr/0013-rbac-data-model-and-enforcement-contract.md`.
 
 ### Area B — Provisioning & lifecycle
@@ -446,21 +456,27 @@ database work or engineering help.
 1. **Given** an operator with `platform_tenant:write`, **when** they `POST /api/v1/platform/tenants`
    with a valid display name, slug, plan tier and admin email, **then** within one transaction the
    tenant is created with status `PENDING`, `TENANT_ADMIN` and `MEMBER` system roles are seeded for
-   it with the same permission sets as the bootstrap tenant's, an invitation for the admin email
-   with role `TENANT_ADMIN` is created (US-028 mechanism), and 201 is returned in p95 < 2 s.
+   it with the same permission sets as the bootstrap tenant's, a **bootstrap invitation** for the
+   admin email with role `TENANT_ADMIN` is created (US-028 storage, but issued by the platform, not
+   by an in-tenant admin), and 201 is returned in p95 < 2 s.
 2. **Given** a slug that already exists, is reserved (e.g. `www`, `api`, `admin`, `platform`) or
-   is not URL-safe lowercase, **when** the operator submits it, **then** 409 or 400 is returned and
-   nothing is created.
+   is not URL-safe lowercase, **when** the operator submits it, **then** 409 (taken or reserved) or
+   400 (malformed) is returned and nothing is created.
 3. **Given** any step fails (role seeding, invitation creation), **when** the transaction ends,
    **then** no tenant, role or invitation row remains (rollback IT).
 4. **Given** the invited admin accepts (US-029), **when** their account is created, **then** the
    tenant transitions `PENDING → ACTIVE` automatically and a `TENANT_ACTIVATED` event is recorded.
+   This is the **only** way a tenant becomes `ACTIVE` for the first time, so an `ACTIVE` tenant
+   always has at least one admin.
+7. **Given** a `PENDING` tenant whose bootstrap invitation expired or went to the wrong address,
+   **when** an operator re-issues it (optionally to a corrected email), **then** the old invitation is
+   revoked, a new one is sent, and `INVITATION_REISSUED` is audited.
 5. **Given** a support agent with only `platform_tenant:read`, **when** they call the create
    endpoint, **then** they receive 403.
 6. **Given** a successful creation, **when** the audit trail is read, **then** a `TENANT_CREATED`
    event exists with actor, tenant id, slug and plan tier and **no** admin email in clear text.
 
-**Dependencies:** US-021, US-023, US-028. **Code anchors:** `V5__rbac_schema.sql` (seed pattern),
+**Dependencies:** US-021, US-023, US-028, US-029. **Code anchors:** `V5__rbac_schema.sql` (seed pattern),
 `rbac/application/RoleAssignmentService.java`, `identity/application/service/SecureEventService.java`.
 
 #### US-025 — Suspend, reactivate, schedule deletion of and restore a tenant
@@ -475,9 +491,10 @@ keeping a recoverable, auditable record.
 
 **Acceptance criteria**
 1. **Given** a tenant, **when** an operator `PATCH`es `/api/v1/platform/tenants/{tenantId}/status`,
-   **then** only these transitions succeed: `PENDING→ACTIVE`, `ACTIVE→SUSPENDED`,
-   `SUSPENDED→ACTIVE`, `ACTIVE|SUSPENDED→PENDING_DELETION`, `PENDING_DELETION→SUSPENDED` (restore);
-   any other returns 409 with the current and requested status.
+   **then** only these transitions succeed: `ACTIVE→SUSPENDED`, `SUSPENDED→ACTIVE`,
+   `PENDING|ACTIVE|SUSPENDED→PENDING_DELETION`, and restore `PENDING_DELETION→SUSPENDED` (or
+   `→PENDING` if the tenant was never activated); any other returns 409 with the current and
+   requested status. `PENDING→ACTIVE` is not an operator action (US-024 AC4).
 2. **Given** any accepted transition, **when** it commits, **then** a `tenant_status_history` row
    (previous, new, actor, reason, timestamp) and a `TENANT_STATUS_CHANGED` audit event are written,
    and the tenant's status cache entry is deleted.
@@ -486,11 +503,13 @@ keeping a recoverable, auditable record.
 4. **Given** a tenant in `PENDING_DELETION`, **when** it is read, **then** the response shows the
    scheduled purge date (transition time + grace period, config default 30 days).
 5. **Given** the bootstrap or operator tenant, **when** an operator tries to suspend or delete it,
-   **then** the request is rejected.
+   **then** 409 is returned and nothing changes.
 6. **Given** `GET /api/v1/platform/tenants/{tenantId}/status-history`, **when** called with
    `platform_tenant:read`, **then** the history is returned newest first, paginated.
 
 **Dependencies:** US-021, US-023. Decision D6 (grace period). **Blocks:** US-026, US-039.
+**Code anchors:** new tenant context (per ADR 0002 hexagonal layout); `identity/application/service/SecureEventService.java`;
+`rbac/infrastructure/cache/RedisPermissionCacheAdapter.java` (key-builder pattern for the status cache).
 
 #### US-026 — Enforce tenant status on every request, login and token refresh
 
@@ -509,13 +528,15 @@ be bypassed with an existing token.
 2. **Given** such a user, **when** they call login or refresh, **then** no token is issued and the
    response does not reveal whether the password was correct (anti-enumeration, per the pattern in
    `ForgotPasswordUseCase`).
-3. **Given** a tenant in `PENDING` status, **when** its only (invited) user accepts, **then** they can
-   sign in (US-024 AC4 activates the tenant first).
+3. **Given** a user whose tenant is `ACTIVE`, **when** they log in or refresh, **then** the tenant check
+   passes with no extra round-trip on a warm cache. (The `PENDING`→first sign-in path is tested in
+   US-029 AC6.)
 4. **Given** an operator suspends a tenant, **when** 60 s have elapsed, **then** 100 % of that
-   tenant's requests on all application instances are rejected (IT with two app contexts sharing
-   Redis, or documented equivalent).
+   tenant's requests on all application instances are rejected — proved by an IT that runs two
+   application contexts against one Redis and one MySQL container.
 5. **Given** Redis is unavailable, **when** the status is needed, **then** it is read from MySQL
-   (fail-safe, not fail-open) and a metric/alert fires.
+   (fail-safe, not fail-open) and a fallback counter (e.g. `nexus.tenant.status.cache.fallback`)
+   is incremented.
 6. **Given** an `ACTIVE` tenant and a warm cache, **when** the k6 suite in `nexus-test/` runs,
    **then** the filter adds < 5 ms p95.
 7. **Given** a request from a platform-operator user, **when** it targets a suspended tenant via
@@ -542,7 +563,7 @@ another tenant.
 1. **Given** a tenant with slug `acme`, **when** a user submits login, forgot-password or
    resend-verification through the tenant-scoped entry point (form chosen by decision D1), **then**
    the backend resolves tenant `acme` and uses it instead of `default-tenant-id`.
-2. **Given** an unknown or non-`ACTIVE`/`PENDING` slug, **when** any of these flows is called,
+2. **Given** an unknown or non-`ACTIVE` slug, **when** any of these flows is called,
    **then** the response is indistinguishable from "wrong credentials / email not found" for that
    flow (no tenant enumeration), with equalised timing per the existing anti-enumeration pattern.
 3. **Given** a verification, reset or invitation email, **when** it is sent, **then** its links
@@ -555,6 +576,8 @@ another tenant.
 6. **Given** the Angular app, **when** it loads under a tenant slug, **then** the sign-in pages show
    the tenant display name, fetched from a public, rate-limited endpoint that returns only
    display name and logo URL.
+7. **Given** the same email in tenants A and B, **when** 5 failed logins are made against A from one
+   IP and a correct login to B from another IP, **then** B's login succeeds (completes US-022 AC3).
 
 **Dependencies:** US-021, US-026. Decisions D1, D3. **Code anchors:**
 `identity/interfaces/rest/LoginController.java`, `RegistrationController.java`,
@@ -576,9 +599,10 @@ revoke pending invitations, **so that** I control who joins my tenant without as
    (token stored only as a hash), valid for 7 days by default, and an email is sent.
    The inviter must pass the same privilege gate as direct role assignment (US-016 / ADR 0017:
    granting `TENANT_ADMIN`, or any role carrying a permission in `RbacDangerousPermissions`, requires
-   the caller to hold `TENANT_ADMIN` in the same tenant), so an invitation cannot escalate privilege.
-2. **Given** a role id from another tenant, or a platform-scope role, **when** used in an invitation,
-   **then** 404/403 is returned and nothing is created (cross-tenant IT).
+   the caller to hold `TENANT_ADMIN` or a fully admin-equivalent role in the same tenant — ADR 0018),
+   checked when the invitation is created, so an invitation cannot escalate privilege.
+2. **Given** a role id from another tenant (including an operator-tenant platform role), **when** used
+   in an invitation, **then** 404 is returned and nothing is created (cross-tenant IT).
 3. **Given** an email that already belongs to an active user in this tenant, or has a pending
    invitation, **when** invited, **then** 409 is returned.
 4. **Given** a pending invitation, **when** the admin resends it, **then** the old token is
@@ -590,7 +614,9 @@ revoke pending invitations, **so that** I control who joins my tenant without as
 7. **Given** the Angular members page (US-030), **when** a tenant admin uses "Invite member",
    **then** an `NxDialog` collects email and role and shows 409 inline.
 
-**Dependencies:** US-021, US-027 (tenant-aware email links). Invitation state may extend
+**Dependencies:** US-021, US-027 (tenant-aware email links). **Code anchors:**
+`rbac/application/RoleAssignmentService.java` (privilege gate), `identity/application/EmailBlindIndexService.java`,
+`identity/infrastructure/mail/MailEventListener.java`. Invitation state may extend
 `auth_tokens` (new type) or be a new table — Gate 2 decides; note `auth_tokens.user_id` is
 `NOT NULL`, so a pre-account invitation needs either a `PENDING` user row or a separate table.
 
@@ -607,7 +633,14 @@ sign-up or approval step.
 **Acceptance criteria**
 1. **Given** a valid, unexpired invitation, **when** the invitee submits a password meeting the
    existing policy, **then** an `ACTIVE`, email-verified user is created in the invitation's tenant,
-   the pre-assigned role is granted through `RoleAssignmentService`, and the invitation is consumed.
+   the pre-assigned role is granted, and the invitation is consumed — all in one transaction.
+   The grant **cannot** go through `RoleAssignmentService.assign(actor, …)` unchanged: the invitee
+   holds no role yet and a platform operator fails its same-tenant check (the same trap as G4).
+   Gate 2 must define a dedicated invitation-grant path that relies on the privilege check already
+   made when the invitation was issued (US-028 AC1 / US-024), and must decide what is recorded in
+   `user_roles.assigned_by` (NOT NULL, FK to `users`) — e.g. the inviter for in-tenant invitations
+   and the new user themself for a platform bootstrap invitation — with the issuer kept in the audit
+   event.
 2. **Given** an expired, revoked, already-used or unknown token, **when** it is used, **then** the
    same generic 410 response is returned for all four cases.
 3. **Given** the invitation is for tenant A, **when** accepted, **then** the created user's
@@ -616,6 +649,8 @@ sign-up or approval step.
    acceptance is refused with the same generic response.
 5. **Given** acceptance succeeds, **when** the audit trail is read, **then** `INVITATION_ACCEPTED` and
    `ROLE_ASSIGNED` events exist for the new user.
+6. **Given** a bootstrap invitation for a `PENDING` tenant (US-024), **when** it is accepted, **then** the
+   tenant becomes `ACTIVE` in the same transaction and the new admin can sign in immediately.
 
 **Dependencies:** US-028. **Code anchors:** `identity/application/RegisterUserUseCase.java`,
 `rbac/application/RoleAssignmentService.java`, password policy from EPIC-001 US-006.
@@ -650,7 +685,9 @@ has access.
 6. **Given** each deactivate/reactivate, **when** it commits, **then** `MEMBER_DEACTIVATED` /
    `MEMBER_REACTIVATED` audit events are written.
 
-**Dependencies:** US-021, US-022. **Coordination:** US-019/US-020 own role-assignment UI; this page
+**Dependencies:** US-021, US-022. **Code anchors:** `identity/domain/User.java`, `identity/domain/UserStatus.java`,
+`identity/application/EmailBlindIndexService.java`, `rbac/domain/RbacAdminEquivalence.java`,
+`nexus-frontend/src/app/shared/directives/has-permission.directive.ts`. **Coordination:** US-019/US-020 own role-assignment UI; this page
 links to it rather than duplicating it (decision D8 confirms the split).
 
 ### Area D — Tenant profile, settings & branding
@@ -748,9 +785,10 @@ bought.
 3. **Given** a tenant admin, **when** they view the members page, **then** used / allowed seats are
    shown.
 4. **Given** the existing `nexus.rbac.max-roles-per-tenant`, **when** this story completes, **then** it
-   is expressed through the same plan-limit mechanism (or explicitly left global, with reason).
+   remains a global safety cap (not a plan limit) and is documented as such.
 
-**Dependencies:** US-024, US-028, US-030; ADR 0019 questions 1, 2 and 4 decided.
+**Dependencies:** US-024, US-028, US-030; decision D10; ADR 0019 questions 1, 2 and 4 decided.
+**Code anchors:** `rbac/application/RoleManagementService.java` (existing `max-roles-per-tenant` check).
 
 #### US-035 — Protect tenants from a noisy neighbour with per-tenant rate limits
 
@@ -769,7 +807,8 @@ that** our service quality does not depend on other customers.
 3. **Given** metrics, **when** exported, **then** tenant id is not a raw label (bounded cardinality per
    `docs/observability-standards.md`).
 
-**Dependencies:** ADR 0019 accepted; US-034.
+**Dependencies:** ADR 0019 accepted; US-034. **Code anchors:** `identity/infrastructure/security/RedisRateLimitStore.java`,
+`identity/infrastructure/web/LoginRateLimitFilter.java`.
 
 ### Area F — Audit logging
 
@@ -791,15 +830,16 @@ Nexus support.
    first, paginated, within the retention window.
 2. **Given** a date range of up to 90 days, **when** CSV export is requested, **then** a CSV is
    produced with the same filtering; larger ranges are rejected (bounded per ADR 0019 interim rule).
-3. **Given** events whose metadata contain personal data, **when** returned, **then** only fields
-   allowed by the no-PII logging rule are included.
+3. **Given** events whose metadata contain personal data, **when** returned, **then** only metadata keys
+   on an explicit allowlist (defined at Gate 2) are included, and email addresses are never returned.
 4. **Given** operator actions on this tenant (US-025), **when** listed, **then** they appear, marked as
    performed by Nexus staff, without revealing the operator's identity beyond a role label
    _(inferred requirement — confirm with legal)_.
 5. **Given** the Angular route `/settings/audit`, **when** opened with `audit:read`, **then** an
    `nx-table` with filters and an export button is shown.
 
-**Dependencies:** US-021; ADR 0020 question 1 (retention) decided.
+**Dependencies:** US-021, US-025 (operator events and the `actor_scope` marker, §3.2 H); ADR 0020
+question 1 (retention) decided.
 **Code anchors:** `identity/infrastructure/persistence/JpaAuthEventRepository.java` (currently no query methods).
 
 ### Area G — Operator back-office
@@ -820,7 +860,8 @@ tools.
    date), excluding `DELETED` by default.
 2. **Given** the Angular route `/platform/tenants`, **when** opened by an operator, **then** the list,
    a detail page with status history, a "Create tenant" dialog (US-024) and status actions (US-025,
-   with a reason field and confirmation) are available; support agents see no action buttons.
+   with a reason field and confirmation) and "Re-issue admin invitation" for `PENDING` tenants
+   (US-024 AC7) are available; support agents see no action buttons.
 3. **Given** a tenant user (any tenant role), **when** they navigate to `/platform/**`, **then**
    `permissionGuard` redirects to `/access-denied` and the API returns 403 (backend is the boundary).
 4. **Given** a destructive action (suspend, schedule deletion), **when** confirmed, **then** the
@@ -842,14 +883,14 @@ tools.
 
 **Acceptance criteria**
 1. **Given** `tenant:write`, **when** an export is requested, **then** it runs asynchronously, is
-   limited to one concurrent export per tenant, and the admin is notified when ready.
+   limited to one concurrent export per tenant, and the requesting admin is emailed when it is ready.
 2. **Given** the export, **when** produced, **then** it contains every tenant-owned table's rows for
    that tenant only (proved by a test that seeds two tenants), in the format decided under ADR 0020.
 3. **Given** a finished export, **when** downloaded, **then** the link is single-use and expires
    (duration decided at Gate 2).
 4. **Given** each request and download, **when** they happen, **then** audit events are recorded.
 
-**Dependencies:** ADR 0020 Q2 decided; storage mechanism decided at Gate 2 (this is where a
+**Dependencies:** ADR 0020 Q2 decided; storage mechanism decided at Gate 2 (no file storage exists today) (this is where a
 `FileStorageService`-style abstraction may first be justified).
 
 #### US-039 — Purge a tenant after its deletion grace period
@@ -865,7 +906,7 @@ when their grace period ends, **so that** we honour offboarding commitments with
 1. **Given** a tenant whose grace period has ended, **when** the scheduled purge runs, **then** its
    tenant-owned data is deleted or anonymised per ADR 0020, its Redis keys are removed, and the
    tenant row moves to `DELETED` (row kept as a tombstone with slug reserved).
-2. **Given** append-only `auth_events` and `user_roles`, **when** purge runs, **then** it follows the
+2. **Given** `auth_events` (append-only) and `user_roles` (DELETE blocked by trigger), **when** purge runs, **then** it follows the
    ADR 0020 decision (e.g. pseudonymise instead of delete) through a dedicated privileged path —
    `nexus_app` gains no general `DELETE`.
 3. **Given** the purge job, **when** it runs, **then** it emits metrics and one audit event per tenant,
@@ -881,7 +922,7 @@ when their grace period ends, **so that** we honour offboarding commitments with
 |---|---|---|---|
 | Should | M | Later | GDPR Art. 17; Slack "only Primary Owner can request deletion of profile data" |
 
-**As a** Compliance Officer, **I want** to erase a specific person's personal data from my tenant,
+**As a** Tenant Admin acting on a data-subject request, **I want** to erase a specific person's personal data from my tenant,
 **so that** we can meet a GDPR erasure request within the statutory deadline.
 
 **Acceptance criteria**
@@ -893,7 +934,8 @@ when their grace period ends, **so that** we honour offboarding commitments with
 3. **Given** the request, **when** completed, **then** a `MEMBER_ERASED` event records who requested it
    and when, without the erased data.
 
-**Dependencies:** US-030; ADR 0020 Q3 decided; ADR 0006.
+**Dependencies:** US-030; ADR 0020 Q3 decided; ADR 0006. **Code anchors:** `identity/domain/User.java`,
+`identity/application/EmailBlindIndexService.java`, `V2__identity_schema.sql` (`auth_events` triggers).
 
 ### Area I — Enterprise identity (SSO / SCIM)
 
@@ -912,10 +954,11 @@ features such as SSO enforcement can be enabled for that domain.
 2. **Given** the TXT record is published, **when** verification runs, **then** the domain becomes
    `VERIFIED` and a `TENANT_DOMAIN_VERIFIED` event is written; a domain can be verified by only one
    tenant.
-3. **Given** a verified domain later loses its TXT record, **when** re-checked, **then** the operator
-   is alerted (behaviour decided at Gate 1).
+3. **Given** a verified domain, **when** the daily re-check no longer finds its TXT record, **then** the
+   domain returns to `PENDING`, any SSO enforcement tied to it is paused, and tenant admins are
+   emailed.
 
-**Dependencies:** US-031.
+**Dependencies:** US-031. **Code anchors:** none yet — new capability.
 
 #### US-042 — Let my users sign in with our identity provider
 
@@ -934,7 +977,8 @@ users sign in with company credentials and leavers lose access when IT disables 
 3. **Given** an unknown IdP user, **when** they first sign in, **then** behaviour follows the admin's
    setting (JIT-create as `MEMBER` or refuse).
 
-**Dependencies:** US-027, US-041. Decision D9 (build on Spring Security vs buy WorkOS/Auth0).
+**Dependencies:** US-027, US-041. **Code anchors:** `identity/infrastructure/security/JwtRs256Service.java`
+(claims contract). Decision D9 (build on Spring Security vs buy WorkOS/Auth0).
 
 #### US-043 — Provision and deprovision users automatically from our directory
 
@@ -952,7 +996,7 @@ SCIM, **so that** onboarding and offboarding happen without manual steps in Nexu
 3. **Given** SCIM manages a user, **when** a tenant admin edits that user's synced attributes in Nexus,
    **then** the edit is refused (Atlassian pattern).
 
-**Dependencies:** US-042. Recorded for roadmap traceability; re-scope at its own Gate 1.
+**Dependencies:** US-042. **Code anchors:** none yet. Recorded for roadmap traceability; re-scope at its own Gate 1.
 
 ### Area J — Tenant hierarchy
 
@@ -970,11 +1014,11 @@ them, **so that** future features can scope data and delegated administration to
    tenant and it is scoped to the caller's tenant only.
 2. **Given** an organisation, **when** members are added or removed, **then** only members of the same
    tenant can be added (cross-tenant IT) and membership changes are audited.
-3. **Given** a consuming feature exists (named at Gate 1), **when** this story is scheduled, **then**
-   that feature's scoping rule is part of the acceptance criteria — this story is not built on its
-   own.
+3. **Given** an organisation with members, **when** it is deactivated, **then** membership rows are kept,
+   the organisation is excluded from default lists, and new members cannot be added.
 
-**Dependencies:** US-030; decision D4. Replaces the previous draft's US-023 organisation CRUD.
+**Dependencies:** US-030; decision D4. Scheduling rule: build only together with the first feature
+that scopes data by organisation, whose scoping rule then joins these criteria. Replaces the previous draft's US-023 organisation CRUD.
 
 ### 5.1 Story index
 
@@ -983,7 +1027,7 @@ them, **so that** future features can scope data and delegated administration to
 | US-021 | Register tenants with enforced referential integrity | A | Must | M | MVP | EPIC-002, US-018 |
 | US-022 | Close tenant-isolation gaps | A | Must | M | MVP | US-021 |
 | US-023 | Platform-operator authority | A | Must | M | MVP | US-021 |
-| US-024 | Provision tenant + roles + invited admin | B | Must | L | MVP | US-021, US-023, US-028 |
+| US-024 | Provision tenant + roles + invited admin | B | Must | L | MVP | US-021, US-023, US-028, US-029 |
 | US-025 | Suspend / reactivate / delete / restore | B | Must | M | MVP | US-021, US-023 |
 | US-026 | Enforce tenant status on requests, login, refresh | B | Must | M | MVP | US-025 |
 | US-027 | Tenant-aware sign-in and recovery | C | Must | L | MVP | US-021, US-026 |
@@ -993,8 +1037,8 @@ them, **so that** future features can scope data and delegated administration to
 | US-031 | Tenant profile | D | Must | M | MVP | US-021 |
 | US-032 | Tenant context in app header | D | Should | S | MVP | US-031 |
 | US-037 | Operator console | G | Should | M | MVP | US-023, US-024, US-025 |
-| US-034 | Seat limits by plan | E | Should | M | Next | US-024, US-028, US-030, ADR 0019 |
-| US-036 | Tenant audit viewer + export | F | Should | M | Next | US-021, ADR 0020 Q1 |
+| US-034 | Seat limits by plan | E | Should | M | Next | US-024, US-028, US-030, D10, ADR 0019 |
+| US-036 | Tenant audit viewer + export | F | Should | M | Next | US-021, US-025, ADR 0020 Q1 |
 | US-033 | Brand colours | D | Could | M | Later | US-031, US-032 |
 | US-035 | Per-tenant rate limits | E | Could | M | Later | US-034, ADR 0019 |
 | US-038 | Tenant data export | H | Should | L | Later | ADR 0020 Q2 |
@@ -1032,7 +1076,7 @@ them, **so that** future features can scope data and delegated administration to
 
 | ID | Requirement |
 |---|---|
-| NFR-SEC-1 | Each MVP story completes Gate 2 threat modelling (`03b-threat-model.md`); US-023, US-026, US-027 are mandatory security-reviewer stories. |
+| NFR-SEC-1 | Each MVP story completes Gate 2 threat modelling (`03b-threat-model.md`); US-023, US-026, US-027, US-028 and US-029 are mandatory security-reviewer stories. |
 | NFR-SEC-2 | Invitation and export tokens are random, single-use, stored hashed, and expire. |
 | NFR-SEC-3 | Unauthenticated tenant-resolution endpoints are rate-limited and never reveal whether a tenant or email exists. |
 | NFR-SEC-4 | Operator accounts must use MFA before GA _(no MFA exists in the codebase today — flagged as risk R3)_. |
@@ -1104,7 +1148,7 @@ Gate 1 when a customer or regulation requires it. ADR 0020 must be accepted befo
 | D3 | Public self-registration | (a) keep for bootstrap tenant only; (b) invite-only everywhere; (c) per-tenant toggle | **(a) now, (b) for customer tenants** — today every registrant joins the default tenant with no role | US-027 |
 | D4 | Organisations (sub-tenant level) | (a) defer; (b) build as in previous draft | **(a) defer** until a feature consumes them | US-044 |
 | D5 | Bootstrapping the first operator account | (a) migration-seeded operator tenant + CLI/runbook to invite the first operator; (b) env-configured email invited at startup | **(a)** — auditable and matches existing runbook practice | US-023 |
-| D6 | Deletion grace period | 14 / 30 / 90 days | **30 days** (configurable) — confirm with legal and contracts | US-025, US-039 |
+| D6 | Deletion grace period | 14 / 30 / 90 days | **30 days** (configurable) — confirm with legal and contracts. This answers only the grace-period part of ADR 0020 Q2 early (so US-025 can show a purge date); record it as a partial decision in ADR 0020, which still owns the purge itself | US-025, US-039 |
 | D7 | Distinct Tenant Owner role | (a) no — rely on last-admin protection; (b) yes | **(a)** for MVP | — |
 | D8 | Split with RBAC UI | Members page (US-030) here; role assignment/editing UI in US-019/US-020 | **Confirm** with the RBAC UI owner so there is one members list, not two | US-030 |
 | D9 | Enterprise SSO | build on Spring Security vs buy (WorkOS / Auth0) | Decide at US-042 Gate 1 with cost data | US-042 |
@@ -1112,8 +1156,8 @@ Gate 1 when a customer or regulation requires it. ADR 0020 must be accepted befo
 
 ### 8.2 Open questions
 
-1. Does US-018 (RBAC hardening) include EPIC-002 Open Decision #4? If not, a story must be added
-   ahead of US-021.
+1. US-018 (RBAC hardening) is planned but not yet filed. Will it include EPIC-002 Open Decision #4
+   (still OPEN)? If not, a story must be added ahead of US-021.
 2. Should the `MEMBER` role receive `tenant:read` so US-032 can call `GET /tenants/me`, or should a
    narrower "tenant summary" come with `/users/me`?
 3. Which user status represents a reversible member deactivation (US-030 AC2)?
@@ -1137,6 +1181,7 @@ Gate 1 when a customer or regulation requires it. ADR 0020 must be accepted befo
 | R9 | Changing sign-in URLs (D1) breaks existing bookmarks / email links | Low | Med | US-027 AC4 keeps bootstrap-tenant behaviour |
 | R10 | Duplicate members UI between this epic and RBAC UI | Med | Low | D8 |
 | R11 | A deactivated member keeps API access until their access token expires (≤ 15 min) | High (by design today) | Med | US-030 AC2 names it; Gate 2 decides whether to add a per-request user-status check alongside US-026's tenant check |
+| R12 | The invitation-grant path (US-029 AC1) bypasses `RoleAssignmentService`'s caller gate and becomes a new privilege-escalation route | Med | Critical | Grant only the role frozen on an invitation that passed the gate when issued; single-use hashed token; mandatory security review of US-028/US-029 |
 
 ---
 
