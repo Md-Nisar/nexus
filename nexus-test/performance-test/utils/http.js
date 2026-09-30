@@ -19,6 +19,10 @@ export function postJson(path, body, params = {}) {
   });
 }
 
+export function del(path, params = {}) {
+  return http.del(`${config.baseUrl}${path}`, null, withName(path, params));
+}
+
 function withName(path, params) {
   return { ...params, tags: { name: path, ...params.tags } };
 }

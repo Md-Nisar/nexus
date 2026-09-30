@@ -1,6 +1,6 @@
 import { fail } from 'k6';
 import { config } from '../config/environment.js';
-import { postJson } from './http.js';
+import { get, postJson } from './http.js';
 
 /**
  * Returns a bearer access token: ACCESS_TOKEN if set, otherwise one obtained by logging in as
@@ -24,6 +24,18 @@ export function obtainAccessToken() {
     fail(`Login failed with HTTP ${res.status}; check PERF_USER_EMAIL / PERF_USER_PASSWORD`);
   }
   return res.json('accessToken');
+}
+
+/**
+ * Returns the id of the user the access token belongs to (GET /api/v1/users/me), for scenarios
+ * that call user-scoped endpoints such as /api/v1/users/{userId}/roles. Call it from setup().
+ */
+export function currentUserId(accessToken) {
+  const res = get('/api/v1/users/me', bearer(accessToken));
+  if (res.status !== 200) {
+    fail(`GET /api/v1/users/me failed with HTTP ${res.status}; is the access token valid?`);
+  }
+  return res.json('userId');
 }
 
 export function bearer(accessToken) {

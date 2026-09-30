@@ -5,7 +5,7 @@ import {
   errorThresholds,
   latencyThresholds,
 } from '../../thresholds/default-thresholds.js';
-import { obtainAccessToken } from '../../utils/auth.js';
+import { currentUserId, obtainAccessToken } from '../../utils/auth.js';
 import { smoke } from '../../workloads/smoke.js';
 
 export const options = {
@@ -20,7 +20,8 @@ export const options = {
 };
 
 export function setup() {
-  return { accessToken: obtainAccessToken() };
+  const accessToken = obtainAccessToken();
+  return { accessToken, userId: currentUserId(accessToken) };
 }
 
 export { rbacRead };

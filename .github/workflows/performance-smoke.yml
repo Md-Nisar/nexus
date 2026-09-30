@@ -125,6 +125,13 @@ jobs:
           K6_WEB_DASHBOARD_EXPORT: results/smoke-rbac-read.html
         run: npm run test:smoke:rbac-read
 
+      - name: Smoke test — RBAC role lifecycle (writes)
+        working-directory: nexus-test/performance-test
+        env:
+          K6_WEB_DASHBOARD: 'true'
+          K6_WEB_DASHBOARD_EXPORT: results/smoke-rbac-role-lifecycle.html
+        run: npm run test:smoke:rbac-role-lifecycle
+
       - name: Collect application log
         if: always()
         run: cp "$RUNNER_TEMP/nexus-backend.log" nexus-test/performance-test/results/ || true

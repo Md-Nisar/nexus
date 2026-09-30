@@ -8,14 +8,16 @@ Plain k6 JavaScript: no custom framework, no build step.
 ```text
 performance-test/
 ├── tests/                  # Entry points: one file = one runnable test = scenario(s) + workload + thresholds
-│   ├── smoke/              #   platform-health.js, user-profile.js
-│   ├── load/               #   platform-health.js
+│   ├── smoke/              #   platform-health.js, user-profile.js, rbac-read.js, rbac-role-lifecycle.js
+│   ├── load/               #   platform-health.js, rbac-read.js, rbac-role-lifecycle.js
 │   ├── stress/             #   platform-health.js
 │   ├── spike/              #   platform-health.js
 │   └── soak/               #   platform-health.js
 ├── scenarios/              # WHAT a user/client does (application flows), knows nothing about traffic volume
 │   ├── platform-health.js  #   GET /actuator/health/readiness
-│   └── user-profile.js     #   GET /api/v1/users/me (authenticated)
+│   ├── user-profile.js     #   GET /api/v1/users/me (authenticated)
+│   ├── rbac-read.js        #   roles, permissions, role permissions, a user's roles (reads)
+│   └── rbac-role-lifecycle.js  # create role, attach/detach permission, assign/revoke (writes)
 ├── workloads/              # HOW MUCH traffic: k6 executor + stages, knows nothing about the application
 │   └── smoke.js · load.js · stress.js · spike.js · soak.js
 ├── thresholds/
@@ -24,7 +26,8 @@ performance-test/
 │   ├── environment.js      # the ONLY place environment variables are read
 │   └── base-options.js     # k6 options every test shares (summary stats, env tag)
 ├── utils/                  # small shared helpers: http.js, checks.js, auth.js
-├── scripts/                # wait-for-ready.sh, inspect-tests.sh
+├── scripts/                # wait-for-ready.sh, inspect-tests.sh, reset-local-db.sh
+├── CONVENTIONS.md          # rules for adding a module's performance tests (start here)
 ├── results/                # run output (git-ignored, except .gitkeep)
 └── package.json            # npm scripts + Prettier (k6 itself is NOT an npm package)
 ```
@@ -83,7 +86,7 @@ environment must supply its own dedicated account through secrets.
 
 The dev profile also assigns that user the seeded `TENANT_ADMIN` role (all permissions), so the RBAC
 scenarios work with no extra setup. Any other environment must provide its own account with the
-permissions the scenario needs (`role:read` and permission read access for `rbac-read`).
+permissions the scenario needs (`role:read`, `user:read` for `rbac-read`; also `role:write`, `user:write` and `TENANT_ADMIN` for `rbac-role-lifecycle`).
 
 **Login is rate limited** to 10 attempts per minute per IP and 5 per minute per email, and failed
 attempts count. Tests log in once in `setup()`; running several tests as the same user in quick
@@ -97,16 +100,18 @@ Wait until the app is ready (optional locally, required in automation):
 BASE_URL=http://localhost:1000 npm run wait-for-ready        # optional arg: timeout seconds (default 120)
 ```
 
-| Category          | Command                                                                                   | Default shape (override with `VUS` / `DURATION`) | ≈ Run time |
-| ----------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------ | ---------- |
-| smoke             | `BASE_URL=http://localhost:1000 npm run test:smoke`                                       | 1 VU, 30s                                        | 30s        |
-| smoke (auth)      | `BASE_URL=... PERF_USER_EMAIL=... PERF_USER_PASSWORD=... npm run test:smoke:user-profile` | 1 VU, 30s                                        | 30s        |
-| smoke (RBAC read) | `... npm run test:smoke:rbac-read`                                                        | 1 VU, 30s                                        | 30s        |
-| load              | `BASE_URL=http://localhost:1000 npm run test:load`                                        | ramp 1m → 10 VUs for 5m → ramp down 30s          | 6.5m       |
-| load (RBAC read)  | `... npm run test:load:rbac-read`                                                         | same profile                                     | 6.5m       |
-| stress            | `BASE_URL=http://localhost:1000 npm run test:stress`                                      | steps ⅓ → ⅔ → peak 30 VUs, 2m at peak            | 10m        |
-| spike             | `BASE_URL=http://localhost:1000 npm run test:spike`                                       | baseline 5 → jump to 50 VUs for 1m → recover     | 4.5m       |
-| soak              | `BASE_URL=http://localhost:1000 npm run test:soak`                                        | 10 VUs for 1h                                    | 1h 4m      |
+| Category           | Command                                                                                   | Default shape (override with `VUS` / `DURATION`) | ≈ Run time |
+| ------------------ | ----------------------------------------------------------------------------------------- | ------------------------------------------------ | ---------- |
+| smoke              | `BASE_URL=http://localhost:1000 npm run test:smoke`                                       | 1 VU, 30s                                        | 30s        |
+| smoke (auth)       | `BASE_URL=... PERF_USER_EMAIL=... PERF_USER_PASSWORD=... npm run test:smoke:user-profile` | 1 VU, 30s                                        | 30s        |
+| smoke (RBAC read)  | `... npm run test:smoke:rbac-read`                                                        | 1 VU, 30s                                        | 30s        |
+| smoke (RBAC write) | `... npm run test:smoke:rbac-role-lifecycle`                                              | 1 VU, 30s                                        | 30s        |
+| load               | `BASE_URL=http://localhost:1000 npm run test:load`                                        | ramp 1m → 10 VUs for 5m → ramp down 30s          | 6.5m       |
+| load (RBAC read)   | `... npm run test:load:rbac-read`                                                         | same profile                                     | 6.5m       |
+| load (RBAC write)  | `... npm run test:load:rbac-role-lifecycle`                                               | same profile                                     | 6.5m       |
+| stress             | `BASE_URL=http://localhost:1000 npm run test:stress`                                      | steps ⅓ → ⅔ → peak 30 VUs, 2m at peak            | 10m        |
+| spike              | `BASE_URL=http://localhost:1000 npm run test:spike`                                       | baseline 5 → jump to 50 VUs for 1m → recover     | 4.5m       |
+| soak               | `BASE_URL=http://localhost:1000 npm run test:soak`                                        | 10 VUs for 1h                                    | 1h 4m      |
 
 On Windows PowerShell set variables first (`$env:BASE_URL="http://localhost:1000"`), or use
 `npm run test:smoke -- -e BASE_URL=http://localhost:1000`. `wait-for-ready` and `inspect` need bash
@@ -168,6 +173,9 @@ agreed performance SLAs yet, and nothing in this suite is one.**
 
 ## Extending
 
+**Start with [CONVENTIONS.md](CONVENTIONS.md)**: it is the rulebook for a new module, with the RBAC
+scenarios as the reference.
+
 **New scenario:** add `scenarios/<flow-name>.js` exporting one function named after the flow
 (`createRole`). Use `get`/`postJson` from `utils/http.js`, assert with `checkResponse`, add
 `sleep()` think time. Only call endpoints that exist in nexus-backend. Then add a test per
@@ -186,8 +194,9 @@ conservative default. For arrival-rate (requests/s) models, use k6's `constant-a
 an end-to-end flow) belong in the scenario that owns them; move them to `utils/metrics.js` only once
 shared.
 
-**Test data:** not needed yet, since both scenarios use only configuration, so there is no `data/`
-directory. When one is needed: static non-sensitive data goes in `data/<name>.json`, loaded once
+**Test data:** scenarios generate what they need at run time (see
+[CONVENTIONS.md](CONVENTIONS.md#test-data-and-isolation)), so there is no `data/` directory. When
+static data is needed: static non-sensitive data goes in `data/<name>.json`, loaded once
 with `SharedArray` from `k6/data`; environment-specific data is selected by `TEST_ENV`
 (`data/<TEST_ENV>/<name>.json`); generated data (unique emails etc.) goes in a small
 `utils/test-data.js` using `exec.vu.idInTest`/`exec.scenario.iterationInTest` for uniqueness. Never
@@ -201,7 +210,8 @@ PRs that touch this directory, and on demand (`workflow_dispatch`):
 ```text
 checkout → install k6 (pinned + sha256-verified) → format:check + inspect → build jar
   → docker compose up mysql redis → start app (dev profile) → wait-for-ready
-  → test:smoke → test:smoke:user-profile → test:smoke:rbac-read → upload results/ + app log → clean up
+  → test:smoke → test:smoke:user-profile → test:smoke:rbac-read → test:smoke:rbac-role-lifecycle
+  → upload results/ + app log → clean up
 ```
 
 The workflow only supplies `BASE_URL`, `SERVER_PORT` (the app's default port 1000 is privileged, so
@@ -214,8 +224,9 @@ the same tests at another environment means changing `BASE_URL`, nothing else.
 - Scheduled load/stress/spike/soak runs in CI (numbers from a shared CI runner are not meaningful).
 - Dashboards and metric storage (Prometheus, Grafana, k6 Cloud).
 - Production SLAs, which need to be agreed first. Thresholds here are gates and interim values.
-- Write-path scenarios (registration, role management). They need test-data isolation and cleanup,
-  and some trigger email or rate limits.
+- Write scenarios beyond RBAC (registration triggers email and rate limits), and stress, spike and
+  soak runs of write scenarios: they wait for a dedicated environment, because writes accumulate
+  data. See [CONVENTIONS.md](CONVENTIONS.md#test-data-and-isolation).
 
 ## Assumptions
 

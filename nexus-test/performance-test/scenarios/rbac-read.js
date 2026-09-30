@@ -6,10 +6,11 @@ import { get } from '../utils/http.js';
 /**
  * RbacRead: an administrator browsing the RBAC catalogue, read-only.
  *
- * Lists roles and permissions, then opens the permissions of the first role returned (its id comes
- * from the response, nothing is hard-coded). Needs a user holding role:read and permission read
- * access; see "Test data" in the README. Expects `data.accessToken` from the test's setup(). Access
- * tokens expire after 900s, so this is not suitable for a soak test until a token refresh is added.
+ * Lists roles and permissions, opens the permissions of the first role returned (its id comes from
+ * the response, nothing is hard-coded), and lists the test user's own role assignments. Needs a user
+ * holding role:read and user:read; see "Test data" in the README. Expects `data.accessToken` and
+ * `data.userId` from the test's setup() (see utils/auth.js). Access tokens expire after 900s, so
+ * this is not suitable for a soak test until a token refresh is added.
  */
 export function rbacRead(data) {
   const params = bearer(data.accessToken);
@@ -29,6 +30,12 @@ export function rbacRead(data) {
     });
     checkResponse(rolePermissions, 200, { 'role permissions is a list': isList });
   }
+
+  const userRoles = get(`/api/v1/users/${data.userId}/roles`, {
+    ...params,
+    tags: { name: '/api/v1/users/{userId}/roles' },
+  });
+  checkResponse(userRoles, 200, { 'user roles is a list': isList });
   sleep(1);
 }
 
