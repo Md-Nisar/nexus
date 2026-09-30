@@ -104,11 +104,6 @@ jobs:
             exit 1
           }
 
-      # Gives the seeded test user TENANT_ADMIN for the RBAC scenarios (disposable CI database).
-      - name: Grant test user admin role
-        working-directory: nexus-test/performance-test
-        run: npm run grant-test-user-admin
-
       - name: Smoke test — platform health
         working-directory: nexus-test/performance-test
         env:

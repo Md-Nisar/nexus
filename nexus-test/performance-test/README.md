@@ -24,7 +24,7 @@ performance-test/
 │   ├── environment.js      # the ONLY place environment variables are read
 │   └── base-options.js     # k6 options every test shares (summary stats, env tag)
 ├── utils/                  # small shared helpers: http.js, checks.js, auth.js
-├── scripts/                # wait-for-ready.sh, inspect-tests.sh, grant-test-user-admin.sh
+├── scripts/                # wait-for-ready.sh, inspect-tests.sh
 ├── results/                # run output (git-ignored, except .gitkeep)
 └── package.json            # npm scripts + Prettier (k6 itself is NOT an npm package)
 ```
@@ -81,13 +81,9 @@ credentials through the variables above. CI runs the `dev` profile, so it falls 
 setting the `PERF_USER_EMAIL` / `PERF_USER_PASSWORD` repository secrets overrides it. Any other
 environment must supply its own dedicated account through secrets.
 
-That user has no roles out of the box, so it can call `GET /api/v1/users/me` but not the RBAC read
-endpoints (403). For the RBAC scenarios, `npm run grant-test-user-admin` gives it the seeded
-`TENANT_ADMIN` role (all permissions). It logs in as the test user, then inserts the assignment
-straight into the docker-compose MySQL, so it is **for a throw-away local or CI database only**: it
-bypasses the application's audit trail and last-admin rules. It is idempotent. Run it after the app
-has started and before the RBAC tests. Once the backend has a supported way to provision an admin
-test user, replace the script with it.
+The dev profile also assigns that user the seeded `TENANT_ADMIN` role (all permissions), so the RBAC
+scenarios work with no extra setup. Any other environment must provide its own account with the
+permissions the scenario needs (`role:read` and permission read access for `rbac-read`).
 
 **Login is rate limited** to 10 attempts per minute per IP and 5 per minute per email, and failed
 attempts count. Tests log in once in `setup()`; running several tests as the same user in quick
@@ -105,9 +101,9 @@ BASE_URL=http://localhost:1000 npm run wait-for-ready        # optional arg: tim
 | ----------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------ | ---------- |
 | smoke             | `BASE_URL=http://localhost:1000 npm run test:smoke`                                       | 1 VU, 30s                                        | 30s        |
 | smoke (auth)      | `BASE_URL=... PERF_USER_EMAIL=... PERF_USER_PASSWORD=... npm run test:smoke:user-profile` | 1 VU, 30s                                        | 30s        |
-| smoke (RBAC read) | `... npm run grant-test-user-admin && npm run test:smoke:rbac-read`                       | 1 VU, 30s                                        | 30s        |
+| smoke (RBAC read) | `... npm run test:smoke:rbac-read`                                                        | 1 VU, 30s                                        | 30s        |
 | load              | `BASE_URL=http://localhost:1000 npm run test:load`                                        | ramp 1m → 10 VUs for 5m → ramp down 30s          | 6.5m       |
-| load (RBAC read)  | `... npm run test:load:rbac-read` (after `grant-test-user-admin`)                         | same profile                                     | 6.5m       |
+| load (RBAC read)  | `... npm run test:load:rbac-read`                                                         | same profile                                     | 6.5m       |
 | stress            | `BASE_URL=http://localhost:1000 npm run test:stress`                                      | steps ⅓ → ⅔ → peak 30 VUs, 2m at peak            | 10m        |
 | spike             | `BASE_URL=http://localhost:1000 npm run test:spike`                                       | baseline 5 → jump to 50 VUs for 1m → recover     | 4.5m       |
 | soak              | `BASE_URL=http://localhost:1000 npm run test:soak`                                        | 10 VUs for 1h                                    | 1h 4m      |
@@ -205,7 +201,7 @@ PRs that touch this directory, and on demand (`workflow_dispatch`):
 ```text
 checkout → install k6 (pinned + sha256-verified) → format:check + inspect → build jar
   → docker compose up mysql redis → start app (dev profile) → wait-for-ready
-  → grant-test-user-admin → test:smoke → test:smoke:user-profile → test:smoke:rbac-read → upload results/ + app log → clean up
+  → test:smoke → test:smoke:user-profile → test:smoke:rbac-read → upload results/ + app log → clean up
 ```
 
 The workflow only supplies `BASE_URL`, `SERVER_PORT` (the app's default port 1000 is privileged, so
