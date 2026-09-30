@@ -91,9 +91,13 @@ jobs:
         working-directory: nexus-test/performance-test
         run: |
           npm run wait-for-ready -- 180 || {
-            echo "::group::Application log (last 100 lines)"
-            tail -n 100 "$RUNNER_TEMP/nexus-backend.log" || true
-            echo "::endgroup::"
+            {
+              echo "backend process: $(pgrep -af '[j]ava -jar' || echo 'NOT RUNNING')"
+              tail -n 60 "$RUNNER_TEMP/nexus-backend.log" || true
+            } > "$RUNNER_TEMP/diagnostics.txt"
+            cat "$RUNNER_TEMP/diagnostics.txt"
+            # Also surface it as an annotation so it is visible on the run summary page.
+            echo "::error title=Application not ready::$(sed ':a;N;$!ba;s/%/%25/g;s/\r/%0D/g;s/\n/%0A/g' "$RUNNER_TEMP/diagnostics.txt")"
             exit 1
           }
 
