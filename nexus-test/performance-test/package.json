@@ -6,12 +6,15 @@
   "scripts": {
     "test:smoke": "k6 run --no-usage-report --summary-export=results/smoke-platform-health.json tests/smoke/platform-health.js",
     "test:smoke:user-profile": "k6 run --no-usage-report --summary-export=results/smoke-user-profile.json tests/smoke/user-profile.js",
+    "test:smoke:rbac-read": "k6 run --no-usage-report --summary-export=results/smoke-rbac-read.json tests/smoke/rbac-read.js",
     "test:load": "k6 run --no-usage-report --summary-export=results/load-platform-health.json tests/load/platform-health.js",
+    "test:load:rbac-read": "k6 run --no-usage-report --summary-export=results/load-rbac-read.json tests/load/rbac-read.js",
     "test:stress": "k6 run --no-usage-report --summary-export=results/stress-platform-health.json tests/stress/platform-health.js",
     "test:spike": "k6 run --no-usage-report --summary-export=results/spike-platform-health.json tests/spike/platform-health.js",
     "test:soak": "k6 run --no-usage-report --summary-export=results/soak-platform-health.json tests/soak/platform-health.js",
     "inspect": "bash scripts/inspect-tests.sh",
     "wait-for-ready": "bash scripts/wait-for-ready.sh",
+    "grant-test-user-admin": "bash scripts/grant-test-user-admin.sh",
     "format": "prettier --write \"{config,scenarios,thresholds,utils,workloads,tests}/**/*.js\"",
     "format:check": "prettier --check \"{config,scenarios,thresholds,utils,workloads,tests}/**/*.js\""
   },

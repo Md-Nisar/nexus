@@ -1,5 +1,5 @@
 import { baseOptions } from '../../config/base-options.js';
-import { userProfile } from '../../scenarios/user-profile.js';
+import { rbacRead } from '../../scenarios/rbac-read.js';
 import {
   INTERIM_LATENCY_MS,
   errorThresholds,
@@ -11,11 +11,11 @@ import { smoke } from '../../workloads/smoke.js';
 export const options = {
   ...baseOptions,
   scenarios: {
-    user_profile: { ...smoke(), exec: 'userProfile' },
+    rbac_read: { ...smoke(), exec: 'rbacRead' },
   },
   thresholds: {
     ...errorThresholds,
-    ...latencyThresholds('user_profile', INTERIM_LATENCY_MS),
+    ...latencyThresholds('rbac_read', INTERIM_LATENCY_MS),
   },
 };
 
@@ -23,4 +23,4 @@ export function setup() {
   return { accessToken: obtainAccessToken() };
 }
 
-export { userProfile };
+export { rbacRead };
