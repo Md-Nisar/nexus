@@ -24,7 +24,7 @@ performance-test/
 │   ├── environment.js      # the ONLY place environment variables are read
 │   └── base-options.js     # k6 options every test shares (summary stats, env tag)
 ├── utils/                  # small shared helpers: http.js, checks.js, auth.js
-├── scripts/                # wait-for-ready.sh, inspect-tests.sh
+├── scripts/                # wait-for-ready.sh, inspect-tests.sh, grant-test-user-admin.sh
 ├── results/                # run output (git-ignored, except .gitkeep)
 └── package.json            # npm scripts + Prettier (k6 itself is NOT an npm package)
 ```
@@ -42,7 +42,7 @@ together:
 export const options = {
   ...baseOptions,
   scenarios: { platform_health: { ...load(), exec: 'platformHealth' } },
-  thresholds: { ...errorThresholds, ...latencyThresholds('platform_health', EXAMPLE_LATENCY_MS) },
+  thresholds: { ...errorThresholds, ...latencyThresholds('platform_health', INTERIM_LATENCY_MS) },
 };
 export { platformHealth }; // k6 calls exported functions by the name given in `exec`
 ```
@@ -65,15 +65,15 @@ export { platformHealth }; // k6 calls exported functions by the name given in `
 All configuration is environment variables, read only in [`config/environment.js`](config/environment.js).
 Set them as OS variables or pass `-e NAME=value` to k6 (`npm run test:smoke -- -e BASE_URL=...`).
 
-| Variable | Required | Purpose |
-|----------|----------|---------|
-| `BASE_URL` | **yes** | Backend root URL, e.g. `http://localhost:1000`. No default, so a test can never silently hit the wrong environment. |
-| `TEST_ENV` | no (`local`) | Label tagged on every metric (`local`, `ci`, `staging`, `perf`). |
-| `VUS` | no | Scales the workload: steady-state users (load, soak) or peak users (stress, spike). |
-| `DURATION` | no | Hold time of the workload's main phase, e.g. `30s`, `10m`, `2h`. |
-| `THRESHOLD_P95_MS`, `THRESHOLD_P99_MS` | no | Override the latency thresholds for this environment. |
-| `ACCESS_TOKEN` | auth tests | A bearer token to use as-is. |
-| `PERF_USER_EMAIL`, `PERF_USER_PASSWORD` | auth tests | Credentials to log in with once in `setup()` when `ACCESS_TOKEN` is unset. |
+| Variable                                | Required     | Purpose                                                                                                             |
+| --------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `BASE_URL`                              | **yes**      | Backend root URL, e.g. `http://localhost:1000`. No default, so a test can never silently hit the wrong environment. |
+| `TEST_ENV`                              | no (`local`) | Label tagged on every metric (`local`, `ci`, `staging`, `perf`).                                                    |
+| `VUS`                                   | no           | Scales the workload: steady-state users (load, soak) or peak users (stress, spike).                                 |
+| `DURATION`                              | no           | Hold time of the workload's main phase, e.g. `30s`, `10m`, `2h`.                                                    |
+| `THRESHOLD_P95_MS`, `THRESHOLD_P99_MS`  | no           | Override the latency thresholds for this environment.                                                               |
+| `ACCESS_TOKEN`                          | auth tests   | A bearer token to use as-is.                                                                                        |
+| `PERF_USER_EMAIL`, `PERF_USER_PASSWORD` | auth tests   | Credentials to log in with once in `setup()` when `ACCESS_TOKEN` is unset.                                          |
 
 **No real credentials are committed.** The `dev` profile seeds a pre-verified, dev-only test user
 (see `DevDataInitializer` in nexus-backend), a documented non-secret fixture. Locally, pass its
@@ -81,9 +81,17 @@ credentials through the variables above. CI runs the `dev` profile, so it falls 
 setting the `PERF_USER_EMAIL` / `PERF_USER_PASSWORD` repository secrets overrides it. Any other
 environment must supply its own dedicated account through secrets.
 
-That user has no roles, so it can call `GET /api/v1/users/me` but not the RBAC read endpoints
-(`/api/v1/roles`, `/api/v1/permissions` return 403). Scenarios for those need a test user with the
-right permissions, which does not exist yet.
+That user has no roles out of the box, so it can call `GET /api/v1/users/me` but not the RBAC read
+endpoints (403). For the RBAC scenarios, `npm run grant-test-user-admin` gives it the seeded
+`TENANT_ADMIN` role (all permissions). It logs in as the test user, then inserts the assignment
+straight into the docker-compose MySQL, so it is **for a throw-away local or CI database only**: it
+bypasses the application's audit trail and last-admin rules. It is idempotent. Run it after the app
+has started and before the RBAC tests. Once the backend has a supported way to provision an admin
+test user, replace the script with it.
+
+**Login is rate limited** to 10 attempts per minute per IP and 5 per minute per email, and failed
+attempts count. Tests log in once in `setup()`; running several tests as the same user in quick
+succession (or retrying repeatedly) returns HTTP 429, so leave a minute between attempts.
 
 ## Running
 
@@ -93,14 +101,16 @@ Wait until the app is ready (optional locally, required in automation):
 BASE_URL=http://localhost:1000 npm run wait-for-ready        # optional arg: timeout seconds (default 120)
 ```
 
-| Category | Command | Default shape (override with `VUS` / `DURATION`) | ≈ Run time |
-|----------|---------|------------------------------|------------|
-| smoke | `BASE_URL=http://localhost:1000 npm run test:smoke` | 1 VU, 30s | 30s |
-| smoke (auth) | `BASE_URL=... PERF_USER_EMAIL=... PERF_USER_PASSWORD=... npm run test:smoke:user-profile` | 1 VU, 30s | 30s |
-| load | `BASE_URL=http://localhost:1000 npm run test:load` | ramp 1m → 10 VUs for 5m → ramp down 30s | 6.5m |
-| stress | `BASE_URL=http://localhost:1000 npm run test:stress` | steps ⅓ → ⅔ → peak 30 VUs, 2m at peak | 10m |
-| spike | `BASE_URL=http://localhost:1000 npm run test:spike` | baseline 5 → jump to 50 VUs for 1m → recover | 4.5m |
-| soak | `BASE_URL=http://localhost:1000 npm run test:soak` | 10 VUs for 1h | 1h 4m |
+| Category          | Command                                                                                   | Default shape (override with `VUS` / `DURATION`) | ≈ Run time |
+| ----------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------ | ---------- |
+| smoke             | `BASE_URL=http://localhost:1000 npm run test:smoke`                                       | 1 VU, 30s                                        | 30s        |
+| smoke (auth)      | `BASE_URL=... PERF_USER_EMAIL=... PERF_USER_PASSWORD=... npm run test:smoke:user-profile` | 1 VU, 30s                                        | 30s        |
+| smoke (RBAC read) | `... npm run grant-test-user-admin && npm run test:smoke:rbac-read`                       | 1 VU, 30s                                        | 30s        |
+| load              | `BASE_URL=http://localhost:1000 npm run test:load`                                        | ramp 1m → 10 VUs for 5m → ramp down 30s          | 6.5m       |
+| load (RBAC read)  | `... npm run test:load:rbac-read` (after `grant-test-user-admin`)                         | same profile                                     | 6.5m       |
+| stress            | `BASE_URL=http://localhost:1000 npm run test:stress`                                      | steps ⅓ → ⅔ → peak 30 VUs, 2m at peak            | 10m        |
+| spike             | `BASE_URL=http://localhost:1000 npm run test:spike`                                       | baseline 5 → jump to 50 VUs for 1m → recover     | 4.5m       |
+| soak              | `BASE_URL=http://localhost:1000 npm run test:soak`                                        | 10 VUs for 1h                                    | 1h 4m      |
 
 On Windows PowerShell set variables first (`$env:BASE_URL="http://localhost:1000"`), or use
 `npm run test:smoke -- -e BASE_URL=http://localhost:1000`. `wait-for-ready` and `inspect` need bash
@@ -110,15 +120,15 @@ Without npm: `k6 run -e BASE_URL=http://localhost:1000 tests/smoke/platform-heal
 
 ### Test categories: purpose and when to use them
 
-| Category | Question it answers | When to run |
-|----------|---------------------|-------------|
-| **smoke** | Do the script, config and environment work at all? Minimal traffic, not a measurement. | Every change to these tests; before any bigger run; in CI. |
-| **load** | Does the system meet its thresholds under normal expected traffic? | Before releases; after performance-sensitive changes. |
-| **stress** | Where does it start to degrade above normal traffic, and does it recover? | Capacity planning; after infrastructure changes. |
-| **spike** | Does a sudden burst break it, and does it recover afterwards? | Before events with bursty traffic; after changes to pools, limits, autoscaling. |
-| **soak** | Does anything degrade over hours (leaks, pool exhaustion, unbounded caches)? | Periodically on a dedicated environment; before major releases. |
+| Category   | Question it answers                                                                    | When to run                                                                     |
+| ---------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| **smoke**  | Do the script, config and environment work at all? Minimal traffic, not a measurement. | Every change to these tests; before any bigger run; in CI.                      |
+| **load**   | Does the system meet its thresholds under normal expected traffic?                     | Before releases; after performance-sensitive changes.                           |
+| **stress** | Where does it start to degrade above normal traffic, and does it recover?              | Capacity planning; after infrastructure changes.                                |
+| **spike**  | Does a sudden burst break it, and does it recover afterwards?                          | Before events with bursty traffic; after changes to pools, limits, autoscaling. |
+| **soak**   | Does anything degrade over hours (leaks, pool exhaustion, unbounded caches)?           | Periodically on a dedicated environment; before major releases.                 |
 
-Only smoke is meant for a laptop or PR pipeline. The other categories *run* locally (useful to try
+Only smoke is meant for a laptop or PR pipeline. The other categories _run_ locally (useful to try
 a change), but their numbers only mean something on hardware sized like production.
 
 ### Validate without traffic
@@ -137,9 +147,10 @@ agreed performance SLAs yet, and nothing in this suite is one.**
 - `latencyThresholds(scenario, { p95Ms, p99Ms })` gates `http_req_duration` p95/p99 **per k6
   scenario**, so `setup()` traffic (the login, which is deliberately slow Argon2 hashing) and other
   scenarios in the same test don't skew it.
-- `EXAMPLE_LATENCY_MS` (p95 < 1000ms, p99 < 2000ms) is a **loose placeholder** that shows the
-  mechanism works. When a scenario gets a real target (story acceptance criteria are the source),
-  pass it in that test: `latencyThresholds('user_profile', { p95Ms: 300 })`.
+- `INTERIM_LATENCY_MS` (p95 < 1000ms, p99 < 2000ms) is a **loose interim value**: it keeps the gate
+  meaningful (a 10x regression still fails) until real targets exist. Production is not set up yet
+  and follows the RBAC work as the first release, so revisit these numbers then. When a scenario
+  gets a real target (story acceptance criteria are the source), pass it in that test: `latencyThresholds('user_profile', { p95Ms: 300 })`.
 - `THRESHOLD_P95_MS` / `THRESHOLD_P99_MS` override latency per environment, because a laptop and
   a performance environment legitimately differ.
 - Endpoint-level gates use the `name` tag every request gets from `utils/http.js`:
@@ -194,7 +205,7 @@ PRs that touch this directory, and on demand (`workflow_dispatch`):
 ```text
 checkout → install k6 (pinned + sha256-verified) → format:check + inspect → build jar
   → docker compose up mysql redis → start app (dev profile) → wait-for-ready
-  → test:smoke → test:smoke:user-profile → upload results/ + app log → clean up
+  → grant-test-user-admin → test:smoke → test:smoke:user-profile → test:smoke:rbac-read → upload results/ + app log → clean up
 ```
 
 The workflow only supplies `BASE_URL`, `SERVER_PORT` (the app's default port 1000 is privileged, so
@@ -206,7 +217,7 @@ the same tests at another environment means changing `BASE_URL`, nothing else.
 - A dedicated or cloud performance environment, and any infrastructure (Kubernetes, Terraform, cloud).
 - Scheduled load/stress/spike/soak runs in CI (numbers from a shared CI runner are not meaningful).
 - Dashboards and metric storage (Prometheus, Grafana, k6 Cloud).
-- Production SLAs, which need to be agreed first. Thresholds here are gates and examples.
+- Production SLAs, which need to be agreed first. Thresholds here are gates and interim values.
 - Write-path scenarios (registration, role management). They need test-data isolation and cleanup,
   and some trigger email or rate limits.
 

@@ -4,8 +4,9 @@ import { config } from '../config/environment.js';
  * Nexus has no agreed performance SLAs yet, so nothing here is one.
  *
  * - errorThresholds are framework correctness gates: the system answered, and answered correctly.
- * - EXAMPLE_LATENCY_MS are deliberately loose placeholder values that show the mechanism works.
- *   Replace them per scenario once real targets exist (story acceptance criteria are the source).
+ * - INTERIM_LATENCY_MS are deliberately loose values that keep the gate meaningful until real
+ *   targets exist. Production is not set up yet (it follows RBAC, as the first release); adjust
+ *   them then, per scenario (story acceptance criteria are the source).
  *
  * A breached threshold makes `k6 run` exit non-zero (99), which fails the npm script and CI step.
  */
@@ -15,7 +16,7 @@ export const errorThresholds = {
   checks: ['rate>0.99'],
 };
 
-export const EXAMPLE_LATENCY_MS = { p95Ms: 1000, p99Ms: 2000 };
+export const INTERIM_LATENCY_MS = { p95Ms: 1000, p99Ms: 2000 };
 
 /**
  * p95/p99 gates on http_req_duration, scoped to one k6 scenario so that setup() traffic (e.g.
