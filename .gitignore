@@ -26,3 +26,8 @@ __pycache__/
 # Angular
 nexus-frontend/dist/
 nexus-frontend/node_modules/
+
+# Performance tests
+nexus-test/performance-test/node_modules/
+nexus-test/performance-test/results/*
+!nexus-test/performance-test/results/.gitkeep
