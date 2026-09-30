@@ -27,7 +27,9 @@ jobs:
     timeout-minutes: 30
 
     env:
-      BASE_URL: http://localhost:1000
+      # Port 1000 (the app default) is privileged; the non-root runner user cannot bind it.
+      SERVER_PORT: '8080'
+      BASE_URL: http://localhost:8080
       TEST_ENV: ci
       K6_VERSION: v1.3.0
       # sha256 of k6-v1.3.0-linux-amd64.tar.gz, from the release's k6-v1.3.0-checksums.txt
