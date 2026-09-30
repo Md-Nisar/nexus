@@ -1,21 +1,26 @@
 import { baseOptions } from '../../config/base-options.js';
-import { platformHealth } from '../../scenarios/platform-health.js';
+import { rbacRead } from '../../scenarios/rbac-read.js';
 import {
   INTERIM_LATENCY_MS,
   errorThresholds,
   latencyThresholds,
 } from '../../thresholds/default-thresholds.js';
+import { obtainAccessToken } from '../../utils/auth.js';
 import { load } from '../../workloads/load.js';
 
 export const options = {
   ...baseOptions,
   scenarios: {
-    platform_health: { ...load(), exec: 'platformHealth' },
+    rbac_read: { ...load(), exec: 'rbacRead' },
   },
   thresholds: {
     ...errorThresholds,
-    ...latencyThresholds('platform_health', INTERIM_LATENCY_MS),
+    ...latencyThresholds('rbac_read', INTERIM_LATENCY_MS),
   },
 };
 
-export { platformHealth };
+export function setup() {
+  return { accessToken: obtainAccessToken() };
+}
+
+export { rbacRead };
