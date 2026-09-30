@@ -78,6 +78,10 @@ jobs:
       - name: Start application
         run: |
           docker compose up -d --wait mysql redis
+          # The compose healthcheck pings over the socket, which also answers during MySQL's
+          # first-boot init (before it accepts TCP). Wait on TCP so Flyway can connect.
+          timeout 120 bash -c 'until docker compose exec -T mysql \
+            mysqladmin ping -h 127.0.0.1 -uroot -proot --silent; do sleep 2; done'
           cd nexus-backend
           SPRING_PROFILES_ACTIVE=dev nohup java -jar target/nexus-backend-*.jar \
             > "$RUNNER_TEMP/nexus-backend.log" 2>&1 &
@@ -85,7 +89,13 @@ jobs:
 
       - name: Wait for application readiness
         working-directory: nexus-test/performance-test
-        run: npm run wait-for-ready -- 180
+        run: |
+          npm run wait-for-ready -- 180 || {
+            echo "::group::Application log (last 100 lines)"
+            tail -n 100 "$RUNNER_TEMP/nexus-backend.log" || true
+            echo "::endgroup::"
+            exit 1
+          }
 
       - name: Smoke test — platform health
         working-directory: nexus-test/performance-test
