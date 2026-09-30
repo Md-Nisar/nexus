@@ -26,8 +26,6 @@
       "Read(~/.aws/**)",
       "Edit(./.env*)",
       "Edit(./**/application-prod.*)",
-      "Edit(./.github/**)",
-      "Edit(./.githooks/**)",
       "Edit(./nexus-scripts/**)",
       "Edit(./.claude/hooks/**)",
       "Edit(./.mcp.json)"
