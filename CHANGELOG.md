@@ -14,7 +14,7 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ### Added — k6 RBAC read scenarios
 
-- `rbac-read` scenario (roles, permissions, role permissions; read-only) with smoke and load tests, and `grant-test-user-admin` to give the dev-seeded test user `TENANT_ADMIN` on a disposable local/CI database. The `Performance Smoke` workflow now runs the authenticated and RBAC smokes. Latency thresholds renamed `INTERIM_LATENCY_MS`; they are revisited once production exists.
+- `rbac-read` scenario (roles, permissions, role permissions; read-only) with smoke and load tests, and the dev-profile seed user now holds the seeded `TENANT_ADMIN` role (`DevDataInitializer`, via `UserRoleAssignmentPort`, idempotent). The `Performance Smoke` workflow now runs the authenticated and RBAC smokes. Latency thresholds renamed `INTERIM_LATENCY_MS`; they are revisited once production exists.
 
 ### Added — US-015 (Enable role and role-permission management API)
 

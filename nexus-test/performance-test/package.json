@@ -14,7 +14,6 @@
     "test:soak": "k6 run --no-usage-report --summary-export=results/soak-platform-health.json tests/soak/platform-health.js",
     "inspect": "bash scripts/inspect-tests.sh",
     "wait-for-ready": "bash scripts/wait-for-ready.sh",
-    "grant-test-user-admin": "bash scripts/grant-test-user-admin.sh",
     "format": "prettier --write \"{config,scenarios,thresholds,utils,workloads,tests}/**/*.js\"",
     "format:check": "prettier --check \"{config,scenarios,thresholds,utils,workloads,tests}/**/*.js\""
   },

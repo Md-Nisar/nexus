@@ -6,7 +6,10 @@ import com.example.nexus.identity.application.port.out.UserRegistrationPort;
 import com.example.nexus.identity.domain.EmailCipher;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
+import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
+import com.example.nexus.rbac.domain.RbacRoleNames;
 import java.time.Instant;
+import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -24,6 +27,11 @@ import org.springframework.transaction.annotation.Transactional;
  * tests can log in immediately without a verification email flow. Idempotent — skips
  * insertion if the user already exists.
  *
+ * <p>The user is also assigned the seeded {@code TENANT_ADMIN} system role (all permissions), so
+ * E2E and performance tests can exercise the RBAC endpoints. This is dev-only: it goes through
+ * {@link UserRoleAssignmentPort}, the same persistence path as a real assignment, but skips the
+ * caller-permission checks that would otherwise make the first admin impossible to create.
+ *
  * <p>Credentials: {@code test@example.com} / {@code TestPass99!}
  */
 @Component
@@ -39,6 +47,7 @@ public class DevDataInitializer implements ApplicationRunner {
   private final EmailBlindIndexService emailBlindIndexService;
   private final PasswordHasherPort passwordHasherPort;
   private final UuidGenerator uuidGenerator;
+  private final UserRoleAssignmentPort userRoleAssignmentPort;
   private final UUID defaultTenantId;
 
   public DevDataInitializer(
@@ -46,11 +55,13 @@ public class DevDataInitializer implements ApplicationRunner {
       EmailBlindIndexService emailBlindIndexService,
       PasswordHasherPort passwordHasherPort,
       UuidGenerator uuidGenerator,
+      UserRoleAssignmentPort userRoleAssignmentPort,
       @Value("${nexus.identity.default-tenant-id}") UUID defaultTenantId) {
     this.userRegistrationPort = userRegistrationPort;
     this.emailBlindIndexService = emailBlindIndexService;
     this.passwordHasherPort = passwordHasherPort;
     this.uuidGenerator = uuidGenerator;
+    this.userRoleAssignmentPort = userRoleAssignmentPort;
     this.defaultTenantId = defaultTenantId;
   }
 
@@ -59,8 +70,11 @@ public class DevDataInitializer implements ApplicationRunner {
   public void run(ApplicationArguments args) {
     String emailHmac = emailBlindIndexService.blindIndex(E2E_EMAIL);
 
-    if (userRegistrationPort.findByTenantAndEmailHmac(defaultTenantId, emailHmac).isPresent()) {
+    Optional<User> existing =
+        userRegistrationPort.findByTenantAndEmailHmac(defaultTenantId, emailHmac);
+    if (existing.isPresent()) {
       log.debug("E2E test user already exists — skipping seed");
+      grantTenantAdmin(existing.get());
       return;
     }
 
@@ -81,5 +95,22 @@ public class DevDataInitializer implements ApplicationRunner {
     userRegistrationPort.save(user);
 
     log.info("E2E test user seeded: {} (tenant {})", E2E_EMAIL, defaultTenantId);
+    grantTenantAdmin(user);
+  }
+
+  /** Idempotent: also runs for a user seeded by an earlier version, before this role existed. */
+  private void grantTenantAdmin(User user) {
+    Optional<UUID> roleId =
+        userRoleAssignmentPort.findRoleIdByName(defaultTenantId, RbacRoleNames.TENANT_ADMIN);
+    if (roleId.isEmpty()) {
+      log.warn("{} role not found for tenant {} — test user left without roles",
+          RbacRoleNames.TENANT_ADMIN, defaultTenantId);
+      return;
+    }
+    if (userRoleAssignmentPort.hasActiveAssignment(user.getId(), roleId.get())) {
+      return;
+    }
+    userRoleAssignmentPort.assign(user.getId(), roleId.get(), defaultTenantId, user.getId());
+    log.info("E2E test user assigned {}", RbacRoleNames.TENANT_ADMIN);
   }
 }
