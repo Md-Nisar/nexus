@@ -34,9 +34,10 @@ jobs:
       K6_VERSION: v1.3.0
       # sha256 of k6-v1.3.0-linux-amd64.tar.gz, from the release's k6-v1.3.0-checksums.txt
       K6_SHA256: 84d26fc1f7bc03e02f2e016b3b1b20c032e05dfe461fca82de4e3a6ebe72ddbd
-      # Optional: set these repository secrets to also run the authenticated smoke test.
-      PERF_USER_EMAIL: ${{ secrets.PERF_USER_EMAIL }}
-      PERF_USER_PASSWORD: ${{ secrets.PERF_USER_PASSWORD }}
+      # The app runs with the dev profile, whose DevDataInitializer seeds this pre-verified,
+      # dev-only user (a documented, non-secret fixture). Repository secrets override it.
+      PERF_USER_EMAIL: ${{ secrets.PERF_USER_EMAIL || 'test@example.com' }}
+      PERF_USER_PASSWORD: ${{ secrets.PERF_USER_PASSWORD || 'TestPass99!' }}
 
     steps:
       - name: Checkout Code
@@ -111,7 +112,6 @@ jobs:
         run: npm run test:smoke
 
       - name: Smoke test — user profile (authenticated)
-        if: ${{ env.PERF_USER_EMAIL != '' }}
         working-directory: nexus-test/performance-test
         env:
           K6_WEB_DASHBOARD: 'true'

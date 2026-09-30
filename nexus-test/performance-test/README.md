@@ -75,9 +75,15 @@ Set them as OS variables or pass `-e NAME=value` to k6 (`npm run test:smoke -- -
 | `ACCESS_TOKEN` | auth tests | A bearer token to use as-is. |
 | `PERF_USER_EMAIL`, `PERF_USER_PASSWORD` | auth tests | Credentials to log in with once in `setup()` when `ACCESS_TOKEN` is unset. |
 
-**Credentials are never committed.** Locally, the `dev` profile seeds a pre-verified test user
-(see `DevDataInitializer` in nexus-backend); pass its credentials through the variables above.
-In CI they come from repository secrets.
+**No real credentials are committed.** The `dev` profile seeds a pre-verified, dev-only test user
+(see `DevDataInitializer` in nexus-backend), a documented non-secret fixture. Locally, pass its
+credentials through the variables above. CI runs the `dev` profile, so it falls back to that user;
+setting the `PERF_USER_EMAIL` / `PERF_USER_PASSWORD` repository secrets overrides it. Any other
+environment must supply its own dedicated account through secrets.
+
+That user has no roles, so it can call `GET /api/v1/users/me` but not the RBAC read endpoints
+(`/api/v1/roles`, `/api/v1/permissions` return 403). Scenarios for those need a test user with the
+right permissions, which does not exist yet.
 
 ## Running
 
@@ -188,12 +194,11 @@ PRs that touch this directory, and on demand (`workflow_dispatch`):
 ```text
 checkout → install k6 (pinned + sha256-verified) → format:check + inspect → build jar
   → docker compose up mysql redis → start app (dev profile) → wait-for-ready
-  → test:smoke (+ test:smoke:user-profile if secrets set) → upload results/ + app log → clean up
+  → test:smoke → test:smoke:user-profile → upload results/ + app log → clean up
 ```
 
-The workflow only supplies `BASE_URL`, `TEST_ENV=ci` and, optionally, credentials: the
-`PERF_USER_EMAIL` / `PERF_USER_PASSWORD` repository secrets. Without them the authenticated smoke
-step is skipped. Results are uploaded as the `performance-smoke-<sha>` artifact (30 days). Pointing
+The workflow only supplies `BASE_URL`, `SERVER_PORT` (the app's default port 1000 is privileged, so
+the non-root runner uses 8080), `TEST_ENV=ci` and the dev-seed credentials described above. Results are uploaded as the `performance-smoke-<sha>` artifact (30 days). Pointing
 the same tests at another environment means changing `BASE_URL`, nothing else.
 
 ## Out of scope (for now)
