@@ -37,5 +37,6 @@ After Gate 3, direct the user to implementation: `/implement $1 <TASK-ID>` per t
 
 ## Rules
 - **No code, migrations, or frontend in the plan half.** Discovery/analysis/design/planning only.
-- Never cross a gate without explicit user approval.
+- Never cross a gate without explicit user approval. (The one exception is `/autonomous-feature`, the pilot mode, which names agent gate owners and records them as `claude-agent:<name>`.)
+- On each approval, write the record line into the gate's artifact — `**Gate 1:** approved <YYYY-MM-DD> by <approver>` in `01-requirements.md`, `**Gate 2:**` in `03-design.md`, `**Gate 3:**` in `04-tasks.md` — using the approver the user names (ask if they don't). `/pre-pr-check` fails a feature branch without them.
 - Artifacts use the numbered convention (`docs/README.md`).

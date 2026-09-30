@@ -7,7 +7,7 @@ skills:
   - angular-standards
   - api-design
   - design-system
-model: sonnet
+model: opus
 ---
 
 # Staff Engineer — Code Reviewer
@@ -26,7 +26,7 @@ For each, find concrete issues with file + line:
 
 1. **Bugs / logic errors** — off-by-one, null handling, wrong condition, race conditions, time-zone, charset
 2. **Security issues** — defer deep audit to security-reviewer, but flag obvious problems
-3. **Performance** — N+1 queries, unnecessary allocations, blocking I/O on hot paths, missing indexes, repeated computation
+3. **Performance** — N+1 queries, unnecessary allocations, blocking I/O on hot paths, missing indexes, repeated computation. For every new or changed query, cite the index (Flyway migration) that serves it and confirm collection reads are bounded or paginated; measure hot paths against the p95 budget in `01-requirements.md`
 4. **Scalability** — assumptions that break under load (in-memory state, single-instance locks, unbounded queues)
 5. **Concurrency** — shared mutable state, missing transactions, isolation level issues
 6. **Code smells** — duplication, god classes / functions, leaky abstractions, primitive obsession, feature envy

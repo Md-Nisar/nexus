@@ -13,6 +13,7 @@ This directory configures Claude Code for the Nexus project. Everything here is 
 │   └── code-reviewer.md      security-reviewer.md  qa-engineer.md     release-manager.md
 ├── commands/              # Slash commands
 │   ├── new-feature.md     # /new-feature <ID>      ← canonical front door (plan half + gates)
+│   ├── autonomous-feature.md # /autonomous-feature <ID> ← PILOT: unattended Phases 0–9 → draft PR (low/medium risk only)
 │   ├── pre-pr-check.md    # /pre-pr-check          ← run all local gates + DoD before a PR
 │   ├── security-review.md # /security-review [ID]  ← ad-hoc diff security audit
 │   ├── analyze-story.md  impact-analysis.md  design.md  breakdown.md   # plan phases 1–4
@@ -22,7 +23,7 @@ This directory configures Claude Code for the Nexus project. Everything here is 
 │   └── userstory-plan.md  userstory-action.md      # batch runners for each half
 ├── skills/                # Standards skills + workflow skills
 │   ├── spring-boot-standards/  angular-standards/  api-design/  design-system/   # standards (auto-loaded by topic)
-│   ├── angular-developer/  angular-new-app/        # vendored from angular/skills (skills-lock.json)
+│   ├── angular-developer/                          # vendored from angular/skills (skills-lock.json)
 │   └── feature-discovery/  pr-checklist/  pr-authoring/  sonar-triage/  sonar-safe-fix/   # workflow procedures
 └── hooks/                 # Cross-platform Node hooks wired into settings.json
     ├── _hooklib.mjs            # shared helpers
@@ -75,7 +76,7 @@ All artifacts land in `docs/features/<FEATURE-ID>/` using the **numbered convent
 
 - Each sub-agent has its own context — heavy exploration in a sub-agent keeps your main thread clean.
 - Run `/context` to check usage. Run `/compact` between major tasks if creeping toward limits.
-- `architect` defaults to `sonnet` (2026-09 retro: was `opus`, moved to cut plan-phase cost — its job is applying established patterns and writing contracts, not adversarial reasoning). `security-reviewer` remains `opus` — it is the epic's adversarial backstop and has caught real defects (lock-scope, deadlock-proof gaps) at that depth on RBAC work; do not downgrade it without a deliberate, human-made edit to `security-reviewer.md`. Engineers, reviewers, and QA are `sonnet`. Escalate `architect` to `opus` per story (edit its frontmatter, or override with `--model`) when a story is flagged security-critical.
+- Model tiering — **`opus`** where the agent's judgment is the last line of defense: `architect` (the design every later phase builds on; a flaw costs a revision loop with the security reviewer), `security-reviewer` (the adversarial backstop — it has caught real lock-scope and deadlock-proof defects on RBAC work; do not downgrade it without a deliberate, human-made edit), and `code-reviewer` (the fresh-context pass before merge). **`sonnet`** where output is closely specified and verified downstream: `backend-engineer` and `frontend-engineer` (implement an approved task, checked by tests, ArchUnit, CI and the opus reviewers; `/implement` escalates a task to `opus` when it touches authz, locking or crypto), `qa-engineer` (coverage gates are mechanical), `business-analyst` (a human approves Gate 1) and `release-manager` (checklist-driven). Engineers run most often, so this split keeps per-story cost down where the review net is strongest.
 - For a quick fix that doesn't need the full workflow: just talk to Claude directly. The workflow is for substantial features.
 
 ## Maintaining this directory
@@ -83,3 +84,5 @@ All artifacts land in `docs/features/<FEATURE-ID>/` using the **numbered convent
 - After every feature, run `/retro <FEATURE-ID>`. If new conventions emerged, update the relevant agent or skill files.
 - Treat agent and skill files as code: PR them, review them, keep them in sync with reality.
 - If a hook fires too often or not enough, tune it — hooks are leverage; bad hooks are friction.
+- Plugins `superpowers`, `feature-dev` and `frontend-design` are disabled in `settings.json` on purpose: the first two ship competing feature workflows that bypass `/new-feature`'s gates, and the third contradicts the `design-system` rules (ADR 0004). Don't re-enable them without changing the operating model.
+- New third-party skills are vendored, reviewed, and pinned by hash in `skills-lock.json` — a skill is instructions Claude follows, so treat it as a dependency.

@@ -63,6 +63,7 @@ You are a Senior Backend Engineer on the **Nexus** team.
 - Unit tests for services with Mockito; no Spring context.
 - Integration tests with `@SpringBootTest` + Testcontainers MySQL for repository / web layer.
 - Test naming: `should_<expected>_when_<condition>`.
+- Test pyramid and per-layer coverage gates: `docs/TESTING.md`. New code paths emit the logs/metrics/audit events required by `docs/observability-standards.md` (Per-Feature Observability Checklist).
 - Cover happy + edge + error paths. Boundary values explicitly.
 - Run `./mvnw verify -DskipITs` (or `mvnw.cmd verify -DskipITs` on Windows) and report results.
 

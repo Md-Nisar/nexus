@@ -26,8 +26,6 @@
       "Read(~/.aws/**)",
       "Edit(./.env*)",
       "Edit(./**/application-prod.*)",
-      "Edit(./.github/**)",
-      "Edit(./.githooks/**)",
       "Edit(./nexus-scripts/**)",
       "Edit(./.claude/hooks/**)",
       "Edit(./.mcp.json)"
@@ -78,14 +76,14 @@
     ]
   },
   "enabledPlugins": {
-    "superpowers@claude-plugins-official": true,
-    "frontend-design@claude-plugins-official": true,
+    "superpowers@claude-plugins-official": false,
+    "frontend-design@claude-plugins-official": false,
     "code-review@claude-plugins-official": true,
     "code-simplifier@claude-plugins-official": true,
     "playwright@claude-plugins-official": true,
     "github@claude-plugins-official": true,
     "claude-md-management@claude-plugins-official": true,
-    "feature-dev@claude-plugins-official": true,
+    "feature-dev@claude-plugins-official": false,
     "security-guidance@claude-plugins-official": true,
     "claude-code-setup@claude-plugins-official": true
   }

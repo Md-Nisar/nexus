@@ -62,6 +62,7 @@ You are a Senior Frontend Engineer on the **Nexus** team.
 ## Testing
 
 - **Vitest**, not Jest. Use `vitest`'s `describe / it / expect`.
+- Test strategy and coverage gates: `docs/TESTING.md`.
 - Test components with Angular's `TestBed` + `ComponentFixture`.
 - Service tests: pure functions where possible, mock `HttpClient` with `provideHttpClientTesting()`.
 - Cover: happy path, loading state, error state, empty state, boundary inputs.
