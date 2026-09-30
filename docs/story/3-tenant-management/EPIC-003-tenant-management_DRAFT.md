@@ -3,1498 +3,1288 @@
 ```
 EPIC ID:       EPIC-003
 EPIC TITLE:    Tenant Management
-PRIORITY:      P0
-STORY POINTS:  29
-BLOCKED BY:    EPIC-002 (US-011 permission enforcement, US-012 role assignment)
-BLOCKS:        EPIC-004 User Lifecycle & Provisioning
-
-Description:
-  Delivers the two-tier tenant model (Tenant → Organisation), Platform Admin
-  tenant lifecycle management, Tenant Admin self-service profile management,
-  organisation CRUD with full Angular UI, suspension enforcement filter,
-  Angular TenantContextService, and full audit of all tenant lifecycle events.
-  Makes the platform commercially viable for B2B enterprise customers.
-
-Business Goal:
-  First enterprise customer onboardable within 1 week of GA.
-
-Success Metrics:
-  - Zero cross-tenant data leakage findings in pre-GA pen test
-  - Tenant creation p95 < 2s
-  - Suspension enforced within 5 min of Platform Admin action
-
-Storage Providers (FileStorageService abstraction):
-  - Local disk  → @Profile("dev", "test")
-  - AWS S3      → @Profile("prod")
-  - SFTP        → @Profile("sftp")
+STATUS:        DRAFT — rewritten 2026-09-30, pending Gate 1 on each story
+PRIORITY:      P0 (MVP slice) — later phases prioritised per story
+STORIES:       US-021 … US-044 (24 stories; 13 in MVP)
+BLOCKED BY:    EPIC-002 entry criteria (Open Decision #4 ArchUnit gate; US-016/US-017 merged),
+               US-018 (RBAC hardening)
+RELATED:       US-019 / US-020 (RBAC UI) — role-assignment screens live there, not here
+BLOCKS:        Any customer-facing feature that stores tenant-owned data
 ```
+
+> **Status of this document.** This is a full rewrite of the earlier draft of this file (see git
+> history for the original). The earlier draft's intent — a first enterprise customer onboardable
+> within one week of GA, with zero cross-tenant leakage — is kept. Its structure, numbering and
+> several technical assumptions were changed because they did not match the codebase; every
+> deliberate change is listed in [§0.3](#03-what-changed-from-the-previous-draft-and-why).
+> Statements are **verified** against the code on branch state of 2026-09-30 unless marked
+> _(inferred)_ or _(unverified)_.
 
 ---
 
-## Stories in this Epic
+## Contents
 
-| Story | Title | Points | Priority | Sprint |
+0. [Summary of the previous draft and what changed](#0-summary-of-the-previous-draft-and-what-changed)
+1. [Problem, goals, non-goals](#1-problem-goals-non-goals)
+2. [Personas](#2-personas)
+3. [Current state and recommended architecture](#3-current-state-and-recommended-architecture)
+4. [Gap analysis](#4-gap-analysis)
+5. [Feature areas and user stories](#5-feature-areas-and-user-stories)
+6. [Non-functional requirements](#6-non-functional-requirements)
+7. [Phased rollout](#7-phased-rollout)
+8. [Decisions needed, open questions and risks](#8-decisions-needed-open-questions-and-risks)
+9. [Appendix A — Industry research comparison](#appendix-a--industry-research-comparison)
+10. [Appendix B — Sources](#appendix-b--sources)
+11. [Appendix C — Verification log](#appendix-c--verification-log)
+
+---
+
+## 0. Summary of the previous draft and what changed
+
+### 0.1 What the previous draft proposed
+
+| Aspect | Previous draft |
+|---|---|
+| Intent | Two-tier model (Tenant → Organisation); Platform Admin creates tenants and controls lifecycle; Tenant Admin self-service profile and organisation CRUD; suspension filter; Angular `TenantContextService`; audit of tenant events |
+| Stories | US-020 … US-025, 29 points, Sprints 5–7 |
+| Schema | `V4__tenant_schema.sql` creating `tenants`, `organisations`, `tenant_status_history`; FK from `users.tenant_id`; seed `organisation:read/write` |
+| Platform admin | `tenant:write` permission used as the platform-admin gate (OQ-004) |
+| Storage | New `FileStorageService` with Local / S3 / SFTP implementations (wired but unused in the epic) |
+| Success metrics | Zero cross-tenant findings in pre-GA pen test; tenant creation p95 < 2 s; suspension enforced ≤ 5 min |
+
+### 0.2 Gaps and contradictions found in the previous draft (all verified)
+
+| # | Finding | Evidence |
+|---|---|---|
+| G1 | **Story IDs collide** with the RBAC plan: US-018 is RBAC hardening; US-019 / US-020 are RBAC UI. | Product direction for this rewrite; `docs/story/2-rbac/` ends at US-017 |
+| G2 | **Migration version collides**: `V4__` is already `V4__auth_events_add_user_agent.sql`; latest is `V5__rbac_schema.sql`. | `nexus-backend/src/main/resources/db/migration/` |
+| G3 | **Privilege-escalation hole**: gating platform-admin actions on `tenant:write` would let *every* tenant admin create/suspend *any* tenant, because `V5` grants `TENANT_ADMIN` every permission including `tenant:write`. | `V5__rbac_schema.sql` (seed: "TENANT_ADMIN gets all 7") |
+| G4 | **Tenant-creation flow cannot work**: it assigns `TENANT_ADMIN` to an existing `tenantAdminUserId`, but users belong to exactly one tenant (`users.tenant_id NOT NULL`), and `RoleAssignmentService.verifySameTenant` rejects cross-tenant targets. A brand-new tenant has no users and no roles. | `V2__identity_schema.sql`; `rbac/application/RoleAssignmentService.java` |
+| G5 | **No way for a second tenant's users to sign in**: login, registration and password reset all use the single `nexus.identity.default-tenant-id`. The draft never addresses tenant resolution. | `identity/interfaces/rest/LoginController.java`, `RegistrationController.java`, `PasswordResetController.java` |
+| G6 | **Organisations have no members**: the draft's organisation CRUD has no user↔organisation link and no consuming feature, so it delivers labels with no behaviour. | Draft US-023 |
+| G7 | **Non-existent classes and names referenced**: `AuditEventPublisher`, `AuditEventType`, `UuidBinaryConverter`, `UuidUtils`, `jwtHelper.extractTenantId`, package `com.example.nexus.tenant`, `ToastService`, `DialogService`, `TableComponent`, `EmptyStateComponent`, `app-input`, `app-button`. | Real equivalents: `AuthEventType` + `SecureEventService`; `UuidV7Converter`; `AuthenticatedRequestDetails` / `RbacControllerSupport.resolveActor`; `NxToast`, `NxDialog`, `NxTable`, `NxEmptyState`, `nx-input`, `nx-button` |
+| G8 | **Speculative infrastructure**: `FileStorageService` (3 implementations, S3/SFTP credentials) is built but never called. | Draft US-020 Task 5 |
+| G9 | **Suspension lag**: draft accepts ≤ 5 min; research and our Redis design support near-immediate enforcement. Also, login/refresh are not blocked for suspended tenants in the draft (auth paths excluded from the filter). | Draft US-024 AC-6 / T-7 |
+| G10 | **Lifecycle has no grace period / restore** and `DELETED` is terminal immediately; no link to ADR 0020 (data lifecycle). | Draft `TenantStatus` transition map |
+| G11 | Draft ignores EPIC-002 Open Decision #4 (ArchUnit `@RequiresPermission`/`@PublicEndpoint` rule), which **blocks the first protected Epic 3 controller from merging**. | `docs/story/2-rbac/EPIC-002.md` → Open Decisions #4 |
+| G12 | Draft puts implementation code (Java/TS bodies) in the epic; this repo's operating model produces that in Gate 2/3 artefacts (`docs/features/<ID>/03-design.md`, `04-tasks.md`). | `PROJECT.md` → Operating Model |
+
+### 0.3 What changed from the previous draft and why
+
+| Change | Why |
+|---|---|
+| Stories renumbered **US-021 … US-044** | G1 |
+| Migration referred to as "next free Flyway version" (V6 at time of writing) | G2 — the exact number depends on what US-017/US-018 merge first |
+| New **platform-scope permission namespace** and operator role, never attachable to tenant roles | G3 |
+| Provisioning creates the tenant **plus its system roles** and **invites** the first admin by email | G4; Auth0 Organizations / Atlassian invitation pattern |
+| New **tenant-aware sign-in** story (tenant resolved from a slug) | G5 — without it the epic cannot onboard a second customer |
+| **Organisations deferred** to "Later" and redefined with membership | G6; research: keep one tenant level until a customer needs sub-units (§A.3) |
+| Implementation code removed; stories carry testable Given/When/Then criteria, dependencies and code anchors | G7, G12 |
+| `FileStorageService` **cut**; logo is a validated HTTPS URL in MVP, upload later | G8 (CLAUDE.md §2 — nothing speculative) |
+| Suspension target tightened to **≤ 60 s**, and login/refresh also blocked | G9 |
+| Lifecycle gains **PENDING_DELETION** with a restore window; purge tied to ADR 0020 | G10; Entra 30-day soft delete, Atlassian 14-day, GitHub/AWS 90-day patterns |
+| EPIC-002 Open Decision #4 made an explicit **entry criterion** | G11 |
+| Added isolation-hardening, invitations, member directory, audit viewer, quotas, export/erasure, SSO/SCIM areas | Phase 3 research — table-stakes coverage (§A.2) |
+
+---
+
+## 1. Problem, goals, non-goals
+
+### 1.1 Problem statement
+
+Nexus is described as multi-tenant — `tenant_id` columns exist on `users`, `roles`, `user_roles`
+and `auth_events`, JWTs carry a `tenant_id` claim, and RBAC checks are tenant-aware — but there is
+**no tenant as a first-class entity**. There is no `tenants` table, no foreign key behind any
+`tenant_id`, no way to create a second tenant, and every unauthenticated flow (register, login,
+forgot/reset password, resend verification) is pinned to one configured default tenant.
+`docs/ARCHITECTURE.md` states it plainly: "Multi-tenancy | Not implemented".
+
+As a result, Nexus cannot onboard a second B2B customer, cannot suspend a non-paying customer,
+cannot let a customer administer its own users, and has isolation guarantees that rest partly on
+convention rather than on database or framework enforcement.
+
+### 1.2 Goals
+
+1. **Onboard a new enterprise customer end-to-end without engineering involvement**: an operator
+   provisions the tenant, its first admin is invited, and that admin invites their users —
+   within one week of GA (kept from previous draft).
+2. **Make the tenant boundary enforceable, not conventional**: registered tenants with FKs,
+   mandatory tenant claim, automated checks for unscoped queries, cross-tenant tests as CI gates.
+3. **Give operators safe lifecycle control**: suspend, reactivate, schedule deletion and restore,
+   with every action recorded and effective within 60 s.
+4. **Give tenant admins self-service** over their tenant profile and membership.
+5. **Lay the groundwork** (without building it yet) for plans/quotas, data export and erasure,
+   and enterprise SSO/SCIM.
+
+### 1.3 Success metrics
+
+| Metric | Target | Source |
+|---|---|---|
+| Cross-tenant data-access findings in pre-GA pen test | 0 (Critical/High) | Previous draft |
+| Time from "contract signed" to first tenant user signed in | ≤ 1 business day of operator effort | Previous draft goal, made measurable |
+| Tenant provisioning API p95 | < 2 s (excluding email delivery) | Previous draft |
+| Suspension effective on all API calls | ≤ 60 s worst case after the operator action | Tightened from 5 min (G9) |
+| Added p95 latency from tenant-status check | < 5 ms on cache hit | _(inferred target; validate with nexus-test k6 suite)_ |
+
+### 1.4 Non-goals (this epic)
+
+- **Silo or bridge isolation** (schema-per-tenant, DB-per-tenant, dedicated deployments). Nexus
+  stays on the pool model (§3.2).
+- **Multi-tenant user accounts** (one login that belongs to several tenants, tenant switcher).
+  Users remain per-tenant (§3.2 C, decision D2).
+- **Operator impersonation** of tenant users — conflicts with ADR 0013 D6's tenant-provenance
+  invariant; would need its own ADR and threat model.
+- **Billing / payments / invoicing.** Plan tier is a label that drives limits; no payment
+  integration.
+- **Role and permission management UI** — delivered by US-019 / US-020 (RBAC UI).
+- **Custom domains per tenant, per-tenant sandboxes, BYOK / EKM, data residency.**
+- **SCIM server** — listed as a "Later" story for traceability, not committed in this epic.
+
+---
+
+## 2. Personas
+
+| Persona | Who | Scope | Maps to (proposed) |
+|---|---|---|---|
+| **Platform Operator** | Nexus staff who onboard and manage customers | All tenants (cross-tenant) | `PLATFORM_OPERATOR` role in the operator tenant with `platform_tenant:read`, `platform_tenant:write` (US-023) |
+| **Support Agent** | Nexus support staff | All tenants, read-only | `PLATFORM_SUPPORT` role with `platform_tenant:read` only (US-023) |
+| **Tenant Admin** | Customer's administrator (the first one is the "owner" contact) | Own tenant only | Existing `TENANT_ADMIN` system role (V5 seed, re-seeded per tenant by US-024) |
+| **End User** | Customer's employee | Own tenant only | Existing `MEMBER` system role |
+| **Invitee** | Person who received an invitation but has no account yet | None until acceptance | No account; holds a single-use invitation token |
+| **Compliance Officer** | Customer's security/privacy contact (often the Tenant Admin) | Own tenant's audit trail and data requests | `audit:read` (existing, currently unused by any endpoint) |
+
+"Tenant Owner" as a distinct role (Slack Primary Owner / Atlassian org admin pattern) is **not**
+introduced in MVP: the last-admin lockout protection from US-016 (shipped) and US-017 (in progress)
+already prevents a tenant from losing its last admin. Revisit if a customer needs an undeletable owner (decision D7).
+
+---
+
+## 3. Current state and recommended architecture
+
+### 3.1 How tenancy works today (verified)
+
+All backend paths are relative to `nexus-backend/src/main/java/com/example/nexus/` unless they
+start with `nexus-`, `docs/` or `src/`; bare `V*__*.sql` names are under
+`nexus-backend/src/main/resources/db/migration/`.
+
+| Concern | Current state | Code anchors |
+|---|---|---|
+| Bounded contexts | `identity`, `rbac`, `common`, `config`. **No tenant context.** | package tree |
+| Tenant entity | **None.** No `tenants` table. The bootstrap tenant `00000000-0000-7000-8000-000000000001` exists only as a literal on the seeded `roles` rows. | `nexus-backend/src/main/resources/db/migration/V5__rbac_schema.sql` (seed section); ADR 0014 D5 |
+| Isolation model | **Pool** — shared schema, `tenant_id BINARY(16)` column, no FK. On `users` (NOT NULL, `UNIQUE (tenant_id, email_hmac)`), `roles` (NOT NULL, `UNIQUE (tenant_id, name)`), `user_roles` (NOT NULL), `auth_events` (NULL). `user_roles.tenant_id` is not constrained to match the user's or role's tenant. | `V2__identity_schema.sql`, `V5__rbac_schema.sql` |
+| Query scoping | Manual: tenant-scoped derived/JPQL queries plus service-level checks (`verifySameTenant`, `resolveRoleInTenant`). An ArchUnit rule requires tenant scoping on *declared* repository methods, with a 6-entry allowlist; **inherited `findById`/`findAll` and JPQL bodies are not checked** (stated in the test's own Javadoc). | `rbac/application/RoleAssignmentService.java`, `rbac/application/RoleManagementService.java`, `nexus-backend/src/test/java/com/example/nexus/architecture/TenantIsolationArchitectureTest.java` |
+| Tenant resolution (unauthenticated) | Controllers inject `@Value("${nexus.identity.default-tenant-id}")` and pass it to use cases. **Every self-registered user lands in the default tenant**, with **no role**. | `identity/interfaces/rest/RegistrationController.java`, `LoginController.java`, `PasswordResetController.java`; `identity/application/RegisterUserUseCase.java` |
+| Tenant resolution (authenticated) | JWT `tenant_id` claim → `Authentication` details (only `JwtAuthenticationFilter` may set them — ArchUnit) → `AuthenticatedRequestDetails` → `RbacControllerSupport.resolveActor`. | `identity/infrastructure/web/JwtAuthenticationFilter.java`, `common/security/AuthenticatedRequestDetails.java`, `rbac/interfaces/rest/RbacControllerSupport.java`, `nexus-backend/src/test/java/com/example/nexus/architecture/HexagonalArchitectureTest.java` |
+| JWT | RS256; claims `sub`, `tenant_id`, `email_verified`, `roles`, `permissions`, `token_version`, `schema_version`, `jti`, `iat`, `exp`. **`verify()` does not require `tenant_id`** (null passes). Access-token TTL 900 s; no per-request user/tenant status check. | `identity/infrastructure/security/JwtRs256Service.java`; `nexus-backend/src/main/resources/application.yml` (`access-token-ttl-seconds: 900`) |
+| Authorisation | `@RequiresPermission` → `TenantAwarePermissionEvaluator` checks the permission is in the JWT `permissions` claim; no DB lookup per request. Seeded permissions: `tenant:read`, `tenant:write`, `user:read`, `user:write`, `role:read`, `role:write`, `audit:read`. `TENANT_ADMIN` holds all seven; `MEMBER` holds `user:read`. **No platform/super-admin concept.** | `common/security/RequiresPermission.java`, `common/security/TenantAwarePermissionEvaluator.java`, `V5__rbac_schema.sql`, `rbac/domain/RbacDangerousPermissions.java` |
+| Unused permissions | `tenant:read`, `tenant:write`, `audit:read` are seeded but no endpoint uses them. | every `@RequiresPermission` call site uses only `ROLE_READ`, `ROLE_WRITE`, `USER_READ` or `USER_WRITE` |
+| Redis keys | Permission cache is tenant-scoped (`…:rbac:permset:{tenantId}:{userId}`). Login/forgot/reset rate-limit keys are **not** tenant-scoped (`USER:{emailHmac}`, `IP:…`), so the same email in two tenants shares one lockout bucket. | `rbac/infrastructure/cache/RedisPermissionCacheAdapter.java`, `identity/infrastructure/web/LoginRateLimitFilter.java`, `identity/infrastructure/security/RedisRateLimitStore.java`; ADR 0016 D3 |
+| Quotas | Only `nexus.rbac.max-roles-per-tenant` (default 500). ADR 0019 (per-tenant fairness) is **Proposed**, all questions open. | `rbac/application/RoleManagementService.java`; `docs/adr/0019-tenant-fairness-and-quotas.md` |
+| Audit | One append-only table `auth_events` (nullable `tenant_id`, triggers block UPDATE/DELETE), written via `SecureEventService` (REQUIRES_NEW, ADR 0009) with a retry buffer (ADR 0011). Event types in `AuthEventType` — **no TENANT_\* events; no read API**. | `identity/application/service/SecureEventService.java`, `identity/domain/AuthEventType.java`, `identity/infrastructure/audit/AuthEventRetryBuffer.java` |
+| Users & invitations | Only `GET /api/v1/users/me` and `/api/v1/users/{userId}/roles`. No user list, no invitations, no SSO/SCIM. `UserStatus` = `PENDING, ACTIVE, LOCKED, DISABLED`; `DISABLED` is treated as terminal by self-service reset. | `identity/interfaces/rest/UserProfileController.java`, `rbac/interfaces/rest/UserRoleController.java`, `identity/domain/UserStatus.java`, `identity/domain/User.java` |
+| Email | Global from-address and frontend base URL; mail events carry no tenant. | `identity/infrastructure/mail/MailEventListener.java`, `identity/infrastructure/mail/SmtpMailSenderAdapter.java` |
+| Background jobs | Only the audit retry-buffer drain (`@Scheduled`) and async mail listeners; MDC (incl. `tenantId`) is propagated to async threads. No outbox, no tenant-aware jobs. | `identity/infrastructure/audit/AuthEventRetryBuffer.java`, `config/AsyncConfig.java`, `common/web/MdcTaskDecorator.java` |
+| File storage | **None.** | — |
+| Feature flags | Static properties + `@ConditionalOnProperty` per story (`feature.nexus-us0xx-…`); no per-tenant flags. | `nexus-backend/src/main/resources/application.yml` (`feature:` block) |
+| Data lifecycle | No export, deletion, or retention jobs. ADR 0020 is **Proposed**, all questions open. Append-only triggers on `auth_events` and `user_roles` will block naïve hard deletes. | `docs/adr/0020-tenant-data-lifecycle.md`, `V2__identity_schema.sql`, `V5__rbac_schema.sql` |
+| DB grants | Least-privilege `nexus_app` user, per-table grants in three places (ADR 0012/0014 follow-on rule: every new table adds its grants in the same story). | `nexus-database/mysql/init/02-grants-post-schema.sql`, `nexus-backend/src/test/resources/nexus-app-grants.sql`, prod runbook |
+| Frontend | Token in memory (`AuthStore` signal); `tenantId` available only via `currentUser()?.tenantId` from `/users/me`; no tenant context service; header in `app.html` shows only a wordmark and theme toggle; `permissionGuard` exists but no route uses it; no admin UI. | `nexus-frontend/src/app/core/auth/auth.store.ts`, `nexus-frontend/src/app/features/auth/auth.service.ts`, `nexus-frontend/src/app/shared/types/auth.ts`, `nexus-frontend/src/app/app.html`, `nexus-frontend/src/app/core/guards/permission.guard.ts`, `nexus-frontend/src/app/app.routes.ts` |
+| Config drift | ADR 0014 D5 specified a fallback for `default-tenant-id`; ADR 0015 D8 deliberately removed it for prod-safety, so `application.yml` has none and dev/test set it explicitly. Consistent with ADR 0015, not a bug. | `application.yml` (`default-tenant-id: ${NEXUS_IDENTITY_DEFAULT_TENANT_ID}`), `docs/adr/0015-us-009-threat-model-hardening.md` D8 |
+
+### 3.2 Recommended architecture
+
+**A. Isolation model — stay on _pool_ (shared schema + `tenant_id`), harden it.**
+AWS SaaS Lens defines pool as tenants sharing resources and silo as dedicated resources per tenant,
+with bridge as a mix. Pool matches our single-MySQL modular monolith and pre-enterprise stage;
+silo adds per-tenant migration and operations cost we cannot justify yet. The pool model's known
+weakness is that one missed `WHERE tenant_id` leaks data, so the epic invests in *automated*
+enforcement:
+
+1. A `tenants` table and FKs from every `tenant_id` column that has a NOT NULL tenant
+   (`users`, `roles`, `user_roles`), plus a composite constraint so `user_roles` rows cannot
+   mix tenants (US-021). `auth_events` keeps no FK (append-only, pre-auth events have no tenant).
+2. `tenant_id` becomes a **required** JWT claim (US-022).
+3. The ArchUnit rule is extended to cover inherited `findById`/`findAll` on tenant-owned
+   entities (US-022). _Hibernate `@TenantId` / `@Filter` was considered and **not** recommended
+   now_: it would change query semantics under the existing RBAC lock queries and cross-tenant
+   health readers (`rbac/infrastructure/persistence/ZeroAdminTenantReader.java`) and needs its own
+   spike. Listed as risk R6.
+4. Tenant-scoped rate-limit keys (US-022), following ADR 0016 D3's keyspace convention.
+5. `CrossTenantPermissionIT`-style merge-blocking tests for every new endpoint (NFR-ISO-3).
+
+Silo is left open as a future **bridge** option for a premium tier (e.g. a dedicated database for
+one customer) — no design work in this epic.
+
+**B. Tenant hierarchy — single level now (Tenant), sub-units later.**
+Every researched product has one top-level customer boundary (Salesforce org, Atlassian org,
+Auth0/WorkOS organization, Entra tenant). Multi-level hierarchies (Slack Grid, GitHub Enterprise,
+Shopify Plus, Entra administrative units) are enterprise-tier features. The previous draft's
+Organisation level is deferred to US-044 and redefined with membership (decision D4).
+
+**C. Identity model — users stay per-tenant; tenant resolved by slug.**
+Today a user row belongs to exactly one tenant and email is unique *per tenant*. We keep that
+(Okta's "separate orgs" option in its multi-tenancy guidance) rather than introduce a global identity
+with many memberships (Auth0 / WorkOS pattern), because: the schema, blind index and lockout code
+already assume it; and no customer has asked for cross-tenant accounts. Unauthenticated flows need
+to know the tenant, so each tenant gets an immutable, URL-safe **slug** used in the sign-in URL
+(US-027). Decisions D1 (subdomain vs path) and D2 (per-tenant vs global identity) are flagged.
+
+**D. Platform scope — a separate permission namespace and an operator tenant.**
+Operator capabilities must never be reachable by a tenant admin (G3). Recommendation (US-023):
+
+- New permissions `platform_tenant:read` and `platform_tenant:write`, following ADR 0013 D1's
+  flat `resource:action` format. They are flagged as platform-scope in the `permissions` catalogue
+  and **rejected** by `RoleManagementService` when a tenant tries to attach them to a role, and
+  never granted to `TENANT_ADMIN`.
+- A dedicated **operator tenant** (seeded, not the bootstrap tenant that self-registration uses)
+  holds `PLATFORM_OPERATOR` and `PLATFORM_SUPPORT` roles.
+- Operator endpoints live under `/api/v1/platform/**`. They take the *target* tenant id from the
+  path; the *caller's* tenant still comes from the token. This is an explicit, documented exception
+  to the `docs/ARCHITECTURE.md` rule "tenant id comes from the auth token, never from request
+  body/path" and needs an ADR amendment plus a threat model (ADR 0013 D6 requires re-review for any
+  cross-tenant authority).
+
+This mirrors GitHub Enterprise (enterprise owners are separate from org owners and get no org
+content by default) and AWS Organizations (management account separate from member accounts).
+
+**E. RBAC model — keep EPIC-002's roles-of-permissions; add platform roles; no custom-role UI here.**
+Per-tenant system roles (`TENANT_ADMIN`, `MEMBER`) are seeded at provisioning time (ADR 0014 D5
+already anticipates this). Custom roles already exist via US-015; their UI is US-019/US-020. This matches the direction
+Salesforce still recommends (a permission-set-led model, even after cancelling the planned
+retirement of permissions on profiles) and WorkOS/Auth0's roles-per-membership model.
+
+**F. Tenant status enforcement — request filter backed by a Redis status cache.**
+A filter after `JwtAuthenticationFilter` resolves the caller's tenant status from
+`nexus:tenant:status:{tenant_id}` (ADR 0016 keyspace), falling back to the DB, and rejects
+non-active tenants. Login and refresh also check tenant status, because suspending must stop new
+sessions too (G9). Cache entries are deleted on every status change and have a short TTL.
+
+**G. Lifecycle — PENDING → ACTIVE ⇄ SUSPENDED → PENDING_DELETION → (restore | DELETED).**
+`PENDING_DELETION` blocks access like `SUSPENDED` but is restorable for a grace period
+(30 days proposed — Entra's 30-day user restore; Atlassian uses 14 days for managed accounts,
+GitHub 90 for repos/members, AWS 90 for closed accounts). Restore returns the tenant to `SUSPENDED`
+so an operator re-activates it deliberately. The purge
+into `DELETED` is gated on ADR 0020 decisions (US-039).
+
+**H. Audit — reuse `auth_events` via `SecureEventService`, add TENANT\_\* / MEMBER\_\* / INVITATION\_\* event types.**
+One audit stream keeps ADR 0009/0011 guarantees (survives rollback, bounded retry). Operator
+actions carry an `actor_scope=PLATFORM` marker in `metadata` so tenant-facing views can show them.
+_Renaming `auth_events` to a general audit table is out of scope (risk R7)._
+
+---
+
+## 4. Gap analysis
+
+Legend: **Exists** — implemented and fit for purpose · **Partial** — some pieces exist ·
+**Missing** — nothing exists · **Risky** — exists but creates a security/correctness risk.
+
+| # | Capability | Status | Evidence (§3.1) | Addressed by |
 |---|---|---|---|---|
-| US-020 | Tenant and organisation data model + migrations | 5 | P0 | 5 |
-| US-021 | Platform Admin — tenant create + lifecycle management | 5 | P0 | 5 |
-| US-022 | Tenant Admin — profile management (API + UI) | 5 | P0 | 6 |
-| US-023 | Tenant Admin — organisation management (API + UI) | 8 | P0 | 6 |
-| US-024 | Tenant suspension enforcement filter | 3 | P0 | 6 |
-| US-025 | Angular TenantContextService + audit events | 3 | P1 | 7 |
-| **Total** | | **29** | | |
+| 1 | Tenant entity / registry | Missing | no `tenants` table | US-021 |
+| 2 | DB-level tenant referential integrity | Risky | `tenant_id` without FK; `user_roles` tenant not tied to user/role tenant | US-021 |
+| 3 | Row scoping in repositories | Partial | declared methods checked by ArchUnit; inherited `findById`/`findAll` unchecked | US-022 |
+| 4 | Tenant claim integrity in JWT | Risky | `verify()` accepts a token without `tenant_id` | US-022 |
+| 5 | Tenant-scoped rate limiting / lockout | Risky | `USER:{emailHmac}` shared across tenants | US-022 |
+| 6 | Tenant-scoped caches | Exists | permission cache keyed by tenant+user | — (NFR-ISO-4 keeps it so) |
+| 7 | Permission enforcement (tenant) | Exists | `@RequiresPermission`, `CrossTenantPermissionIT` | — |
+| 8 | Controller annotation coverage gate | Missing | EPIC-002 Open Decision #4 open | Entry criterion (US-018 assumed) |
+| 9 | Platform operator authority | Missing | no platform role/permission | US-023 |
+| 10 | Tenant provisioning | Missing | — | US-024 |
+| 11 | Per-tenant system-role seeding | Partial | seeded for bootstrap tenant only | US-024 |
+| 12 | Lifecycle (suspend / delete / restore) | Missing | — | US-025, US-026 |
+| 13 | Tenant resolution for sign-in | Risky | single `default-tenant-id` for all unauthenticated flows | US-027 |
+| 14 | Self-registration into a tenant | Risky | every self-registrant joins the default tenant with no role | US-027 (decision D3) |
+| 15 | Invitations | Missing | — | US-028, US-029 |
+| 16 | Tenant member directory / deactivation | Missing | only `/users/me` | US-030 |
+| 17 | Role assignment UI | Missing | API exists (US-012/US-015) | US-019 / US-020 (out of this epic) |
+| 18 | Tenant profile / settings | Missing | `tenant:read/write` unused | US-031 |
+| 19 | Frontend tenant context | Partial | `tenantId` on `AuthUser` only | US-032 |
+| 20 | Branding | Missing | ADR 0004 tokens make it feasible | US-033 |
+| 21 | Plans, seats, quotas | Partial | only max-roles-per-tenant; ADR 0019 open | US-034, US-035 |
+| 22 | Audit write path | Exists | `SecureEventService`, append-only `auth_events` | extended in each story |
+| 23 | Tenant lifecycle audit events | Missing | no TENANT\_\* types | US-024–US-031 |
+| 24 | Audit read / export for tenants | Missing | `audit:read` unused, no query API | US-036 |
+| 25 | Operator back-office UI | Missing | — | US-037 |
+| 26 | Tenant data export | Missing | ADR 0020 open | US-038 |
+| 27 | Tenant purge / retention | Missing | ADR 0020 open; append-only triggers | US-039 |
+| 28 | Data-subject erasure | Missing | ADR 0020 open; ADR 0006 note | US-040 |
+| 29 | Tenant-aware email | Risky | global from-address / base URL; links cannot carry tenant | US-027, US-028 |
+| 30 | Domain verification | Missing | — | US-041 |
+| 31 | Enterprise SSO (OIDC/SAML) | Missing | — | US-042 |
+| 32 | SCIM provisioning | Missing | — | US-043 |
+| 33 | Sub-tenant hierarchy (organisations) | Missing | — | US-044 |
+| 34 | Background jobs tenant-aware | Partial | MDC carries `tenantId`; no tenant-iterating jobs yet | NFR-ISO-5 |
+| 35 | File storage | Missing | none | Not needed in this epic (G8) |
 
 ---
 
-## Open Decisions (all resolved)
+## 5. Feature areas and user stories
 
-| # | Decision | Resolution |
-|---|---|---|
-| OQ-001 | Storage provider | `FileStorageService` abstraction — Local (dev), S3 (prod), SFTP (enterprise) |
-| OQ-002 | `organisation:read/write` placement | Seeded in V4 migration alongside tenant tables |
-| OQ-003 | ADR-004 | Two-tier tenant model — approved |
-| OQ-004 | Platform Admin role for MVP | `tenant:write` permission used; super-admin role deferred to ops epic |
+**Conventions for every story below**
 
----
+- Priority is MoSCoW **within this epic**; phase is MVP / Next / Later (§7).
+- Size: S ≈ ≤ 3 pts, M ≈ 5 pts, L ≈ 8 pts _(inferred calibration from EPIC-002 point sizes)_.
+- Every story that adds an endpoint must: carry `@RequiresPermission` (or `@PublicEndpoint`);
+  add a merge-blocking cross-tenant IT; publish its audit events through `SecureEventService`; add
+  `nexus_app` grants for any new table in all three grant artefacts (ADR 0014 follow-on rule);
+  state its retention class (ADR 0020 interim rule); and name ADR 0019 if it adds an unbounded
+  per-tenant operation. These are not repeated per story.
+- UI stories use the `shared/ui` wrappers (`nx-table`, `nx-dialog-shell`/`NxDialog`, `NxToast`,
+  `nx-empty-state`, `nx-input`, `nx-button`) per ADR 0004, compose `permissionGuard` after
+  `authGuard`, and meet WCAG 2.1 AA with zero critical Axe findings.
+- Error responses use the existing RFC 7807 `ProblemDetail` shape from
+  `common/web/GlobalExceptionHandler.java`; new codes use a `TNT_` prefix (exact codes at Gate 2).
 
-## Recommended Sprint Order
+### Area A — Isolation foundation & hardening
 
-| Sprint | Stories | Points | Notes |
+#### US-021 — Register tenants as first-class records with enforced referential integrity
+
+| Priority | Size | Phase | Pattern |
 |---|---|---|---|
-| Sprint 5 | US-020, US-021 | 10 | Schema + Platform Admin create/lifecycle; V4 migration must merge first |
-| Sprint 6 | US-022, US-023, US-024 | 16 | Tenant Admin profile + orgs (API + UI) + suspension filter |
-| Sprint 7 | US-025 | 3 | Angular TenantContextService + audit event constants |
+| Must | M | MVP | AWS SaaS Lens pool isolation; every researched product has a tenant/org entity |
 
----
+**As a** Platform Operator, **I want** every tenant to exist as a registered record that all
+tenant-owned rows must reference, **so that** fabricated, mistyped or orphaned tenant ids are
+rejected by the database instead of silently creating invisible tenants.
 
-## Claude Code Session Breakdown
+**Acceptance criteria**
+1. **Given** the next free Flyway migration has run, **when** the schema is inspected, **then** a
+   `tenants` table exists with at least: `id BINARY(16)` (UUIDv7), `slug` (unique, immutable),
+   `display_name`, `status`, `plan_tier`, `created_at`, `updated_at`, `version`; and an append-only
+   `tenant_status_history` table (UPDATE/DELETE blocked by triggers, as for `auth_events`).
+2. **Given** the migration runs on a database that already has rows, **when** it completes,
+   **then** the bootstrap tenant `00000000-0000-7000-8000-000000000001` exists as an `ACTIVE` row
+   and an operator-tenant row exists (its roles are added by US-023), and the migration fails with a clear error if any
+   `users`/`roles`/`user_roles` row references a tenant id that is neither.
+3. **Given** the migration has run, **when** a row is inserted into `users`, `roles` or `user_roles`
+   with a `tenant_id` not in `tenants`, **then** the insert fails with an FK violation.
+4. **Given** a user in tenant A and a role in tenant B, **when** a `user_roles` row linking them is
+   inserted directly in SQL, **then** it is rejected by a DB constraint (composite FK or trigger —
+   chosen at Gate 2).
+5. **Given** the `nexus_app` user, **when** it runs the application's tenant queries, **then** it has
+   exactly the grants the design specifies in `02-grants-post-schema.sql`, `nexus-app-grants.sql`
+   and the prod runbook (no `DELETE` on `tenants` or `tenant_status_history`).
+6. **Given** Testcontainers ITs, **when** the migration chain V1→latest runs, **then** it is green and
+   Hibernate `ddl-auto=validate` passes.
 
-| Session | Story | Scope | Branch |
+**Dependencies:** EPIC-002 complete through US-018. **Blocks:** every other story.
+**Code anchors:** `V2__identity_schema.sql`, `V5__rbac_schema.sql`, `nexus-database/mysql/init/02-grants-post-schema.sql`.
+
+#### US-022 — Close known tenant-isolation gaps before new tenant data exists
+
+| Priority | Size | Phase | Pattern |
 |---|---|---|---|
-| 1 | US-020a | V4 migration SQL + TenantStatus enum + FileStorageService interface + implementations | `feature/US-020a-tenant-schema` |
-| 2 | US-020b | JPA entities + repositories + Testcontainers migration test | `feature/US-020b-tenant-entities` |
-| 3 | US-021 | TenantService + TenantAdminController + DTOs + exceptions + audit | `feature/US-021-tenant-admin-api` |
-| 4 | US-022 | TenantProfileController (backend) + TenantProfileComponent + route (frontend) | `feature/US-022-tenant-profile` |
-| 5 | US-023a | OrganisationService + OrganisationController + DTOs + exceptions (backend) | `feature/US-023a-org-api` |
-| 6 | US-023b | OrganisationListComponent + OrganisationFormDialogComponent + route (frontend) | `feature/US-023b-org-ui` |
-| 7 | US-024 | TenantStatusCacheService + TenantStatusFilter + SecurityConfig registration | `feature/US-024-suspension-filter` |
-| 8 | US-025 | TenantContextService + AuthService update + AppShellComponent + audit constants | `feature/US-025-tenant-context` |
+| Must | M | MVP | AWS SaaS Lens "SaaS identity" (tenant context in the token, enforced across layers) |
+
+**As a** Tenant Admin, **I want** the platform to reject any request or query that is not bound
+to my tenant, **so that** my data cannot leak to another customer through a missing filter or a
+malformed token.
+
+**Acceptance criteria**
+1. **Given** a correctly signed access token without a `tenant_id` claim (or with a malformed one),
+   **when** it is presented to any authenticated endpoint including `/api/v1/users/me`, **then** the
+   request is rejected with 401 `AUTH_003`.
+2. **Given** a repository whose entity has a `tenantId` field, **when** production code calls an
+   inherited `findById`, `findAll`, `existsById` or `deleteById` on it outside an allowlisted
+   adapter, **then** `TenantIsolationArchitectureTest` fails the build.
+3. **Given** the same email address registered in tenants A and B, **when** 10 failed logins are
+   made against tenant A, **then** tenant B's account for that email is neither rate-limited nor
+   locked (rate-limit keys include the tenant id).
+4. **Given** the existing 6-entry `UNSCOPED_ALLOWLIST`, **when** this story completes, **then** each
+   entry is either removed (method gains a tenant predicate) or re-justified in the PR with
+   security-reviewer sign-off.
+5. **Given** every Redis key written by the application, **when** it holds tenant-owned data,
+   **then** it contains the tenant id per ADR 0016 D3 (verified by a test enumerating key builders).
+
+**Dependencies:** US-021. **Code anchors:** `identity/infrastructure/security/JwtRs256Service.java`,
+`nexus-backend/src/test/java/com/example/nexus/architecture/TenantIsolationArchitectureTest.java`,
+`identity/infrastructure/web/LoginRateLimitFilter.java`.
+
+#### US-023 — Establish a platform-operator authority that tenant roles can never hold
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Must | M | MVP | GitHub Enterprise owners vs org owners; AWS Organizations management account vs member accounts |
+
+**As a** Platform Operator, **I want** a platform-scope role whose permissions cannot be granted
+inside a customer tenant, **so that** only Nexus staff can create, suspend or delete tenants and
+no tenant admin can escalate into cross-tenant control.
+
+**Acceptance criteria**
+1. **Given** the migration, **when** the permission catalogue is read, **then** `platform_tenant:read`
+   and `platform_tenant:write` exist, are marked platform-scope, and are **not** held by any
+   `TENANT_ADMIN` or `MEMBER` role in any tenant.
+2. **Given** a tenant admin with `role:write`, **when** they call
+   `POST /api/v1/roles/{roleId}/permissions` with a platform-scope permission, **then** the request
+   is rejected (403 or 422, code at Gate 2) and an audit event is recorded.
+3. **Given** the seeded operator tenant, **when** it is inspected, **then** it holds
+   `PLATFORM_OPERATOR` (both platform permissions) and `PLATFORM_SUPPORT` (`platform_tenant:read`)
+   system roles, and self-registration can never create users in it.
+4. **Given** a user holding `TENANT_ADMIN` in any customer tenant, **when** they call any
+   `/api/v1/platform/**` endpoint, **then** they receive 403 `RBAC_001` (merge-blocking IT).
+5. **Given** the design, **when** Gate 2 completes, **then** an ADR amendment records the
+   `/api/v1/platform/**` path-tenant exception to the ARCHITECTURE.md rule and the ADR 0013 D6
+   re-review, and `RbacDangerousPermissions` includes the new permissions.
+
+**Dependencies:** US-021. Decision D5 (how the first operator account is bootstrapped).
+**Code anchors:** `rbac/domain/RbacDangerousPermissions.java`, `rbac/application/RoleManagementService.java`,
+`common/security/TenantAwarePermissionEvaluator.java`, `docs/adr/0013-rbac-data-model-and-enforcement-contract.md`.
+
+### Area B — Provisioning & lifecycle
+
+#### US-024 — Provision a new tenant with its system roles and an invited first admin
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Must | L | MVP | Auth0 Organizations create-org + invite-member-with-role; AWS SaaS Lens orchestrated onboarding |
+
+**As a** Platform Operator, **I want** to create a tenant by entering its name, slug, plan tier
+and the first admin's email, **so that** a new customer is ready to use Nexus without any
+database work or engineering help.
+
+**Acceptance criteria**
+1. **Given** an operator with `platform_tenant:write`, **when** they `POST /api/v1/platform/tenants`
+   with a valid display name, slug, plan tier and admin email, **then** within one transaction the
+   tenant is created with status `PENDING`, `TENANT_ADMIN` and `MEMBER` system roles are seeded for
+   it with the same permission sets as the bootstrap tenant's, an invitation for the admin email
+   with role `TENANT_ADMIN` is created (US-028 mechanism), and 201 is returned in p95 < 2 s.
+2. **Given** a slug that already exists, is reserved (e.g. `www`, `api`, `admin`, `platform`) or
+   is not URL-safe lowercase, **when** the operator submits it, **then** 409 or 400 is returned and
+   nothing is created.
+3. **Given** any step fails (role seeding, invitation creation), **when** the transaction ends,
+   **then** no tenant, role or invitation row remains (rollback IT).
+4. **Given** the invited admin accepts (US-029), **when** their account is created, **then** the
+   tenant transitions `PENDING → ACTIVE` automatically and a `TENANT_ACTIVATED` event is recorded.
+5. **Given** a support agent with only `platform_tenant:read`, **when** they call the create
+   endpoint, **then** they receive 403.
+6. **Given** a successful creation, **when** the audit trail is read, **then** a `TENANT_CREATED`
+   event exists with actor, tenant id, slug and plan tier and **no** admin email in clear text.
+
+**Dependencies:** US-021, US-023, US-028. **Code anchors:** `V5__rbac_schema.sql` (seed pattern),
+`rbac/application/RoleAssignmentService.java`, `identity/application/service/SecureEventService.java`.
+
+#### US-025 — Suspend, reactivate, schedule deletion of and restore a tenant
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Must | M | MVP | Entra users-restore 30-day soft delete; Atlassian 14-day deactivation before delete; AWS 90-day post-closure |
+
+**As a** Platform Operator, **I want** to change a tenant's status with a mandatory reason and
+see its status history, **so that** I can respond to non-payment, abuse or offboarding while
+keeping a recoverable, auditable record.
+
+**Acceptance criteria**
+1. **Given** a tenant, **when** an operator `PATCH`es `/api/v1/platform/tenants/{tenantId}/status`,
+   **then** only these transitions succeed: `PENDING→ACTIVE`, `ACTIVE→SUSPENDED`,
+   `SUSPENDED→ACTIVE`, `ACTIVE|SUSPENDED→PENDING_DELETION`, `PENDING_DELETION→SUSPENDED` (restore);
+   any other returns 409 with the current and requested status.
+2. **Given** any accepted transition, **when** it commits, **then** a `tenant_status_history` row
+   (previous, new, actor, reason, timestamp) and a `TENANT_STATUS_CHANGED` audit event are written,
+   and the tenant's status cache entry is deleted.
+3. **Given** a request with no reason or a reason over 512 characters, **when** submitted, **then**
+   400 is returned.
+4. **Given** a tenant in `PENDING_DELETION`, **when** it is read, **then** the response shows the
+   scheduled purge date (transition time + grace period, config default 30 days).
+5. **Given** the bootstrap or operator tenant, **when** an operator tries to suspend or delete it,
+   **then** the request is rejected.
+6. **Given** `GET /api/v1/platform/tenants/{tenantId}/status-history`, **when** called with
+   `platform_tenant:read`, **then** the history is returned newest first, paginated.
+
+**Dependencies:** US-021, US-023. Decision D6 (grace period). **Blocks:** US-026, US-039.
+
+#### US-026 — Enforce tenant status on every request, login and token refresh
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Must | M | MVP | AWS SaaS Lens tenant context resolved per request; Atlassian suspend access |
+
+**As a** Platform Operator, **I want** a suspended or pending-deletion tenant's users to lose
+access within 60 seconds, **so that** a suspension decision is effective immediately and cannot
+be bypassed with an existing token.
+
+**Acceptance criteria**
+1. **Given** a user of any tenant whose status is not `ACTIVE` (e.g. `SUSPENDED`,
+   `PENDING_DELETION`) with a valid access token, **when** they call any authenticated endpoint, **then** they receive 403 with a tenant-status
+   code and no controller runs.
+2. **Given** such a user, **when** they call login or refresh, **then** no token is issued and the
+   response does not reveal whether the password was correct (anti-enumeration, per the pattern in
+   `ForgotPasswordUseCase`).
+3. **Given** a tenant in `PENDING` status, **when** its only (invited) user accepts, **then** they can
+   sign in (US-024 AC4 activates the tenant first).
+4. **Given** an operator suspends a tenant, **when** 60 s have elapsed, **then** 100 % of that
+   tenant's requests on all application instances are rejected (IT with two app contexts sharing
+   Redis, or documented equivalent).
+5. **Given** Redis is unavailable, **when** the status is needed, **then** it is read from MySQL
+   (fail-safe, not fail-open) and a metric/alert fires.
+6. **Given** an `ACTIVE` tenant and a warm cache, **when** the k6 suite in `nexus-test/` runs,
+   **then** the filter adds < 5 ms p95.
+7. **Given** a request from a platform-operator user, **when** it targets a suspended tenant via
+   `/api/v1/platform/**`, **then** it is **not** blocked (the operator's own tenant is checked, not
+   the target's).
+
+**Dependencies:** US-025. **Code anchors:** `config/SecurityConfig.java`,
+`identity/infrastructure/web/JwtAuthenticationFilter.java`,
+`identity/application/service/LoginUseCase.java`, `identity/application/service/RefreshTokenUseCase.java`.
+
+### Area C — Sign-in, invitations & membership
+
+#### US-027 — Resolve the tenant for sign-in and account recovery from the tenant slug
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Must | L | MVP | Salesforce My Domain (per-org login URL); Auth0 `organization_name` in the login route |
+
+**As an** End User, **I want** to sign in, reset my password and verify my email at my company's
+Nexus address, **so that** I reach my own tenant's account even if the same email is used in
+another tenant.
+
+**Acceptance criteria**
+1. **Given** a tenant with slug `acme`, **when** a user submits login, forgot-password or
+   resend-verification through the tenant-scoped entry point (form chosen by decision D1), **then**
+   the backend resolves tenant `acme` and uses it instead of `default-tenant-id`.
+2. **Given** an unknown or non-`ACTIVE`/`PENDING` slug, **when** any of these flows is called,
+   **then** the response is indistinguishable from "wrong credentials / email not found" for that
+   flow (no tenant enumeration), with equalised timing per the existing anti-enumeration pattern.
+3. **Given** a verification, reset or invitation email, **when** it is sent, **then** its links
+   carry the tenant slug and the email shows the tenant display name.
+4. **Given** the bootstrap tenant, **when** no slug is supplied, **then** existing behaviour is
+   unchanged (backwards compatibility until decision D3 retires it).
+5. **Given** public self-registration, **when** decision D3 is implemented, **then** registration
+   is either disabled for customer tenants (invite-only) or restricted by tenant setting — never
+   possible into the operator tenant.
+6. **Given** the Angular app, **when** it loads under a tenant slug, **then** the sign-in pages show
+   the tenant display name, fetched from a public, rate-limited endpoint that returns only
+   display name and logo URL.
+
+**Dependencies:** US-021, US-026. Decisions D1, D3. **Code anchors:**
+`identity/interfaces/rest/LoginController.java`, `RegistrationController.java`,
+`PasswordResetController.java`, `identity/infrastructure/mail/SmtpMailSenderAdapter.java`,
+`nexus-frontend/src/app/features/auth/auth.routes.ts`.
+
+#### US-028 — Invite people to my tenant with a pre-assigned role
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Must | L | MVP | Auth0 Organizations invitations (role pre-assigned, default 7-day TTL) |
+
+**As a** Tenant Admin, **I want** to invite a colleague by email with a chosen role, and resend or
+revoke pending invitations, **so that** I control who joins my tenant without asking Nexus staff.
+
+**Acceptance criteria**
+1. **Given** a tenant admin with `user:write`, **when** they `POST /api/v1/tenants/me/invitations`
+   with an email and a role id from their own tenant, **then** a single-use invitation is created
+   (token stored only as a hash), valid for 7 days by default, and an email is sent.
+   The inviter must pass the same privilege gate as direct role assignment (US-016 / ADR 0017:
+   granting `TENANT_ADMIN`, or any role carrying a permission in `RbacDangerousPermissions`, requires
+   the caller to hold `TENANT_ADMIN` in the same tenant), so an invitation cannot escalate privilege.
+2. **Given** a role id from another tenant, or a platform-scope role, **when** used in an invitation,
+   **then** 404/403 is returned and nothing is created (cross-tenant IT).
+3. **Given** an email that already belongs to an active user in this tenant, or has a pending
+   invitation, **when** invited, **then** 409 is returned.
+4. **Given** a pending invitation, **when** the admin resends it, **then** the old token is
+   invalidated and a new one issued; **when** they revoke it, **then** it can no longer be accepted.
+5. **Given** `GET /api/v1/tenants/me/invitations`, **when** called with `user:read`, **then** only this
+   tenant's invitations are listed with status (pending / accepted / expired / revoked).
+6. **Given** each create/resend/revoke, **when** it commits, **then** an `INVITATION_*` audit event is
+   written with the email stored only as HMAC/cipher (ADR 0006), never in clear text.
+7. **Given** the Angular members page (US-030), **when** a tenant admin uses "Invite member",
+   **then** an `NxDialog` collects email and role and shows 409 inline.
+
+**Dependencies:** US-021, US-027 (tenant-aware email links). Invitation state may extend
+`auth_tokens` (new type) or be a new table — Gate 2 decides; note `auth_tokens.user_id` is
+`NOT NULL`, so a pre-account invitation needs either a `PENDING` user row or a separate table.
+
+#### US-029 — Accept an invitation and join the tenant
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Must | M | MVP | Auth0 invitation acceptance; WorkOS/AuthKit invite flow |
+
+**As an** Invitee, **I want** to open my invitation link, set my password and land in my
+company's tenant with the role I was given, **so that** I can start working without a separate
+sign-up or approval step.
+
+**Acceptance criteria**
+1. **Given** a valid, unexpired invitation, **when** the invitee submits a password meeting the
+   existing policy, **then** an `ACTIVE`, email-verified user is created in the invitation's tenant,
+   the pre-assigned role is granted through `RoleAssignmentService`, and the invitation is consumed.
+2. **Given** an expired, revoked, already-used or unknown token, **when** it is used, **then** the
+   same generic 410 response is returned for all four cases.
+3. **Given** the invitation is for tenant A, **when** accepted, **then** the created user's
+   `tenant_id` is A regardless of any tenant hint in the request.
+4. **Given** the tenant is `SUSPENDED` or `PENDING_DELETION`, **when** the invitee accepts, **then**
+   acceptance is refused with the same generic response.
+5. **Given** acceptance succeeds, **when** the audit trail is read, **then** `INVITATION_ACCEPTED` and
+   `ROLE_ASSIGNED` events exist for the new user.
+
+**Dependencies:** US-028. **Code anchors:** `identity/application/RegisterUserUseCase.java`,
+`rbac/application/RoleAssignmentService.java`, password policy from EPIC-001 US-006.
+
+#### US-030 — View and manage the members of my tenant
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Must | M | MVP | Atlassian/Slack admin user lists with suspend/deactivate; Okta "deprovision, don't delete" |
+
+**As a** Tenant Admin, **I want** to see everyone in my tenant with their status and roles and
+deactivate or reactivate a member, **so that** leavers lose access promptly and I can audit who
+has access.
+
+**Acceptance criteria**
+1. **Given** `user:read`, **when** `GET /api/v1/tenants/me/members?status=&q=&page=` is called,
+   **then** only this tenant's users are returned (id, email, status, role names, last sign-in if
+   available), paginated (default 20, max 100); email search uses the blind index, not a scan.
+2. **Given** `user:write`, **when** the admin deactivates a member, **then** the member's refresh
+   tokens are revoked, their `token_version` is bumped, and they cannot sign in or refresh; an
+   already-issued access token stays valid until its 900 s TTL expires (the same accepted residual
+   documented on `User.java`'s password-reset path, since `token_version` is not checked per
+   request) unless Gate 2 adds a per-request user-status check; **when** reactivated, **then** they
+   can sign in again. The status used for this is decided at Gate 1 (the existing
+   `DISABLED` is treated as terminal by self-service reset; a reversible status may be needed).
+3. **Given** the member is the last holder of an admin-equivalent role, **when** deactivation is
+   requested, **then** it is refused, reusing the US-016/US-017 last-admin protection.
+4. **Given** a member id from another tenant, **when** used, **then** 404 is returned (cross-tenant IT).
+5. **Given** the Angular route `/settings/members` guarded by `authGuard` then `permissionGuard`
+   (`user:read`), **when** opened, **then** an `nx-table` lists members with an empty state, and
+   deactivate/reactivate actions are shown only with `user:write` (`*appHasPermission`).
+6. **Given** each deactivate/reactivate, **when** it commits, **then** `MEMBER_DEACTIVATED` /
+   `MEMBER_REACTIVATED` audit events are written.
+
+**Dependencies:** US-021, US-022. **Coordination:** US-019/US-020 own role-assignment UI; this page
+links to it rather than duplicating it (decision D8 confirms the split).
+
+### Area D — Tenant profile, settings & branding
+
+#### US-031 — View and update my tenant's profile
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Must | M | MVP | Table stakes (§A.2): tenant-admin self-service settings _(no specific vendor screen researched)_ |
+
+**As a** Tenant Admin, **I want** to view and edit my tenant's display name, logo URL and
+billing/technical contacts, **so that** our details are accurate without contacting Nexus staff.
+
+**Acceptance criteria**
+1. **Given** `tenant:read`, **when** `GET /api/v1/tenants/me` is called, **then** the caller's tenant
+   (from the token only — no id in path or body) is returned, including slug, status and plan tier
+   as read-only fields.
+2. **Given** `tenant:write`, **when** `PATCH /api/v1/tenants/me` changes display name, logo URL or
+   contacts, **then** they are saved; slug, status and plan tier in the body are rejected with 400
+   (not silently ignored — the previous draft's AC-4 behaviour is reversed so clients learn early).
+3. **Given** a logo URL that is not `https://` or exceeds 512 characters, **when** submitted, **then**
+   400 is returned.
+4. **Given** contact name/email/phone, **when** stored, **then** they are encrypted at rest with the
+   same AES-256-GCM `TextEncryptor` used by ADR 0006. Note: the existing `AttributeEncryptor` is
+   typed to `EmailCipher` only, so a converter for general PII strings is needed (the previous
+   draft assumed it could be reused as-is).
+5. **Given** a profile update, **when** audited, **then** `TENANT_PROFILE_UPDATED` lists changed field
+   names only — no values.
+6. **Given** the Angular route `/settings/tenant`, **when** a user with `tenant:read` opens it, **then**
+   the form is pre-filled and editable only with `tenant:write`; save shows an `NxToast`.
+7. **Given** a request for another tenant's profile by any means, **when** made, **then** it is
+   impossible by construction (no id parameter) and the cross-tenant IT proves `GET /me` returns only
+   the caller's tenant.
+
+**Dependencies:** US-021. **Code anchors:** `identity/infrastructure/persistence/AttributeEncryptor.java`,
+`common/web/GlobalExceptionHandler.java`.
+
+#### US-032 — Show which tenant I am working in
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Should | S | MVP | Auth0 Organizations per-org branding; common B2B UX _(vendor screens not researched)_ |
+
+**As an** End User, **I want** to see my company's name and logo in the Nexus header, **so that**
+I know I am in the right tenant.
+
+**Acceptance criteria**
+1. **Given** a signed-in user, **when** the session is established, **then** a signal-based tenant
+   context in `core/` holds display name and logo URL from `GET /api/v1/tenants/me` (requires the
+   `MEMBER` role to hold `tenant:read`, or a narrower public projection — Gate 1 decides).
+2. **Given** the header in `app.html`, **when** a user is signed in, **then** it shows the tenant display
+   name and logo (with non-empty `alt`), and nothing tenant-specific when signed out.
+3. **Given** logout, **when** it completes, **then** the tenant context is cleared.
+4. **Given** the logo fails to load, **when** rendered, **then** the display name is shown alone.
+
+**Dependencies:** US-031. **Code anchors:** `nexus-frontend/src/app/core/auth/auth.store.ts`,
+`nexus-frontend/src/app/app.html`.
+
+#### US-033 — Apply my tenant's brand colours
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Could | M | Later | Auth0 Organizations per-org branding; ADR 0004 token theming |
+
+**As a** Tenant Admin, **I want** to set a primary brand colour for my tenant, **so that** Nexus
+looks like part of our company's tooling.
+
+**Acceptance criteria**
+1. **Given** `tenant:write`, **when** a primary colour is saved, **then** it is validated as a hex
+   colour and rejected if it fails WCAG 2.1 AA contrast against the `--nx-*` surface tokens.
+2. **Given** a saved colour, **when** any member signs in, **then** the relevant `--nx-*` tokens are
+   overridden at runtime for light and dark themes.
+3. **Given** no colour, **when** rendered, **then** the default theme applies.
+
+**Dependencies:** US-031, US-032. **Code anchors:** `docs/adr/0004-angular-material-design-system.md`.
+
+### Area E — Plans, quotas & limits
+
+#### US-034 — Enforce seat limits by plan tier
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Should | M | Next | Auth0 entity limits; Shopify Plus store limit; AWS SaaS Lens tiering |
+
+**As a** Platform Operator, **I want** each plan tier to define a maximum number of active
+members (with an optional per-tenant override), **so that** tenants stay within what they have
+bought.
+
+**Acceptance criteria**
+1. **Given** plan-tier limits in configuration and an optional override on the tenant, **when** a
+   tenant is at its limit, **then** creating an invitation or reactivating a member returns 409 with
+   a limit code, and pending invitations count toward the limit.
+2. **Given** an operator with `platform_tenant:write`, **when** they change a tenant's plan tier or
+   override, **then** it takes effect on the next check and a `TENANT_PLAN_CHANGED` event is written.
+3. **Given** a tenant admin, **when** they view the members page, **then** used / allowed seats are
+   shown.
+4. **Given** the existing `nexus.rbac.max-roles-per-tenant`, **when** this story completes, **then** it
+   is expressed through the same plan-limit mechanism (or explicitly left global, with reason).
+
+**Dependencies:** US-024, US-028, US-030; ADR 0019 questions 1, 2 and 4 decided.
+
+#### US-035 — Protect tenants from a noisy neighbour with per-tenant rate limits
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Could | M | Later | AWS SaaS Lens noisy-neighbour guidance |
+
+**As a** Tenant Admin, **I want** another tenant's heavy usage not to slow down my users, **so
+that** our service quality does not depend on other customers.
+
+**Acceptance criteria**
+1. **Given** a per-tier request budget, **when** a tenant exceeds it, **then** further requests get
+   429 with `Retry-After` and an RFC 7807 body; other tenants are unaffected (load test).
+2. **Given** Redis is unavailable, **when** the limiter runs, **then** it behaves per ADR 0019's
+   fail-open/fail-closed decision and emits a metric.
+3. **Given** metrics, **when** exported, **then** tenant id is not a raw label (bounded cardinality per
+   `docs/observability-standards.md`).
+
+**Dependencies:** ADR 0019 accepted; US-034.
+
+### Area F — Audit logging
+
+Every MVP story writes its own audit events (see story ACs). This area adds the **read** side.
+
+#### US-036 — Review and export my tenant's audit trail
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Should | M | Next | Atlassian org audit log (180 days, export); GitHub/Salesforce 180-day audit trails; Stripe security history CSV |
+
+**As a** Compliance Officer, **I want** to search and export my tenant's security and
+administration events, **so that** I can answer auditors and investigate incidents without asking
+Nexus support.
+
+**Acceptance criteria**
+1. **Given** `audit:read`, **when** `GET /api/v1/tenants/me/audit-events?type=&from=&to=&page=` is
+   called, **then** only events whose `tenant_id` equals the caller's tenant are returned, newest
+   first, paginated, within the retention window.
+2. **Given** a date range of up to 90 days, **when** CSV export is requested, **then** a CSV is
+   produced with the same filtering; larger ranges are rejected (bounded per ADR 0019 interim rule).
+3. **Given** events whose metadata contain personal data, **when** returned, **then** only fields
+   allowed by the no-PII logging rule are included.
+4. **Given** operator actions on this tenant (US-025), **when** listed, **then** they appear, marked as
+   performed by Nexus staff, without revealing the operator's identity beyond a role label
+   _(inferred requirement — confirm with legal)_.
+5. **Given** the Angular route `/settings/audit`, **when** opened with `audit:read`, **then** an
+   `nx-table` with filters and an export button is shown.
+
+**Dependencies:** US-021; ADR 0020 question 1 (retention) decided.
+**Code anchors:** `identity/infrastructure/persistence/JpaAuthEventRepository.java` (currently no query methods).
+
+### Area G — Operator back-office
+
+#### US-037 — Manage tenants from an operator console
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Should | M | MVP | Slack Grid admin dashboard; Atlassian admin; AWS SaaS Lens operational tooling |
+
+**As a** Platform Operator, **I want** a console to find a tenant, see its details and status
+history, and perform lifecycle actions, **so that** onboarding and support do not require API
+tools.
+
+**Acceptance criteria**
+1. **Given** `platform_tenant:read`, **when** `GET /api/v1/platform/tenants?status=&q=&page=` is
+   called, **then** tenants are listed (slug, display name, status, plan tier, member count, created
+   date), excluding `DELETED` by default.
+2. **Given** the Angular route `/platform/tenants`, **when** opened by an operator, **then** the list,
+   a detail page with status history, a "Create tenant" dialog (US-024) and status actions (US-025,
+   with a reason field and confirmation) are available; support agents see no action buttons.
+3. **Given** a tenant user (any tenant role), **when** they navigate to `/platform/**`, **then**
+   `permissionGuard` redirects to `/access-denied` and the API returns 403 (backend is the boundary).
+4. **Given** a destructive action (suspend, schedule deletion), **when** confirmed, **then** the
+   operator must type the tenant slug.
+
+**Dependencies:** US-023, US-024, US-025. **Code anchors:** `nexus-frontend/src/app/app.routes.ts`,
+`nexus-frontend/src/app/core/guards/permission.guard.ts`.
+
+### Area H — Data export & deletion
+
+#### US-038 — Export all of my tenant's data
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Should | L | Later | ADR 0020 Q2 (offboarding export format) _(no vendor export feature researched)_ |
+
+**As a** Tenant Admin, **I want** to request a machine-readable export of my tenant's data,
+**so that** we can meet our own retention duties and leave Nexus without losing records.
+
+**Acceptance criteria**
+1. **Given** `tenant:write`, **when** an export is requested, **then** it runs asynchronously, is
+   limited to one concurrent export per tenant, and the admin is notified when ready.
+2. **Given** the export, **when** produced, **then** it contains every tenant-owned table's rows for
+   that tenant only (proved by a test that seeds two tenants), in the format decided under ADR 0020.
+3. **Given** a finished export, **when** downloaded, **then** the link is single-use and expires
+   (duration decided at Gate 2).
+4. **Given** each request and download, **when** they happen, **then** audit events are recorded.
+
+**Dependencies:** ADR 0020 Q2 decided; storage mechanism decided at Gate 2 (this is where a
+`FileStorageService`-style abstraction may first be justified).
+
+#### US-039 — Purge a tenant after its deletion grace period
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Should | L | Later | Entra/Atlassian/AWS grace-then-purge; ADR 0020 Q2, Q5 |
+
+**As a** Platform Operator, **I want** tenants in `PENDING_DELETION` to be purged automatically
+when their grace period ends, **so that** we honour offboarding commitments without manual SQL.
+
+**Acceptance criteria**
+1. **Given** a tenant whose grace period has ended, **when** the scheduled purge runs, **then** its
+   tenant-owned data is deleted or anonymised per ADR 0020, its Redis keys are removed, and the
+   tenant row moves to `DELETED` (row kept as a tombstone with slug reserved).
+2. **Given** append-only `auth_events` and `user_roles`, **when** purge runs, **then** it follows the
+   ADR 0020 decision (e.g. pseudonymise instead of delete) through a dedicated privileged path —
+   `nexus_app` gains no general `DELETE`.
+3. **Given** the purge job, **when** it runs, **then** it emits metrics and one audit event per tenant,
+   and is idempotent if interrupted.
+4. **Given** a tenant restored before the deadline (US-025), **when** the job runs, **then** it is
+   untouched.
+
+**Dependencies:** US-025; ADR 0020 decided.
+
+#### US-040 — Fulfil a data-subject erasure request for one user
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Should | M | Later | GDPR Art. 17; Slack "only Primary Owner can request deletion of profile data" |
+
+**As a** Compliance Officer, **I want** to erase a specific person's personal data from my tenant,
+**so that** we can meet a GDPR erasure request within the statutory deadline.
+
+**Acceptance criteria**
+1. **Given** `user:write` and a deactivated member, **when** erasure is requested, **then** the user's
+   encrypted email, blind index and other personal fields are removed or irreversibly
+   pseudonymised, and their sessions/tokens are deleted.
+2. **Given** audit events referencing the user, **when** erasure completes, **then** they remain
+   (integrity) but no longer resolve to the person, per ADR 0020 Q3.
+3. **Given** the request, **when** completed, **then** a `MEMBER_ERASED` event records who requested it
+   and when, without the erased data.
+
+**Dependencies:** US-030; ADR 0020 Q3 decided; ADR 0006.
+
+### Area I — Enterprise identity (SSO / SCIM)
+
+#### US-041 — Verify my company's email domain
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Could | M | Later | WorkOS Domain Verification (DNS TXT); Atlassian verified domains → managed accounts |
+
+**As a** Tenant Admin, **I want** to prove my company owns its email domain, **so that** higher-trust
+features such as SSO enforcement can be enabled for that domain.
+
+**Acceptance criteria**
+1. **Given** `tenant:write`, **when** a domain is added, **then** a unique DNS TXT token is issued and
+   the domain is `PENDING`.
+2. **Given** the TXT record is published, **when** verification runs, **then** the domain becomes
+   `VERIFIED` and a `TENANT_DOMAIN_VERIFIED` event is written; a domain can be verified by only one
+   tenant.
+3. **Given** a verified domain later loses its TXT record, **when** re-checked, **then** the operator
+   is alerted (behaviour decided at Gate 1).
+
+**Dependencies:** US-031.
+
+#### US-042 — Let my users sign in with our identity provider
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Could | L | Later | Auth0 per-organization connections; Salesforce My Domain SSO; Shopify Plus SAML after domain verification |
+
+**As a** Tenant Admin, **I want** to connect our OIDC or SAML identity provider, **so that** our
+users sign in with company credentials and leavers lose access when IT disables them.
+
+**Acceptance criteria**
+1. **Given** a verified domain, **when** the admin configures an IdP, **then** users of that domain
+   signing in at the tenant slug are redirected to it; the Nexus JWT is issued with the same claims
+   contract (`tenant_id` from the tenant, never from the IdP assertion).
+2. **Given** SSO is enforced, **when** a domain user tries password login, **then** it is refused.
+3. **Given** an unknown IdP user, **when** they first sign in, **then** behaviour follows the admin's
+   setting (JIT-create as `MEMBER` or refuse).
+
+**Dependencies:** US-027, US-041. Decision D9 (build on Spring Security vs buy WorkOS/Auth0).
+
+#### US-043 — Provision and deprovision users automatically from our directory
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Won't (this epic) | L | Later | SCIM 2.0 — Entra provisioning, Okta, Atlassian Guard, WorkOS Directory Sync |
+
+**As a** Tenant Admin, **I want** our directory to create, update and deactivate Nexus users via
+SCIM, **so that** onboarding and offboarding happen without manual steps in Nexus.
+
+**Acceptance criteria**
+1. **Given** a tenant SCIM token, **when** the IdP creates/updates/deactivates a user, **then** the
+   member is created/updated/deactivated in that tenant only.
+2. **Given** a SCIM token, **when** used against another tenant's resources, **then** 404 is returned.
+3. **Given** SCIM manages a user, **when** a tenant admin edits that user's synced attributes in Nexus,
+   **then** the edit is refused (Atlassian pattern).
+
+**Dependencies:** US-042. Recorded for roadmap traceability; re-scope at its own Gate 1.
+
+### Area J — Tenant hierarchy
+
+#### US-044 — Group my members into organisations
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Could | L | Later | Entra administrative units; Shopify Plus stores; Slack Grid workspaces |
+
+**As a** Tenant Admin, **I want** to create organisations within my tenant and assign members to
+them, **so that** future features can scope data and delegated administration to a business unit.
+
+**Acceptance criteria**
+1. **Given** `tenant:write`, **when** an organisation is created, **then** its name is unique per
+   tenant and it is scoped to the caller's tenant only.
+2. **Given** an organisation, **when** members are added or removed, **then** only members of the same
+   tenant can be added (cross-tenant IT) and membership changes are audited.
+3. **Given** a consuming feature exists (named at Gate 1), **when** this story is scheduled, **then**
+   that feature's scoping rule is part of the acceptance criteria — this story is not built on its
+   own.
+
+**Dependencies:** US-030; decision D4. Replaces the previous draft's US-023 organisation CRUD.
+
+### 5.1 Story index
+
+| Story | Title | Area | MoSCoW | Size | Phase | Depends on |
+|---|---|---|---|---|---|---|
+| US-021 | Register tenants with enforced referential integrity | A | Must | M | MVP | EPIC-002, US-018 |
+| US-022 | Close tenant-isolation gaps | A | Must | M | MVP | US-021 |
+| US-023 | Platform-operator authority | A | Must | M | MVP | US-021 |
+| US-024 | Provision tenant + roles + invited admin | B | Must | L | MVP | US-021, US-023, US-028 |
+| US-025 | Suspend / reactivate / delete / restore | B | Must | M | MVP | US-021, US-023 |
+| US-026 | Enforce tenant status on requests, login, refresh | B | Must | M | MVP | US-025 |
+| US-027 | Tenant-aware sign-in and recovery | C | Must | L | MVP | US-021, US-026 |
+| US-028 | Invite members with a role | C | Must | L | MVP | US-021, US-027 |
+| US-029 | Accept an invitation | C | Must | M | MVP | US-028 |
+| US-030 | Member directory, deactivate/reactivate | C | Must | M | MVP | US-021, US-022 |
+| US-031 | Tenant profile | D | Must | M | MVP | US-021 |
+| US-032 | Tenant context in app header | D | Should | S | MVP | US-031 |
+| US-037 | Operator console | G | Should | M | MVP | US-023, US-024, US-025 |
+| US-034 | Seat limits by plan | E | Should | M | Next | US-024, US-028, US-030, ADR 0019 |
+| US-036 | Tenant audit viewer + export | F | Should | M | Next | US-021, ADR 0020 Q1 |
+| US-033 | Brand colours | D | Could | M | Later | US-031, US-032 |
+| US-035 | Per-tenant rate limits | E | Could | M | Later | US-034, ADR 0019 |
+| US-038 | Tenant data export | H | Should | L | Later | ADR 0020 Q2 |
+| US-039 | Purge after grace period | H | Should | L | Later | US-025, ADR 0020 |
+| US-040 | Data-subject erasure | H | Should | M | Later | US-030, ADR 0020 Q3 |
+| US-041 | Domain verification | I | Could | M | Later | US-031 |
+| US-042 | Tenant SSO (OIDC/SAML) | I | Could | L | Later | US-027, US-041 |
+| US-043 | SCIM provisioning | I | Won't (this epic) | L | Later | US-042 |
+| US-044 | Organisations with membership | J | Could | L | Later | US-030, D4 |
 
 ---
 
-## Cross-Tenant Security Tests — Mandatory CI Gates
+## 6. Non-functional requirements
 
-| Story | Test | Scenario |
+### 6.1 Isolation guarantees
+
+| ID | Requirement |
+|---|---|
+| NFR-ISO-1 | The caller's tenant is taken only from the verified token. Only `/api/v1/platform/**` may name a *target* tenant in the path, and only for callers holding a platform-scope permission. |
+| NFR-ISO-2 | Every tenant-owned table has a NOT NULL `tenant_id` with an FK to `tenants` (except `auth_events`, documented). |
+| NFR-ISO-3 | Every new endpoint has a merge-blocking IT proving another tenant's resources return 403/404, in the style of `nexus-backend/src/test/java/com/example/nexus/rbac/security/CrossTenantPermissionIT.java`. |
+| NFR-ISO-4 | Every Redis key holding tenant data includes the tenant id (ADR 0016 D3). |
+| NFR-ISO-5 | Background jobs that iterate tenants set the tenant explicitly per unit of work and never reuse a previous tenant's context. |
+| NFR-ISO-6 | Platform-scope permissions can never be attached to a tenant role (US-023 AC2 is a regression test). |
+
+### 6.2 Performance
+
+| ID | Requirement |
+|---|---|
+| NFR-PERF-1 | Tenant-status check adds < 5 ms p95 on cache hit (US-026). |
+| NFR-PERF-2 | Tenant provisioning p95 < 2 s excluding email delivery. |
+| NFR-PERF-3 | Paginated list endpoints (members, tenants, audit) p95 < 500 ms at 10 k rows per tenant _(inferred target; add a k6 scenario in `nexus-test/`)_. |
+
+### 6.3 Security
+
+| ID | Requirement |
+|---|---|
+| NFR-SEC-1 | Each MVP story completes Gate 2 threat modelling (`03b-threat-model.md`); US-023, US-026, US-027 are mandatory security-reviewer stories. |
+| NFR-SEC-2 | Invitation and export tokens are random, single-use, stored hashed, and expire. |
+| NFR-SEC-3 | Unauthenticated tenant-resolution endpoints are rate-limited and never reveal whether a tenant or email exists. |
+| NFR-SEC-4 | Operator accounts must use MFA before GA _(no MFA exists in the codebase today — flagged as risk R3)_. |
+| NFR-SEC-5 | No PII (emails, names, contacts) in logs or audit metadata values, per existing no-PII rule. |
+
+### 6.4 Compliance (GDPR)
+
+| ID | Requirement |
+|---|---|
+| NFR-GDPR-1 | Each new table states its retention class (ADR 0020 interim rule). |
+| NFR-GDPR-2 | Tenant offboarding and data-subject erasure follow ADR 0020 once accepted (US-038–US-040). No story may hard-delete tenant data before then. |
+| NFR-GDPR-3 | Data residency is out of scope; if a customer requires it, it is a bridge/silo decision (§3.2 A), not a feature of this epic. |
+| NFR-GDPR-4 | Contact PII on `tenants` is encrypted at rest (ADR 0006 approach). |
+
+### 6.5 Observability
+
+| ID | Requirement |
+|---|---|
+| NFR-OBS-1 | `tenantId` stays in MDC for every request and async task (already true via `MdcTaskDecorator`). |
+| NFR-OBS-2 | Metrics: tenants by status, status-check cache hit ratio, invitations sent/accepted/expired, suspension enforcement latency — with bounded cardinality (no raw tenant id label). |
+| NFR-OBS-3 | An alert fires if a request is served for a non-`ACTIVE` tenant (defence-in-depth counter in the status filter). |
+
+---
+
+## 7. Phased rollout
+
+### Entry criteria (before the first MVP story merges)
+
+- [ ] EPIC-002 Open Decision #4 closed: ArchUnit rule that every `@RestController` method carries
+      `@RequiresPermission` or `@PublicEndpoint`, plus the self-invocation check (assumed to be in
+      US-018 — **confirm**).
+- [ ] US-016 and US-017 merged (EPIC-002 Open Decisions #6/#7).
+- [ ] Decisions D1, D2, D3, D5 and D6 recorded (see §8).
+- [ ] ADR amendment for the platform path-tenant exception drafted (US-023 AC5).
+
+### MVP — "second customer can be onboarded safely"
+
+| Order | Stories | Why this order |
 |---|---|---|
-| US-022 | T-5 | Tenant Admin cannot access another tenant's profile via JWT boundary |
-| US-023 | T-4 | Tenant Admin cannot update org in a different tenant |
-| US-024 | T-2, T-3 | SUSPENDED + DELETED tenant users blocked on all endpoints |
+| 1 | US-021, US-022 | Schema and isolation gaps first; everything builds on them |
+| 2 | US-023 | Platform authority before any platform endpoint |
+| 3 | US-025, US-026 | Lifecycle and enforcement before tenants exist in production |
+| 4 | US-027, US-028, US-029 | Tenant sign-in and invitations (US-024 needs US-028) |
+| 5 | US-024, US-030, US-031 | Provisioning, members, profile |
+| 6 | US-032, US-037 | Tenant header, operator console |
+
+Exit: a second tenant is provisioned in staging by an operator, its admin accepts an invitation,
+invites a member, and a pen-test-style cross-tenant suite shows zero findings.
+
+### Next — "self-service and accountability"
+
+US-034 (seat limits, after ADR 0019), US-036 (audit viewer, after ADR 0020 Q1).
+
+### Later — "enterprise readiness"
+
+US-033, US-035, US-038, US-039, US-040, US-041, US-042, US-043, US-044 — each re-scoped at its own
+Gate 1 when a customer or regulation requires it. ADR 0020 must be accepted before US-038–US-040.
 
 ---
 
-## Before Sprint 5 — Mandatory Gates
+## 8. Decisions needed, open questions and risks
 
-- [ ] ADR-004 (Two-tier tenant model) signed off before any dev starts
-- [ ] Gate 1 review on US-020 complete — schema review, FK backfill risk assessed
-- [ ] Orphaned `users.tenant_id` rows checked in any existing data before V4 migration
-- [ ] S3 + SFTP credentials added to secrets vault before Sprint 6
+### 8.1 Decisions needing human input
+
+| # | Decision | Options | Recommendation | Blocks |
+|---|---|---|---|---|
+| D1 | How the tenant is identified at sign-in | (a) subdomain `acme.nexus.app`; (b) path `/t/acme/login`; (c) email-domain discovery | **(b) path** for MVP — no wildcard DNS/TLS or cookie-domain work; (a) can be added later. (c) needs verified domains (US-041). | US-027 |
+| D2 | Identity model | (a) per-tenant users (today); (b) global identity + memberships | **(a)** — matches the schema; revisit if cross-tenant users are requested | US-027–US-030 |
+| D3 | Public self-registration | (a) keep for bootstrap tenant only; (b) invite-only everywhere; (c) per-tenant toggle | **(a) now, (b) for customer tenants** — today every registrant joins the default tenant with no role | US-027 |
+| D4 | Organisations (sub-tenant level) | (a) defer; (b) build as in previous draft | **(a) defer** until a feature consumes them | US-044 |
+| D5 | Bootstrapping the first operator account | (a) migration-seeded operator tenant + CLI/runbook to invite the first operator; (b) env-configured email invited at startup | **(a)** — auditable and matches existing runbook practice | US-023 |
+| D6 | Deletion grace period | 14 / 30 / 90 days | **30 days** (configurable) — confirm with legal and contracts | US-025, US-039 |
+| D7 | Distinct Tenant Owner role | (a) no — rely on last-admin protection; (b) yes | **(a)** for MVP | — |
+| D8 | Split with RBAC UI | Members page (US-030) here; role assignment/editing UI in US-019/US-020 | **Confirm** with the RBAC UI owner so there is one members list, not two | US-030 |
+| D9 | Enterprise SSO | build on Spring Security vs buy (WorkOS / Auth0) | Decide at US-042 Gate 1 with cost data | US-042 |
+| D10 | Plan tiers | names and seat limits per tier | Product to define before US-034 | US-034 |
+
+### 8.2 Open questions
+
+1. Does US-018 (RBAC hardening) include EPIC-002 Open Decision #4? If not, a story must be added
+   ahead of US-021.
+2. Should the `MEMBER` role receive `tenant:read` so US-032 can call `GET /tenants/me`, or should a
+   narrower "tenant summary" come with `/users/me`?
+3. Which user status represents a reversible member deactivation (US-030 AC2)?
+4. What exact operator identity, if any, may be shown to tenants in their audit view (US-036 AC4)?
+5. Do existing environments hold any `users`/`roles` rows with a tenant id other than the bootstrap
+   tenant? (US-021 AC2 fails the migration if so — run the check in each environment first.)
+6. Which story delivers MFA for operator accounts before GA (NFR-SEC-4 / R3)? It is not in this epic.
+
+### 8.3 Risks
+
+| # | Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|---|
+| R1 | A missed tenant predicate leaks data (pool model) | Med | Critical | US-021 FKs, US-022 ArchUnit extension, NFR-ISO-3 ITs, pre-GA pen test |
+| R2 | Platform authority misconfigured → tenant admin gains cross-tenant control | Low | Critical | US-023 AC1/AC2/AC4 as merge-blocking tests; separate permission namespace |
+| R3 | Operator accounts protected by password only (no MFA exists) | Med | High | NFR-SEC-4; decide MFA story before GA |
+| R4 | FK migration fails on unexpected data in some environment | Med | High | Open question 5; migration pre-check with clear error |
+| R5 | Suspension bypass via existing tokens | Low (after US-026) | High | Per-request status filter; login/refresh blocked; ≤ 60 s SLO test |
+| R6 | ArchUnit cannot see JPQL bodies; a bound-but-unused `tenantId` still leaks | Med | High | Code review + cross-tenant ITs; spike Hibernate `@TenantId`/`@Filter` as a follow-up |
+| R7 | `auth_events` grows into a general audit log with a misleading name and identity-context ownership | Med | Low | Accept for this epic; revisit with ADR 0020 |
+| R8 | ADR 0019/0020 stay undecided, blocking Next/Later | Med | Med | Named as blockers; schedule decisions alongside MVP |
+| R9 | Changing sign-in URLs (D1) breaks existing bookmarks / email links | Low | Med | US-027 AC4 keeps bootstrap-tenant behaviour |
+| R10 | Duplicate members UI between this epic and RBAC UI | Med | Low | D8 |
+| R11 | A deactivated member keeps API access until their access token expires (≤ 15 min) | High (by design today) | Med | US-030 AC2 names it; Gate 2 decides whether to add a per-request user-status check alongside US-026's tenant check |
 
 ---
----
 
-## US-020 — Establish tenant and organisation data model with migrations
+## Appendix A — Industry research comparison
 
-| TYPE | PRIORITY | STORY POINTS | EPIC LINK | SPRINT | ASSIGNEE |
-|------|----------|--------------|-----------|--------|----------|
-| Feature | P0 | 5 | EPIC-003: Tenant Management | Sprint 5 | _(Tech lead assigns)_ |
+> **Method and confidence.** Research was done by web search restricted to vendor-owned domains;
+> direct page fetches were blocked by the environment's egress policy, so claims rest on
+> search-result extracts of official pages. Items the research could not confirm from an official
+> page are marked _(unverified)_ and are **not** used as the sole basis for any story. Re-open the
+> URL before quoting a figure in a contract or ADR.
 
-### User Story
-As a platform development team,
-I want a tenant and organisation schema with status history and FK enforcement,
-So that all future features have a stable, two-tier tenant model to build on.
+### A.1 Comparison
 
-### Background / Context
+| Product | Hierarchy | RBAC approach | SSO / SCIM | Delegated admin | Lifecycle / grace | Isolation / tiering | Quotas / limits | Audit retention / export | Self-serve vs operator |
+|---|---|---|---|---|---|---|---|---|---|
+| Salesforce | Org (+ sandbox orgs); My Domain URL per org | Profiles + permission sets / groups (muting); record access via org-wide defaults, role hierarchy, sharing | SAML/OIDC via My Domain; SCIM _(unverified)_ | Delegated administration _(unverified)_ | Developer Edition: self-reactivate ≤ 30 days, via Support ≤ 60 days | Editions; 4 sandbox tiers | Sandboxes per edition | Setup Audit Trail ≥ 180 days; CSV + API | Very strong self-serve (Setup) |
+| Atlassian Cloud | Organization → sites → apps | Groups + admin roles (org, site, app, user-access admin) | SAML + SCIM with Atlassian Guard | Site / app / user-access admins | Managed account deactivated 14 days before deletion | Plans; data residency; Isolated Cloud | Sandboxes: 1 per app (Premium) / up to 5 (Enterprise) | Up to 180 days (Guard/Enterprise); export advised | Admin UI + Organizations REST API |
+| Slack Enterprise Grid | Org → workspaces | Fixed owner/admin tiers + system roles | SAML; SCIM on Business+/Enterprise | Workspace owners; system roles | Deactivation keeps profile; workspace deletion permanent | EKM add-on; single-region data residency | — _(not researched)_ | Audit Logs API Enterprise-only; retention _(unverified)_ | Org admin dashboard |
+| Microsoft Entra ID | Tenant → administrative units; multi-tenant orgs | Built-in + custom roles, scopable to AUs | SAML/OIDC; outbound SCIM; B2B guests | Administrative units, restricted-management AUs | Deleted users restorable 30 days | Licence tiers | — _(not researched)_ | 7 days (Free) / 30 days (P1/P2); Azure Monitor for longer | Portal + Graph API |
+| GitHub Enterprise Cloud | Enterprise → orgs → teams | Built-in + up to 20 custom repo and 20 custom org roles | SAML (org or enterprise); SCIM; EMU | Org owners under enterprise owners (owners get no org content by default) | Deleted repo restore / member reinstatement within 90 days | Personal accounts vs EMU | 20 custom repo + 20 custom org roles | 180 days (Git events 7); streaming to SIEM/storage | UI + REST |
+| Shopify Plus | Organization → up to 10 stores | Organization roles + store roles | SAML + SCIM after domain verification | Store user administrator | _(unverified)_ | Plan tier | 10 stores; unlimited staff | _(unverified)_ | Admin UI |
+| Stripe | Organization → accounts; Connect platform → connected accounts | Built-in + custom roles | SAML with JIT; SCIM; group mapping | Per-account roles | _(unverified)_ | Connect controller properties | — _(not researched)_ | Security history / activity 180 days; CSV; Activity Logs API | Dashboard + API |
+| AWS Organizations + SaaS Lens | Root → OUs (≤ 5 levels) → accounts | IAM + SCP/RCP guardrails | IAM Identity Center _(not researched)_ | Delegated-administrator accounts | Closed account reopenable within 90 days | Silo / pool / bridge; tier-based silo for premium tenants | 10 accounts default (adjustable); 2,000 OUs | CloudTrail _(not researched)_ | API / IaC-first |
+| Auth0 Organizations | Tenant → organizations → members | Roles per membership | Per-organization connections; auto-membership | "My Organization" API _(blog source)_ | Invitation TTL default 7 days, max 30 | Pooled | 100 k orgs, 10 connections per org (defaults) | 1–30 days by plan; log streams | Dashboard + API |
+| WorkOS | Organization → memberships | Multiple roles per membership; IdP group → role mapping | SSO + Directory Sync; Admin Portal | Customer IT via Admin Portal | Directory events drive deprovisioning | — | — _(not researched)_ | 30 days default, configurable up to 10 years; streaming | Customer-facing Admin Portal |
+| Okta | Single org or hub-and-spoke orgs | Custom admin roles + resource sets | SAML/OIDC; SCIM client | Resource-set-scoped admins | "Deprovision", not delete | Separate orgs for residency / strong delegation | 10 k resource sets; 1 k resources per set | System Log 90 days | Admin console + API |
 
-Creates `tenants`, `organisations`, and `tenant_status_history` tables via
-`V4__tenant_schema.sql`. Backfills the `users.tenant_id` raw column (from
-US-001) with a real FK constraint. Seeds `organisation:read` and
-`organisation:write` permissions and adds them to `TENANT_ADMIN` role.
-Append-only trigger on `tenant_status_history`. Gate for all other Epic 3 stories.
+### A.2 Table-stakes vs differentiators
 
-**Target database:** MySQL 8.4 Community
-**ID strategy:** UUIDv7 stored as `BINARY(16)` — ADR-001
-**PII encryption:** reuse `AttributeEncryptor.java` from EPIC-001
-**ADR required:** ADR-004 — Two-tier tenant model sign-off before merge
+**Table stakes** (expected by the first mid-market/enterprise buyer) and where this epic covers them:
 
-### Acceptance Criteria
+| Capability | Covered by |
+|---|---|
+| Tenant entity with admins; users belong to a tenant | US-021, US-024 |
+| Invitation with expiring token and pre-assigned role | US-028, US-029 |
+| Small set of built-in roles with server-side checks | EPIC-002 (exists) + US-024 seeding |
+| Every query scoped by tenant; tenant context from the token | US-022, NFR-ISO-1 |
+| Suspend / deactivate users and tenants; soft delete with grace | US-025, US-026, US-030 |
+| Tenant-visible audit log with export | US-036 |
+| Operator console with audited actions | US-037, US-025 |
+| Enforced MFA / SSO at least on a paid tier | Gap — R3 (MFA), US-042 (SSO, Later) |
 
-| # | Criterion | Definition of Done | Priority |
-|---|-----------|--------------------|----------|
-| AC-1 | `tenants` table created | `V4__tenant_schema.sql` creates `tenants` with all columns and indexes per spec below | P0 |
-| AC-2 | `organisations` table created | Created with `UNIQUE (tenant_id, name)` and status index | P0 |
-| AC-3 | `tenant_status_history` append-only | Table created; `BEFORE UPDATE` / `BEFORE DELETE` triggers raise `SQLSTATE '45000'` | P0 |
-| AC-4 | `users.tenant_id` FK enforced | Orphan pre-check + `ALTER TABLE users ADD CONSTRAINT fk_users_tenant FOREIGN KEY (tenant_id) REFERENCES tenants(id)` | P0 |
-| AC-5 | New permissions seeded | `organisation:read` and `organisation:write` added to `permissions` table and to `TENANT_ADMIN` role in `role_permissions` | P0 |
-| AC-6 | PII fields encrypted | `billing_contact_name`, `billing_contact_email`, `contact_address` use `AttributeEncryptor` from EPIC-001 | P0 |
-| AC-7 | Migration clean-forward in CI | Testcontainers: V1 → V2 → V3 → V4 chain succeeds; checksum stable | P1 |
+**Differentiators** (enterprise tier; deliberately Later or out of scope): SCIM with group mapping
+(US-043); domain verification → managed accounts (US-041); custom roles / scoped delegated admin
+(custom roles exist via US-015; scoped delegation not planned); multi-level hierarchy (US-044);
+audit streaming and configurable retention; data residency, BYOK/EKM, silo tiers; per-tenant
+sandboxes; customer-facing IT admin portal; per-tier noisy-neighbour throttling (US-035).
 
-### Schema Specification
+### A.3 Fit for Nexus
 
-#### `tenants`
-```sql
-CREATE TABLE tenants (
-    id                     BINARY(16)    NOT NULL,
-    name                   VARCHAR(255)  NOT NULL,
-    domain                 VARCHAR(255)  NOT NULL,
-    status                 ENUM('ACTIVE','INACTIVE','SUSPENDED','DELETED')
-                                         NOT NULL DEFAULT 'INACTIVE',
-    plan_tier              VARCHAR(64)   NOT NULL DEFAULT 'STARTER',
-    logo_url               VARCHAR(512)  NULL,
-    billing_contact_name   TEXT          NULL,  -- encrypted
-    billing_contact_email  TEXT          NULL,  -- encrypted
-    billing_contact_phone  VARCHAR(32)   NULL,
-    contact_address        TEXT          NULL,  -- encrypted
-    created_by             BINARY(16)    NOT NULL,
-    created_at             TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at             TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP
-                                         ON UPDATE CURRENT_TIMESTAMP,
-    deleted_at             TIMESTAMP     NULL,
-    PRIMARY KEY (id),
-    UNIQUE KEY uq_tenant_domain (domain),
-    INDEX idx_tenant_status (status),
-    INDEX idx_tenant_created_at (created_at),
-    CONSTRAINT fk_tenant_created_by FOREIGN KEY (created_by) REFERENCES users(id)
-);
-```
-
-#### `organisations`
-```sql
-CREATE TABLE organisations (
-    id          BINARY(16)                  NOT NULL,
-    tenant_id   BINARY(16)                  NOT NULL,
-    name        VARCHAR(255)                NOT NULL,
-    description VARCHAR(512)                NULL,
-    status      ENUM('ACTIVE','INACTIVE')   NOT NULL DEFAULT 'ACTIVE',
-    created_by  BINARY(16)                  NOT NULL,
-    created_at  TIMESTAMP                   NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  TIMESTAMP                   NOT NULL DEFAULT CURRENT_TIMESTAMP
-                                            ON UPDATE CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    UNIQUE KEY uq_org_tenant_name (tenant_id, name),
-    INDEX idx_org_tenant_status (tenant_id, status),
-    CONSTRAINT fk_org_tenant     FOREIGN KEY (tenant_id)  REFERENCES tenants(id),
-    CONSTRAINT fk_org_created_by FOREIGN KEY (created_by) REFERENCES users(id)
-);
-```
-
-#### `tenant_status_history`
-```sql
-CREATE TABLE tenant_status_history (
-    id              BINARY(16)                                        NOT NULL,
-    tenant_id       BINARY(16)                                        NOT NULL,
-    previous_status ENUM('ACTIVE','INACTIVE','SUSPENDED','DELETED')   NULL,
-    new_status      ENUM('ACTIVE','INACTIVE','SUSPENDED','DELETED')   NOT NULL,
-    changed_by      BINARY(16)                                        NOT NULL,
-    reason          VARCHAR(512)                                      NULL,
-    created_at      TIMESTAMP                                         NOT NULL
-                    DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id),
-    INDEX idx_tsh_tenant (tenant_id, created_at),
-    CONSTRAINT fk_tsh_tenant     FOREIGN KEY (tenant_id)  REFERENCES tenants(id),
-    CONSTRAINT fk_tsh_changed_by FOREIGN KEY (changed_by) REFERENCES users(id)
-);
-
-CREATE TRIGGER trg_tsh_no_update
-    BEFORE UPDATE ON tenant_status_history FOR EACH ROW
-BEGIN
-    SIGNAL SQLSTATE '45000'
-        SET MESSAGE_TEXT = 'tenant_status_history is append-only';
-END;
-
-CREATE TRIGGER trg_tsh_no_delete
-    BEFORE DELETE ON tenant_status_history FOR EACH ROW
-BEGIN
-    SIGNAL SQLSTATE '45000'
-        SET MESSAGE_TEXT = 'tenant_status_history is append-only';
-END;
-```
-
-#### FK backfill on `users`
-```sql
--- Orphan pre-check — fail migration if any orphaned rows exist
-SET @orphaned = (
-    SELECT COUNT(*) FROM users
-    WHERE tenant_id IS NOT NULL
-      AND tenant_id NOT IN (SELECT id FROM tenants)
-);
-IF @orphaned > 0 THEN
-    SIGNAL SQLSTATE '45000'
-        SET MESSAGE_TEXT = 'Orphaned users.tenant_id rows — resolve before adding FK';
-END IF;
-
-ALTER TABLE users
-    ADD CONSTRAINT fk_users_tenant
-    FOREIGN KEY (tenant_id) REFERENCES tenants(id);
-```
-
-#### New permission seeds
-```sql
-INSERT INTO permissions (id, name, description) VALUES
-    (UUID_TO_BIN(UUID()), 'organisation:read',  'View organisations within tenant'),
-    (UUID_TO_BIN(UUID()), 'organisation:write', 'Manage organisations within tenant');
-
-INSERT INTO role_permissions (role_id, permission_id)
-SELECT r.id, p.id
-FROM roles r, permissions p
-WHERE r.name = 'TENANT_ADMIN'
-  AND p.name IN ('organisation:read', 'organisation:write');
-```
-
-### Claude Code — Implementation Tasks
-
-#### Task 1 — Flyway migration
-**File:** `src/main/resources/db/migration/V4__tenant_schema.sql`
-- Create tables: `tenants` → `organisations` → `tenant_status_history`
-- Add append-only triggers on `tenant_status_history`
-- FK backfill on `users.tenant_id` with orphan pre-check
-- Seed `organisation:read` / `organisation:write` + assign to `TENANT_ADMIN`
-
-#### Task 2 — TenantStatus enum with transition map
-**File:** `src/main/java/com/example/nexus/tenant/domain/TenantStatus.java`
-```java
-public enum TenantStatus {
-    ACTIVE, INACTIVE, SUSPENDED, DELETED;
-
-    private static final Map<TenantStatus, Set<TenantStatus>> ALLOWED = Map.of(
-        INACTIVE,  Set.of(ACTIVE, DELETED),
-        ACTIVE,    Set.of(INACTIVE, SUSPENDED, DELETED),
-        SUSPENDED, Set.of(ACTIVE, DELETED),
-        DELETED,   Set.of()
-    );
-
-    public boolean canTransitionTo(TenantStatus next) {
-        return ALLOWED.getOrDefault(this, Set.of()).contains(next);
-    }
-}
-```
-
-#### Task 3 — JPA entities
-**Package:** `com.example.nexus.tenant.domain`
-
-| Class | Table | Notes |
+| Pattern | Fit now? | Reason |
 |---|---|---|
-| `Tenant.java` | `tenants` | `@Entity`; `@Convert(AttributeEncryptor)` on PII fields; `@Enumerated` for status |
-| `Organisation.java` | `organisations` | `@Entity`; `@ManyToOne` to `Tenant` |
-| `TenantStatusHistory.java` | `tenant_status_history` | `@Entity`; immutable — no setters |
-
-Reuse `UuidBinaryConverter.java` + `AttributeEncryptor.java` from EPIC-001.
-
-#### Task 4 — Repositories
-**Package:** `com.example.nexus.tenant.repository`
-
-```java
-// TenantRepository.java
-Optional<Tenant> findByDomain(String domain);
-Page<Tenant> findAllByStatusNot(TenantStatus status, Pageable pageable);
-Optional<Tenant> findByIdAndStatusNot(byte[] id, TenantStatus status);
-
-// OrganisationRepository.java
-List<Organisation> findAllByTenantIdAndStatus(byte[] tenantId, String status);
-Optional<Organisation> findByIdAndTenantId(byte[] id, byte[] tenantId);
-
-// TenantStatusHistoryRepository.java
-List<TenantStatusHistory> findAllByTenantIdOrderByCreatedAtAsc(byte[] tenantId);
-```
-
-#### Task 5 — FileStorageService abstraction
-**File:** `src/main/java/com/example/nexus/storage/FileStorageService.java`
-```java
-public interface FileStorageService {
-    String store(String key, byte[] content, String mimeType);
-    void delete(String key);
-}
-```
-
-| Implementation | Profile | Backend |
-|---|---|---|
-| `LocalFileStorageService.java` | `dev`, `test` | Writes to `./storage/`; returns relative URL |
-| `S3FileStorageService.java` | `prod` | AWS S3 via `software.amazon.awssdk:s3` |
-| `SftpFileStorageService.java` | `sftp` | SFTP via Apache Commons VFS |
-
-**application.yml:**
-```yaml
-app:
-  storage:
-    provider: local
-    local:
-      base-path: ./storage
-      base-url: http://localhost:8080/files
-    s3:
-      bucket: nexus-files
-      region: ap-south-1
-      access-key: ${AWS_ACCESS_KEY}
-      secret-key: ${AWS_SECRET_KEY}
-    sftp:
-      host: ${SFTP_HOST}
-      port: 22
-      username: ${SFTP_USER}
-      password: ${SFTP_PASSWORD}
-      base-path: /uploads
-      base-url: ${SFTP_BASE_URL}
-```
-
-> In Epic 3 the `logo_url` is accepted as a plain string — `FileStorageService`
-> is wired but not called from controllers. Full upload endpoint is Epic 5 scope.
-
-#### Task 6 — Testcontainers migration test
-**File:** `src/test/java/com/example/nexus/tenant/migration/V4MigrationTest.java`
-- All 3 tables exist after migration
-- Append-only triggers raise `DataIntegrityViolationException` on UPDATE + DELETE
-- Duplicate domain raises `ConstraintViolationException`
-- Duplicate org name in same tenant raises `ConstraintViolationException`
-- Same org name in different tenant succeeds
-- `organisation:read` + `organisation:write` present in `permissions`
-- Both permissions in `TENANT_ADMIN` `role_permissions`
-- FK backfill with orphaned user row causes migration to fail
-
-### Test Scenarios
-
-| # | Scenario | Type | Expected Result |
-|---|----------|------|-----------------|
-| T-1 | V1 → V2 → V3 → V4 migration chain | Integration | All tables, indexes, seed data present |
-| T-2 | Duplicate domain on `tenants` | Integration | Unique constraint violation |
-| T-3 | Duplicate org name same tenant | Integration | Unique constraint violation |
-| T-4 | Same org name different tenant | Integration | Both rows persist |
-| T-5 | UPDATE on `tenant_status_history` | Security | `SQLSTATE '45000'` |
-| T-6 | DELETE on `tenant_status_history` | Security | `SQLSTATE '45000'` |
-| T-7 | `organisation:read/write` in `TENANT_ADMIN` | Integration | Both permissions confirmed |
-| T-8 | FK backfill with orphaned `users.tenant_id` | Integration | Migration fails with clear error |
-
-### Definition of Done
-
-- [ ] `V4__tenant_schema.sql` passes Flyway checksum in CI
-- [ ] `TenantStatus.java` enum with transition map created
-- [ ] All 3 JPA entities created with correct mappings
-- [ ] All 3 repositories created with required query methods
-- [ ] `FileStorageService` interface + 3 implementations created
-- [ ] `V4MigrationTest.java` green in CI (Testcontainers MySQL 8.4)
-- [ ] ADR-004 linked in PR description
-- [ ] No Hibernate schema validation warnings on startup
-
-### Risks
-
-| Risk | Likelihood | Impact | Mitigation |
-|------|-----------|--------|-----------|
-| FK constraint fails on orphaned user rows | Med | High | Pre-check in migration; fail fast with clear message |
-| `organisation:read/write` not seeded before Epic 3 dev | Med | High | AC-5 is P0; all org endpoints fail without it |
+| Pool isolation with automated guards | **Yes** | Matches single MySQL + monolith; guards are cheap (US-021, US-022) |
+| Per-tenant slug in sign-in URL | **Yes** | Needed to resolve tenant before authentication; Salesforce/Slack precedent |
+| Invitations with role + 7-day expiry | **Yes** | Cheap; replaces "everyone joins default tenant" |
+| Separate platform authority | **Yes** | Required to fix G3 |
+| Soft delete with grace and restore | **Yes** | Cheap now, expensive to retrofit |
+| Global identity + multi-tenant membership | Not now | Schema assumes per-tenant users; no demand yet (D2) |
+| Multi-level hierarchy | Not now | No consuming feature (D4) |
+| Hibernate `@TenantId` / `@Filter` | Spike later | Could strengthen R6 but touches RBAC lock queries |
+| SSO / SCIM / domain verification | Later | Build-vs-buy (D9) when a deal requires it |
+| Silo / bridge, residency, BYOK | Not now | Operational cost far exceeds current need |
+| Audit streaming to SIEM | Not now | Keep `auth_events` schema stream-friendly |
 
 ---
----
 
-## US-021 — Enable Platform Admin to create and manage tenant lifecycle
+## Appendix B — Sources
 
-| TYPE | PRIORITY | STORY POINTS | EPIC LINK | SPRINT | ASSIGNEE |
-|------|----------|--------------|-----------|--------|----------|
-| Feature | P0 | 5 | EPIC-003: Tenant Management | Sprint 5 | _(Tech lead assigns)_ |
+AWS
+- https://docs.aws.amazon.com/wellarchitected/latest/saas-lens/silo-pool-and-bridge-models.html — silo, pool, bridge definitions
+- https://docs.aws.amazon.com/wellarchitected/latest/saas-lens/pool-isolation.html — pool isolation
+- https://docs.aws.amazon.com/pdfs/wellarchitected/latest/saas-lens/wellarchitected-saas-lens.pdf — SaaS identity, tenant context in JWT, noisy neighbour, tiering, onboarding
+- https://docs.aws.amazon.com/organizations/latest/userguide/orgs_manage_policies_scps.html — SCPs as guardrails
+- https://docs.aws.amazon.com/organizations/latest/userguide/orgs_getting-started_concepts.html — OUs, delegated administrator
+- https://docs.aws.amazon.com/organizations/latest/userguide/orgs_reference_limits.html — account/OU limits
+- https://docs.aws.amazon.com/accounts/latest/reference/manage-acct-closing.html — 90-day post-closure period
 
-### User Story
-As a Platform Admin,
-I want to create tenants and control their lifecycle status,
-So that I can onboard and manage enterprise customers on the platform.
+Auth0
+- https://auth0.com/docs/manage-users/organizations — Organizations overview
+- https://auth0.com/docs/manage-users/organizations/configure-organizations/send-membership-invitations — invitation flow
+- https://auth0.com/docs/api/management/v2/organizations/post-invitations — `ttl_sec` default 7 days, roles
+- https://auth0.com/docs/manage-users/organizations/configure-organizations/enable-connections — per-org connections
+- https://auth0.com/docs/deploy-monitor/logs/log-data-retention — log retention by plan
 
-### Background / Context
+WorkOS
+- https://workos.com/docs/domain-verification — DNS TXT domain verification
+- https://workos.com/docs/directory-sync/understanding-events — directory sync events
+- https://workos.com/docs/authkit/roles-and-permissions — membership roles
+- https://workos.com/docs/reference/audit-logs/retention — audit retention
 
-First Platform Admin capability on the platform. Tenant creation auto-assigns
-the `TENANT_ADMIN` role to a specified user via `RoleAssignmentService` (US-012)
-in the same transaction — if role assignment fails, tenant creation is rolled
-back. Status transitions are validated against the `TenantStatus` state machine
-(US-020) and every transition recorded in `tenant_status_history`. All actions
-audited via `AuditEventPublisher` (US-008).
+GitHub
+- https://docs.github.com/en/enterprise-cloud@latest/admin/monitoring-activity-in-your-enterprise/reviewing-audit-logs-for-your-enterprise/accessing-the-audit-log-for-your-enterprise — 180 days, Git events 7 days
+- https://docs.github.com/en/enterprise-cloud@latest/admin/monitoring-activity-in-your-enterprise/reviewing-audit-logs-for-your-enterprise/streaming-the-audit-log-for-your-enterprise — audit streaming
+- https://docs.github.com/en/enterprise-cloud@latest/admin/user-management/managing-users-in-your-enterprise/roles-in-an-enterprise — enterprise owners
+- https://docs.github.com/en/enterprise-cloud@latest/admin/managing-iam/understanding-iam-for-enterprises/about-enterprise-managed-users — EMU
+- https://docs.github.com/en/enterprise-cloud@latest/organizations/managing-peoples-access-to-your-organization-with-roles/managing-custom-organization-roles — custom org roles
 
-### Acceptance Criteria
+Slack
+- https://docs.slack.dev/admins/audit-logs-api/ — Audit Logs API, Enterprise only
+- https://slack.com/help/articles/360018112273-Types-of-roles-in-Slack — org and workspace roles
+- https://docs.slack.dev/admins/scim-api/ — SCIM API
+- https://slack.com/help/articles/360019110974-Slack-Enterprise-Key-Management — EKM
+- https://slack.com/help/articles/360035633934-Data-residency-for-Slack — data residency
+- https://slack.com/help/articles/204475027 — deactivation and profile-data deletion
 
-| # | Criterion | Definition of Done | Priority |
-|---|-----------|--------------------|----------|
-| AC-1 | Create tenant | `POST /api/v1/admin/tenants` creates tenant with status=INACTIVE; auto-assigns `TENANT_ADMIN` to specified user; returns 201 within 2s p95 | P0 |
-| AC-2 | Domain uniqueness enforced | Duplicate domain returns 409 + `TNT_002` | P0 |
-| AC-3 | List all tenants paginated | `GET /api/v1/admin/tenants` returns paginated list; default page 20; status filter supported; DELETED excluded by default | P0 |
-| AC-4 | View tenant detail | `GET /api/v1/admin/tenants/{tenantId}` returns full profile including decrypted billing info | P0 |
-| AC-5 | Status transition validated | `PATCH /api/v1/admin/tenants/{tenantId}/status` enforces state machine; invalid transition returns 409 + `TNT_003` with `previousStatus` and `newStatus` in body | P0 |
-| AC-6 | Status history recorded | Every status change writes row to `tenant_status_history` within 1s | P0 |
-| AC-7 | Soft delete | `status=DELETED` sets `deleted_at`; excluded from list; data retained | P0 |
-| AC-8 | All actions audited | `TENANT_CREATED`, `TENANT_STATUS_CHANGED` events in audit stream | P0 |
+Microsoft
+- https://learn.microsoft.com/en-us/entra/identity/role-based-access-control/administrative-units — administrative units
+- https://learn.microsoft.com/en-us/entra/identity/monitoring-health/reference-reports-data-retention — log retention
+- https://learn.microsoft.com/en-us/entra/identity/app-provisioning/user-provisioning — SCIM provisioning
+- https://learn.microsoft.com/en-us/entra/fundamentals/users-restore — 30-day user restore
+- https://learn.microsoft.com/en-us/entra/external-id/what-is-b2b — B2B guests
 
-### API Specification
+Atlassian
+- https://support.atlassian.com/user-management/docs/verify-a-domain-to-manage-accounts/ — domain verification
+- https://support.atlassian.com/security-and-access-policies/docs/view-audit-log-activities/ — 180-day org audit log
+- https://support.atlassian.com/provisioning-users/docs/understand-user-provisioning/ — SCIM
+- https://support.atlassian.com/user-management/docs/give-users-admin-permissions/ — admin roles
+- https://support.atlassian.com/user-management/docs/delete-a-managed-account/ — 14-day deactivation before deletion
 
-#### POST /api/v1/admin/tenants
-**Permission:** `tenant:write`
-**Request:**
-```json
-{
-  "name": "Acme Corp",
-  "domain": "acme.com",
-  "planTier": "ENTERPRISE",
-  "tenantAdminUserId": "018f4e2a-...",
-  "billingContactName": "John Smith",
-  "billingContactEmail": "billing@acme.com",
-  "billingContactPhone": "+1-555-0100",
-  "contactAddress": "123 Main St, San Francisco, CA 94105"
-}
-```
+Salesforce
+- https://help.salesforce.com/s/articleView?id=003834041&language=en_US&type=1 — "Permissions in Profiles Retirement Cancelled"; permission-set-led model still recommended
+- https://admin.salesforce.com/blog/2026/the-salesforce-admins-guide-to-profiles-and-permissions — profiles for defaults, permission sets for access
+- https://help.salesforce.com/s/articleView?language=en_US&id=admin_monitorsetup.htm — Setup Audit Trail
+- https://help.salesforce.com/s/articleView?id=xcloud.domain_name_url_formats.htm&language=en_US&type=5 — My Domain URLs
+- https://help.salesforce.com/s/articleView?id=sf.admin_deactivate_org.htm&language=en_US&type=5 — Developer Edition deactivation windows
 
-| Status | Code | Body |
-|---|---|---|
-| 201 | — | `TenantDetailDto` |
-| 409 | `TNT_002` | Domain already registered |
-| 404 | `USR_001` | `tenantAdminUserId` not found |
+Shopify
+- https://help.shopify.com/en/manual/organization-settings/expansion-stores — store limit
+- https://help.shopify.com/en/manual/your-account/users/roles/role-categories — organization vs store roles
+- https://help.shopify.com/en/manual/your-account/users/security/advanced-security-features/scim — SCIM on Plus
 
-#### GET /api/v1/admin/tenants
-**Permission:** `tenant:read` | **Query:** `?status=ACTIVE&page=0&size=20` | **Response:** `Page<TenantSummaryDto>`
+Stripe
+- https://docs.stripe.com/get-started/account/orgs/setup — Organizations vs Connect
+- https://docs.stripe.com/get-started/account/teams/roles — roles and custom roles
+- https://docs.stripe.com/get-started/account/sso/scim — SCIM
+- https://docs.stripe.com/activity-logs — activity / security history
 
-#### GET /api/v1/admin/tenants/{tenantId}
-**Permission:** `tenant:read` | **Response:** `TenantDetailDto`
+Okta
+- https://developer.okta.com/docs/concepts/multi-tenancy/ — single org vs hub-and-spoke
+- https://help.okta.com/oie/en-us/content/topics/security/custom-admin-role/custom-admin-roles.htm — custom admin roles and resource sets
+- https://developer.okta.com/docs/guides/scim-provisioning-integration-overview/main/ — SCIM lifecycle
+- https://help.okta.com/en-us/content/topics/reports/syslog-filters.htm — System Log 90 days
 
-#### PATCH /api/v1/admin/tenants/{tenantId}/status
-**Permission:** `tenant:write`
-**Request:** `{ "status": "SUSPENDED", "reason": "Non-payment" }`
-
-| Status | Code | Body |
-|---|---|---|
-| 200 | — | `TenantDetailDto` |
-| 409 | `TNT_003` | `{ "previousStatus": "DELETED", "newStatus": "ACTIVE", "message": "Invalid transition" }` |
-
-### Claude Code — Implementation Tasks
-
-#### Task 1 — TenantService
-**File:** `src/main/java/com/example/nexus/tenant/service/TenantService.java`
-
-```java
-@Service
-@RequiredArgsConstructor
-@Transactional
-public class TenantService {
-
-    private final TenantRepository tenantRepository;
-    private final TenantStatusHistoryRepository historyRepository;
-    private final RoleAssignmentService roleAssignmentService; // US-012
-    private final AuditEventPublisher auditEventPublisher;     // US-008
-    private final TenantStatusCacheService statusCacheService; // US-024
-
-    /**
-     * Creates a tenant and auto-assigns TENANT_ADMIN to the specified user.
-     * Both in a single @Transactional scope — rollback if assignment fails.
-     */
-    public TenantDetailDto create(CreateTenantRequest request, byte[] createdBy) { ... }
-
-    /**
-     * Validates via TenantStatus.canTransitionTo().
-     * Writes tenant_status_history. Invalidates Redis cache. Publishes audit event.
-     */
-    public TenantDetailDto updateStatus(byte[] tenantId, TenantStatus newStatus,
-                                        String reason, byte[] changedBy) { ... }
-
-    public Page<TenantSummaryDto> listAll(TenantStatus statusFilter, Pageable pageable) { ... }
-
-    public TenantDetailDto getById(byte[] tenantId) { ... }
-}
-```
-
-#### Task 2 — TenantAdminController
-**File:** `src/main/java/com/example/nexus/tenant/controller/TenantAdminController.java`
-
-```java
-@RestController
-@RequestMapping("/api/v1/admin/tenants")
-@RequiredArgsConstructor
-public class TenantAdminController {
-
-    @PostMapping
-    @RequiresPermission("tenant:write")
-    public ResponseEntity<TenantDetailDto> createTenant(
-        @RequestBody @Valid CreateTenantRequest request,
-        Authentication authentication) { ... }
-
-    @GetMapping
-    @RequiresPermission("tenant:read")
-    public ResponseEntity<Page<TenantSummaryDto>> listTenants(
-        @RequestParam(required = false) TenantStatus status,
-        Pageable pageable) { ... }
-
-    @GetMapping("/{tenantId}")
-    @RequiresPermission("tenant:read")
-    public ResponseEntity<TenantDetailDto> getTenant(@PathVariable UUID tenantId) { ... }
-
-    @PatchMapping("/{tenantId}/status")
-    @RequiresPermission("tenant:write")
-    public ResponseEntity<TenantDetailDto> updateStatus(
-        @PathVariable UUID tenantId,
-        @RequestBody @Valid UpdateTenantStatusRequest request,
-        Authentication authentication) { ... }
-}
-```
-
-#### Task 3 — DTOs
-**Package:** `com.example.nexus.tenant.dto`
-
-```java
-// CreateTenantRequest.java
-public record CreateTenantRequest(
-    @NotBlank String name, @NotBlank String domain, String planTier,
-    @NotNull UUID tenantAdminUserId, String billingContactName,
-    @Email String billingContactEmail, String billingContactPhone,
-    String contactAddress
-) {}
-
-// UpdateTenantStatusRequest.java
-public record UpdateTenantStatusRequest(@NotNull TenantStatus status, String reason) {}
-
-// TenantSummaryDto.java
-public record TenantSummaryDto(
-    UUID id, String name, String domain,
-    TenantStatus status, String planTier, Instant createdAt
-) {}
-
-// TenantDetailDto.java
-public record TenantDetailDto(
-    UUID id, String name, String domain, TenantStatus status, String planTier,
-    String logoUrl, String billingContactName, String billingContactEmail,
-    String billingContactPhone, String contactAddress,
-    Instant createdAt, Instant updatedAt
-) {}
-```
-
-#### Task 4 — Custom exceptions
-```java
-// DomainAlreadyExistsException.java   → 409 + TNT_002
-// InvalidStatusTransitionException.java → 409 + TNT_003 (fields: previousStatus, newStatus)
-```
-Wire to `GlobalExceptionHandler.java` (US-011).
-
-#### Task 5 — Audit events
-```java
-// In TenantService.create():
-auditEventPublisher.publish(AuditEvent.builder()
-    .eventType("TENANT_CREATED")
-    .tenantId(tenant.getId()).userId(createdBy)
-    .metadata(Map.of("name", tenant.getName(), "domain", tenant.getDomain(),
-                     "plan_tier", tenant.getPlanTier()))
-    .build());
-
-// In TenantService.updateStatus():
-auditEventPublisher.publish(AuditEvent.builder()
-    .eventType("TENANT_STATUS_CHANGED")
-    .tenantId(tenantId).userId(changedBy)
-    .metadata(Map.of("previous_status", previous.name(),
-                     "new_status", newStatus.name(),
-                     "reason", reason != null ? reason : ""))
-    .build());
-```
-
-### Test Scenarios
-
-| # | Scenario | Type | Expected Result |
-|---|----------|------|-----------------|
-| T-1 | Create tenant → `TENANT_ADMIN` auto-assigned | Integration | 201; role assigned in same transaction |
-| T-2 | Role assignment fails → tenant not created | Integration | Transaction rolled back; no tenant row |
-| T-3 | Duplicate domain | Integration | 409 + `TNT_002` |
-| T-4 | List tenants with `status=ACTIVE` filter | Integration | Only ACTIVE tenants returned |
-| T-5 | Valid transition: `INACTIVE → ACTIVE` | Integration | 200; `tenant_status_history` row written |
-| T-6 | Invalid transition: `DELETED → ACTIVE` | Integration | 409 + `TNT_003` with previousStatus + newStatus |
-| T-7 | Soft delete: `status=DELETED` | Integration | `deleted_at` set; excluded from default list |
-| T-8 | `TENANT_CREATED` audit event | Integration | Event in stream with correct metadata |
-| T-9 | `TENANT_STATUS_CHANGED` audit event | Integration | Event with previous + new status |
-| T-10 | List 1,000 tenants paginated | Performance | p95 < 500ms |
-
-### Definition of Done
-
-- [ ] `TenantService.java` — create, updateStatus, listAll, getById
-- [ ] `TenantAdminController.java` — 4 endpoints
-- [ ] All DTOs created
-- [ ] Custom exceptions wired to `GlobalExceptionHandler`
-- [ ] T-2 transaction rollback test — mandatory CI gate
-- [ ] T-6 invalid transition test — mandatory CI gate
-- [ ] Audit events T-8 and T-9 green
-- [ ] Feature flag wired for `/api/v1/admin/**` endpoints
-
-### Risks
-
-| Risk | Likelihood | Impact | Mitigation |
-|------|-----------|--------|-----------|
-| `TENANT_ADMIN` auto-assignment fails → orphaned tenant | Med | High | Single `@Transactional` scope; rollback on failure (T-2) |
+Internal
+- `docs/ARCHITECTURE.md`, `docs/story/2-rbac/EPIC-002.md`, ADRs 0004, 0006, 0009, 0011–0016, 0019, 0020 in `docs/adr/`.
 
 ---
----
 
-## US-022 — Enable Tenant Admin to manage their own tenant profile (API + UI)
+## Appendix C — Verification log
 
-| TYPE | PRIORITY | STORY POINTS | EPIC LINK | SPRINT | ASSIGNEE |
-|------|----------|--------------|-----------|--------|----------|
-| Feature | P0 | 5 | EPIC-003: Tenant Management | Sprint 6 | _(Tech lead assigns)_ |
-
-### User Story
-As a Tenant Admin,
-I want to view and update my tenant profile via a self-service UI,
-So that I can keep our organisation details accurate without involving Platform Admins.
-
-### Background / Context
-
-Tenant Admins operate strictly within their own tenant boundary — `tenant_id`
-is always derived from the JWT, never from the request body or path variable.
-They cannot change `status` or `plan_tier` (Platform Admin only). All profile
-updates are audited with field names only — no PII values. The Angular profile
-page reads from `GET /api/v1/tenants/me` and submits via `PATCH /api/v1/tenants/me`.
-
-### Acceptance Criteria
-
-| # | Criterion | Definition of Done | Priority |
-|---|-----------|--------------------|----------|
-| AC-1 | View own tenant (API) | `GET /api/v1/tenants/me` returns full profile for caller's `tenant_id` from JWT; requires `tenant:read` | P0 |
-| AC-2 | Update own tenant profile (API) | `PATCH /api/v1/tenants/me` updates name, domain, logo_url, billing contact, contact_address; requires `tenant:write` | P0 |
-| AC-3 | Domain uniqueness on update | Changing domain to existing one returns 409 + `TNT_002` | P0 |
-| AC-4 | Status and plan_tier not updatable | Fields excluded from DTO; attempts silently ignored | P1 |
-| AC-5 | Cross-tenant access blocked | `tenant_id` always from JWT; no path variable accepted | P0 |
-| AC-6 | Profile update audited | `TENANT_PROFILE_UPDATED` event with changed field names — no PII values | P0 |
-| AC-7 | Tenant profile page renders | `/tenant/profile` route displays current data in editable form; requires `tenant:read` via `PermissionGuard` | P0 |
-| AC-8 | Profile form saves successfully | Submit calls `PATCH /api/v1/tenants/me`; success toast shown; form reflects saved values | P0 |
-| AC-9 | Domain conflict shown inline | 409 + `TNT_002` renders as inline field error on domain input | P0 |
-| AC-10 | Form meets WCAG 2.1 AA | Keyboard-complete; labels associated; errors via `aria-describedby`; contrast ≥ 4.5:1 | P0 |
-
-### Claude Code — Implementation Tasks
-
-#### BACKEND
-
-##### Task 1 — TenantProfileController
-**File:** `src/main/java/com/example/nexus/tenant/controller/TenantProfileController.java`
-
-```java
-@RestController
-@RequestMapping("/api/v1/tenants/me")
-@RequiredArgsConstructor
-public class TenantProfileController {
-
-    @GetMapping
-    @RequiresPermission("tenant:read")
-    public ResponseEntity<TenantDetailDto> getMyTenant(Authentication authentication) {
-        byte[] tenantId = jwtHelper.extractTenantId(authentication);
-        return ResponseEntity.ok(tenantService.getById(tenantId));
-    }
-
-    @PatchMapping
-    @RequiresPermission("tenant:write")
-    public ResponseEntity<TenantDetailDto> updateMyTenant(
-        @RequestBody TenantProfileUpdateRequest request,
-        Authentication authentication) {
-        byte[] tenantId = jwtHelper.extractTenantId(authentication);
-        return ResponseEntity.ok(tenantService.updateProfile(tenantId, request));
-    }
-}
-```
-
-##### Task 2 — TenantProfileUpdateRequest DTO
-**File:** `src/main/java/com/example/nexus/tenant/dto/TenantProfileUpdateRequest.java`
-
-```java
-// status and planTier deliberately excluded
-public record TenantProfileUpdateRequest(
-    String name, String domain, String logoUrl,
-    String billingContactName, @Email String billingContactEmail,
-    String billingContactPhone, String contactAddress
-) {}
-```
-
-##### Task 3 — TenantService.updateProfile()
-**File:** `src/main/java/com/example/nexus/tenant/service/TenantService.java` *(extend — US-021)*
-
-```java
-@Transactional
-public TenantDetailDto updateProfile(byte[] tenantId, TenantProfileUpdateRequest request) {
-    Tenant tenant = tenantRepository.findByIdAndStatusNot(tenantId, TenantStatus.DELETED)
-        .orElseThrow(() -> new TenantNotFoundException(tenantId));
-
-    List<String> changedFields = new ArrayList<>();
-
-    if (request.name() != null && !request.name().equals(tenant.getName())) {
-        tenant.setName(request.name()); changedFields.add("name");
-    }
-    if (request.domain() != null && !request.domain().equals(tenant.getDomain())) {
-        if (tenantRepository.findByDomain(request.domain()).isPresent())
-            throw new DomainAlreadyExistsException(request.domain());
-        tenant.setDomain(request.domain()); changedFields.add("domain");
-    }
-    // Repeat for all updatable fields; PII re-encrypted by AttributeEncryptor on save
-
-    auditEventPublisher.publish(AuditEvent.builder()
-        .eventType("TENANT_PROFILE_UPDATED")
-        .tenantId(tenantId)
-        .metadata(Map.of("changed_fields", String.join(",", changedFields)))
-        .build());
-
-    return toDetailDto(tenantRepository.save(tenant));
-}
-```
-
-#### FRONTEND
-
-##### Task 4 — TenantProfileService
-**File:** `src/app/features/tenant/services/tenant-profile.service.ts`
-
-```typescript
-@Injectable({ providedIn: 'root' })
-export class TenantProfileService {
-  constructor(private http: HttpClient) {}
-
-  getProfile(): Observable<TenantDetailDto> {
-    return this.http.get<TenantDetailDto>('/api/v1/tenants/me');
-  }
-
-  updateProfile(request: TenantProfileUpdateRequest): Observable<TenantDetailDto> {
-    return this.http.patch<TenantDetailDto>('/api/v1/tenants/me', request);
-  }
-}
-```
-
-**Interfaces — `src/app/features/tenant/models/tenant.model.ts`:**
-```typescript
-export interface TenantDetailDto {
-  id: string; name: string; domain: string; status: string; planTier: string;
-  logoUrl: string | null; billingContactName: string | null;
-  billingContactEmail: string | null; billingContactPhone: string | null;
-  contactAddress: string | null;
-}
-
-export interface TenantProfileUpdateRequest {
-  name?: string; domain?: string; logoUrl?: string;
-  billingContactName?: string; billingContactEmail?: string;
-  billingContactPhone?: string; contactAddress?: string;
-}
-```
-
-##### Task 5 — TenantProfileComponent
-**File:** `src/app/features/tenant/pages/tenant-profile/tenant-profile.component.ts`
-
-```typescript
-@Component({ selector: 'app-tenant-profile', templateUrl: './tenant-profile.component.html' })
-export class TenantProfileComponent implements OnInit {
-
-  profileForm!: FormGroup;
-  loading = false;
-  saving = false;
-  domainError: string | null = null;
-
-  constructor(
-    private fb: FormBuilder,
-    private tenantProfileService: TenantProfileService,
-    private toastService: ToastService
-  ) {}
-
-  ngOnInit(): void {
-    this.loading = true;
-    this.tenantProfileService.getProfile().subscribe({
-      next: profile => {
-        this.profileForm = this.fb.group({
-          name:                [profile.name,                Validators.required],
-          domain:              [profile.domain,              Validators.required],
-          logoUrl:             [profile.logoUrl],
-          billingContactName:  [profile.billingContactName],
-          billingContactEmail: [profile.billingContactEmail, Validators.email],
-          billingContactPhone: [profile.billingContactPhone],
-          contactAddress:      [profile.contactAddress]
-        });
-        this.loading = false;
-      },
-      error: () => this.loading = false
-    });
-  }
-
-  onSubmit(): void {
-    if (this.profileForm.invalid) return;
-    this.saving = true;
-    this.domainError = null;
-
-    this.tenantProfileService.updateProfile(this.profileForm.value).subscribe({
-      next: () => { this.saving = false; this.toastService.success('Profile updated successfully'); },
-      error: (err) => {
-        this.saving = false;
-        if (err.status === 409 && err.error?.error_code === 'TNT_002') {
-          this.domainError = 'This domain is already registered';
-          this.profileForm.get('domain')?.setErrors({ domainTaken: true });
-        }
-      }
-    });
-  }
-}
-```
-
-**Template — `tenant-profile.component.html`:**
-```html
-<main aria-labelledby="profile-heading">
-  <h1 id="profile-heading">Tenant Profile</h1>
-  <app-loading-state *ngIf="loading" />
-  <form *ngIf="!loading && profileForm" [formGroup]="profileForm" (ngSubmit)="onSubmit()" novalidate>
-    <section aria-labelledby="general-heading">
-      <h2 id="general-heading">General</h2>
-      <app-input label="Tenant Name" formControlName="name" [required]="true" />
-      <app-input label="Domain" formControlName="domain" [required]="true" aria-describedby="domain-error" />
-      <span id="domain-error" role="alert" *ngIf="domainError">{{ domainError }}</span>
-    </section>
-    <section aria-labelledby="billing-heading">
-      <h2 id="billing-heading">Billing Contact</h2>
-      <app-input label="Contact Name"  formControlName="billingContactName" />
-      <app-input label="Contact Email" formControlName="billingContactEmail" type="email" />
-      <app-input label="Contact Phone" formControlName="billingContactPhone" type="tel" />
-      <app-input label="Address"       formControlName="contactAddress" />
-    </section>
-    <app-button type="submit" variant="primary"
-      [disabled]="profileForm.invalid || saving" [loading]="saving">
-      Save Changes
-    </app-button>
-  </form>
-</main>
-```
-
-##### Task 6 — Route registration
-**File:** `src/app/features/tenant/tenant.routes.ts`
-```typescript
-export const TENANT_ROUTES: Routes = [
-  {
-    path: 'profile',
-    component: TenantProfileComponent,
-    canActivate: [PermissionGuard],
-    data: { permission: 'tenant:read' }
-  }
-];
-```
-Register in `app.routes.ts`:
-```typescript
-{ path: 'tenant', loadChildren: () => import('./features/tenant/tenant.routes').then(m => m.TENANT_ROUTES) }
-```
-
-### Test Scenarios
-
-| # | Scenario | Type | Expected Result |
-|---|----------|------|-----------------|
-| T-1 | View own tenant (API) | Integration | 200 with full profile |
-| T-2 | Update name and billing contact (API) | Integration | 200; PII re-encrypted |
-| T-3 | Attempt status change via PATCH /me | Integration | 200; status unchanged |
-| T-4 | Domain taken (API) | Integration | 409 + `TNT_002` |
-| T-5 | Cross-tenant access | Security | 403 — **mandatory CI gate** |
-| T-6 | Audit metadata — no PII values | Security | Field names only in metadata |
-| T-7 | Profile page loads with current data | E2E | Form fields pre-populated |
-| T-8 | Submit valid form | E2E | Success toast shown; values persisted |
-| T-9 | Domain conflict shown inline | E2E | Field error on domain input; no full-page error |
-| T-10 | Profile page — Axe accessibility scan | Accessibility | Zero critical issues |
-
-### Definition of Done
-
-**Backend**
-- [ ] `TenantProfileController.java` — GET + PATCH
-- [ ] `TenantProfileUpdateRequest.java` (status + planTier excluded)
-- [ ] `TenantService.updateProfile()` with changed-fields tracking
-- [ ] T-5 cross-tenant test — mandatory CI gate
-- [ ] T-6 PII-free audit test green
-
-**Frontend**
-- [ ] `TenantProfileService.ts` + interfaces created
-- [ ] `TenantProfileComponent` — form, loading state, inline error handling
-- [ ] `/tenant/profile` route registered with `PermissionGuard`
-- [ ] T-7, T-8, T-9 E2E tests green
-- [ ] T-10 Axe scan zero critical issues
-
----
----
-
-## US-023 — Enable Tenant Admin to manage organisations (API + UI)
-
-| TYPE | PRIORITY | STORY POINTS | EPIC LINK | SPRINT | ASSIGNEE |
-|------|----------|--------------|-----------|--------|----------|
-| Feature | P0 | 8 | EPIC-003: Tenant Management | Sprint 6 | _(Tech lead assigns)_ |
-
-### User Story
-As a Tenant Admin,
-I want to create, view, and manage organisations within my tenant via a UI,
-So that I can group users into logical business units without needing developer support.
-
-### Background / Context
-
-Organisations are the second tier of the tenant hierarchy. All API operations
-strictly scoped to the caller's `tenant_id` from JWT. `orgId` validated against
-the caller's tenant before any read or write — cross-tenant access blocked at
-service layer. The Angular UI provides a list view with create and edit dialogs,
-consuming the existing `DialogComponent` and `TableComponent` from the EPIC-001
-design system.
-
-### Acceptance Criteria
-
-| # | Criterion | Definition of Done | Priority |
-|---|-----------|--------------------|----------|
-| AC-1 | Create organisation (API) | `POST /api/v1/tenants/me/organisations` creates org; returns 201; requires `organisation:write` | P0 |
-| AC-2 | Name unique per tenant | Duplicate name returns 409 + `ORG_001` | P0 |
-| AC-3 | List organisations (API) | `GET /api/v1/tenants/me/organisations` active orgs default; `?includeInactive=true` for all; requires `organisation:read` | P0 |
-| AC-4 | Update organisation (API) | `PATCH /api/v1/tenants/me/organisations/{orgId}` updates name + description; requires `organisation:write` | P0 |
-| AC-5 | Cross-tenant isolation | `orgId` validated against caller's `tenant_id`; foreign org returns 403 | P0 |
-| AC-6 | Deactivate organisation | PATCH with `status=INACTIVE`; excluded from default list | P1 |
-| AC-7 | Events audited | `ORGANISATION_CREATED`, `ORGANISATION_UPDATED` in audit stream | P0 |
-| AC-8 | Organisation list page renders | `/tenant/organisations` displays active orgs in `TableComponent`; requires `organisation:read` via `PermissionGuard` | P0 |
-| AC-9 | Create org via dialog | "New Organisation" button opens dialog; submit creates org; table refreshes; success toast shown | P0 |
-| AC-10 | Edit org via dialog | "Edit" action opens pre-filled dialog; submit updates org and refreshes table | P0 |
-| AC-11 | Duplicate name shown inline | 409 + `ORG_001` renders as inline field error on name input inside dialog | P0 |
-| AC-12 | Empty state handled | No organisations → `EmptyStateComponent` with "Create your first organisation" CTA | P0 |
-| AC-13 | Page meets WCAG 2.1 AA | Table has `<caption>`; dialog traps focus; all actions keyboard-accessible | P0 |
-
-### Claude Code — Implementation Tasks
-
-#### BACKEND
-
-##### Task 1 — OrganisationService
-**File:** `src/main/java/com/example/nexus/tenant/service/OrganisationService.java`
-
-```java
-@Service
-@RequiredArgsConstructor
-@Transactional
-public class OrganisationService {
-
-    private final OrganisationRepository organisationRepository;
-    private final AuditEventPublisher auditEventPublisher;
-
-    public OrganisationDto create(byte[] tenantId, CreateOrganisationRequest request,
-                                  byte[] createdBy) {
-        if (organisationRepository.existsByTenantIdAndName(tenantId, request.name()))
-            throw new OrganisationNameExistsException(request.name());
-        // create + save + publish ORGANISATION_CREATED
-    }
-
-    public List<OrganisationDto> list(byte[] tenantId, boolean includeInactive) { ... }
-
-    public OrganisationDto update(byte[] orgId, byte[] tenantId,
-                                  UpdateOrganisationRequest request) {
-        Organisation org = organisationRepository
-            .findByIdAndTenantId(orgId, tenantId)
-            .orElseThrow(() -> new AccessDeniedException("Organisation not in tenant"));
-        // update + save + publish ORGANISATION_UPDATED
-    }
-}
-```
-
-##### Task 2 — OrganisationController
-**File:** `src/main/java/com/example/nexus/tenant/controller/OrganisationController.java`
-
-```java
-@RestController
-@RequestMapping("/api/v1/tenants/me/organisations")
-@RequiredArgsConstructor
-public class OrganisationController {
-
-    @PostMapping
-    @RequiresPermission("organisation:write")
-    public ResponseEntity<OrganisationDto> create(
-        @RequestBody @Valid CreateOrganisationRequest request,
-        Authentication authentication) { ... }
-
-    @GetMapping
-    @RequiresPermission("organisation:read")
-    public ResponseEntity<List<OrganisationDto>> list(
-        @RequestParam(defaultValue = "false") boolean includeInactive,
-        Authentication authentication) { ... }
-
-    @PatchMapping("/{orgId}")
-    @RequiresPermission("organisation:write")
-    public ResponseEntity<OrganisationDto> update(
-        @PathVariable UUID orgId,
-        @RequestBody UpdateOrganisationRequest request,
-        Authentication authentication) { ... }
-}
-```
-
-##### Task 3 — DTOs + exception
-```java
-// CreateOrganisationRequest.java
-public record CreateOrganisationRequest(@NotBlank String name, String description) {}
-
-// UpdateOrganisationRequest.java
-public record UpdateOrganisationRequest(String name, String description, String status) {}
-
-// OrganisationDto.java
-public record OrganisationDto(UUID id, UUID tenantId, String name,
-    String description, String status, Instant createdAt) {}
-
-// OrganisationNameExistsException.java → 409 + ORG_001
-```
-Wire `OrganisationNameExistsException` to `GlobalExceptionHandler.java`.
-
-#### FRONTEND
-
-##### Task 4 — OrganisationService (Angular)
-**File:** `src/app/features/tenant/services/organisation.service.ts`
-
-```typescript
-@Injectable({ providedIn: 'root' })
-export class OrganisationService {
-  constructor(private http: HttpClient) {}
-
-  list(includeInactive = false): Observable<OrganisationDto[]> {
-    return this.http.get<OrganisationDto[]>('/api/v1/tenants/me/organisations',
-      { params: { includeInactive: String(includeInactive) } });
-  }
-
-  create(request: CreateOrganisationRequest): Observable<OrganisationDto> {
-    return this.http.post<OrganisationDto>('/api/v1/tenants/me/organisations', request);
-  }
-
-  update(orgId: string, request: UpdateOrganisationRequest): Observable<OrganisationDto> {
-    return this.http.patch<OrganisationDto>(`/api/v1/tenants/me/organisations/${orgId}`, request);
-  }
-}
-```
-
-**Interfaces — `src/app/features/tenant/models/organisation.model.ts`:**
-```typescript
-export interface OrganisationDto {
-  id: string; tenantId: string; name: string;
-  description: string | null; status: 'ACTIVE' | 'INACTIVE'; createdAt: string;
-}
-export interface CreateOrganisationRequest { name: string; description?: string; }
-export interface UpdateOrganisationRequest { name?: string; description?: string; status?: 'ACTIVE' | 'INACTIVE'; }
-```
-
-##### Task 5 — OrganisationListComponent
-**File:** `src/app/features/tenant/pages/organisation-list/organisation-list.component.ts`
-
-```typescript
-@Component({ selector: 'app-organisation-list', templateUrl: './organisation-list.component.html' })
-export class OrganisationListComponent implements OnInit {
-
-  organisations: OrganisationDto[] = [];
-  loading = false;
-  columns = ['name', 'description', 'status', 'createdAt', 'actions'];
-
-  constructor(
-    private organisationService: OrganisationService,
-    private dialog: DialogService,
-    private toastService: ToastService
-  ) {}
-
-  ngOnInit(): void { this.load(); }
-
-  load(): void {
-    this.loading = true;
-    this.organisationService.list().subscribe({
-      next: orgs => { this.organisations = orgs; this.loading = false; },
-      error: () => this.loading = false
-    });
-  }
-
-  openCreateDialog(): void {
-    this.dialog.open(OrganisationFormDialogComponent, { title: 'New Organisation' })
-      .afterClosed().pipe(filter(Boolean))
-      .subscribe(() => { this.load(); this.toastService.success('Organisation created'); });
-  }
-
-  openEditDialog(org: OrganisationDto): void {
-    this.dialog.open(OrganisationFormDialogComponent, { title: 'Edit Organisation', data: org })
-      .afterClosed().pipe(filter(Boolean))
-      .subscribe(() => { this.load(); this.toastService.success('Organisation updated'); });
-  }
-}
-```
-
-**Template — `organisation-list.component.html`:**
-```html
-<main aria-labelledby="orgs-heading">
-  <div class="page-header">
-    <h1 id="orgs-heading">Organisations</h1>
-    <app-button *appHasPermission="'organisation:write'" variant="primary" (onClick)="openCreateDialog()">
-      New Organisation
-    </app-button>
-  </div>
-  <app-loading-state *ngIf="loading" />
-  <app-empty-state *ngIf="!loading && organisations.length === 0"
-    icon="business" title="No organisations yet"
-    description="Create your first organisation to start grouping users."
-    actionLabel="Create Organisation" (action)="openCreateDialog()" />
-  <app-table *ngIf="!loading && organisations.length > 0"
-    [data]="organisations" [columns]="columns" caption="Organisations in your tenant">
-    <ng-template appTableCell="actions" let-org>
-      <app-button variant="ghost" size="sm" *appHasPermission="'organisation:write'" (onClick)="openEditDialog(org)">
-        Edit
-      </app-button>
-    </ng-template>
-  </app-table>
-</main>
-```
-
-##### Task 6 — OrganisationFormDialogComponent
-**File:** `src/app/features/tenant/components/organisation-form-dialog/organisation-form-dialog.component.ts`
-
-```typescript
-@Component({ selector: 'app-organisation-form-dialog' })
-export class OrganisationFormDialogComponent implements OnInit {
-
-  form!: FormGroup;
-  saving = false;
-  nameError: string | null = null;
-  isEditMode = false;
-
-  constructor(
-    private fb: FormBuilder,
-    private organisationService: OrganisationService,
-    private dialogRef: DialogRef,
-    @Optional() @Inject(DIALOG_DATA) public data: OrganisationDto | null
-  ) {}
-
-  ngOnInit(): void {
-    this.isEditMode = !!this.data;
-    this.form = this.fb.group({
-      name:        [this.data?.name ?? '',        Validators.required],
-      description: [this.data?.description ?? '']
-    });
-  }
-
-  onSubmit(): void {
-    if (this.form.invalid) return;
-    this.saving = true;
-    this.nameError = null;
-
-    const request$ = this.isEditMode
-      ? this.organisationService.update(this.data!.id, this.form.value)
-      : this.organisationService.create(this.form.value);
-
-    request$.subscribe({
-      next: () => { this.saving = false; this.dialogRef.close(true); },
-      error: (err) => {
-        this.saving = false;
-        if (err.status === 409 && err.error?.error_code === 'ORG_001') {
-          this.nameError = 'An organisation with this name already exists';
-          this.form.get('name')?.setErrors({ nameTaken: true });
-        }
-      }
-    });
-  }
-
-  onCancel(): void { this.dialogRef.close(false); }
-}
-```
-
-##### Task 7 — Route registration
-**File:** `src/app/features/tenant/tenant.routes.ts` *(extend — US-022 Task 6)*
-```typescript
-{
-  path: 'organisations',
-  component: OrganisationListComponent,
-  canActivate: [PermissionGuard],
-  data: { permission: 'organisation:read' }
-}
-```
-
-### Test Scenarios
-
-| # | Scenario | Type | Expected Result |
-|---|----------|------|-----------------|
-| T-1 | Create organisation (API) | Integration | 201; scoped to caller's tenant |
-| T-2 | Duplicate name same tenant (API) | Integration | 409 + `ORG_001` |
-| T-3 | Same name different tenant (API) | Integration | Both rows persist |
-| T-4 | Update org in different tenant (API) | Security | 403 — **mandatory CI gate** |
-| T-5 | Deactivate org (API) | Integration | INACTIVE; excluded from default list |
-| T-6 | Audit events (API) | Integration | `ORGANISATION_CREATED` + `ORGANISATION_UPDATED` |
-| T-7 | Organisation list page renders | E2E | Table shows active orgs |
-| T-8 | Empty state with CTA | E2E | `EmptyStateComponent` shown; CTA opens create dialog |
-| T-9 | Create org via dialog — success | E2E | Dialog closes; table refreshes; toast shown |
-| T-10 | Duplicate name — inline error | E2E | Name field error; dialog stays open |
-| T-11 | Edit org — pre-filled dialog | E2E | Dialog opens with current values; save updates table |
-| T-12 | Organisation list — Axe scan | Accessibility | Zero critical issues |
-
-### Definition of Done
-
-**Backend**
-- [ ] `OrganisationService.java` — create, list, update
-- [ ] `OrganisationController.java` — POST, GET, PATCH
-- [ ] DTOs + `OrganisationNameExistsException` wired to `GlobalExceptionHandler`
-- [ ] T-4 cross-tenant test — mandatory CI gate
-- [ ] T-6 audit events green
-
-**Frontend**
-- [ ] `OrganisationService.ts` + interfaces created
-- [ ] `OrganisationListComponent` — table, loading, empty state
-- [ ] `OrganisationFormDialogComponent` — create + edit mode + inline error
-- [ ] `/tenant/organisations` route registered with `PermissionGuard`
-- [ ] T-7 through T-11 E2E tests green
-- [ ] T-12 Axe scan zero critical issues
-
----
----
-
-## US-024 — Implement tenant suspension enforcement filter
-
-| TYPE | PRIORITY | STORY POINTS | EPIC LINK | SPRINT | ASSIGNEE |
-|------|----------|--------------|-----------|--------|----------|
-| Feature | P0 | 3 | EPIC-003: Tenant Management | Sprint 6 | _(Tech lead assigns)_ |
-
-### User Story
-As a Platform Admin,
-I want suspended tenant users to be blocked from all API access,
-So that suspending a tenant immediately cuts off their access to the platform.
-
-### Background / Context
-
-Enforcement at the infrastructure layer — not per-endpoint. Spring Security
-filter reads tenant status from a Redis-cached lookup after JWT validation.
-SUSPENDED or DELETED → 403 before any controller is reached. Cache TTL 5 min
-— maximum lag between suspension and enforcement. Cache invalidated immediately
-on status change via `TenantService.updateStatus()`.
-
-### Acceptance Criteria
-
-| # | Criterion | Definition of Done | Priority |
-|---|-----------|--------------------|----------|
-| AC-1 | Suspended tenant users blocked | Every API request from SUSPENDED tenant returns `403 + TENANT_001`; no controller reached | P0 |
-| AC-2 | Deleted tenant users blocked | Same for DELETED status | P0 |
-| AC-3 | Active tenant users unaffected | Filter adds < 10ms to p95 (cache hit) | P0 |
-| AC-4 | Cache invalidated on suspension | Redis key `tenant:status:{tenantId}` deleted on status change | P0 |
-| AC-5 | Filter position correct | Executes after `JwtAuthenticationFilter`, before controllers | P0 |
-| AC-6 | Auth endpoints excluded | `/api/v1/auth/**` and `/.well-known/jwks.json` bypass filter | P1 |
-
-### Claude Code — Implementation Tasks
-
-#### Task 1 — TenantStatusCacheService
-**File:** `src/main/java/com/example/nexus/tenant/service/TenantStatusCacheService.java`
-
-```java
-@Service
-@RequiredArgsConstructor
-public class TenantStatusCacheService {
-
-    private final RedisTemplate<String, String> redisTemplate;
-    private final TenantRepository tenantRepository;
-    private static final Duration TTL = Duration.ofMinutes(5);
-
-    public TenantStatus getStatus(byte[] tenantId) {
-        String key = cacheKey(tenantId);
-        String cached = redisTemplate.opsForValue().get(key);
-        if (cached != null) return TenantStatus.valueOf(cached);
-
-        TenantStatus status = tenantRepository.findById(tenantId)
-            .map(Tenant::getStatus)
-            .orElse(TenantStatus.DELETED); // unknown tenant treated as deleted
-
-        redisTemplate.opsForValue().set(key, status.name(), TTL);
-        return status;
-    }
-
-    public void invalidate(byte[] tenantId) {
-        redisTemplate.delete(cacheKey(tenantId));
-    }
-
-    private String cacheKey(byte[] tenantId) {
-        return "tenant:status:" + UuidUtils.toHex(tenantId);
-    }
-}
-```
-
-#### Task 2 — TenantStatusFilter
-**File:** `src/main/java/com/example/nexus/tenant/filter/TenantStatusFilter.java`
-
-```java
-@Component
-@RequiredArgsConstructor
-public class TenantStatusFilter extends OncePerRequestFilter {
-
-    private final TenantStatusCacheService statusCacheService;
-    private final ObjectMapper objectMapper;
-
-    private static final List<String> EXCLUDED_PATHS = List.of("/api/v1/auth/", "/.well-known/");
-
-    @Override
-    protected void doFilterInternal(HttpServletRequest request,
-                                    HttpServletResponse response,
-                                    FilterChain chain) throws IOException, ServletException {
-
-        if (EXCLUDED_PATHS.stream().anyMatch(request.getRequestURI()::startsWith)) {
-            chain.doFilter(request, response);
-            return;
-        }
-
-        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        if (auth == null || !auth.isAuthenticated()) {
-            chain.doFilter(request, response);
-            return;
-        }
-
-        byte[] tenantId = jwtHelper.extractTenantId(auth);
-        TenantStatus status = statusCacheService.getStatus(tenantId);
-
-        if (status == TenantStatus.SUSPENDED || status == TenantStatus.DELETED) {
-            response.setStatus(HttpServletResponse.SC_FORBIDDEN);
-            response.setContentType(MediaType.APPLICATION_JSON_VALUE);
-            response.getWriter().write(objectMapper.writeValueAsString(Map.of(
-                "error_code", "TENANT_001",
-                "message",    "Your account has been suspended. Contact your administrator."
-            )));
-            return;
-        }
-
-        chain.doFilter(request, response);
-    }
-}
-```
-
-#### Task 3 — Register in SecurityConfig
-**File:** `src/main/java/com/example/nexus/config/SecurityConfig.java` *(modify — US-003 / US-011)*
-```java
-http.addFilterAfter(tenantStatusFilter, JwtAuthenticationFilter.class);
-```
-
-#### Task 4 — Cache invalidation in TenantService
-**File:** `src/main/java/com/example/nexus/tenant/service/TenantService.java` *(modify — US-021)*
-```java
-// In updateStatus() after saving:
-tenantStatusCacheService.invalidate(tenantId);
-```
-
-### Test Scenarios
-
-| # | Scenario | Type | Expected Result |
-|---|----------|------|-----------------|
-| T-1 | Active tenant — any endpoint | Integration | Request proceeds normally |
-| T-2 | Suspended tenant — any endpoint | Security | 403 + `TENANT_001`; no controller reached — **mandatory CI gate** |
-| T-3 | Deleted tenant — any endpoint | Security | 403 + `TENANT_001` — **mandatory CI gate** |
-| T-4 | Suspend → next request blocked | E2E | 403 within 5 min (cache TTL or immediate on invalidation) |
-| T-5 | Reactivate → next request succeeds | E2E | 200 after cache invalidation |
-| T-6 | Filter latency — cache hit | Performance | < 10ms added to p95 |
-| T-7 | Suspended user hits `/api/v1/auth/login` | Integration | Login succeeds (auth endpoint excluded) |
-
-### Definition of Done
-
-- [ ] `TenantStatusCacheService.java` — Redis cache + DB fallback
-- [ ] `TenantStatusFilter.java` — auth endpoints excluded; correct 403 response
-- [ ] Filter registered after `JwtAuthenticationFilter` in `SecurityConfig`
-- [ ] Cache invalidated from `TenantService.updateStatus()`
-- [ ] T-2 + T-3 — mandatory CI gate
-- [ ] T-6 performance < 10ms documented in PR description
-
----
----
-
-## US-025 — Implement Angular TenantContextService and audit tenant events
-
-| TYPE | PRIORITY | STORY POINTS | EPIC LINK | SPRINT | ASSIGNEE |
-|------|----------|--------------|-----------|--------|----------|
-| Feature | P1 | 3 | EPIC-003: Tenant Management | Sprint 7 | _(Tech lead assigns)_ |
-
-### User Story
-As a frontend developer and compliance team member,
-I want a standard Angular service exposing the current tenant context and all
-tenant lifecycle events audited,
-So that feature UIs can display tenant-aware information and compliance
-requirements are met from day one.
-
-### Background / Context
-
-Two concerns in one story — both are small and share the same dependency on
-US-022 (`GET /api/v1/tenants/me`). `TenantContextService` is the Angular
-equivalent of the backend `TenantStatusFilter` — it makes tenant profile data
-(name, logo, plan) available to all future feature UIs without each component
-making its own API call. Audit event constants are confirmed and wired, not
-newly published — publishing happens in US-021 and US-022.
-
-### Acceptance Criteria
-
-| # | Criterion | Definition of Done | Priority |
-|---|-----------|--------------------|----------|
-| AC-1 | `TenantContextService` fetches on login | Calls `GET /api/v1/tenants/me` after login; stores result in `currentTenant$` observable | P0 |
-| AC-2 | Tenant name + logo in app shell | `AppShellComponent` subscribes to `currentTenant$`; displays name and logo in header | P0 |
-| AC-3 | Service resets on logout | `currentTenant$` emits null when `AuthService.logout()` called | P0 |
-| AC-4 | `TENANT_CREATED` audited | Event in stream on `TenantService.create()` with tenant_id, created_by, plan_tier | P0 |
-| AC-5 | `TENANT_STATUS_CHANGED` audited | Event on every status transition: previous_status, new_status, changed_by, reason | P0 |
-| AC-6 | `TENANT_PROFILE_UPDATED` audited | Event on PATCH /tenants/me with changed field names — no PII values | P0 |
-
-### Claude Code — Implementation Tasks
-
-#### Task 1 — TenantContextService
-**File:** `src/app/core/services/tenant-context.service.ts`
-
-```typescript
-export interface TenantProfile {
-  tenantId: string;
-  name: string;
-  logoUrl: string | null;
-  planTier: string;
-}
-
-@Injectable({ providedIn: 'root' })
-export class TenantContextService {
-
-  private currentTenantSubject = new BehaviorSubject<TenantProfile | null>(null);
-  currentTenant$ = this.currentTenantSubject.asObservable();
-
-  constructor(private http: HttpClient) {}
-
-  loadTenantProfile(): Observable<TenantProfile> {
-    return this.http.get<TenantProfile>('/api/v1/tenants/me').pipe(
-      tap(profile => this.currentTenantSubject.next(profile))
-    );
-  }
-
-  clear(): void {
-    this.currentTenantSubject.next(null);
-  }
-}
-```
-
-#### Task 2 — AuthService integration
-**File:** `src/app/core/services/auth.service.ts` *(modify — US-003)*
-
-```typescript
-login(credentials): Observable<void> {
-  return this.http.post<TokenResponse>('/api/v1/auth/login', credentials).pipe(
-    tap(tokens => this.storeTokens(tokens)),
-    switchMap(() => this.tenantContextService.loadTenantProfile()),
-    map(() => void 0)
-  );
-}
-
-logout(): void {
-  // ... existing cleanup
-  this.tenantContextService.clear();
-}
-```
-
-#### Task 3 — AppShellComponent
-**File:** `src/app/core/components/app-shell/app-shell.component.ts` *(modify or create)*
-
-```typescript
-tenant$ = this.tenantContextService.currentTenant$;
-```
-```html
-<img *ngIf="(tenant$ | async)?.logoUrl as logo" [src]="logo" alt="Tenant logo">
-<span>{{ (tenant$ | async)?.name }}</span>
-```
-
-#### Task 4 — Backend audit event constants
-**File:** `src/main/java/com/example/nexus/audit/model/AuditEventType.java` *(extend — US-008)*
-
-```java
-String TENANT_CREATED         = "TENANT_CREATED";
-String TENANT_STATUS_CHANGED  = "TENANT_STATUS_CHANGED";
-String TENANT_PROFILE_UPDATED = "TENANT_PROFILE_UPDATED";
-```
-
-Verify `TenantService` (US-021, US-022) publishes using these constants — no new publish calls needed.
-
-### Test Scenarios
-
-| # | Scenario | Type | Expected Result |
-|---|----------|------|-----------------|
-| T-1 | Login → `currentTenant$` populated | Unit | Observable emits `TenantProfile` |
-| T-2 | Logout → `currentTenant$` cleared | Unit | Observable emits null |
-| T-3 | App shell displays tenant name | E2E | Name visible in header after login |
-| T-4 | `TENANT_CREATED` audit event | Integration | Event with correct metadata fields |
-| T-5 | `TENANT_STATUS_CHANGED` audit event | Integration | Event with previous + new status |
-| T-6 | `TENANT_PROFILE_UPDATED` — no PII | Security | Metadata contains field names only |
-
-### Definition of Done
-
-- [ ] `TenantContextService.ts` — `currentTenant$` observable, `loadTenantProfile()`, `clear()`
-- [ ] `AuthService` updated — load on login, clear on logout
-- [ ] `AppShellComponent` displays tenant name and logo from `currentTenant$`
-- [ ] Audit event type constants confirmed in `AuditEventType.java`
-- [ ] T-6 PII-free metadata test green
-- [ ] No regression on US-003 login tests
+_Filled in by the Phase 6 verification passes; see below._
