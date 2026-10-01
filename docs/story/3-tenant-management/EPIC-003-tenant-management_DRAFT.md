@@ -1082,7 +1082,7 @@ that scopes data by organisation, whose scoping rule then joins these criteria. 
 | NFR-SEC-1 | Each MVP story completes Gate 2 threat modelling (`03b-threat-model.md`); US-023, US-026, US-027, US-028 and US-029 are mandatory security-reviewer stories. |
 | NFR-SEC-2 | Invitation and export tokens are random, single-use, stored hashed, and expire. |
 | NFR-SEC-3 | Unauthenticated tenant-resolution endpoints are rate-limited and never reveal whether a tenant or email exists. |
-| NFR-SEC-4 | Operator accounts must use MFA before GA _(no MFA exists in the codebase today — flagged as risk R3)_. |
+| NFR-SEC-4 | Operator accounts must use MFA before GA (approved, D11) _(no MFA exists in the codebase today — flagged as risk R3)_. |
 | NFR-SEC-5 | No PII (emails, names, contacts) in logs or audit metadata values, per existing no-PII rule. |
 
 ### 6.4 Compliance (GDPR)
@@ -1112,7 +1112,7 @@ that scopes data by organisation, whose scoping rule then joins these criteria. 
       `@RequiresPermission` or `@PublicEndpoint`, plus the self-invocation check (assumed to be in
       US-018 — **confirm**).
 - [ ] US-016 and US-017 merged (EPIC-002 Open Decisions #6/#7).
-- [ ] Decisions D1, D2, D3, D5 and D6 recorded (see §8).
+- [x] Decisions D1, D2, D3, D5 and D6 recorded (see §8; approved 2026-10-01).
 - [ ] ADR amendment for the platform path-tenant exception drafted (US-023 AC5).
 
 ### MVP — "second customer can be onboarded safely"
@@ -1146,21 +1146,29 @@ Gate 1 when a customer or regulation requires it. ADR 0020 must be accepted befo
 
 | # | Decision | Options | Recommendation | Blocks |
 |---|---|---|---|---|
-| D1 | How the tenant is identified at sign-in | (a) subdomain `acme.nexus.app`; (b) path `/t/acme/login`; (c) email-domain discovery | **(b) path** for MVP — no wildcard DNS/TLS or cookie-domain work; (a) can be added later. (c) needs verified domains (US-041). | US-027 |
-| D2 | Identity model | (a) per-tenant users (today); (b) global identity + memberships | **(a)** — matches the schema; revisit if cross-tenant users are requested | US-027–US-030 |
-| D3 | Public self-registration | (a) keep for bootstrap tenant only; (b) invite-only everywhere; (c) per-tenant toggle | **(a) now, (b) for customer tenants** — today every registrant joins the default tenant with no role | US-027 |
+| D1 | How the tenant is identified at sign-in | (a) subdomain `acme.nexus.app`; (b) path `/t/acme/login`; (c) email-domain discovery | **Approved 2026-10-01.** **(b) path** for MVP — no wildcard DNS/TLS or cookie-domain work; (a) can be added later. (c) needs verified domains (US-041). | US-027 |
+| D2 | Identity model | (a) per-tenant users (today); (b) global identity + memberships | **Approved 2026-10-01.** **(a)** — matches the schema; revisit if cross-tenant users are requested | US-027–US-030 |
+| D3 | Public self-registration | (a) keep for bootstrap tenant only; (b) invite-only everywhere; (c) per-tenant toggle | **Approved 2026-10-01.** **(a) now, (b) for customer tenants** — today every registrant joins the default tenant with no role | US-027 |
 | D4 | Organisations (sub-tenant level) | (a) defer; (b) build as in previous draft | **(a) defer** until a feature consumes them | US-044 |
-| D5 | Bootstrapping the first operator account | (a) migration-seeded operator tenant + CLI/runbook to invite the first operator; (b) env-configured email invited at startup | **(a)** — auditable and matches existing runbook practice | US-023 |
-| D6 | Deletion grace period | 14 / 30 / 90 days | **30 days** (configurable) — confirm with legal and contracts. This answers only the grace-period part of ADR 0020 Q2 early (so US-025 can show a purge date); record it as a partial decision in ADR 0020, which still owns the purge itself | US-025, US-039 |
+| D5 | Bootstrapping the first operator account | (a) migration-seeded operator tenant + CLI/runbook to invite the first operator; (b) env-configured email invited at startup | **Approved 2026-10-01.** **(a)** — auditable and matches existing runbook practice | US-023 |
+| D6 | Deletion grace period | 14 / 30 / 90 days | **Approved 2026-10-01.** **30 days** (configurable). This answers only the grace-period part of ADR 0020 Q2 early (so US-025 can show a purge date); record it as a partial decision in ADR 0020, which still owns the purge itself | US-025, US-039 |
 | D7 | Distinct Tenant Owner role | (a) no — rely on last-admin protection; (b) yes | **(a)** for MVP | — |
 | D8 | Split with RBAC UI | Members page (US-030) here; role assignment/editing UI in US-019/US-020 | **Confirm** with the RBAC UI owner so there is one members list, not two | US-030 |
 | D9 | Enterprise SSO | build on Spring Security vs buy (WorkOS / Auth0) | Decide at US-042 Gate 1 with cost data | US-042 |
 | D10 | Plan tiers | names and seat limits per tier | Product to define before US-034 | US-034 |
+| D11 | MFA for operator accounts | (a) required before GA; (b) optional / later | **Approved 2026-10-01.** **(a)** — NFR-SEC-4 is a GA blocker. The delivering story is not yet filed (open question 6) | GA |
 
 ### 8.2 Open questions
 
 1. US-018 (RBAC hardening) is planned but not yet filed. Will it include EPIC-002 Open Decision #4
-   (still OPEN)? If not, a story must be added ahead of US-021.
+   (still OPEN)? If not, a story must be added ahead of US-021. **Undecided as of 2026-10-01.**
+   Recommendation: make Open Decision #4's three items — (a) the ArchUnit rule that every
+   `@RestController` method carries `@RequiresPermission` or `@PublicEndpoint`, (b) the
+   `@PublicEndpoint` annotation, (c) the same-class self-invocation check — explicit acceptance
+   criteria of US-018 when it is filed. They are `rbac` enforcement work, they are already called
+   "RBAC hardening" in EPIC-002, and EPIC-002 says they gate the first protected Epic 3
+   controller, so US-018 is their natural home. The EPIC-002 owner confirms this when filing
+   US-018.
 2. Should the `MEMBER` role receive `tenant:read` so US-032 can call `GET /tenants/me`, or should a
    narrower "tenant summary" come with `/users/me`?
 3. Which user status represents a reversible member deactivation (US-030 AC2)?
@@ -1168,6 +1176,7 @@ Gate 1 when a customer or regulation requires it. ADR 0020 must be accepted befo
 5. Do existing environments hold any `users`/`roles` rows with a tenant id other than the bootstrap
    tenant? (US-021 AC2 fails the migration if so — run the check in each environment first.)
 6. Which story delivers MFA for operator accounts before GA (NFR-SEC-4 / R3)? It is not in this epic.
+   The requirement itself is approved (D11); only the delivering story is open.
 
 ### 8.3 Risks
 
@@ -1175,7 +1184,7 @@ Gate 1 when a customer or regulation requires it. ADR 0020 must be accepted befo
 |---|---|---|---|---|
 | R1 | A missed tenant predicate leaks data (pool model) | Med | Critical | US-021 FKs, US-022 ArchUnit extension, NFR-ISO-3 ITs, pre-GA pen test |
 | R2 | Platform authority misconfigured → tenant admin gains cross-tenant control | Low | Critical | US-023 AC1/AC2/AC4 as merge-blocking tests; separate permission namespace |
-| R3 | Operator accounts protected by password only (no MFA exists) | Med | High | NFR-SEC-4; decide MFA story before GA |
+| R3 | Operator accounts protected by password only (no MFA exists) | Med | High | NFR-SEC-4 (approved as a GA blocker, D11); file the MFA story before GA |
 | R4 | FK migration fails on unexpected data in some environment | Med | High | Open question 5; migration pre-check with clear error |
 | R5 | Suspension bypass via existing tokens | Low (after US-026) | High | Per-request status filter; login/refresh blocked; ≤ 60 s SLO test |
 | R6 | ArchUnit cannot see JPQL bodies; a bound-but-unused `tenantId` still leaks | Med | High | Code review + cross-tenant ITs; spike Hibernate `@TenantId`/`@Filter` as a follow-up |
