@@ -5,9 +5,9 @@ EPIC ID:       EPIC-003
 EPIC TITLE:    Tenant Management
 STATUS:        DRAFT — rewritten 2026-09-30, pending Gate 1 on each story
 PRIORITY:      P0 (MVP slice) — later phases prioritised per story
-STORIES:       US-021 … US-044 (24 stories; 13 in MVP)
-BLOCKED BY:    EPIC-002 entry criteria (Open Decision #4 ArchUnit gate; US-016/US-017 merged),
-               US-018 (RBAC hardening — planned, not yet filed in docs/story/2-rbac/)
+STORIES:       US-021 … US-045 (25 stories; 14 in MVP)
+BLOCKED BY:    EPIC-002 entry criteria (Open Decision #4 build checks — owner committed to land
+               them before Epic 3 starts; US-016/US-017 merged)
 RELATED:       US-019 / US-020 (RBAC UI) — role-assignment screens live there, not here
 BLOCKS:        Any customer-facing feature that stores tenant-owned data
 ```
@@ -371,7 +371,7 @@ rejected by the database instead of silently creating invisible tenants.
 6. **Given** Testcontainers ITs, **when** the migration chain V1→latest runs, **then** it is green and
    Hibernate `ddl-auto=validate` passes.
 
-**Dependencies:** the §7 entry criteria (EPIC-002 Open Decision #4, US-016/US-017, US-018). **Blocks:** every other story.
+**Dependencies:** the §7 entry criteria (EPIC-002 Open Decision #4, US-016/US-017). **Blocks:** every other story.
 **Code anchors:** `V2__identity_schema.sql`, `V5__rbac_schema.sql`, `nexus-database/mysql/init/02-grants-post-schema.sql`.
 
 #### US-022 — Close known tenant-isolation gaps before new tenant data exists
@@ -677,8 +677,11 @@ has access.
    already-issued access token stays valid until its 900 s TTL expires (the same accepted residual
    documented on `User.java`'s password-reset path, since `token_version` is not checked per
    request) unless Gate 2 adds a per-request user-status check; **when** reactivated, **then** they
-   can sign in again. The status used for this is decided at Gate 1 (the existing
-   `DISABLED` is treated as terminal by self-service reset; a reversible status may be needed).
+   can sign in again. Deactivation sets the existing `DISABLED` status (decided 2026-10-01, open
+   question 3): login and refresh already refuse it, and self-service password reset already
+   refuses to reactivate it. Reactivation is a new, explicit `User` transition `DISABLED → ACTIVE`
+   that only this admin endpoint calls; `applyPasswordReset` keeps refusing `DISABLED`. No new
+   status value is added.
 3. **Given** the member is the last holder of an admin-equivalent role, **when** deactivation is
    requested, **then** it is refused, reusing the US-016/US-017 last-admin protection.
 4. **Given** a member id from another tenant, **when** used, **then** 404 is returned (cross-tenant IT).
@@ -739,14 +742,17 @@ I know I am in the right tenant.
 
 **Acceptance criteria**
 1. **Given** a signed-in user, **when** the session is established, **then** a signal-based tenant
-   context in `core/` holds display name and logo URL from `GET /api/v1/tenants/me` (requires the
-   `MEMBER` role to hold `tenant:read`, or a narrower public projection — Gate 1 decides).
+   context in `core/` holds the tenant's display name, slug and logo URL from a `tenant` summary
+   object added to `GET /api/v1/users/me` (`MeResponse`), which every signed-in user can already
+   call (decided 2026-10-01, open question 2). `MEMBER` does **not** get `tenant:read`; the full
+   profile at `GET /api/v1/tenants/me` (US-031), including contacts, stays admin-only.
 2. **Given** the header in `app.html`, **when** a user is signed in, **then** it shows the tenant display
    name and logo (with non-empty `alt`), and nothing tenant-specific when signed out.
 3. **Given** logout, **when** it completes, **then** the tenant context is cleared.
 4. **Given** the logo fails to load, **when** rendered, **then** the display name is shown alone.
 
-**Dependencies:** US-031. **Code anchors:** `nexus-frontend/src/app/core/auth/auth.store.ts`,
+**Dependencies:** US-031. **Code anchors:** `identity/interfaces/rest/dto/MeResponse.java`,
+`identity/interfaces/rest/UserProfileController.java`, `nexus-frontend/src/app/core/auth/auth.store.ts`,
 `nexus-frontend/src/app/app.html`.
 
 #### US-033 — Apply my tenant's brand colours
@@ -836,8 +842,9 @@ Nexus support.
 3. **Given** events whose metadata contain personal data, **when** returned, **then** only metadata keys
    on an explicit allowlist (defined at Gate 2) are included, and email addresses are never returned.
 4. **Given** operator actions on this tenant (US-025), **when** listed, **then** they appear, marked as
-   performed by Nexus staff, without revealing the operator's identity beyond a role label
-   _(inferred requirement — confirm with legal)_.
+   performed by Nexus staff and shown only with a role label (`Nexus operator` / `Nexus support`)
+   and the event id (decided 2026-10-01, open question 4). The operator's user id stays in the
+   stored event for internal investigation and is never returned by the tenant API.
 5. **Given** the Angular route `/settings/audit`, **when** opened with `audit:read`, **then** an
    `nx-table` with filters and an export button is shown.
 
@@ -872,6 +879,56 @@ tools.
 
 **Dependencies:** US-023, US-024, US-025. **Code anchors:** `nexus-frontend/src/app/app.routes.ts`,
 `nexus-frontend/src/app/core/guards/permission.guard.ts`.
+
+#### US-045 — Require multi-factor sign-in for operator accounts
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Must | L | MVP | GitHub Enterprise and AWS root/management accounts require MFA for administrators; Okta/Entra admin-role MFA policies _(vendor MFA settings not researched in detail)_ |
+
+**As a** Platform Operator, **I want** my account to require a second factor at sign-in, **so
+that** a stolen password alone cannot be used to create, suspend or delete customer tenants.
+
+**Acceptance criteria**
+1. **Given** a user in the operator tenant, **when** they sign in for the first time after this
+   story ships, **then** they must enrol a TOTP authenticator (RFC 6238) before any token is
+   issued; enrolment shows a QR code once and asks for one valid code to confirm it.
+2. **Given** an enrolled operator-tenant user, **when** the password step of `LoginUseCase`
+   succeeds, **then** no access or refresh token is issued; the response is a short-lived (≤ 5 min),
+   single-use MFA challenge, and tokens are issued only after a valid TOTP code is submitted
+   against it.
+3. **Given** a wrong TOTP code, **when** submitted, **then** the failure counts toward the existing
+   account lockout (`SecureEventService`) and the challenge endpoint is rate-limited like login
+   (`LoginRateLimitFilter`); a code already used within its time step is rejected (no replay).
+4. **Given** enrolment, **when** it completes, **then** 10 single-use recovery codes are shown once
+   and stored only as hashes; the TOTP secret is stored encrypted at rest with the AES-256-GCM `TextEncryptor` from ADR 0006
+   (through the general-purpose converter US-031 AC4 adds),
+   never logged and never returned again.
+5. **Given** an access token for an operator-tenant user, **when** it is issued, **then** it records
+   that MFA was completed (an `amr`-style claim), and `TenantAwarePermissionEvaluator` refuses
+   `platform_tenant:*` permissions on any token without it (403 `RBAC_001`). Adding the claim bumps
+   `JwtClaims.CURRENT_VERSION`, per the frozen-contract rule on `JwtClaims.java`.
+6. **Given** a lost authenticator, **when** an operator-tenant `TENANT_ADMIN` resets that user's
+   MFA, **then** the user must re-enrol at next sign-in, their refresh tokens are revoked, and the
+   reset is audited; no user can reset their own MFA, and the last operator admin's reset follows
+   the D5 runbook.
+7. **Given** each enrolment, successful challenge, failed challenge, recovery-code use and MFA
+   reset, **when** it happens, **then** an `auth_events` row is written (`MFA_ENROLLED`,
+   `MFA_SUCCESS`, `MFA_FAILURE`, `MFA_RECOVERY_CODE_USED`, `MFA_RESET`) with no secret or code in
+   metadata.
+8. **Given** a user in a customer tenant, **when** they sign in, **then** the flow is unchanged (MFA
+   for customer tenants is out of scope here; it can reuse this mechanism later).
+9. **Given** the Angular sign-in flow, **when** an MFA challenge is returned, **then** a code entry
+   step is shown with an accessible single input, a "use a recovery code" option and generic
+   error text.
+
+**Dependencies:** US-023 (operator tenant and platform permissions), US-027 (tenant-aware sign-in),
+US-031 (encryption converter).
+Mandatory security review (new authentication factor). Decision D11. **Blocks:** GA (NFR-SEC-4).
+**Code anchors:** `identity/application/service/LoginUseCase.java`,
+`identity/application/service/RefreshTokenUseCase.java`, `identity/application/service/SecureEventService.java`,
+`identity/domain/JwtClaims.java`, `identity/infrastructure/web/LoginRateLimitFilter.java`,
+`common/security/TenantAwarePermissionEvaluator.java`.
 
 ### Area H — Data export & deletion
 
@@ -1027,7 +1084,7 @@ that scopes data by organisation, whose scoping rule then joins these criteria. 
 
 | Story | Title | Area | MoSCoW | Size | Phase | Depends on |
 |---|---|---|---|---|---|---|
-| US-021 | Register tenants with enforced referential integrity | A | Must | M | MVP | EPIC-002, US-018 |
+| US-021 | Register tenants with enforced referential integrity | A | Must | M | MVP | EPIC-002 entry criteria |
 | US-022 | Close tenant-isolation gaps | A | Must | M | MVP | US-021 |
 | US-023 | Platform-operator authority | A | Must | M | MVP | US-021 |
 | US-024 | Provision tenant + roles + invited admin | B | Must | L | MVP | US-021, US-023, US-028, US-029 |
@@ -1040,6 +1097,7 @@ that scopes data by organisation, whose scoping rule then joins these criteria. 
 | US-031 | Tenant profile | D | Must | M | MVP | US-021 |
 | US-032 | Tenant context in app header | D | Should | S | MVP | US-031 |
 | US-037 | Operator console | G | Should | M | MVP | US-023, US-024, US-025 |
+| US-045 | Operator MFA | G | Must | L | MVP | US-023, US-027, US-031, D11 |
 | US-034 | Seat limits by plan | E | Should | M | Next | US-024, US-028, US-030, D10, ADR 0019 |
 | US-036 | Tenant audit viewer + export | F | Should | M | Next | US-021, US-025, ADR 0020 Q1 |
 | US-033 | Brand colours | D | Could | M | Later | US-031, US-032 |
@@ -1082,7 +1140,7 @@ that scopes data by organisation, whose scoping rule then joins these criteria. 
 | NFR-SEC-1 | Each MVP story completes Gate 2 threat modelling (`03b-threat-model.md`); US-023, US-026, US-027, US-028 and US-029 are mandatory security-reviewer stories. |
 | NFR-SEC-2 | Invitation and export tokens are random, single-use, stored hashed, and expire. |
 | NFR-SEC-3 | Unauthenticated tenant-resolution endpoints are rate-limited and never reveal whether a tenant or email exists. |
-| NFR-SEC-4 | Operator accounts must use MFA before GA (approved, D11) _(no MFA exists in the codebase today — flagged as risk R3)_. |
+| NFR-SEC-4 | Operator accounts must use MFA before GA (approved, D11; delivered by US-045) _(no MFA exists in the codebase today — flagged as risk R3)_. |
 | NFR-SEC-5 | No PII (emails, names, contacts) in logs or audit metadata values, per existing no-PII rule. |
 
 ### 6.4 Compliance (GDPR)
@@ -1109,8 +1167,9 @@ that scopes data by organisation, whose scoping rule then joins these criteria. 
 ### Entry criteria (before the first MVP story merges)
 
 - [ ] EPIC-002 Open Decision #4 closed: ArchUnit rule that every `@RestController` method carries
-      `@RequiresPermission` or `@PublicEndpoint`, plus the self-invocation check (assumed to be in
-      US-018 — **confirm**).
+      `@RequiresPermission` or `@PublicEndpoint`, plus the self-invocation check. The epic owner
+      committed on 2026-10-01 to land these before Epic 3 starts; which story carries them is
+      their choice (it need not be US-018).
 - [ ] US-016 and US-017 merged (EPIC-002 Open Decisions #6/#7).
 - [x] Decisions D1, D2, D3, D5 and D6 recorded (see §8; approved 2026-10-01).
 - [ ] ADR amendment for the platform path-tenant exception drafted (US-023 AC5).
@@ -1124,9 +1183,9 @@ that scopes data by organisation, whose scoping rule then joins these criteria. 
 | 3 | US-025, US-026 | Lifecycle and enforcement before tenants exist in production |
 | 4 | US-027, US-028, US-029 | Tenant sign-in and invitations (US-024 needs US-028) |
 | 5 | US-024, US-030, US-031 | Provisioning, members, profile |
-| 6 | US-032, US-037 | Tenant header, operator console |
+| 6 | US-032, US-037, US-045 | Tenant header, operator console, operator MFA (US-045 must merge before any operator account exists in production) |
 
-Exit: a second tenant is provisioned in staging by an operator, its admin accepts an invitation,
+Exit: a second tenant is provisioned in staging by an operator who signed in with MFA, its admin accepts an invitation,
 invites a member, and a pen-test-style cross-tenant suite shows zero findings.
 
 ### Next — "self-service and accountability"
@@ -1149,34 +1208,34 @@ Gate 1 when a customer or regulation requires it. ADR 0020 must be accepted befo
 | D1 | How the tenant is identified at sign-in | (a) subdomain `acme.nexus.app`; (b) path `/t/acme/login`; (c) email-domain discovery | **Approved 2026-10-01.** **(b) path** for MVP — no wildcard DNS/TLS or cookie-domain work; (a) can be added later. (c) needs verified domains (US-041). | US-027 |
 | D2 | Identity model | (a) per-tenant users (today); (b) global identity + memberships | **Approved 2026-10-01.** **(a)** — matches the schema; revisit if cross-tenant users are requested | US-027–US-030 |
 | D3 | Public self-registration | (a) keep for bootstrap tenant only; (b) invite-only everywhere; (c) per-tenant toggle | **Approved 2026-10-01.** **(a) now, (b) for customer tenants** — today every registrant joins the default tenant with no role | US-027 |
-| D4 | Organisations (sub-tenant level) | (a) defer; (b) build as in previous draft | **(a) defer** until a feature consumes them | US-044 |
+| D4 | Organisations (sub-tenant level) | (a) defer; (b) build as in previous draft | **Decided 2026-10-01.** **(a) defer** until a feature consumes them | US-044 |
 | D5 | Bootstrapping the first operator account | (a) migration-seeded operator tenant + CLI/runbook to invite the first operator; (b) env-configured email invited at startup | **Approved 2026-10-01.** **(a)** — auditable and matches existing runbook practice | US-023 |
 | D6 | Deletion grace period | 14 / 30 / 90 days | **Approved 2026-10-01.** **30 days** (configurable). This answers only the grace-period part of ADR 0020 Q2 early (so US-025 can show a purge date); record it as a partial decision in ADR 0020, which still owns the purge itself | US-025, US-039 |
-| D7 | Distinct Tenant Owner role | (a) no — rely on last-admin protection; (b) yes | **(a)** for MVP | — |
+| D7 | Distinct Tenant Owner role | (a) no — rely on last-admin protection; (b) yes | **Decided 2026-10-01.** **(a)** for MVP; revisit if a customer asks for an owner distinct from admins | — |
 | D8 | Split with RBAC UI | Members page (US-030) here; role assignment/editing UI in US-019/US-020 | **Confirm** with the RBAC UI owner so there is one members list, not two | US-030 |
-| D9 | Enterprise SSO | build on Spring Security vs buy (WorkOS / Auth0) | Decide at US-042 Gate 1 with cost data | US-042 |
-| D10 | Plan tiers | names and seat limits per tier | Product to define before US-034 | US-034 |
-| D11 | MFA for operator accounts | (a) required before GA; (b) optional / later | **Approved 2026-10-01.** **(a)** — NFR-SEC-4 is a GA blocker. The delivering story is not yet filed (open question 6) | GA |
+| D9 | Enterprise SSO | build on Spring Security vs buy (WorkOS / Auth0) | **Decided 2026-10-01.** **Build OIDC on Spring Security** (already in the stack; no per-connection fee; identity stays in Nexus). Re-evaluate buying only if a customer needs SAML or SCIM (US-043), at US-042 Gate 1 | US-042 |
+| D10 | Plan tiers | names and seat limits per tier | **Decided 2026-10-01.** Structure only: tiers and their limits are configuration data (a `plan_tier` value on `tenants`, limits in config), not code. The tier names and numbers are a commercial choice and still need product input before US-034 | US-034 |
+| D11 | MFA for operator accounts | (a) required before GA; (b) optional / later | **Approved 2026-10-01.** **(a)** — NFR-SEC-4 is a GA blocker. Delivered by US-045 | GA, US-045 |
 
 ### 8.2 Open questions
 
 1. US-018 (RBAC hardening) is planned but not yet filed. Will it include EPIC-002 Open Decision #4
-   (still OPEN)? If not, a story must be added ahead of US-021. **Undecided as of 2026-10-01.**
-   Recommendation: make Open Decision #4's three items — (a) the ArchUnit rule that every
-   `@RestController` method carries `@RequiresPermission` or `@PublicEndpoint`, (b) the
-   `@PublicEndpoint` annotation, (c) the same-class self-invocation check — explicit acceptance
-   criteria of US-018 when it is filed. They are `rbac` enforcement work, they are already called
-   "RBAC hardening" in EPIC-002, and EPIC-002 says they gate the first protected Epic 3
-   controller, so US-018 is their natural home. The EPIC-002 owner confirms this when filing
-   US-018.
+   (still OPEN)? If not, a story must be added ahead of US-021. **Resolved 2026-10-01:** the owner
+   will land the three build checks before Epic 3 starts; this stays an entry criterion (§7)
+   whichever story carries them.
 2. Should the `MEMBER` role receive `tenant:read` so US-032 can call `GET /tenants/me`, or should a
-   narrower "tenant summary" come with `/users/me`?
-3. Which user status represents a reversible member deactivation (US-030 AC2)?
+   narrower "tenant summary" come with `/users/me`? **Decided 2026-10-01:** a tenant summary on
+   `/users/me`; `MEMBER` does not get `tenant:read` (US-032 AC1).
+3. Which user status represents a reversible member deactivation (US-030 AC2)? **Decided
+   2026-10-01:** the existing `DISABLED`, with an explicit admin-only reactivation (US-030 AC2).
 4. What exact operator identity, if any, may be shown to tenants in their audit view (US-036 AC4)?
+   **Decided 2026-10-01:** a role label and event id only (US-036 AC4).
 5. Do existing environments hold any `users`/`roles` rows with a tenant id other than the bootstrap
    tenant? (US-021 AC2 fails the migration if so — run the check in each environment first.)
-6. Which story delivers MFA for operator accounts before GA (NFR-SEC-4 / R3)? It is not in this epic.
-   The requirement itself is approved (D11); only the delivering story is open.
+   **Resolved 2026-10-01:** no environment is set up yet, so there is no existing data to check.
+   US-021 AC2's pre-check stays as a guard.
+6. Which story delivers MFA for operator accounts before GA (NFR-SEC-4 / R3)? **Resolved
+   2026-10-01:** US-045, added to this epic's MVP.
 
 ### 8.3 Risks
 
@@ -1184,8 +1243,8 @@ Gate 1 when a customer or regulation requires it. ADR 0020 must be accepted befo
 |---|---|---|---|---|
 | R1 | A missed tenant predicate leaks data (pool model) | Med | Critical | US-021 FKs, US-022 ArchUnit extension, NFR-ISO-3 ITs, pre-GA pen test |
 | R2 | Platform authority misconfigured → tenant admin gains cross-tenant control | Low | Critical | US-023 AC1/AC2/AC4 as merge-blocking tests; separate permission namespace |
-| R3 | Operator accounts protected by password only (no MFA exists) | Med | High | NFR-SEC-4 (approved as a GA blocker, D11); file the MFA story before GA |
-| R4 | FK migration fails on unexpected data in some environment | Med | High | Open question 5; migration pre-check with clear error |
+| R3 | Operator accounts protected by password only (no MFA exists) | Med | High | US-045 (MVP; GA blocker per D11 and NFR-SEC-4) |
+| R4 | FK migration fails on unexpected data in some environment | Low (no environment exists yet) | High | Migration pre-check with clear error (US-021 AC2) |
 | R5 | Suspension bypass via existing tokens | Low (after US-026) | High | Per-request status filter; login/refresh blocked; ≤ 60 s SLO test |
 | R6 | ArchUnit cannot see JPQL bodies; a bound-but-unused `tenantId` still leaks | Med | High | Code review + cross-tenant ITs; spike Hibernate `@TenantId`/`@Filter` as a follow-up |
 | R7 | `auth_events` grows into a general audit log with a misleading name and identity-context ownership | Med | Low | Accept for this epic; revisit with ADR 0020 |
@@ -1234,7 +1293,7 @@ Gate 1 when a customer or regulation requires it. ADR 0020 must be accepted befo
 | Suspend / deactivate users and tenants; soft delete with grace | US-025, US-026, US-030 |
 | Tenant-visible audit log with export | US-036 |
 | Operator console with audited actions | US-037, US-025 |
-| Enforced MFA / SSO at least on a paid tier | Gap — R3 (MFA), US-042 (SSO, Later) |
+| Enforced MFA / SSO at least on a paid tier | Operator MFA: US-045 (MVP); SSO: US-042 (Later) |
 
 **Differentiators** (enterprise tier; deliberately Later or out of scope): SCIM with group mapping
 (US-043); domain verification → managed accounts (US-041); custom roles / scoped delegated admin
