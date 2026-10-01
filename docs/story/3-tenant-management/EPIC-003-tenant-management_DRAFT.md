@@ -371,7 +371,7 @@ rejected by the database instead of silently creating invisible tenants.
 6. **Given** Testcontainers ITs, **when** the migration chain V1→latest runs, **then** it is green and
    Hibernate `ddl-auto=validate` passes.
 
-**Dependencies:** EPIC-002 complete through US-018. **Blocks:** every other story.
+**Dependencies:** the §7 entry criteria (EPIC-002 Open Decision #4, US-016/US-017, US-018). **Blocks:** every other story.
 **Code anchors:** `V2__identity_schema.sql`, `V5__rbac_schema.sql`, `nexus-database/mysql/init/02-grants-post-schema.sql`.
 
 #### US-022 — Close known tenant-isolation gaps before new tenant data exists
@@ -427,7 +427,10 @@ no tenant admin can escalate into cross-tenant control.
    `PLATFORM_OPERATOR` (both platform permissions) and `PLATFORM_SUPPORT` (`platform_tenant:read`)
    system roles plus its own `TENANT_ADMIN`, so further operators and support agents are invited and
    deactivated with the ordinary US-028 / US-030 flows inside the operator tenant; self-registration
-   can never create users in it.
+   can never create users in it. Because `PLATFORM_*` roles carry no permission in
+   `RbacDangerousPermissions`, the ADR 0017 assignment gate would not protect them: assigning or
+   revoking a `PLATFORM_*` role must additionally require the caller to hold `TENANT_ADMIN` in the
+   operator tenant (merge-blocking test: a `user:write`-only operator-tenant user gets 403).
 4. **Given** a user holding `TENANT_ADMIN` in any customer tenant, **when** they call any
    `/api/v1/platform/**` endpoint, **then** they receive 403 `RBAC_001` (merge-blocking IT).
 5. **Given** the design, **when** Gate 2 completes, **then** an ADR records the `/api/v1/platform/**`
@@ -468,13 +471,13 @@ database work or engineering help.
    tenant transitions `PENDING → ACTIVE` automatically and a `TENANT_ACTIVATED` event is recorded.
    This is the **only** way a tenant becomes `ACTIVE` for the first time, so an `ACTIVE` tenant
    always has at least one admin.
-7. **Given** a `PENDING` tenant whose bootstrap invitation expired or went to the wrong address,
-   **when** an operator re-issues it (optionally to a corrected email), **then** the old invitation is
-   revoked, a new one is sent, and `INVITATION_REISSUED` is audited.
 5. **Given** a support agent with only `platform_tenant:read`, **when** they call the create
    endpoint, **then** they receive 403.
 6. **Given** a successful creation, **when** the audit trail is read, **then** a `TENANT_CREATED`
    event exists with actor, tenant id, slug and plan tier and **no** admin email in clear text.
+7. **Given** a `PENDING` tenant whose bootstrap invitation expired or went to the wrong address,
+   **when** an operator re-issues it (optionally to a corrected email), **then** the old invitation is
+   revoked, a new one is sent, and `INVITATION_REISSUED` is audited.
 
 **Dependencies:** US-021, US-023, US-028, US-029. **Code anchors:** `V5__rbac_schema.sql` (seed pattern),
 `rbac/application/RoleAssignmentService.java`, `identity/application/service/SecureEventService.java`.
@@ -1332,4 +1335,19 @@ Internal
 
 ## Appendix C — Verification log
 
-_Filled in by the Phase 6 verification passes; see below._
+Five verification passes were run on this rewrite (2026-09-30 → 2026-10-01). Each pass re-read the
+epic, re-checked codebase claims by opening the code, re-checked research attributions against
+Appendix A/B, and checked story quality and consistency.
+
+| Pass | Method | Found | Fixed |
+|---|---|---|---|
+| 1 | Script resolving every cited file path; grep checks of key claims (JWT `verify()`, `@RequiresPermission` call sites, `token_version` use, `JpaAuthEventRepository`, Redis key builders, MDC propagation) | All paths resolved. 6 story "Pattern" cells cited vendor features not in the research; US-017 described as shipped; US-030 overstated deactivation (access tokens are not re-checked per request); no story for operator MFA | Patterns re-attributed or marked _(not researched)_; US-017 status corrected; US-030 AC2 states the 900 s residual; added R11 and open question 6 |
+| 2 | Full end-to-end re-read | Broken cross-reference (§3.3); lifecycle restore/PENDING gaps; `AttributeEncryptor` is typed to `EmailCipher` only (cannot be reused for tenant contacts as the old draft assumed); US-016 gate misdescribed (verified against ADR 0017); research table lacked a quotas column | All fixed; ADR 0017 wording used; quotas column added |
+| 3 | Independent fresh-context adversarial review (20 findings), each spot-checked in code before acting | First-admin invitation could not be granted through `RoleAssignmentService` (same trap as G4; `user_roles.assigned_by` NOT NULL); adding platform permissions to `RbacDangerousPermissions` would break ADR 0018 admin-equivalence; `PENDING` lifecycle dead end; US-022 AC3 untestable before US-027; US-018 not yet filed; ADR 0013 D6 overstated; D6 vs ADR 0020 overlap; US-027/US-026 conflict on `PENDING`; ADR 0018 admin-equivalent caller omitted; no way to manage further operators; rate-limit store is in-memory by default; `user_roles` blocks DELETE only; forward reference in US-026; missing dependencies (US-024, US-034, US-036); US-040 persona; missing code anchors; ~10 vague ACs; bootstrap-tenant literal locations | All 20 fixed; added R12 (invitation-grant path) and made US-028/US-029 mandatory security-review stories |
+| 4 | Targeted re-read of every Pass-3 change (the second independent reviewer hit a rate limit, so this pass was done directly) | Operator-tenant `PLATFORM_*` roles carry no dangerous permission, so the ADR 0017 gate would let any `user:write` holder there assign them; US-021 dependency wording | US-023 AC3 requires `TENANT_ADMIN` in the operator tenant to assign/revoke `PLATFORM_*` roles; dependency reworded |
+| 5 | Scripted structure check (persona / capability / outcome / priority table / Given-When-Then / dependencies per story; AC numbering; MVP dependency order; no e-mail addresses or personal names) + path check | US-024 AC numbering out of order | Fixed; re-run of both scripts clean (the only unresolved path is the old draft's `V4__tenant_schema.sql`, quoted deliberately) |
+
+**Residual limits of verification.** Vendor documentation could not be fetched directly (egress
+policy); research claims rest on search extracts of official pages and are marked where unverified.
+Targets marked _(inferred)_ (latency budgets, story-point calibration, operator-identity display in
+tenant audit views) have not been validated.
