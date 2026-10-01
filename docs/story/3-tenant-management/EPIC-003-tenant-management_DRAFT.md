@@ -694,7 +694,7 @@ has access.
 **Dependencies:** US-021, US-022. **Code anchors:** `identity/domain/User.java`, `identity/domain/UserStatus.java`,
 `identity/application/EmailBlindIndexService.java`, `rbac/domain/RbacAdminEquivalence.java`,
 `nexus-frontend/src/app/shared/directives/has-permission.directive.ts`. **Coordination:** US-019/US-020 own role-assignment UI; this page
-links to it rather than duplicating it (decision D8 confirms the split).
+links to it rather than duplicating it (decision D8, approved 2026-10-01).
 
 ### Area D — Tenant profile, settings & branding
 
@@ -1212,7 +1212,7 @@ Gate 1 when a customer or regulation requires it. ADR 0020 must be accepted befo
 | D5 | Bootstrapping the first operator account | (a) migration-seeded operator tenant + CLI/runbook to invite the first operator; (b) env-configured email invited at startup | **Approved 2026-10-01.** **(a)** — auditable and matches existing runbook practice | US-023 |
 | D6 | Deletion grace period | 14 / 30 / 90 days | **Approved 2026-10-01.** **30 days** (configurable). This answers only the grace-period part of ADR 0020 Q2 early (so US-025 can show a purge date); record it as a partial decision in ADR 0020, which still owns the purge itself | US-025, US-039 |
 | D7 | Distinct Tenant Owner role | (a) no — rely on last-admin protection; (b) yes | **Decided 2026-10-01.** **(a)** for MVP; revisit if a customer asks for an owner distinct from admins | — |
-| D8 | Split with RBAC UI | Members page (US-030) here; role assignment/editing UI in US-019/US-020 | **Confirm** with the RBAC UI owner so there is one members list, not two | US-030 |
+| D8 | Split with RBAC UI | Members page (US-030) here; role assignment/editing UI in US-019/US-020 | **Approved 2026-10-01.** One members list, built in US-030; each row links to the US-019/US-020 role screens, which do not build their own list | US-030 |
 | D9 | Enterprise SSO | build on Spring Security vs buy (WorkOS / Auth0) | **Decided 2026-10-01.** **Build OIDC on Spring Security** (already in the stack; no per-connection fee; identity stays in Nexus). Re-evaluate buying only if a customer needs SAML or SCIM (US-043), at US-042 Gate 1 | US-042 |
 | D10 | Plan tiers | names and seat limits per tier | **Decided 2026-10-01.** Structure only: tiers and their limits are configuration data (a `plan_tier` value on `tenants`, limits in config), not code. The tier names and numbers are a commercial choice and still need product input before US-034 | US-034 |
 | D11 | MFA for operator accounts | (a) required before GA; (b) optional / later | **Approved 2026-10-01.** **(a)** — NFR-SEC-4 is a GA blocker. Delivered by US-045 | GA, US-045 |
@@ -1250,7 +1250,7 @@ Gate 1 when a customer or regulation requires it. ADR 0020 must be accepted befo
 | R7 | `auth_events` grows into a general audit log with a misleading name and identity-context ownership | Med | Low | Accept for this epic; revisit with ADR 0020 |
 | R8 | ADR 0019/0020 stay undecided, blocking Next/Later | Med | Med | Named as blockers; schedule decisions alongside MVP |
 | R9 | Changing sign-in URLs (D1) breaks existing bookmarks / email links | Low | Med | US-027 AC4 keeps bootstrap-tenant behaviour |
-| R10 | Duplicate members UI between this epic and RBAC UI | Med | Low | D8 |
+| R10 | Duplicate members UI between this epic and RBAC UI | Low (D8 approved) | Low | D8: one list in US-030 |
 | R11 | A deactivated member keeps API access until their access token expires (≤ 15 min) | High (by design today) | Med | US-030 AC2 names it; Gate 2 decides whether to add a per-request user-status check alongside US-026's tenant check |
 | R12 | The invitation-grant path (US-029 AC1) bypasses `RoleAssignmentService`'s caller gate and becomes a new privilege-escalation route | Med | Critical | Grant only the role frozen on an invitation that passed the gate when issued; single-use hashed token; mandatory security review of US-028/US-029 |
 
