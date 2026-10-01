@@ -355,6 +355,8 @@ rejected by the database instead of silently creating invisible tenants.
    `tenants` table exists with at least: `id BINARY(16)` (UUIDv7), `slug` (unique, immutable),
    `display_name`, `status`, `plan_tier`, `created_at`, `updated_at`, `version`; and an append-only
    `tenant_status_history` table (UPDATE/DELETE blocked by triggers, as for `auth_events`).
+   `plan_tier` is one of `FREE`, `TEAMS`, `ENTERPRISE` (D10); the bootstrap and operator tenant
+   rows are seeded as `ENTERPRISE`.
 2. **Given** the migration runs on a database that already has rows, **when** it completes,
    **then** the bootstrap tenant `00000000-0000-7000-8000-000000000001` exists as an `ACTIVE` row
    and an operator-tenant row exists (its roles are added by US-023), and the migration fails with a clear error if any
@@ -786,8 +788,8 @@ members (with an optional per-tenant override), **so that** tenants stay within 
 bought.
 
 **Acceptance criteria**
-1. **Given** plan-tier limits in configuration and an optional override on the tenant, **when** a
-   tenant is at its limit, **then** creating an invitation or reactivating a member returns 409 with
+1. **Given** plan-tier limits in configuration (defaults per D10: Free 5, Teams 50, Enterprise 500
+   active members) and an optional override on the tenant, **when** a tenant is at its limit, **then** creating an invitation or reactivating a member returns 409 with
    a limit code, and pending invitations count toward the limit.
 2. **Given** an operator with `platform_tenant:write`, **when** they change a tenant's plan tier or
    override, **then** it takes effect on the next check and a `TENANT_PLAN_CHANGED` event is written.
@@ -795,8 +797,13 @@ bought.
    shown.
 4. **Given** the existing `nexus.rbac.max-roles-per-tenant`, **when** this story completes, **then** it
    remains a global safety cap (not a plan limit) and is documented as such.
+5. **Given** a tenant moved to a tier whose limit is below its current member count, **when** the
+   change is saved, **then** no existing member loses access; only new invitations and
+   reactivations are refused until the count is under the limit, and the operator is warned
+   before confirming.
+6. **Given** the operator tenant, **when** seats are checked, **then** it has no seat limit.
 
-**Dependencies:** US-024, US-028, US-030; decision D10; ADR 0019 questions 1, 2 and 4 decided.
+**Dependencies:** US-024, US-028, US-030; decision D10 (decided); ADR 0019 questions 1, 2 and 4 decided.
 **Code anchors:** `rbac/application/RoleManagementService.java` (existing `max-roles-per-tenant` check).
 
 #### US-035 — Protect tenants from a noisy neighbour with per-tenant rate limits
@@ -1214,7 +1221,7 @@ Gate 1 when a customer or regulation requires it. ADR 0020 must be accepted befo
 | D7 | Distinct Tenant Owner role | (a) no — rely on last-admin protection; (b) yes | **Decided 2026-10-01.** **(a)** for MVP; revisit if a customer asks for an owner distinct from admins | — |
 | D8 | Split with RBAC UI | Members page (US-030) here; role assignment/editing UI in US-019/US-020 | **Approved 2026-10-01.** One members list, built in US-030; each row links to the US-019/US-020 role screens, which do not build their own list | US-030 |
 | D9 | Enterprise SSO | build on Spring Security vs buy (WorkOS / Auth0) | **Decided 2026-10-01.** **Build OIDC on Spring Security** (already in the stack; no per-connection fee; identity stays in Nexus). Re-evaluate buying only if a customer needs SAML or SCIM (US-043), at US-042 Gate 1 | US-042 |
-| D10 | Plan tiers | names and seat limits per tier | **Decided 2026-10-01.** Structure only: tiers and their limits are configuration data (a `plan_tier` value on `tenants`, limits in config), not code. The tier names and numbers are a commercial choice and still need product input before US-034 | US-034 |
+| D10 | Plan tiers | names and seat limits per tier | **Decided 2026-10-01.** Tiers and their limits are configuration data (a `plan_tier` value on `tenants`, limits in config), not code. Tiers (owner, 2026-10-01): **Free**, **Teams**, **Enterprise**. Member limits (decided at the owner's request): Free 5, Teams 50, Enterprise 500 by default, changed per contract with the per-tenant override (US-034) | US-034 |
 | D11 | MFA for operator accounts | (a) required before GA; (b) optional / later | **Approved 2026-10-01.** **(a)** — NFR-SEC-4 is a GA blocker. Delivered by US-045 | GA, US-045 |
 
 ### 8.2 Open questions
