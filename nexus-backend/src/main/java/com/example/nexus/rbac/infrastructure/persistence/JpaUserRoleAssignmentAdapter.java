@@ -34,20 +34,27 @@ import org.springframework.stereotype.Component;
  * injected; M10 delegates to {@code roleRepository}, and M11/M5b/M12 delegate to {@code
  * userRoleRepository}. {@code JpaRolePermissionRepository} is still not injected — ADR-0017 D2's
  * second half is unweakened by this story.
+ *
+ * <p><b>US-018 M15:</b> {@link JpaPermissionRepository} is injected for the catalogue read only.
+ * It can write {@code permissions} (where {@code nexus_app} holds {@code SELECT} only), never
+ * {@code role_permissions}, so the T-T13 boundary above still holds.
  */
 @Component
 public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
 
   private final JpaUserRoleRepository userRoleRepository;
   private final JpaRoleRepository roleRepository;
+  private final JpaPermissionRepository permissionRepository;
   private final IdGenerator idGenerator;
 
   public JpaUserRoleAssignmentAdapter(
       JpaUserRoleRepository userRoleRepository,
       JpaRoleRepository roleRepository,
+      JpaPermissionRepository permissionRepository,
       IdGenerator idGenerator) {
     this.userRoleRepository = userRoleRepository;
     this.roleRepository = roleRepository;
+    this.permissionRepository = permissionRepository;
     this.idGenerator = idGenerator;
   }
 
@@ -123,6 +130,11 @@ public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
   @Override
   public Set<UUID> findPermissionIdsForRole(UUID roleId, UUID tenantId) {
     return roleRepository.findPermissionIdsByRoleAndTenantId(roleId, tenantId);
+  }
+
+  @Override
+  public Set<UUID> findCatalogueIds() {
+    return permissionRepository.findCatalogueIds();
   }
 
   @Override

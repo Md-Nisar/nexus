@@ -198,8 +198,9 @@ class RoleRevocationSymmetryIT {
   void should_incrementPrivilegedTrueCallerIsAdminTrue_and_makeCallerIsAdminFalseUnreachable_when_activeAdminSelfAssignsDangerousCustomRole() {
     UUID tenantId = uuidGenerator.newId();
     Role adminRole = seedRole(tenantId, "TENANT_ADMIN", "canary-admin-self");
-    // US-018 A2: the admin must hold every permission of the role it grants (grant-subset).
-    grantPermission(adminRole.getId(), ROLE_WRITE_PERMISSION_ID);
+    // US-018 A2 needs the admin to hold every permission of the role it grants, and A4 needs an
+    // administrator to self-assign: the admin role carries the whole catalogue (role:write too).
+    grantWholeCatalogue(adminRole.getId());
     User adminUser = seedUser(tenantId, "canary-admin-self");
     seedActiveAssignment(tenantId, adminRole.getId(), adminUser.getId(), adminUser.getId());
     Role dangerousRole = seedRole(tenantId, "CUSTOM-DANGEROUS", "canary-admin-self");
@@ -224,15 +225,20 @@ class RoleRevocationSymmetryIT {
   }
 
   @Test
-  void should_incrementPrivilegedFalseCallerIsAdminNA_when_nonAdminSelfAssignsPermissionlessRole() {
+  void should_incrementPrivilegedFalseCallerIsAdminNA_when_administratorSelfAssignsPermissionlessRole() {
     UUID tenantId = uuidGenerator.newId();
-    User nonAdminUser = seedUser(tenantId, "canary-nonadmin-self");
-    Role benignRole = seedRole(tenantId, "NO-PERMS", "canary-nonadmin-self");
-    RoleChangeActor actor = new RoleChangeActor(nonAdminUser.getId(), tenantId);
+    User adminUser = seedUser(tenantId, "canary-admin-self-benign");
+    // US-018 A4: only an administrator may self-assign. The admin-defining role is a custom one
+    // (not named TENANT_ADMIN), so the legacy privileged/callerIsAdmin tags below are unaffected.
+    Role adminDefiningRole = seedRole(tenantId, "ADMIN-DEFINING", "canary-admin-self-benign");
+    grantWholeCatalogue(adminDefiningRole.getId());
+    seedActiveAssignment(tenantId, adminDefiningRole.getId(), adminUser.getId(), adminUser.getId());
+    Role benignRole = seedRole(tenantId, "NO-PERMS", "canary-admin-self-benign");
+    RoleChangeActor actor = new RoleChangeActor(adminUser.getId(), tenantId);
     double before = selfRoleAssignmentCount(tenantId, "false", "n_a");
 
     roleAssignmentService.assign(
-        actor, nonAdminUser.getId(), benignRole.getId(), requestContext());
+        actor, adminUser.getId(), benignRole.getId(), requestContext());
 
     assertThat(selfRoleAssignmentCount(tenantId, "false", "n_a"))
         .as("nexus.rbac.self_role_assignment{privileged=false,callerIsAdmin=n_a} must increment"
@@ -256,6 +262,13 @@ class RoleRevocationSymmetryIT {
 
   private void grantPermission(UUID roleId, UUID permissionId) {
     rolePermissionRepository.save(new RolePermission(roleId, permissionId));
+  }
+
+  /** Makes {@code roleId} admin-defining (US-018 §2.1): attaches every catalogue permission. */
+  private void grantWholeCatalogue(UUID roleId) {
+    jdbc.update(
+        "INSERT INTO role_permissions (role_id, permission_id) SELECT ?, id FROM permissions",
+        toBytes(roleId));
   }
 
   private UserRole seedActiveAssignment(UUID tenantId, UUID roleId, UUID assigneeId, UUID assignedById) {

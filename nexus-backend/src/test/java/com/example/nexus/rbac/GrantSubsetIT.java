@@ -15,6 +15,7 @@ import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionReposi
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -42,7 +43,8 @@ import org.springframework.web.client.RestTemplate;
  * US-018 T-001 (ADR-0021 D1, D2; 03-design.md §4.3, §4.11): grant-subset on {@code POST
  * /api/v1/users/{userId}/roles}, end to end through the real filter chain, real RS256 JWTs and
  * Testcontainers MySQL. A caller holding {@code user:role:assign} may assign a role only when they
- * hold every permission it carries (A2).
+ * hold every permission it carries (A2). US-018 T-002 adds A4: a caller may assign a role to
+ * themselves only if they are an administrator (one role carrying the whole catalogue).
  *
  * <p><b>M2 precedence note.</b> Until M3 retires it, the legacy US-016/017 gate runs before A2, so
  * a non-administrator assigning a role that carries a legacy "dangerous" permission ({@code
@@ -194,7 +196,122 @@ class GrantSubsetIT {
     assertThat(activeAssignmentCount(target.getId(), role.getId())).isZero();
   }
 
+  // ── US-018 T-002: A4 self-assignment (03-design.md §2.1, §4.4) ──────────────────────
+
+  /**
+   * TS-3: a non-administrator self-assigns a role they could otherwise grant. The target carries
+   * only {@code audit:read}, which the caller holds and which the legacy gate does not classify,
+   * so neither the legacy gate nor A2 can be the one denying: the reason is A4's own.
+   */
+  @Test
+  void should_return403SelfAssignmentAndOneDenialRow_when_nonAdministratorSelfAssigns() {
+    UUID tenantId = uuidGenerator.newId();
+    User caller =
+        seedUserWithPermissions(
+            tenantId, "ts3-caller", USER_ROLE_ASSIGN_PERMISSION_ID, AUDIT_READ_PERMISSION_ID);
+    Role role = seedRoleWithPermissions(tenantId, "TS3-AUDITOR", AUDIT_READ_PERMISSION_ID);
+
+    ResponseEntity<Map> resp = postAssign(mintToken(caller), caller.getId(), role.getId());
+
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(resp.getBody())
+        .containsEntry("code", "RBAC_001")
+        .containsEntry("requiredPermission", "user:role:assign");
+    List<Map<String, Object>> rows = denialRows(caller.getId());
+    assertThat(rows).as("exactly one ROLE_ASSIGNMENT_DENIED row per request").hasSize(1);
+    assertThat(rows.get(0))
+        .containsEntry("reason", "SELF_ASSIGNMENT")
+        .containsEntry("operation", "assign")
+        .containsEntry("missing_count", null);
+    assertThat(activeAssignmentCount(caller.getId(), role.getId())).isZero();
+  }
+
+  /**
+   * TS-4: the RES-1(b) pre-positioning sequence is blocked at its self-assign step. A
+   * non-administrator tries to self-assign a benign role (denied), then an administrator makes
+   * that role dangerous. The caller never became a holder, so the later attach widens nothing for
+   * them. The second-account variant of this sequence is RES-26 and is not covered by A4.
+   */
+  @Test
+  void should_blockRes1bAtSelfAssignStep_so_laterAttachEscalatesNothing() {
+    UUID tenantId = uuidGenerator.newId();
+    User caller =
+        seedUserWithPermissions(
+            tenantId, "ts4-caller", USER_ROLE_ASSIGN_PERMISSION_ID, AUDIT_READ_PERMISSION_ID);
+    Role benignRole = seedRoleWithPermissions(tenantId, "TS4-BENIGN", AUDIT_READ_PERMISSION_ID);
+
+    ResponseEntity<Map> resp = postAssign(mintToken(caller), caller.getId(), benignRole.getId());
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(denialRows(caller.getId()))
+        .singleElement()
+        .satisfies(row -> assertThat(row).containsEntry("reason", "SELF_ASSIGNMENT"));
+
+    // The later administrator attach (its own gates are T-003's subject, so seeded directly).
+    rolePermissionRepository.save(new RolePermission(benignRole.getId(), ROLE_WRITE_PERMISSION_ID));
+
+    assertThat(activeAssignmentCount(caller.getId(), benignRole.getId())).isZero();
+    assertThat(userRoleRepository.findHeldRolePermissionIdsForAuthorization(caller.getId(), tenantId))
+        .as("the attach must not reach the caller: they never held the role")
+        .noneMatch(ref -> ref.permissionId().equals(ROLE_WRITE_PERMISSION_ID));
+  }
+
+  /**
+   * An administrator (one role carrying the whole catalogue) may self-assign. The target carries
+   * {@code role:write}, so this also exercises a legacy-gate pass via all three dangerous
+   * permissions.
+   */
+  @Test
+  void should_return201_when_administratorSelfAssigns() {
+    UUID tenantId = uuidGenerator.newId();
+    User caller = seedUserWithPermissions(tenantId, "a4-admin", catalogueIds());
+    Role role = seedRoleWithPermissions(tenantId, "A4-ROLE-WRITER", ROLE_WRITE_PERMISSION_ID);
+
+    ResponseEntity<Map> resp = postAssign(mintToken(caller), caller.getId(), role.getId());
+
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+    assertThat(denialRows(caller.getId())).isEmpty();
+    assertThat(activeAssignmentCount(caller.getId(), role.getId())).isEqualTo(1);
+  }
+
+  /** §2.1: the whole catalogue held only across two partial roles is not an administrator. */
+  @Test
+  void should_return403SelfAssignment_when_callerHoldsCatalogueOnlyAcrossTwoRoles() {
+    UUID tenantId = uuidGenerator.newId();
+    UUID[] catalogue = catalogueIds();
+    User caller = seedUser(tenantId, "a4-union");
+    int half = catalogue.length / 2;
+    grantViaNewRole(tenantId, caller, Arrays.copyOfRange(catalogue, 0, half));
+    grantViaNewRole(
+        tenantId, caller, Arrays.copyOfRange(catalogue, half, catalogue.length));
+    Role role = seedRoleWithPermissions(tenantId, "A4-UNION-AUDITOR", AUDIT_READ_PERMISSION_ID);
+
+    ResponseEntity<Map> resp = postAssign(mintToken(caller), caller.getId(), role.getId());
+
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(denialRows(caller.getId()))
+        .singleElement()
+        .satisfies(row -> assertThat(row).containsEntry("reason", "SELF_ASSIGNMENT"));
+    assertThat(activeAssignmentCount(caller.getId(), role.getId())).isZero();
+  }
+
   // ── Fixtures ─────────────────────────────────────────────────────────
+
+  /** Every permission id in the catalogue, read live so the fixture follows future migrations. */
+  private UUID[] catalogueIds() {
+    return jdbc.query("SELECT id FROM permissions", (rs, i) -> fromBytes(rs.getBytes(1)))
+        .toArray(UUID[]::new);
+  }
+
+  private void grantViaNewRole(UUID tenantId, User user, UUID... permissionIds) {
+    Role role = seedRoleWithPermissions(tenantId, "GS-PARTIAL", permissionIds);
+    userRoleRepository.save(
+        new UserRole(uuidGenerator.newId(), user.getId(), role.getId(), tenantId, user.getId()));
+  }
+
+  private static UUID fromBytes(byte[] bytes) {
+    ByteBuffer buf = ByteBuffer.wrap(bytes);
+    return new UUID(buf.getLong(), buf.getLong());
+  }
 
   private User seedUser(UUID tenantId, String tag) {
     String email = "gs-" + tag + "-" + UUID.randomUUID() + "@example.com";

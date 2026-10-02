@@ -64,6 +64,11 @@ class RoleAssignmentEscalationIT {
     UUID tenantId = uuidGenerator.newId();
     User user = seedUser("no-perms", tenantId);
     UUID userId = user.getId();
+    // US-018 A4: only an administrator may self-assign, so the caller holds an admin-defining
+    // role (the whole catalogue).
+    Role adminDefiningRole = seedRole("ADMIN-DEFINING", tenantId);
+    grantWholeCatalogue(adminDefiningRole.getId());
+    seedActiveAssignment(tenantId, adminDefiningRole.getId(), userId, userId);
     // A plain custom role with zero attached permissions -- the counter must fire anyway.
     Role role = seedRole("NO-PERMS", tenantId);
     RoleChangeActor actor = new RoleChangeActor(userId, tenantId);
@@ -180,6 +185,13 @@ class RoleAssignmentEscalationIT {
   private UserRole seedActiveAssignment(UUID tenantId, UUID roleId, UUID assigneeId, UUID assignedById) {
     return userRoleRepository.save(
         new UserRole(uuidGenerator.newId(), assigneeId, roleId, tenantId, assignedById));
+  }
+
+  /** Makes {@code roleId} admin-defining (US-018 §2.1): attaches every catalogue permission. */
+  private void grantWholeCatalogue(UUID roleId) {
+    jdbc.update(
+        "INSERT INTO role_permissions (role_id, permission_id) SELECT ?, id FROM permissions",
+        toBytes(roleId));
   }
 
   private RequestContext requestContext() {

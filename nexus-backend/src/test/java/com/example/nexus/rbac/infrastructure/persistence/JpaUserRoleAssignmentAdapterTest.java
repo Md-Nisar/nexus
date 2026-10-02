@@ -58,6 +58,7 @@ class JpaUserRoleAssignmentAdapterTest {
 
   @Mock private JpaUserRoleRepository userRoleRepository;
   @Mock private JpaRoleRepository roleRepository;
+  @Mock private JpaPermissionRepository permissionRepository;
   @Mock private IdGenerator idGenerator;
 
   private JpaUserRoleAssignmentAdapter adapter;
@@ -69,7 +70,8 @@ class JpaUserRoleAssignmentAdapterTest {
 
   @BeforeEach
   void setUp() {
-    adapter = new JpaUserRoleAssignmentAdapter(userRoleRepository, roleRepository, idGenerator);
+    adapter = new JpaUserRoleAssignmentAdapter(
+            userRoleRepository, roleRepository, permissionRepository, idGenerator);
     userId = UUID.randomUUID();
     roleId = UUID.randomUUID();
     tenantId = UUID.randomUUID();
@@ -216,6 +218,15 @@ class JpaUserRoleAssignmentAdapterTest {
 
     assertThat(adapter.findPermissionIdsForRole(roleId, tenantId)).containsExactly(permissionId);
     verify(roleRepository).findPermissionIdsByRoleAndTenantId(roleId, tenantId);
+  }
+
+  @Test
+  void should_delegateToPermissionRepository_when_findingCatalogueIds_M15() {
+    UUID permissionId = UUID.randomUUID();
+    when(permissionRepository.findCatalogueIds()).thenReturn(Set.of(permissionId));
+
+    assertThat(adapter.findCatalogueIds()).containsExactly(permissionId);
+    verify(permissionRepository).findCatalogueIds();
   }
 
   @Test

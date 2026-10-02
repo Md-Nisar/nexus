@@ -14,5 +14,7 @@ public enum DenialReason {
   // US-012 AC8: caller lacks an active TENANT_ADMIN assignment and attempted to grant TENANT_ADMIN.
   NOT_TENANT_ADMIN,
   // US-018 A2 (ADR-0021 D2): the target role carries a permission the caller does not hold.
-  GRANT_EXCEEDS_CALLER
+  GRANT_EXCEEDS_CALLER,
+  // US-018 A4 (ADR-0021): a caller who is not an administrator assigned a role to themselves.
+  SELF_ASSIGNMENT
 }

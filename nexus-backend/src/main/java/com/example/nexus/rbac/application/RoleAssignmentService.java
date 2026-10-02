@@ -16,6 +16,7 @@ import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
 import com.example.nexus.rbac.domain.LastAdminRoleException;
 import com.example.nexus.rbac.domain.RbacAdminEquivalence;
+import com.example.nexus.rbac.domain.RbacAdministrators;
 import com.example.nexus.rbac.domain.RbacDangerousPermissions;
 import com.example.nexus.rbac.domain.RbacRoleNames;
 import com.example.nexus.rbac.domain.Role;
@@ -218,6 +219,11 @@ public class RoleAssignmentService {
    * user:role:assign}, and the caller may grant only what they hold: the target role's permission
    * ids must be a subset of the union of the caller's held permission ids (M13). This does not
    * close RES-1(b); the second-account path is tracked as RES-26.
+   *
+   * <p><b>US-018 A4:</b> a self-assignment additionally requires the caller to be an administrator
+   * (03-design.md §2.1). Denials follow Decision 6: tenant checks, throttle, legacy gate, A4, A2,
+   * duplicate 409, with one denial row carrying the first reason. A4 removes only the literal
+   * self-target step of RES-1(b); its primitive survives through a second account (RES-26).
    */
   @Transactional
   public ActiveRoleAssignment assign(
@@ -272,9 +278,17 @@ public class RoleAssignmentService {
             requestContext);
       }
 
-      // US-018 A2 (ADR-0021 D2): after the throttle and the legacy gate, before the duplicate
-      // 409, so a denied caller learns nothing about the target's assignment state.
-      requireGrantWithinCallerHoldings(actor, targetUserId, role, requestContext);
+      // US-018 Decision 6 (03-design.md §4.4): after the throttle and the legacy gate, A4 then A2,
+      // both before the duplicate 409, so a denied caller learns nothing about the target's
+      // assignment state. Both take their input from this ONE M13 read, never two reads that
+      // could disagree.
+      List<RolePermissionRef> heldRolePermissions =
+          userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(
+              actor.userId(), actor.tenantId());
+      requireAdministratorForSelfAssignment(
+          actor, targetUserId, role, heldRolePermissions, requestContext);
+      requireGrantWithinCallerHoldings(
+          actor, targetUserId, role, heldRolePermissions, requestContext);
 
       // 07-security-review.md M-1 (2026-09-24): the canary's M12-based caller-status read MUST
       // run BEFORE the INSERT below, never after. Reading it post-commit (as originally shipped)
@@ -994,6 +1008,54 @@ public class RoleAssignmentService {
   }
 
   /**
+   * US-018 A4 (ADR-0021, 03-design.md §2.1, §4.4): a caller may assign a role to themselves only
+   * if they are an administrator, i.e. at least ONE of their held roles is admin-defining ({@link
+   * RbacAdministrators#isAdminDefining}). Evaluated per role over M13's rows, never over the union,
+   * so the whole catalogue held across two partial roles does not qualify (fails closed).
+   *
+   * <p>M15 (the catalogue) is read only on this self-target branch. A read failure propagates
+   * (500) and never allows; an empty catalogue makes nobody an administrator.
+   *
+   * <p>This closes the literal self-target step only. The same pre-positioning through a second
+   * account is not prevented here (RES-26, T-E32).
+   */
+  private void requireAdministratorForSelfAssignment(
+      RoleChangeActor actor,
+      UUID targetUserId,
+      Role role,
+      List<RolePermissionRef> heldRolePermissions,
+      RequestContext requestContext) {
+    if (!targetUserId.equals(actor.userId())) {
+      return;
+    }
+    Set<UUID> catalogueIds = userRoleAssignmentPort.findCatalogueIds();
+    boolean callerIsAdministrator =
+        heldRolePermissions.stream()
+            .collect(
+                Collectors.groupingBy(
+                    RolePermissionRef::roleId,
+                    Collectors.mapping(RolePermissionRef::permissionId, Collectors.toSet())))
+            .values()
+            .stream()
+            .anyMatch(rolePermissionIds ->
+                RbacAdministrators.isAdminDefining(rolePermissionIds, catalogueIds));
+    if (callerIsAdministrator) {
+      return;
+    }
+    recordThrottleDenialAndMaybeWarn(actor, OPERATION_ASSIGN);
+    log.atWarn()
+        .addKeyValue(LOG_KEY_EVENT, "RBAC_SELF_ASSIGNMENT_DENIED")
+        .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+        .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+        .addKeyValue(LOG_KEY_ROLE_ID, role.getId())
+        .log("Blocked a self-assignment by a caller who is not an administrator");
+    recordDenial(
+        actor, targetUserId, role.getId(), role.getName(), DenialReason.SELF_ASSIGNMENT,
+        OPERATION_ASSIGN, requestContext, null);
+    throw new InsufficientPermissionException(USER_ROLE_ASSIGN, DenialReason.SELF_ASSIGNMENT);
+  }
+
+  /**
    * US-018 A2 (ADR-0021 D2, 03-design.md §4.3, §4.4): denies unless every permission of the target
    * role (M14) is in the union of the caller's held permission ids (M13). Ids only, from the one
    * authorization read, never M12 or a JWT claim (MC-2).
@@ -1006,13 +1068,15 @@ public class RoleAssignmentService {
    * the role's contents.
    */
   private void requireGrantWithinCallerHoldings(
-      RoleChangeActor actor, UUID targetUserId, Role role, RequestContext requestContext) {
+      RoleChangeActor actor,
+      UUID targetUserId,
+      Role role,
+      List<RolePermissionRef> heldRolePermissions,
+      RequestContext requestContext) {
     Set<UUID> targetPermissionIds =
         userRoleAssignmentPort.findPermissionIdsForRole(role.getId(), actor.tenantId());
     Set<UUID> heldPermissionIds =
-        userRoleAssignmentPort
-            .findHeldRolePermissionIdsForAuthorization(actor.userId(), actor.tenantId())
-            .stream()
+        heldRolePermissions.stream()
             .map(RolePermissionRef::permissionId)
             .collect(Collectors.toSet());
     int missingCount =

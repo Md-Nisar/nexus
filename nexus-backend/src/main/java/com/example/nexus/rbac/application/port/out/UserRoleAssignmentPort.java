@@ -156,6 +156,16 @@ public interface UserRoleAssignmentPort {
   Set<UUID> findPermissionIdsForRole(UUID roleId, UUID tenantId);
 
   /**
+   * M15 (US-018, 03-design.md §2.1, §4.3) — the ids of the whole, global permission catalogue,
+   * against which a role is admin-defining. Read only when needed: on {@code assign()}, only for a
+   * self-target (A4).
+   *
+   * <p>MUST be a plain, NON-LOCKING read and MUST NEVER be annotated {@code @Lock} (MC-A). A read
+   * failure propagates; the caller must never treat it as "allow".
+   */
+  Set<UUID> findCatalogueIds();
+
+  /**
    * M3 — the active assignment to revoke; empty covers both "never assigned" and "already revoked"
    * (never a silent 204 — always a 404).
    *

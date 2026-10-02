@@ -505,10 +505,10 @@ class RoleAssignmentSecurityIT {
   void should_notTripCanaryAsFalse_when_fullyAdminEquivalentNonNamedCallerSelfAssignsTenantAdmin() {
     UUID tenantK = uuidGenerator.newId();
     Role allThreeRole = seedRole(tenantK, "CANARY-ALL-THREE", "canary");
-    grantPermission(allThreeRole.getId(), USER_WRITE_PERMISSION_ID);
-    grantPermission(allThreeRole.getId(), USER_ROLE_ASSIGN_PERMISSION_ID);
-    grantPermission(allThreeRole.getId(), ROLE_WRITE_PERMISSION_ID);
-    grantPermission(allThreeRole.getId(), TENANT_WRITE_PERMISSION_ID);
+    // US-018 A4: only an administrator may self-assign, so the (still non-TENANT_ADMIN-named)
+    // caller role carries the whole catalogue, which includes all three dangerous permissions
+    // and user:role:assign.
+    grantWholeCatalogue(allThreeRole.getId());
     User caller = seedUser(tenantK, "canary-caller");
     seedActiveAssignment(tenantK, allThreeRole.getId(), caller.getId(), caller.getId());
     String token = mintToken(caller);
@@ -857,6 +857,13 @@ class RoleAssignmentSecurityIT {
 
   private void grantPermission(UUID roleId, UUID permissionId) {
     rolePermissionRepository.save(new RolePermission(roleId, permissionId));
+  }
+
+  /** Makes {@code roleId} admin-defining (US-018 §2.1): attaches every catalogue permission. */
+  private void grantWholeCatalogue(UUID roleId) {
+    jdbc.update(
+        "INSERT INTO role_permissions (role_id, permission_id) SELECT ?, id FROM permissions",
+        toBytes(roleId));
   }
 
   private UserRole seedActiveAssignment(UUID tenantId, UUID roleId, UUID assigneeId, UUID assignedById) {

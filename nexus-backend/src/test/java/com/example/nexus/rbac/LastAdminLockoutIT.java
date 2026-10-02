@@ -26,6 +26,7 @@ import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.domain.UserRole;
+import com.example.nexus.rbac.infrastructure.persistence.JpaPermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
@@ -133,6 +134,7 @@ class LastAdminLockoutIT {
   @Autowired private JpaRoleRepository roleRepository;
   @Autowired private JpaUserRoleRepository userRoleRepository;
   @Autowired private JpaRolePermissionRepository rolePermissionRepository;
+  @Autowired private JpaPermissionRepository permissionRepository;
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private JdbcTemplate jdbc;
   @Autowired private MeterRegistry meterRegistry;
@@ -914,6 +916,22 @@ class LastAdminLockoutIT {
     assertThat(emittedSql).as("M13 and M14, captured from one action").hasSize(2);
     assertNoLockingClause(emittedSql.get(0), "M13 (findHeldRolePermissionIdsForAuthorization)");
     assertNoLockingClause(emittedSql.get(1), "M14 (findPermissionIdsByRoleAndTenantId)");
+  }
+
+  // ── Scenario 6f (US-018 T-002, 03-design.md §4.11 MC-A extended): M15 non-locking ──────────
+
+  /**
+   * MC-A extended: M15 ({@code findCatalogueIds}, hosted on {@code JpaPermissionRepository}) is
+   * A4's catalogue read. It reads only {@code permissions}, on which {@code nexus_app} holds {@code
+   * SELECT} only, so a locking form would be rejected in production yet pass every Testcontainers
+   * IT (container superuser). Invoked directly against the repository bean.
+   */
+  @Test
+  void should_neverEmitForShareOrForUpdate_when_capturingM15sSql_MCA() throws Exception {
+    List<String> emittedSql = captureHibernateSql(permissionRepository::findCatalogueIds);
+
+    assertThat(emittedSql).as("M15, captured from one action").hasSize(1);
+    assertNoLockingClause(emittedSql.get(0), "M15 (findCatalogueIds)");
   }
 
   // ── Scenario 6e (US-017 T-006(c), 03-design.md §11.2 MC-C, RC-20.7): plan stability ─────
