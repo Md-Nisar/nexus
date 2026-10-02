@@ -51,6 +51,19 @@ public interface RbacAuditPort {
   void recordRoleAssignmentDenied(RbacAuditEvent event, DenialReason reason, String operation);
 
   /**
+   * Same contract as {@link #recordRoleAssignmentDenied(RbacAuditEvent, DenialReason, String)},
+   * for a grant-subset denial ({@code GRANT_EXCEEDS_CALLER}, US-018 A2, 03-design.md §4.4) that
+   * also records how many of the target role's permissions the caller lacked.
+   *
+   * @param missingCount the NUMBER of missing permissions, persisted as {@code missingCount} in
+   *     the audit metadata. Never the ids or names themselves: {@code auth_events} is readable by
+   *     {@code audit:read} holders, and the ids would disclose the role's contents. {@code null}
+   *     omits the key.
+   */
+  void recordRoleAssignmentDenied(
+      RbacAuditEvent event, DenialReason reason, String operation, Integer missingCount);
+
+  /**
    * Records a successful role creation (AC12). Must never throw or block. Invoked post-commit;
    * {@code event.permissionId()}/{@code event.permissionName()} are {@code null} — a freshly
    * created role carries no permissions.

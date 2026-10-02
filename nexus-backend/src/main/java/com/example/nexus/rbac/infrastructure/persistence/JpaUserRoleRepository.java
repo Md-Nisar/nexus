@@ -2,6 +2,7 @@ package com.example.nexus.rbac.infrastructure.persistence;
 
 import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.RolePermissionName;
+import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.UserRole;
 import java.util.Collection;
 import java.util.List;
@@ -154,6 +155,28 @@ public interface JpaUserRoleRepository
         AND ur.userId = :userId AND ur.tenantId = :tenantId AND ur.revokedAt IS NULL
       """)
   List<RolePermissionName> findPermissionNamesForActiveAssignmentsOfUser(
+      @Param("userId") UUID userId, @Param("tenantId") UUID tenantId);
+
+  /**
+   * M13 (US-018, 03-design.md §4.3) — the {@code (roleId, permissionId)} pairs a user holds through
+   * active assignments in one tenant. This is <b>the</b> read for grant-subset authorization
+   * decisions (ADR-0021 D2); contrast M12 above, which must never be used for one.
+   *
+   * <p>Driven off {@code fk_user_roles_user} ({@code ur.userId}). Joins {@code Role} with {@code
+   * r.tenantId = ur.tenantId} (T-S1): {@code user_roles.tenant_id} has no constraint tying it to
+   * the role's own tenant until the composite FK lands, so a drifted row must not widen the
+   * caller's holdings. Does not join {@code Permission}: ids only, no names.
+   *
+   * <p>Plain, NON-LOCKING snapshot read; MUST NEVER be annotated {@code @Lock} (MC-A).
+   */
+  @Query(
+      """
+      SELECT new com.example.nexus.rbac.domain.RolePermissionRef(rp.id.roleId, rp.id.permissionId)
+      FROM UserRole ur, Role r, RolePermission rp
+      WHERE ur.roleId = r.id AND r.tenantId = ur.tenantId AND rp.id.roleId = r.id
+        AND ur.userId = :userId AND ur.tenantId = :tenantId AND ur.revokedAt IS NULL
+      """)
+  List<RolePermissionRef> findHeldRolePermissionIdsForAuthorization(
       @Param("userId") UUID userId, @Param("tenantId") UUID tenantId);
 
   /**

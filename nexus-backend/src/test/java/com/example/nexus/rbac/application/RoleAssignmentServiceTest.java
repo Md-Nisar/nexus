@@ -33,6 +33,7 @@ import com.example.nexus.rbac.domain.LastAdminRoleException;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RolePermissionName;
+import com.example.nexus.rbac.domain.RolePermissionRef;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -3477,6 +3478,260 @@ class RoleAssignmentServiceTest {
 
     verify(userRoleAssignmentPort, times(1)).findPermissionNamesForTenantRoles(tenantId);
     verify(userRoleAssignmentPort, times(1)).findRoleIdByName(tenantId, "TENANT_ADMIN");
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // US-018 T-001: A1 (user:role:assign) and A2 grant-subset on assign() (ADR-0021 D2,
+  // 03-design.md §4.3, §4.4). An unstubbed M13 returns an empty list, which means DENY for any
+  // permissioned target: never "fix" a red test here by defaulting to allow.
+  // ---------------------------------------------------------------------------------------
+
+  private void stubBenignAssignTarget() {
+    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
+    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(memberRole()));
+  }
+
+  private void stubSuccessfulInsert() {
+    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
+    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
+        .thenReturn(UUID.randomUUID());
+    when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
+        .thenReturn(
+            Optional.of(
+                new ActiveRoleAssignment(targetUserId, roleId, "MEMBER", Instant.now(), actorId)));
+  }
+
+  @Test
+  void should_deny403GrantExceedsCaller_when_targetRoleCarriesPermissionCallerLacks() {
+    UUID held = UUID.randomUUID();
+    UUID lacked = UUID.randomUUID();
+    stubBenignAssignTarget();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId)).thenReturn(Set.of(held, lacked));
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(List.of(new RolePermissionRef(UUID.randomUUID(), held)));
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .satisfies(
+            e ->
+                assertThat(((InsufficientPermissionException) e).getReason())
+                    .isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+    verify(throttlePort).recordDenial(tenantId, actorId);
+    verifyNoInteractions(permissionCachePort);
+  }
+
+  @Test
+  void should_assign_when_targetPermissionsSubsetOfCallerUnion() {
+    UUID p1 = UUID.randomUUID();
+    UUID p2 = UUID.randomUUID();
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId)).thenReturn(Set.of(p1, p2));
+    // The union spans two of the caller's roles: A2 is a grant bound over the UNION.
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(
+            List.of(
+                new RolePermissionRef(UUID.randomUUID(), p1),
+                new RolePermissionRef(UUID.randomUUID(), p2),
+                new RolePermissionRef(UUID.randomUUID(), UUID.randomUUID())));
+
+    ActiveRoleAssignment result = service.assign(actor, targetUserId, roleId, ctx);
+
+    assertThat(result.roleId()).isEqualTo(roleId);
+    verify(userRoleAssignmentPort).assign(targetUserId, roleId, tenantId, actorId);
+    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
+  }
+
+  @Test
+  void should_assign_when_targetRoleHasNoPermissions() {
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId)).thenReturn(Set.of());
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    // EC7: an empty role grants nothing, so it passes even for a caller holding nothing.
+    verify(userRoleAssignmentPort).assign(targetUserId, roleId, tenantId, actorId);
+  }
+
+  @Test
+  void should_propagateAndNotSave_when_heldPermissionReadThrows() {
+    stubBenignAssignTarget();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Set.of(UUID.randomUUID()));
+    IllegalStateException readFailure = new IllegalStateException("db down");
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenThrow(readFailure);
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isSameAs(readFailure);
+
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+    verifyNoInteractions(rbacAuditPort, permissionCachePort);
+  }
+
+  @Test
+  void should_recordMissingCountAndNoIds_when_grantExceedsCaller() {
+    UUID held = UUID.randomUUID();
+    UUID lackedA = UUID.randomUUID();
+    UUID lackedB = UUID.randomUUID();
+    stubBenignAssignTarget();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Set.of(held, lackedA, lackedB));
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(List.of(new RolePermissionRef(UUID.randomUUID(), held)));
+    ListAppender<ILoggingEvent> logs = startLogCapture();
+
+    try {
+      assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+          .isInstanceOf(InsufficientPermissionException.class);
+    } finally {
+      stopLogCapture(logs);
+    }
+
+    verify(rbacAuditPort, times(1))
+        .recordRoleAssignmentDenied(
+            new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx),
+            DenialReason.GRANT_EXCEEDS_CALLER,
+            "assign",
+            2);
+    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
+
+    ILoggingEvent warn =
+        logs.list.stream()
+            .filter(e -> "RBAC_GRANT_EXCEEDS_CALLER".equals(keyValueMap(e).get("event")))
+            .findFirst()
+            .orElseThrow();
+    assertThat(warn.getLevel()).isEqualTo(Level.WARN);
+    Map<String, Object> fields = keyValueMap(warn);
+    assertThat(fields)
+        .containsEntry("tenantId", tenantId)
+        .containsEntry("actorUserId", actorId)
+        .containsEntry("targetUserId", targetUserId)
+        .containsEntry("roleId", roleId)
+        .containsEntry("missingCount", 2);
+    assertThat(fields.values()).doesNotContain(lackedA, lackedB, held);
+    assertThat(warn.getFormattedMessage())
+        .doesNotContain(lackedA.toString())
+        .doesNotContain(lackedB.toString());
+  }
+
+  @Test
+  void should_reportUserRoleAssignAsRequiredPermission_when_grantExceedsCaller() {
+    stubBenignAssignTarget();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Set.of(UUID.randomUUID()));
+
+    // The endpoint permission, never the missing one: no oracle on the role's contents.
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .satisfies(
+            e ->
+                assertThat(((InsufficientPermissionException) e).getRequiredPermission())
+                    .isEqualTo("user:role:assign"));
+  }
+
+  @Test
+  void should_reportUserRoleAssignAsRequiredPermission_when_revokeTargetCrossTenant() {
+    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(otherTenantId));
+
+    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .satisfies(
+            e ->
+                assertThat(((InsufficientPermissionException) e).getRequiredPermission())
+                    .isEqualTo("user:role:assign"));
+  }
+
+  @Test
+  void should_reportUserRoleAssignAsRequiredPermission_when_throttled() {
+    stubBenignAssignTarget();
+    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .satisfies(
+            e ->
+                assertThat(((InsufficientPermissionException) e).getRequiredPermission())
+                    .isEqualTo("user:role:assign"));
+  }
+
+  @Test
+  void should_checkThrottleBeforeGrantSubsetReads_when_assigning() {
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    // EC8: throttle timing must not be usable to probe role contents.
+    // Two independent orderings, so the relative order of M13 and M14 is not pinned.
+    InOrder targetRead = Mockito.inOrder(throttlePort, userRoleAssignmentPort);
+    targetRead.verify(throttlePort).isThrottled(tenantId, actorId);
+    targetRead.verify(userRoleAssignmentPort).findPermissionIdsForRole(roleId, tenantId);
+    targetRead.verify(userRoleAssignmentPort).hasActiveAssignment(targetUserId, roleId);
+    InOrder callerRead = Mockito.inOrder(throttlePort, userRoleAssignmentPort);
+    callerRead.verify(throttlePort).isThrottled(tenantId, actorId);
+    callerRead
+        .verify(userRoleAssignmentPort)
+        .findHeldRolePermissionIdsForAuthorization(actorId, tenantId);
+    callerRead.verify(userRoleAssignmentPort).hasActiveAssignment(targetUserId, roleId);
+  }
+
+  @Test
+  void should_denyNotTenantAdminBeforeGrantSubset_when_legacyGateFires() {
+    Role role = customRole("BILLING_ADMIN");
+    UUID adminRoleId = UUID.randomUUID();
+    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
+    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
+        .thenReturn(List.of("user:write"));
+    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
+        .thenReturn(Optional.of(adminRoleId));
+    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId))
+        .thenReturn(false);
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .satisfies(
+            e ->
+                assertThat(((InsufficientPermissionException) e).getReason())
+                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
+
+    verify(userRoleAssignmentPort, never()).findPermissionIdsForRole(any(), any());
+    verify(userRoleAssignmentPort, never()).findHeldRolePermissionIdsForAuthorization(any(), any());
+    verify(rbacAuditPort, times(1))
+        .recordRoleAssignmentDenied(any(), eq(DenialReason.NOT_TENANT_ADMIN), eq("assign"));
+    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
+  }
+
+  /**
+   * MC-2, behavioural half (the structural half is {@code HexagonalArchitectureTest}): even when
+   * M12 would report the caller as holding everything, A2 decides from M13 alone, and M12 is never
+   * read on the decision path.
+   */
+  @Test
+  void should_denyGrantExceedsCaller_when_m12ReportsFullHoldingsButM13Empty() {
+    UUID permissionId = UUID.randomUUID();
+    stubBenignAssignTarget();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId)).thenReturn(Set.of(permissionId));
+    Mockito.lenient()
+        .when(userRoleAssignmentPort.findPermissionNamesForActiveAssignmentsOfUser(actorId, tenantId))
+        .thenReturn(List.of(new RolePermissionName(UUID.randomUUID(), "role:write")));
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(List.of());
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .satisfies(
+            e ->
+                assertThat(((InsufficientPermissionException) e).getReason())
+                    .isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    verify(userRoleAssignmentPort, never())
+        .findPermissionNamesForActiveAssignmentsOfUser(any(), any());
   }
 
   // ---------------------------------------------------------------------------------------

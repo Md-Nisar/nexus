@@ -15,10 +15,12 @@ import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
 import com.example.nexus.rbac.domain.IdGenerator;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermissionName;
+import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.UserRole;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -191,6 +193,29 @@ class JpaUserRoleAssignmentAdapterTest {
 
     assertThat(result).containsExactly(pair);
     verify(userRoleRepository).findPermissionNamesForActiveAssignmentsOfUser(userId, tenantId);
+  }
+
+  @Test
+  void should_delegateToUserRoleRepository_when_findingHeldRolePermissionIdsForAuthorization() {
+    RolePermissionRef ref = new RolePermissionRef(roleId, UUID.randomUUID());
+    when(userRoleRepository.findHeldRolePermissionIdsForAuthorization(userId, tenantId))
+        .thenReturn(List.of(ref));
+
+    List<RolePermissionRef> result =
+        adapter.findHeldRolePermissionIdsForAuthorization(userId, tenantId);
+
+    assertThat(result).containsExactly(ref);
+    verify(userRoleRepository).findHeldRolePermissionIdsForAuthorization(userId, tenantId);
+  }
+
+  @Test
+  void should_delegateToRoleRepository_when_findingPermissionIdsForRole() {
+    UUID permissionId = UUID.randomUUID();
+    when(roleRepository.findPermissionIdsByRoleAndTenantId(roleId, tenantId))
+        .thenReturn(Set.of(permissionId));
+
+    assertThat(adapter.findPermissionIdsForRole(roleId, tenantId)).containsExactly(permissionId);
+    verify(roleRepository).findPermissionIdsByRoleAndTenantId(roleId, tenantId);
   }
 
   @Test

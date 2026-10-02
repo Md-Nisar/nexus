@@ -5,9 +5,11 @@ import com.example.nexus.rbac.domain.ActiveAssignmentRef;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermissionName;
+import com.example.nexus.rbac.domain.RolePermissionRef;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -125,6 +127,33 @@ public interface UserRoleAssignmentPort {
    * ADR-0018 D3, upheld — this method is the reason D3 did not have to be reopened to satisfy RC-17).
    */
   List<RolePermissionName> findPermissionNamesForActiveAssignmentsOfUser(UUID userId, UUID tenantId);
+
+  /**
+   * M13 (US-018, 03-design.md §4.3) — every {@code (roleId, permissionId)} pair the user holds
+   * through an ACTIVE assignment in {@code tenantId}. This is <b>the</b> read for grant-subset
+   * authorization decisions (ADR-0021 D2): the caller derives the union of held permission ids
+   * from it. Never substitute M12 or a JWT claim for it.
+   *
+   * <p>Joins {@code roles} with {@code r.tenantId = ur.tenantId} (T-S1), so a {@code user_roles}
+   * row that points at another tenant's role never widens the result. Driven off {@code
+   * fk_user_roles_user}. Ids only; it does not join {@code permissions}.
+   *
+   * <p>MUST be a plain, NON-LOCKING snapshot read and MUST NEVER be annotated {@code @Lock}: a
+   * locking read here would be a new acquisition outside the set-lock region (ADR-0018 D6), and
+   * {@code nexus_app} holds {@code SELECT} only on {@code permissions} (MC-A). A read failure
+   * propagates; the caller must never treat it as "allow".
+   */
+  List<RolePermissionRef> findHeldRolePermissionIdsForAuthorization(UUID userId, UUID tenantId);
+
+  /**
+   * M14 (US-018, 03-design.md §4.3) — the ids of every permission attached to {@code roleId},
+   * provided the role belongs to {@code tenantId}; empty otherwise. The caller has already
+   * tenant-verified the role, so the tenant predicate is defense in depth (T-S1), not the primary
+   * check — and it keeps this read inside the tenant-isolation ArchUnit gate without an exemption.
+   *
+   * <p>MUST be a plain, NON-LOCKING read and MUST NEVER be annotated {@code @Lock} (MC-A).
+   */
+  Set<UUID> findPermissionIdsForRole(UUID roleId, UUID tenantId);
 
   /**
    * M3 — the active assignment to revoke; empty covers both "never assigned" and "already revoked"

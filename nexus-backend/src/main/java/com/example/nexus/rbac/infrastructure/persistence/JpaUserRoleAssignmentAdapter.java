@@ -8,11 +8,13 @@ import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
 import com.example.nexus.rbac.domain.IdGenerator;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermissionName;
+import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.UserRole;
 import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
@@ -110,6 +112,17 @@ public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
   public List<RolePermissionName> findPermissionNamesForActiveAssignmentsOfUser(
       UUID userId, UUID tenantId) {
     return userRoleRepository.findPermissionNamesForActiveAssignmentsOfUser(userId, tenantId);
+  }
+
+  @Override
+  public List<RolePermissionRef> findHeldRolePermissionIdsForAuthorization(
+      UUID userId, UUID tenantId) {
+    return userRoleRepository.findHeldRolePermissionIdsForAuthorization(userId, tenantId);
+  }
+
+  @Override
+  public Set<UUID> findPermissionIdsForRole(UUID roleId, UUID tenantId) {
+    return roleRepository.findPermissionIdsByRoleAndTenantId(roleId, tenantId);
   }
 
   @Override

@@ -83,6 +83,9 @@ class RoleAssignmentSecurityIT {
       UUID.fromString("019f6839-1802-7000-8000-000000000003");
   private static final UUID USER_WRITE_PERMISSION_ID =
       UUID.fromString("019f6839-1803-7000-8000-000000000004");
+  // US-018 A1 (V6): the endpoint permission for POST and DELETE /users/{id}/roles.
+  private static final UUID USER_ROLE_ASSIGN_PERMISSION_ID =
+      UUID.fromString("019f6839-1807-7000-8000-000000000008");
   // Dangerous per RbacDangerousPermissions.NAMES -- used by the T-S7 freshness-on-the-privilege-
   // path extension below to construct a role that is privileged WITHOUT being named TENANT_ADMIN.
   private static final UUID ROLE_WRITE_PERMISSION_ID =
@@ -131,17 +134,17 @@ class RoleAssignmentSecurityIT {
   void should_return403WithCrossTenantTarget_when_postingRoleAssignmentForUserInDifferentTenant() {
     UUID tenantA = uuidGenerator.newId();
     UUID tenantB = uuidGenerator.newId();
-    User caller = seedUserWithRole(tenantA, "post-xt-caller", "WRITER", USER_WRITE_PERMISSION_ID);
+    User caller = seedUserWithRole(tenantA, "post-xt-caller", "ASSIGNER", USER_ROLE_ASSIGN_PERMISSION_ID);
     User targetInTenantB = seedUser(tenantB, "post-xt-target");
     UUID someRoleId = uuidGenerator.newId(); // never reached: the tenant check on the user fires first
     String token = mintToken(caller);
-    double before = permissionDeniedCount("user:write", "CROSS_TENANT_TARGET");
+    double before = permissionDeniedCount("user:role:assign", "CROSS_TENANT_TARGET");
 
     ResponseEntity<Map> resp = postAssign(token, targetInTenantB.getId(), someRoleId);
 
     assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
     assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
-    assertDenialReasonIncrementedByOne("user:write", "CROSS_TENANT_TARGET", before);
+    assertDenialReasonIncrementedByOne("user:role:assign", "CROSS_TENANT_TARGET", before);
   }
 
   /**
@@ -176,17 +179,17 @@ class RoleAssignmentSecurityIT {
   void should_return403WithCrossTenantTarget_when_deletingRoleAssignmentForUserInDifferentTenant() {
     UUID tenantA = uuidGenerator.newId();
     UUID tenantB = uuidGenerator.newId();
-    User caller = seedUserWithRole(tenantA, "delete-xt-caller", "WRITER", USER_WRITE_PERMISSION_ID);
+    User caller = seedUserWithRole(tenantA, "delete-xt-caller", "ASSIGNER", USER_ROLE_ASSIGN_PERMISSION_ID);
     User targetInTenantB = seedUser(tenantB, "delete-xt-target");
     UUID someRoleId = uuidGenerator.newId(); // never reached: the tenant check on the user fires first
     String token = mintToken(caller);
-    double before = permissionDeniedCount("user:write", "CROSS_TENANT_TARGET");
+    double before = permissionDeniedCount("user:role:assign", "CROSS_TENANT_TARGET");
 
     ResponseEntity<Map> resp = deleteRole(token, targetInTenantB.getId(), someRoleId);
 
     assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
     assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
-    assertDenialReasonIncrementedByOne("user:write", "CROSS_TENANT_TARGET", before);
+    assertDenialReasonIncrementedByOne("user:role:assign", "CROSS_TENANT_TARGET", before);
   }
 
   // ── Nonexistent user (distinct from cross-tenant): 404 on all three verbs ──────────────
@@ -194,7 +197,7 @@ class RoleAssignmentSecurityIT {
   @Test
   void should_return404_when_postingRoleAssignmentForNonexistentUser() {
     UUID tenantA = uuidGenerator.newId();
-    User caller = seedUserWithRole(tenantA, "post-404-caller", "WRITER", USER_WRITE_PERMISSION_ID);
+    User caller = seedUserWithRole(tenantA, "post-404-caller", "ASSIGNER", USER_ROLE_ASSIGN_PERMISSION_ID);
     UUID nonexistentUserId = uuidGenerator.newId();
     UUID someRoleId = uuidGenerator.newId();
     String token = mintToken(caller);
@@ -224,7 +227,7 @@ class RoleAssignmentSecurityIT {
   @Test
   void should_return404_when_deletingRoleAssignmentForNonexistentUser() {
     UUID tenantA = uuidGenerator.newId();
-    User caller = seedUserWithRole(tenantA, "delete-404-caller", "WRITER", USER_WRITE_PERMISSION_ID);
+    User caller = seedUserWithRole(tenantA, "delete-404-caller", "ASSIGNER", USER_ROLE_ASSIGN_PERMISSION_ID);
     UUID nonexistentUserId = uuidGenerator.newId();
     UUID someRoleId = uuidGenerator.newId();
     String token = mintToken(caller);
@@ -240,23 +243,22 @@ class RoleAssignmentSecurityIT {
   // ═══════════════════════════════════════════════════════════════════
 
   @Test
-  void should_return403WithNotTenantAdmin_when_nonAdminHoldingUserWriteAttemptsToGrantTenantAdmin() {
+  void should_return403WithNotTenantAdmin_when_nonAdminHoldingUserRoleAssignAttemptsToGrantTenantAdmin() {
     UUID tenantC = uuidGenerator.newId();
-    // Holds user:write via a role NOT named TENANT_ADMIN -- today this is unreachable in
-    // production (only TENANT_ADMIN carries user:write pre-US-015), but this test must not
-    // depend on that: it seeds the scenario directly, per 04-tasks.md T-019's own instruction.
+    // Holds the endpoint permission (user:role:assign since US-018 A1) via a role NOT named
+    // TENANT_ADMIN, seeded directly per 04-tasks.md T-019's own instruction.
     User nonAdminWriter =
-        seedUserWithRole(tenantC, "self-esc-caller", "USER_WRITER", USER_WRITE_PERMISSION_ID);
+        seedUserWithRole(tenantC, "self-esc-caller", "ROLE_ASSIGNER", USER_ROLE_ASSIGN_PERMISSION_ID);
     Role tenantAdminRole = seedRole(tenantC, "TENANT_ADMIN", "self-esc");
     User target = seedUser(tenantC, "self-esc-target");
     String token = mintToken(nonAdminWriter);
-    double before = permissionDeniedCount("user:write", "NOT_TENANT_ADMIN");
+    double before = permissionDeniedCount("user:role:assign", "NOT_TENANT_ADMIN");
 
     ResponseEntity<Map> resp = postAssign(token, target.getId(), tenantAdminRole.getId());
 
     assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
     assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
-    assertDenialReasonIncrementedByOne("user:write", "NOT_TENANT_ADMIN", before);
+    assertDenialReasonIncrementedByOne("user:role:assign", "NOT_TENANT_ADMIN", before);
   }
 
   /**
@@ -269,15 +271,15 @@ class RoleAssignmentSecurityIT {
    * tenant's last administrator rather than merely failing an assertion.
    */
   @Test
-  void should_return403WithNotTenantAdmin_when_nonAdminHoldingUserWriteAttemptsToRevokeAnActiveTenantAdmin() {
+  void should_return403WithNotTenantAdmin_when_nonAdminHoldingUserRoleAssignAttemptsToRevokeAnActiveTenantAdmin() {
     UUID tenantF = uuidGenerator.newId();
     User nonAdminWriter =
-        seedUserWithRole(tenantF, "revoke-esc-caller", "USER_WRITER", USER_WRITE_PERMISSION_ID);
+        seedUserWithRole(tenantF, "revoke-esc-caller", "ROLE_ASSIGNER", USER_ROLE_ASSIGN_PERMISSION_ID);
     Role tenantAdminRole = seedRole(tenantF, "TENANT_ADMIN", "revoke-esc");
     User admin = seedUser(tenantF, "revoke-esc-target");
     seedActiveAssignment(tenantF, tenantAdminRole.getId(), admin.getId(), admin.getId());
     String token = mintToken(nonAdminWriter);
-    double before = permissionDeniedCount("user:write", "NOT_TENANT_ADMIN");
+    double before = permissionDeniedCount("user:role:assign", "NOT_TENANT_ADMIN");
 
     ResponseEntity<Map> resp = deleteRole(token, admin.getId(), tenantAdminRole.getId());
 
@@ -286,7 +288,7 @@ class RoleAssignmentSecurityIT {
             + " through to a 409 lockout or a silent 204 that would strip the tenant's last admin")
         .isEqualTo(HttpStatus.FORBIDDEN);
     assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
-    assertDenialReasonIncrementedByOne("user:write", "NOT_TENANT_ADMIN", before);
+    assertDenialReasonIncrementedByOne("user:role:assign", "NOT_TENANT_ADMIN", before);
   }
 
   /**
@@ -300,6 +302,7 @@ class RoleAssignmentSecurityIT {
     UUID tenantG = uuidGenerator.newId();
     Role tenantAdminRole = seedRole(tenantG, "TENANT_ADMIN", "revoke-pos");
     grantPermission(tenantAdminRole.getId(), USER_WRITE_PERMISSION_ID);
+    grantPermission(tenantAdminRole.getId(), USER_ROLE_ASSIGN_PERMISSION_ID);
     User admin = seedUser(tenantG, "revoke-pos-admin");
     seedActiveAssignment(tenantG, tenantAdminRole.getId(), admin.getId(), admin.getId());
     Role dangerousRole = seedRole(tenantG, "CUSTOM-DANGEROUS", "revoke-pos");
@@ -334,6 +337,7 @@ class RoleAssignmentSecurityIT {
     UUID tenantD = uuidGenerator.newId();
     Role adminRole = seedRole(tenantD, "TENANT_ADMIN", "stale-jwt");
     grantPermission(adminRole.getId(), USER_WRITE_PERMISSION_ID);
+    grantPermission(adminRole.getId(), USER_ROLE_ASSIGN_PERMISSION_ID);
     User admin = seedUser(tenantD, "stale-jwt-admin");
     UserRole assignment = seedActiveAssignment(tenantD, adminRole.getId(), admin.getId(), admin.getId());
 
@@ -357,7 +361,7 @@ class RoleAssignmentSecurityIT {
     assertThat(affected).as("the out-of-band revoke itself must succeed").isEqualTo(1);
 
     User target = seedUser(tenantD, "stale-jwt-target");
-    double before = permissionDeniedCount("user:write", "NOT_TENANT_ADMIN");
+    double before = permissionDeniedCount("user:role:assign", "NOT_TENANT_ADMIN");
 
     // Same token, still cryptographically valid and unexpired.
     ResponseEntity<Map> resp = postAssign(staleToken, target.getId(), adminRole.getId());
@@ -368,7 +372,7 @@ class RoleAssignmentSecurityIT {
             + " live DB read, never trust the JWT's own claims (T-E7)")
         .isEqualTo(HttpStatus.FORBIDDEN);
     assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
-    assertDenialReasonIncrementedByOne("user:write", "NOT_TENANT_ADMIN", before);
+    assertDenialReasonIncrementedByOne("user:role:assign", "NOT_TENANT_ADMIN", before);
   }
 
   /**
@@ -387,6 +391,7 @@ class RoleAssignmentSecurityIT {
     UUID tenantD2 = uuidGenerator.newId();
     Role adminRole = seedRole(tenantD2, "TENANT_ADMIN", "stale-jwt-priv");
     grantPermission(adminRole.getId(), USER_WRITE_PERMISSION_ID);
+    grantPermission(adminRole.getId(), USER_ROLE_ASSIGN_PERMISSION_ID);
     User admin = seedUser(tenantD2, "stale-jwt-priv-admin");
     UserRole assignment = seedActiveAssignment(tenantD2, adminRole.getId(), admin.getId(), admin.getId());
 
@@ -409,7 +414,7 @@ class RoleAssignmentSecurityIT {
     Role dangerousRole = seedRole(tenantD2, "CUSTOM-DANGEROUS", "stale-jwt-priv");
     grantPermission(dangerousRole.getId(), ROLE_WRITE_PERMISSION_ID);
     User target = seedUser(tenantD2, "stale-jwt-priv-target");
-    double before = permissionDeniedCount("user:write", "NOT_TENANT_ADMIN");
+    double before = permissionDeniedCount("user:role:assign", "NOT_TENANT_ADMIN");
 
     // Same still-valid, unexpired token as the name-match test's technique.
     ResponseEntity<Map> resp = postAssign(staleToken, target.getId(), dangerousRole.getId());
@@ -421,7 +426,7 @@ class RoleAssignmentSecurityIT {
             + " own claims (T-S7)")
         .isEqualTo(HttpStatus.FORBIDDEN);
     assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
-    assertDenialReasonIncrementedByOne("user:write", "NOT_TENANT_ADMIN", before);
+    assertDenialReasonIncrementedByOne("user:role:assign", "NOT_TENANT_ADMIN", before);
   }
 
   /**
@@ -442,6 +447,7 @@ class RoleAssignmentSecurityIT {
     // dangerous-permission branch of M5b (RbacAdminEquivalence#isFullyAdminEquivalent).
     Role allThreeRole = seedRole(tenantD3, "ALL-THREE-CUSTOM", "stale-jwt-all3");
     grantPermission(allThreeRole.getId(), USER_WRITE_PERMISSION_ID);
+    grantPermission(allThreeRole.getId(), USER_ROLE_ASSIGN_PERMISSION_ID);
     grantPermission(allThreeRole.getId(), ROLE_WRITE_PERMISSION_ID);
     grantPermission(allThreeRole.getId(), TENANT_WRITE_PERMISSION_ID);
     User caller = seedUser(tenantD3, "stale-jwt-all3-caller");
@@ -466,7 +472,7 @@ class RoleAssignmentSecurityIT {
     // could otherwise mint.
     Role adminRole = seedRole(tenantD3, "TENANT_ADMIN", "stale-jwt-all3");
     User target = seedUser(tenantD3, "stale-jwt-all3-target");
-    double before = permissionDeniedCount("user:write", "NOT_TENANT_ADMIN");
+    double before = permissionDeniedCount("user:role:assign", "NOT_TENANT_ADMIN");
 
     // Same still-valid, unexpired token as the other stale-JWT tests' technique.
     ResponseEntity<Map> resp = postAssign(staleToken, target.getId(), adminRole.getId());
@@ -478,7 +484,7 @@ class RoleAssignmentSecurityIT {
             + " the JWT's own claims (T-S8)")
         .isEqualTo(HttpStatus.FORBIDDEN);
     assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
-    assertDenialReasonIncrementedByOne("user:write", "NOT_TENANT_ADMIN", before);
+    assertDenialReasonIncrementedByOne("user:role:assign", "NOT_TENANT_ADMIN", before);
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -500,6 +506,7 @@ class RoleAssignmentSecurityIT {
     UUID tenantK = uuidGenerator.newId();
     Role allThreeRole = seedRole(tenantK, "CANARY-ALL-THREE", "canary");
     grantPermission(allThreeRole.getId(), USER_WRITE_PERMISSION_ID);
+    grantPermission(allThreeRole.getId(), USER_ROLE_ASSIGN_PERMISSION_ID);
     grantPermission(allThreeRole.getId(), ROLE_WRITE_PERMISSION_ID);
     grantPermission(allThreeRole.getId(), TENANT_WRITE_PERMISSION_ID);
     User caller = seedUser(tenantK, "canary-caller");
@@ -531,24 +538,24 @@ class RoleAssignmentSecurityIT {
   // ═══════════════════════════════════════════════════════════════════
 
   @Test
-  void should_return403_when_callerLacksUserWriteForAssign() {
+  void should_return403_when_callerLacksUserRoleAssignForAssign() {
     UUID tenantE = uuidGenerator.newId();
     User callerWithNoPermissions = seedUser(tenantE, "pair-post-neg-caller");
     User target = seedUser(tenantE, "pair-post-neg-target");
     Role role = seedRole(tenantE, "REGULAR", "pair-post-neg");
     String token = mintToken(callerWithNoPermissions);
-    double before = permissionDeniedCount("user:write", "PERMISSION_ABSENT");
+    double before = permissionDeniedCount("user:role:assign", "PERMISSION_ABSENT");
 
     ResponseEntity<Map> resp = postAssign(token, target.getId(), role.getId());
 
     assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-    assertDenialReasonIncrementedByOne("user:write", "PERMISSION_ABSENT", before);
+    assertDenialReasonIncrementedByOne("user:role:assign", "PERMISSION_ABSENT", before);
   }
 
   @Test
-  void should_return201_when_callerHasUserWriteForAssign() {
+  void should_return201_when_callerHasUserRoleAssignForAssign() {
     UUID tenantE = uuidGenerator.newId();
-    User caller = seedUserWithRole(tenantE, "pair-post-pos-caller", "WRITER", USER_WRITE_PERMISSION_ID);
+    User caller = seedUserWithRole(tenantE, "pair-post-pos-caller", "ASSIGNER", USER_ROLE_ASSIGN_PERMISSION_ID);
     User target = seedUser(tenantE, "pair-post-pos-target");
     Role role = seedRole(tenantE, "REGULAR", "pair-post-pos");
     String token = mintToken(caller);
@@ -560,6 +567,44 @@ class RoleAssignmentSecurityIT {
             + " permission is present -- a negative-only test can pass for the wrong reason"
             + " (e.g. a missing bean denying everyone)")
         .isEqualTo(HttpStatus.CREATED);
+  }
+
+  /**
+   * US-018 FR-A1.b (ADR-0021 D1): {@code user:write} now means "edit user accounts" only. A caller
+   * holding it, but not {@code user:role:assign}, is denied at the endpoint boundary.
+   */
+  @Test
+  void should_return403PermissionAbsent_when_callerHoldsOnlyUserWriteForAssign() {
+    UUID tenantE = uuidGenerator.newId();
+    User caller =
+        seedUserWithRole(tenantE, "a1b-post-caller", "USER_WRITER", USER_WRITE_PERMISSION_ID);
+    User target = seedUser(tenantE, "a1b-post-target");
+    Role role = seedRole(tenantE, "REGULAR", "a1b-post");
+    String token = mintToken(caller);
+    double before = permissionDeniedCount("user:role:assign", "PERMISSION_ABSENT");
+
+    ResponseEntity<Map> resp = postAssign(token, target.getId(), role.getId());
+
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(resp.getBody()).containsEntry("requiredPermission", "user:role:assign");
+    assertDenialReasonIncrementedByOne("user:role:assign", "PERMISSION_ABSENT", before);
+  }
+
+  @Test
+  void should_return403PermissionAbsent_when_callerHoldsOnlyUserWriteForRevoke() {
+    UUID tenantE = uuidGenerator.newId();
+    User caller =
+        seedUserWithRole(tenantE, "a1b-delete-caller", "USER_WRITER", USER_WRITE_PERMISSION_ID);
+    User target = seedUser(tenantE, "a1b-delete-target");
+    Role role = seedRole(tenantE, "REGULAR", "a1b-delete");
+    seedActiveAssignment(tenantE, role.getId(), target.getId(), caller.getId());
+    String token = mintToken(caller);
+    double before = permissionDeniedCount("user:role:assign", "PERMISSION_ABSENT");
+
+    ResponseEntity<Map> resp = deleteRole(token, target.getId(), role.getId());
+
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    assertDenialReasonIncrementedByOne("user:role:assign", "PERMISSION_ABSENT", before);
   }
 
   @Test
@@ -590,24 +635,24 @@ class RoleAssignmentSecurityIT {
   }
 
   @Test
-  void should_return403_when_callerLacksUserWriteForRevoke() {
+  void should_return403_when_callerLacksUserRoleAssignForRevoke() {
     UUID tenantE = uuidGenerator.newId();
     User callerWithNoPermissions = seedUser(tenantE, "pair-delete-neg-caller");
     User target = seedUser(tenantE, "pair-delete-neg-target");
     Role role = seedRole(tenantE, "REGULAR", "pair-delete-neg");
     String token = mintToken(callerWithNoPermissions);
-    double before = permissionDeniedCount("user:write", "PERMISSION_ABSENT");
+    double before = permissionDeniedCount("user:role:assign", "PERMISSION_ABSENT");
 
     ResponseEntity<Map> resp = deleteRole(token, target.getId(), role.getId());
 
     assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-    assertDenialReasonIncrementedByOne("user:write", "PERMISSION_ABSENT", before);
+    assertDenialReasonIncrementedByOne("user:role:assign", "PERMISSION_ABSENT", before);
   }
 
   @Test
-  void should_return204_when_callerHasUserWriteForRevoke() {
+  void should_return204_when_callerHasUserRoleAssignForRevoke() {
     UUID tenantE = uuidGenerator.newId();
-    User caller = seedUserWithRole(tenantE, "pair-delete-pos-caller", "WRITER", USER_WRITE_PERMISSION_ID);
+    User caller = seedUserWithRole(tenantE, "pair-delete-pos-caller", "ASSIGNER", USER_ROLE_ASSIGN_PERMISSION_ID);
     User target = seedUser(tenantE, "pair-delete-pos-target");
     Role role = seedRole(tenantE, "REGULAR", "pair-delete-pos");
     seedActiveAssignment(tenantE, role.getId(), target.getId(), caller.getId());
@@ -625,7 +670,7 @@ class RoleAssignmentSecurityIT {
   @Test
   void should_recordJwtSubjectAsAssignedBy_never_thePathUserId_when_pathUserIdDiffersFromCaller() {
     UUID tenantF = uuidGenerator.newId();
-    User caller = seedUserWithRole(tenantF, "provenance-caller", "WRITER", USER_WRITE_PERMISSION_ID);
+    User caller = seedUserWithRole(tenantF, "provenance-caller", "ASSIGNER", USER_ROLE_ASSIGN_PERMISSION_ID);
     User target = seedUser(tenantF, "provenance-target"); // deliberately NOT the caller
     Role role = seedRole(tenantF, "ORDINARY", "provenance");
     String token = mintToken(caller);
@@ -708,7 +753,7 @@ class RoleAssignmentSecurityIT {
   @Test
   void should_return400_when_pathRoleIdIsMalformedUuidOnDelete() {
     UUID tenantH = uuidGenerator.newId();
-    User caller = seedUserWithRole(tenantH, "malformed-path-role-caller", "WRITER", USER_WRITE_PERMISSION_ID);
+    User caller = seedUserWithRole(tenantH, "malformed-path-role-caller", "ASSIGNER", USER_ROLE_ASSIGN_PERMISSION_ID);
     User target = seedUser(tenantH, "malformed-path-role-target");
     String token = mintToken(caller);
 
@@ -728,7 +773,7 @@ class RoleAssignmentSecurityIT {
   @Test
   void should_return400_when_bodyRoleIdIsMalformedUuidOnPost() {
     UUID tenantH = uuidGenerator.newId();
-    User caller = seedUserWithRole(tenantH, "malformed-body-role-caller", "WRITER", USER_WRITE_PERMISSION_ID);
+    User caller = seedUserWithRole(tenantH, "malformed-body-role-caller", "ASSIGNER", USER_ROLE_ASSIGN_PERMISSION_ID);
     User target = seedUser(tenantH, "malformed-body-role-target");
     String token = mintToken(caller);
 

@@ -198,6 +198,8 @@ class RoleRevocationSymmetryIT {
   void should_incrementPrivilegedTrueCallerIsAdminTrue_and_makeCallerIsAdminFalseUnreachable_when_activeAdminSelfAssignsDangerousCustomRole() {
     UUID tenantId = uuidGenerator.newId();
     Role adminRole = seedRole(tenantId, "TENANT_ADMIN", "canary-admin-self");
+    // US-018 A2: the admin must hold every permission of the role it grants (grant-subset).
+    grantPermission(adminRole.getId(), ROLE_WRITE_PERMISSION_ID);
     User adminUser = seedUser(tenantId, "canary-admin-self");
     seedActiveAssignment(tenantId, adminRole.getId(), adminUser.getId(), adminUser.getId());
     Role dangerousRole = seedRole(tenantId, "CUSTOM-DANGEROUS", "canary-admin-self");

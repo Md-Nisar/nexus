@@ -7,6 +7,7 @@ import com.example.nexus.rbac.domain.RolePermissionName;
 import com.example.nexus.rbac.domain.RoleView;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -70,6 +71,20 @@ public interface JpaRoleRepository extends JpaRepository<Role, UUID> {
       "SELECT p.name FROM RolePermission rp, Permission p "
           + "WHERE rp.id.permissionId = p.id AND rp.id.roleId = :roleId")
   List<String> findPermissionNamesByRole(@Param("roleId") UUID roleId);
+
+  /**
+   * M14 (US-018, 03-design.md §4.3) — the permission ids attached to one role of one tenant,
+   * served by the {@code roles} primary key and the {@code role_permissions} primary-key prefix.
+   * Hosted here for the same reason as {@link #findPermissionNamesByRole}: the assignment adapter
+   * reads it without a dependency on the repository that writes {@code role_permissions}. The
+   * {@code r.tenantId} predicate is defense in depth (T-S1): the caller has already tenant-verified
+   * {@code roleId}. No {@code @Lock} (MC-A).
+   */
+  @Query(
+      "SELECT rp.id.permissionId FROM RolePermission rp, Role r "
+          + "WHERE rp.id.roleId = r.id AND r.id = :roleId AND r.tenantId = :tenantId")
+  Set<UUID> findPermissionIdsByRoleAndTenantId(
+      @Param("roleId") UUID roleId, @Param("tenantId") UUID tenantId);
 
   /**
    * Q12 — RC-4's per-tenant role cap check. Served by {@code uq_roles_tenant_name}'s leftmost

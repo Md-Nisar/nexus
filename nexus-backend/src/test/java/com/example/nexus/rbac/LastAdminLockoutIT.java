@@ -887,6 +887,35 @@ class LastAdminLockoutIT {
         emittedSql.get(1), "FR-2(b) findTenantsWithActiveFullyAdminEquivalentHolders");
   }
 
+  // ── Scenario 6d (US-018 T-001, 03-design.md §4.11 MC-A extended): M13/M14 non-locking ──────
+
+  /**
+   * MC-A extended: M13 ({@code findHeldRolePermissionIdsForAuthorization}) and M14 ({@code
+   * findPermissionIdsByRoleAndTenantId}) are the grant-subset reads (ADR-0021 D2). A locking read on M13
+   * would be a new acquisition outside the set-lock region (ADR-0018 D6), and either read would be
+   * rejected in production if it ever locked a {@code SELECT}-only table, yet would pass every
+   * Testcontainers IT (container superuser). Invoked directly against the repository beans,
+   * capturing both statements from one action.
+   */
+  @Test
+  void should_neverEmitForShareOrForUpdate_when_capturingM13AndM14sSql_MCA() throws Exception {
+    UUID tenantId = uuidGenerator.newId();
+    Role adminRole = seedTenantAdminRole(tenantId, "mca13");
+    User admin = seedUser(tenantId, "mca13-admin");
+    seedActiveAdminAssignment(tenantId, adminRole.getId(), admin.getId(), admin.getId());
+
+    List<String> emittedSql =
+        captureHibernateSql(
+            () -> {
+              userRoleRepository.findHeldRolePermissionIdsForAuthorization(admin.getId(), tenantId);
+              roleRepository.findPermissionIdsByRoleAndTenantId(adminRole.getId(), tenantId);
+            });
+
+    assertThat(emittedSql).as("M13 and M14, captured from one action").hasSize(2);
+    assertNoLockingClause(emittedSql.get(0), "M13 (findHeldRolePermissionIdsForAuthorization)");
+    assertNoLockingClause(emittedSql.get(1), "M14 (findPermissionIdsByRoleAndTenantId)");
+  }
+
   // ── Scenario 6e (US-017 T-006(c), 03-design.md §11.2 MC-C, RC-20.7): plan stability ─────
 
   /**
@@ -1075,8 +1104,19 @@ class LastAdminLockoutIT {
   }
 
   /** A tenant-scoped role literally named {@code TENANT_ADMIN} (matches {@code RbacRoleNames}). */
+  /**
+   * US-018 T-001 fixture churn: the fixture {@code TENANT_ADMIN} carries the whole permission
+   * catalogue, as a real one does (V5 seed plus the B7 footer from V6 on). Without it, A2's
+   * grant-subset check would deny this admin every assignment of a permissioned role.
+   */
   private Role seedTenantAdminRole(UUID tenantId, String tag) {
-    return roleRepository.save(new Role(uuidGenerator.newId(), tenantId, "TENANT_ADMIN", tag, false));
+    Role role =
+        roleRepository.save(new Role(uuidGenerator.newId(), tenantId, "TENANT_ADMIN", tag, false));
+    jdbc.update(
+        "INSERT INTO role_permissions (role_id, permission_id) "
+            + "SELECT UUID_TO_BIN(?), id FROM permissions",
+        role.getId().toString());
+    return role;
   }
 
   private UserRole seedActiveAdminAssignment(
