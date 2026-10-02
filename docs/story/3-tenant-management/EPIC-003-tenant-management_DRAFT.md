@@ -5,7 +5,7 @@ EPIC ID:       EPIC-003
 EPIC TITLE:    Tenant Management
 STATUS:        DRAFT — rewritten 2026-09-30, pending Gate 1 on each story
 PRIORITY:      P0 (MVP slice) — later phases prioritised per story
-STORIES:       US-021 … US-045 (25 stories; 14 in MVP)
+STORIES:       US-021 … US-046 (26 stories; 14 in MVP)
 BLOCKED BY:    EPIC-002 entry criteria (Open Decision #4 build checks — owner committed to land
                them before Epic 3 starts; US-016/US-017 merged)
 RELATED:       US-019 / US-020 (RBAC UI) — role-assignment screens live there, not here
@@ -179,14 +179,14 @@ start with `nexus-`, `docs/` or `src/`; bare `V*__*.sql` names are under
 | Authorisation | `@RequiresPermission` → `TenantAwarePermissionEvaluator` checks the permission is in the JWT `permissions` claim; no DB lookup per request. Seeded permissions: `tenant:read`, `tenant:write`, `user:read`, `user:write`, `role:read`, `role:write`, `audit:read`. `TENANT_ADMIN` holds all seven; `MEMBER` holds `user:read`. **No platform/super-admin concept.** | `common/security/RequiresPermission.java`, `common/security/TenantAwarePermissionEvaluator.java`, `V5__rbac_schema.sql`, `rbac/domain/RbacDangerousPermissions.java` |
 | Unused permissions | `tenant:read`, `tenant:write`, `audit:read` are seeded but no endpoint uses them. | every `@RequiresPermission` call site uses only `ROLE_READ`, `ROLE_WRITE`, `USER_READ` or `USER_WRITE` |
 | Redis keys | Permission cache is tenant-scoped (`…:rbac:permset:{tenantId}:{userId}`). Login/forgot/reset rate-limit keys are **not** tenant-scoped (`USER:{emailHmac}`, `IP:…`), so the same email in two tenants shares one bucket. The rate-limit store defaults to in-memory per instance (`nexus.security.rate-limit.store-type: memory`); Redis is optional. | `rbac/infrastructure/cache/RedisPermissionCacheAdapter.java`, `identity/infrastructure/web/LoginRateLimitFilter.java`, `identity/infrastructure/security/RedisRateLimitStore.java`; ADR 0016 D3 |
-| Quotas | Only `nexus.rbac.max-roles-per-tenant` (default 500). ADR 0019 (per-tenant fairness) is **Proposed**, all questions open. | `rbac/application/RoleManagementService.java`; `docs/adr/0019-tenant-fairness-and-quotas.md` |
+| Quotas | Only `nexus.rbac.max-roles-per-tenant` (default 500). ADR 0019 (per-tenant fairness) was **Proposed** with all questions open; accepted 2026-10-02 (§8.1 D12). | `rbac/application/RoleManagementService.java`; `docs/adr/0019-tenant-fairness-and-quotas.md` |
 | Audit | One append-only table `auth_events` (nullable `tenant_id`, triggers block UPDATE/DELETE), written via `SecureEventService` (REQUIRES_NEW, ADR 0009) with a retry buffer (ADR 0011). Event types in `AuthEventType` — **no TENANT_\* events; no read API**. | `identity/application/service/SecureEventService.java`, `identity/domain/AuthEventType.java`, `identity/infrastructure/audit/AuthEventRetryBuffer.java` |
 | Users & invitations | Only `GET /api/v1/users/me` and `/api/v1/users/{userId}/roles`. No user list, no invitations, no SSO/SCIM. `UserStatus` = `PENDING, ACTIVE, LOCKED, DISABLED`; `DISABLED` is treated as terminal by self-service reset. | `identity/interfaces/rest/UserProfileController.java`, `rbac/interfaces/rest/UserRoleController.java`, `identity/domain/UserStatus.java`, `identity/domain/User.java` |
 | Email | Global from-address and frontend base URL; mail events carry no tenant. | `identity/infrastructure/mail/MailEventListener.java`, `identity/infrastructure/mail/SmtpMailSenderAdapter.java` |
 | Background jobs | Only the audit retry-buffer drain (`@Scheduled`) and async mail listeners; MDC (incl. `tenantId`) is propagated to async threads. No outbox, no tenant-aware jobs. | `identity/infrastructure/audit/AuthEventRetryBuffer.java`, `config/AsyncConfig.java`, `common/web/MdcTaskDecorator.java` |
 | File storage | **None.** | — |
 | Feature flags | Static properties + `@ConditionalOnProperty` per story (`feature.nexus-us0xx-…`); no per-tenant flags. | `nexus-backend/src/main/resources/application.yml` (`feature:` block) |
-| Data lifecycle | No export, deletion, or retention jobs. ADR 0020 is **Proposed**, all questions open. `auth_events` is append-only (UPDATE and DELETE blocked by triggers); `user_roles` blocks DELETE only (revocation is an UPDATE of `revoked_at`). Both will block naïve hard deletes. | `docs/adr/0020-tenant-data-lifecycle.md`, `V2__identity_schema.sql`, `V5__rbac_schema.sql` |
+| Data lifecycle | No export, deletion, or retention jobs. ADR 0020 was **Proposed** with all questions open; accepted 2026-10-02 (§8.1 D13). `auth_events` is append-only (UPDATE and DELETE blocked by triggers); `user_roles` blocks DELETE only (revocation is an UPDATE of `revoked_at`). Both will block naïve hard deletes. | `docs/adr/0020-tenant-data-lifecycle.md`, `V2__identity_schema.sql`, `V5__rbac_schema.sql` |
 | DB grants | Least-privilege `nexus_app` user, per-table grants in three places (ADR 0012/0014 follow-on rule: every new table adds its grants in the same story). | `nexus-database/mysql/init/02-grants-post-schema.sql`, `nexus-backend/src/test/resources/nexus-app-grants.sql`, prod runbook |
 | Frontend | Token in memory (`AuthStore` signal); `tenantId` available only via `currentUser()?.tenantId` from `/users/me`; no tenant context service; header in `app.html` shows only a wordmark and theme toggle; `permissionGuard` exists but no route uses it; no admin UI. | `nexus-frontend/src/app/core/auth/auth.store.ts`, `nexus-frontend/src/app/features/auth/auth.service.ts`, `nexus-frontend/src/app/shared/types/auth.ts`, `nexus-frontend/src/app/app.html`, `nexus-frontend/src/app/core/guards/permission.guard.ts`, `nexus-frontend/src/app/app.routes.ts` |
 | Config drift | ADR 0014 D5 specified a fallback for `default-tenant-id`; ADR 0015 D8 deliberately removed it for prod-safety, so `application.yml` has none and dev/test set it explicitly. Consistent with ADR 0015, not a bug. | `application.yml` (`default-tenant-id: ${NEXUS_IDENTITY_DEFAULT_TENANT_ID}`), `docs/adr/0015-us-009-threat-model-hardening.md` D8 |
@@ -303,14 +303,14 @@ Legend: **Exists** — implemented and fit for purpose · **Partial** — some p
 | 18 | Tenant profile / settings | Missing | `tenant:read/write` unused | US-031 |
 | 19 | Frontend tenant context | Partial | `tenantId` on `AuthUser` only | US-032 |
 | 20 | Branding | Missing | ADR 0004 tokens make it feasible | US-033 |
-| 21 | Plans, seats, quotas | Partial | only max-roles-per-tenant; ADR 0019 open | US-034, US-035 |
+| 21 | Plans, seats, quotas | Partial | only max-roles-per-tenant; ADR 0019 accepted 2026-10-02 | US-034, US-035 |
 | 22 | Audit write path | Exists | `SecureEventService`, append-only `auth_events` | extended in each story |
 | 23 | Tenant lifecycle audit events | Missing | no TENANT\_\* types | US-024–US-031 |
 | 24 | Audit read / export for tenants | Missing | `audit:read` unused, no query API | US-036 |
 | 25 | Operator back-office UI | Missing | — | US-037 |
-| 26 | Tenant data export | Missing | ADR 0020 open | US-038 |
-| 27 | Tenant purge / retention | Missing | ADR 0020 open; append-only triggers | US-039 |
-| 28 | Data-subject erasure | Missing | ADR 0020 open; ADR 0006 note | US-040 |
+| 26 | Tenant data export | Missing | ADR 0020 D2 decides the format | US-038 |
+| 27 | Tenant purge / retention | Missing | ADR 0020 D1/D2/D5; append-only triggers | US-039, US-046 |
+| 28 | Data-subject erasure | Missing | ADR 0020 D3 | US-040 |
 | 29 | Tenant-aware email | Risky | global from-address / base URL; links cannot carry tenant | US-027, US-028 |
 | 30 | Domain verification | Missing | — | US-041 |
 | 31 | Enterprise SSO (OIDC/SAML) | Missing | — | US-042 |
@@ -330,8 +330,8 @@ Legend: **Exists** — implemented and fit for purpose · **Partial** — some p
 - Every story that adds an endpoint must: carry `@RequiresPermission` (or `@PublicEndpoint`);
   add a merge-blocking cross-tenant IT; publish its audit events through `SecureEventService`; add
   `nexus_app` grants for any new table in all three grant artefacts (ADR 0014 follow-on rule);
-  state its retention class (ADR 0020 interim rule); and name ADR 0019 if it adds an unbounded
-  per-tenant operation. These are not repeated per story.
+  name its retention class in ADR 0020 D1's table; and name the ADR 0019 D1 limit that bounds any
+  new expensive or unbounded per-tenant operation. These are not repeated per story.
 - UI stories use the `shared/ui` wrappers (`nx-table`, `nx-dialog-shell`/`NxDialog`, `NxToast`,
   `nx-empty-state`, `nx-input`, `nx-button`) per ADR 0004, compose `permissionGuard` after
   `authGuard`, and meet WCAG 2.1 AA with zero critical Axe findings.
@@ -803,7 +803,8 @@ bought.
    before confirming.
 6. **Given** the operator tenant, **when** seats are checked, **then** it has no seat limit.
 
-**Dependencies:** US-024, US-028, US-030; decision D10 (decided); ADR 0019 questions 1, 2 and 4 decided.
+**Dependencies:** US-024, US-028, US-030; decision D10; ADR 0019 (accepted: D2 limits, D3 seat check in the
+use case under a tenant-row lock, D4 `409`).
 **Code anchors:** `rbac/application/RoleManagementService.java` (existing `max-roles-per-tenant` check).
 
 #### US-035 — Protect tenants from a noisy neighbour with per-tenant rate limits
@@ -816,14 +817,19 @@ bought.
 that** our service quality does not depend on other customers.
 
 **Acceptance criteria**
-1. **Given** a per-tier request budget, **when** a tenant exceeds it, **then** further requests get
+1. **Given** a per-tier request budget (ADR 0019 D2: Free 300, Teams 1,200, Enterprise 6,000
+   requests per minute), **when** a tenant exceeds it, **then** further requests get
    429 with `Retry-After` and an RFC 7807 body; other tenants are unaffected (load test).
-2. **Given** Redis is unavailable, **when** the limiter runs, **then** it behaves per ADR 0019's
-   fail-open/fail-closed decision and emits a metric.
+2. **Given** Redis is unavailable, **when** the limiter runs, **then** it fails open (ADR 0019 D4,
+   matching ADR 0016 D4), emits a metric and raises an alert; per-user and per-IP limits keep
+   working.
+4. **Given** the production profile, **when** the application starts, **then** the rate-limit store
+   is Redis (`nexus.security.rate-limit.store-type: redis`); the in-memory store is refused outside
+   dev/test, since it would multiply each tenant's limit by the number of instances.
 3. **Given** metrics, **when** exported, **then** tenant id is not a raw label (bounded cardinality per
    `docs/observability-standards.md`).
 
-**Dependencies:** ADR 0019 accepted; US-034. **Code anchors:** `identity/infrastructure/security/RedisRateLimitStore.java`,
+**Dependencies:** ADR 0019 (accepted); US-034. **Code anchors:** `identity/infrastructure/security/RedisRateLimitStore.java`,
 `identity/infrastructure/web/LoginRateLimitFilter.java`.
 
 ### Area F — Audit logging
@@ -843,9 +849,10 @@ Nexus support.
 **Acceptance criteria**
 1. **Given** `audit:read`, **when** `GET /api/v1/tenants/me/audit-events?type=&from=&to=&page=` is
    called, **then** only events whose `tenant_id` equals the caller's tenant are returned, newest
-   first, paginated, within the retention window.
+   first, paginated, within the 13-month retention window (ADR 0020 D1); an erased member is shown
+   as "erased user" (ADR 0020 D3).
 2. **Given** a date range of up to 90 days, **when** CSV export is requested, **then** a CSV is
-   produced with the same filtering; larger ranges are rejected (bounded per ADR 0019 interim rule).
+   produced with the same filtering; larger ranges are rejected (bounds the cost, per ADR 0019 follow-on rule 1).
 3. **Given** events whose metadata contain personal data, **when** returned, **then** only metadata keys
    on an explicit allowlist (defined at Gate 2) are included, and email addresses are never returned.
 4. **Given** operator actions on this tenant (US-025), **when** listed, **then** they appear, marked as
@@ -855,8 +862,8 @@ Nexus support.
 5. **Given** the Angular route `/settings/audit`, **when** opened with `audit:read`, **then** an
    `nx-table` with filters and an export button is shown.
 
-**Dependencies:** US-021, US-025 (operator events and the `actor_scope` marker, §3.2 H); ADR 0020
-question 1 (retention) decided.
+**Dependencies:** US-021, US-025 (operator events and the `actor_scope` marker, §3.2 H); ADR 0020 D1
+(retention: 13 months).
 **Code anchors:** `identity/infrastructure/persistence/JpaAuthEventRepository.java` (currently no query methods).
 
 ### Area G — Operator back-office
@@ -943,7 +950,7 @@ Mandatory security review (new authentication factor). Decision D11. **Blocks:**
 
 | Priority | Size | Phase | Pattern |
 |---|---|---|---|
-| Should | L | Later | ADR 0020 Q2 (offboarding export format) _(no vendor export feature researched)_ |
+| Should | L | Later | Microsoft 365 / Atlassian export-before-deletion windows (ADR 0020 research) |
 
 **As a** Tenant Admin, **I want** to request a machine-readable export of my tenant's data,
 **so that** we can meet our own retention duties and leave Nexus without losing records.
@@ -952,36 +959,43 @@ Mandatory security review (new authentication factor). Decision D11. **Blocks:**
 1. **Given** `tenant:write`, **when** an export is requested, **then** it runs asynchronously, is
    limited to one concurrent export per tenant, and the requesting admin is emailed when it is ready.
 2. **Given** the export, **when** produced, **then** it contains every tenant-owned table's rows for
-   that tenant only (proved by a test that seeds two tenants), in the format decided under ADR 0020.
+   that tenant only (proved by a test that seeds two tenants), as a ZIP of JSON Lines files (one per
+   entity type) plus `manifest.json` (ADR 0020 D2.1); password hashes, token hashes, MFA secrets and
+   blind-index values are never included.
+5. **Given** a tenant in `PENDING_DELETION`, **when** its customer asks for an export, **then** an
+   operator with `platform_tenant:write` can produce it (tenant users cannot sign in then).
 3. **Given** a finished export, **when** downloaded, **then** the link is single-use and expires
    (duration decided at Gate 2).
 4. **Given** each request and download, **when** they happen, **then** audit events are recorded.
 
-**Dependencies:** ADR 0020 Q2 decided; storage mechanism decided at Gate 2 (no file storage exists today) (this is where a
+**Dependencies:** ADR 0020 D2 (format); ADR 0019 D1 (one concurrent export per tenant); storage mechanism decided at Gate 2 (no file storage exists today) (this is where a
 `FileStorageService`-style abstraction may first be justified).
 
 #### US-039 — Purge a tenant after its deletion grace period
 
 | Priority | Size | Phase | Pattern |
 |---|---|---|---|
-| Should | L | Later | Entra/Atlassian/AWS grace-then-purge; ADR 0020 Q2, Q5 |
+| Should | L | Later | Entra/Atlassian/AWS grace-then-purge; ADR 0020 D2, D5 |
 
 **As a** Platform Operator, **I want** tenants in `PENDING_DELETION` to be purged automatically
 when their grace period ends, **so that** we honour offboarding commitments without manual SQL.
 
 **Acceptance criteria**
 1. **Given** a tenant whose grace period has ended, **when** the scheduled purge runs, **then** its
-   tenant-owned data is deleted or anonymised per ADR 0020, its Redis keys are removed, and the
-   tenant row moves to `DELETED` (row kept as a tombstone with slug reserved).
+   tenant-owned rows are hard-deleted (ADR 0020 D2.3), its Redis keys are removed, and the
+   tenant row moves to `DELETED` (kept as a tombstone, contact fields cleared, slug reserved
+   permanently). Its `auth_events` stay until their 13-month partition is dropped (D2.4).
 2. **Given** `auth_events` (append-only) and `user_roles` (DELETE blocked by trigger), **when** purge runs, **then** it follows the
-   ADR 0020 decision (e.g. pseudonymise instead of delete) through a dedicated privileged path —
-   `nexus_app` gains no general `DELETE`.
+   runs under the separate `nexus_retention` database account (ADR 0020 D5); `nexus_app` gains no
+   `DELETE` on protected tables, and a test proves `nexus_app` is still refused.
+5. **Given** a completed purge, **when** it commits, **then** the tenant id is appended to
+   `deletion_log` (ADR 0020 D4) and a `TENANT_PURGED` event records row counts per table.
 3. **Given** the purge job, **when** it runs, **then** it emits metrics and one audit event per tenant,
    and is idempotent if interrupted.
 4. **Given** a tenant restored before the deadline (US-025), **when** the job runs, **then** it is
    untouched.
 
-**Dependencies:** US-025; ADR 0020 decided.
+**Dependencies:** US-025, US-046 (retention account and job runner); ADR 0020 (accepted).
 
 #### US-040 — Fulfil a data-subject erasure request for one user
 
@@ -993,16 +1007,56 @@ when their grace period ends, **so that** we honour offboarding commitments with
 **so that** we can meet a GDPR erasure request within the statutory deadline.
 
 **Acceptance criteria**
-1. **Given** `user:write` and a deactivated member, **when** erasure is requested, **then** the user's
-   encrypted email, blind index and other personal fields are removed or irreversibly
-   pseudonymised, and their sessions/tokens are deleted.
+1. **Given** `user:write` and a deactivated member, **when** erasure is requested, **then** within 7
+   days (ADR 0020 D3.1) the `users` row is anonymised, not deleted (`user_roles.assigned_by`
+   references it): `email_cipher` and `email_hmac` are overwritten with non-identifying values,
+   `consent_accepted_at` is cleared and `erased_at` is set; tokens, pending invitations and Redis
+   keys are deleted, and active role assignments are revoked.
 2. **Given** audit events referencing the user, **when** erasure completes, **then** they remain
-   (integrity) but no longer resolve to the person, per ADR 0020 Q3.
+   until their 13-month expiry (ADR 0020 D3.4), shown in the audit view as "erased user".
+4. **Given** an erased user, **when** reactivation is attempted (US-030), **then** it is refused.
+5. **Given** a completed erasure, **when** it commits, **then** the user id is appended to
+   `deletion_log` (ADR 0020 D4).
 3. **Given** the request, **when** completed, **then** a `MEMBER_ERASED` event records who requested it
    and when, without the erased data.
 
-**Dependencies:** US-030; ADR 0020 Q3 decided; ADR 0006. **Code anchors:** `identity/domain/User.java`,
+**Dependencies:** US-030; ADR 0020 D3, D4; ADR 0006. **Code anchors:** `identity/domain/User.java`,
 `identity/application/EmailBlindIndexService.java`, `V2__identity_schema.sql` (`auth_events` triggers).
+
+#### US-046 — Enforce retention periods on tokens and audit events
+
+| Priority | Size | Phase | Pattern |
+|---|---|---|---|
+| Should | L | Next | ISO 27001 A.8.10 scheduled deletion with verification; PCI DSS 10.5.1 12-month audit retention |
+
+**As a** Compliance Officer, **I want** expired tokens and old audit events to be removed on a
+fixed schedule with proof, **so that** we keep data only as long as ADR 0020 says and can show
+auditors that deletion happens.
+
+**Acceptance criteria**
+1. **Given** a new migration, **when** it runs, **then** `auth_events` is `RANGE`-partitioned by month
+   on `created_at` with primary key `(id, created_at)`, and its `UPDATE`/`DELETE` triggers still
+   reject changes (existing append-only tests stay green).
+2. **Given** the rotation job, **when** it runs, **then** it creates next month's partition ahead of
+   time and drops partitions older than 13 months (ADR 0020 D1).
+3. **Given** refresh, auth and invitation tokens expired, revoked or used more than 30 days ago,
+   **when** the token job runs, **then** they are deleted in batches of at most 1,000 rows.
+4. **Given** the `nexus_retention` database account, **when** grants are inspected, **then** it is
+   added to all three grant artefacts and the DB-grant health check; `nexus_app` still has no DDL
+   and no `DELETE` on protected tables (ADR 0012).
+5. **Given** two application instances, **when** a job is due, **then** only one runs it (database
+   lease, ADR 0020 D5), and a rerun after interruption is harmless.
+6. **Given** each job run, **when** it finishes, **then** a `RETENTION_PURGE` audit event and the
+   `nexus_retention_*{data_class}` metrics are written, and an alert fires if a job has not
+   succeeded for 48 hours.
+7. **Given** the `deletion_log` table, **when** it is created, **then** it is append-only and its
+   rows expire after the backup window (ADR 0020 D4).
+
+**Dependencies:** US-021; ADR 0020 (accepted). Ship the partitioning migration (AC1) before
+production holds audit data, because changing the primary key later means rebuilding a large
+append-only table.
+**Code anchors:** `V2__identity_schema.sql` (`auth_events` and its triggers), `nexus-database/mysql/init/01-grants.sql`,
+`nexus-backend/src/test/resources/nexus-app-grants.sql`, `identity/infrastructure/persistence/JpaAuthEventRepository.java`.
 
 ### Area I — Enterprise identity (SSO / SCIM)
 
@@ -1106,12 +1160,13 @@ that scopes data by organisation, whose scoping rule then joins these criteria. 
 | US-037 | Operator console | G | Should | M | MVP | US-023, US-024, US-025 |
 | US-045 | Operator MFA | G | Must | L | MVP | US-023, US-027, US-031, D11 |
 | US-034 | Seat limits by plan | E | Should | M | Next | US-024, US-028, US-030, D10, ADR 0019 |
-| US-036 | Tenant audit viewer + export | F | Should | M | Next | US-021, US-025, ADR 0020 Q1 |
+| US-046 | Retention jobs (tokens, audit partitions) | H | Should | L | Next | US-021, ADR 0020 |
+| US-036 | Tenant audit viewer + export | F | Should | M | Next | US-021, US-025, ADR 0020 D1 |
 | US-033 | Brand colours | D | Could | M | Later | US-031, US-032 |
 | US-035 | Per-tenant rate limits | E | Could | M | Later | US-034, ADR 0019 |
-| US-038 | Tenant data export | H | Should | L | Later | ADR 0020 Q2 |
-| US-039 | Purge after grace period | H | Should | L | Later | US-025, ADR 0020 |
-| US-040 | Data-subject erasure | H | Should | M | Later | US-030, ADR 0020 Q3 |
+| US-038 | Tenant data export | H | Should | L | Later | ADR 0020 D2, ADR 0019 D1 |
+| US-039 | Purge after grace period | H | Should | L | Later | US-025, US-046, ADR 0020 |
+| US-040 | Data-subject erasure | H | Should | M | Later | US-030, ADR 0020 D3 |
 | US-041 | Domain verification | I | Could | M | Later | US-031 |
 | US-042 | Tenant SSO (OIDC/SAML) | I | Could | L | Later | US-027, US-041 |
 | US-043 | SCIM provisioning | I | Won't (this epic) | L | Later | US-042 |
@@ -1154,8 +1209,8 @@ that scopes data by organisation, whose scoping rule then joins these criteria. 
 
 | ID | Requirement |
 |---|---|
-| NFR-GDPR-1 | Each new table states its retention class (ADR 0020 interim rule). |
-| NFR-GDPR-2 | Tenant offboarding and data-subject erasure follow ADR 0020 once accepted (US-038–US-040). No story may hard-delete tenant data before then. |
+| NFR-GDPR-1 | Each new table names its retention class in ADR 0020 D1's table. |
+| NFR-GDPR-2 | Tenant offboarding and data-subject erasure follow ADR 0020 (accepted 2026-10-02) through US-038–US-040 and US-046 only. No other story hard-deletes tenant data. |
 | NFR-GDPR-3 | Data residency is out of scope; if a customer requires it, it is a bridge/silo decision (§3.2 A), not a feature of this epic. |
 | NFR-GDPR-4 | Contact PII on `tenants` is encrypted at rest (ADR 0006 approach). |
 
@@ -1197,12 +1252,13 @@ invites a member, and a pen-test-style cross-tenant suite shows zero findings.
 
 ### Next — "self-service and accountability"
 
-US-034 (seat limits, after ADR 0019), US-036 (audit viewer, after ADR 0020 Q1).
+US-034 (seat limits), US-036 (audit viewer), US-046 (retention jobs; its partitioning migration
+should land before production holds audit data). ADR 0019 and ADR 0020 were accepted on 2026-10-02.
 
 ### Later — "enterprise readiness"
 
 US-033, US-035, US-038, US-039, US-040, US-041, US-042, US-043, US-044 — each re-scoped at its own
-Gate 1 when a customer or regulation requires it. ADR 0020 must be accepted before US-038–US-040.
+Gate 1 when a customer or regulation requires it.
 
 ---
 
@@ -1217,12 +1273,14 @@ Gate 1 when a customer or regulation requires it. ADR 0020 must be accepted befo
 | D3 | Public self-registration | (a) keep for bootstrap tenant only; (b) invite-only everywhere; (c) per-tenant toggle | **Approved 2026-10-01.** **(a) now, (b) for customer tenants** — today every registrant joins the default tenant with no role | US-027 |
 | D4 | Organisations (sub-tenant level) | (a) defer; (b) build as in previous draft | **Decided 2026-10-01.** **(a) defer** until a feature consumes them | US-044 |
 | D5 | Bootstrapping the first operator account | (a) migration-seeded operator tenant + CLI/runbook to invite the first operator; (b) env-configured email invited at startup | **Approved 2026-10-01.** **(a)** — auditable and matches existing runbook practice | US-023 |
-| D6 | Deletion grace period | 14 / 30 / 90 days | **Approved 2026-10-01.** **30 days** (configurable). This answers only the grace-period part of ADR 0020 Q2 early (so US-025 can show a purge date); record it as a partial decision in ADR 0020, which still owns the purge itself | US-025, US-039 |
+| D6 | Deletion grace period | 14 / 30 / 90 days | **Approved 2026-10-01.** **30 days** (configurable). This answers only the grace-period part of ADR 0020 Q2 early (so US-025 can show a purge date); recorded in ADR 0020 D2.2 (accepted 2026-10-02) | US-025, US-039 |
 | D7 | Distinct Tenant Owner role | (a) no — rely on last-admin protection; (b) yes | **Decided 2026-10-01.** **(a)** for MVP; revisit if a customer asks for an owner distinct from admins | — |
 | D8 | Split with RBAC UI | Members page (US-030) here; role assignment/editing UI in US-019/US-020 | **Approved 2026-10-01.** One members list, built in US-030; each row links to the US-019/US-020 role screens, which do not build their own list | US-030 |
 | D9 | Enterprise SSO | build on Spring Security vs buy (WorkOS / Auth0) | **Decided 2026-10-01.** **Build OIDC on Spring Security** (already in the stack; no per-connection fee; identity stays in Nexus). Re-evaluate buying only if a customer needs SAML or SCIM (US-043), at US-042 Gate 1 | US-042 |
 | D10 | Plan tiers | names and seat limits per tier | **Decided 2026-10-01.** Tiers and their limits are configuration data (a `plan_tier` value on `tenants`, limits in config), not code. Tiers (owner, 2026-10-01): **Free**, **Teams**, **Enterprise**. Member limits (decided at the owner's request): Free 5, Teams 50, Enterprise 500 by default, changed per contract with the per-tenant override (US-034) | US-034 |
 | D11 | MFA for operator accounts | (a) required before GA; (b) optional / later | **Approved 2026-10-01.** **(a)** — NFR-SEC-4 is a GA blocker. Delivered by US-045 | GA, US-045 |
+| D12 | ADR 0019 — per-tenant quotas | The five open questions in ADR 0019 | **Accepted 2026-10-02 (delegated).** Rate limit per tenant per tier (Free 300 / Teams 1,200 / Enterprise 6,000 req/min, starting values to load-test), seats checked in the database, one concurrent export; `429` + `Retry-After` for rate, `409` for quotas; rate limits fail open as ADR 0016 D4; metrics labelled by tier, not tenant id | US-034, US-035, US-038 |
+| D13 | ADR 0020 — data lifecycle | The five open questions in ADR 0020 | **Accepted 2026-10-02 (delegated).** Audit events 13 months (PCI DSS 10.5.1), tokens 30 days after expiry, backups 35 days "beyond use"; purge hard-deletes tenant rows and keeps a tombstone; erasure anonymises the user row; old audit data leaves by monthly partition drop through a separate `nexus_retention` account; one region for MVP. Legal to confirm periods before GA | US-036, US-038–US-040, US-046 |
 
 ### 8.2 Open questions
 
@@ -1255,7 +1313,7 @@ Gate 1 when a customer or regulation requires it. ADR 0020 must be accepted befo
 | R5 | Suspension bypass via existing tokens | Low (after US-026) | High | Per-request status filter; login/refresh blocked; ≤ 60 s SLO test |
 | R6 | ArchUnit cannot see JPQL bodies; a bound-but-unused `tenantId` still leaks | Med | High | Code review + cross-tenant ITs; spike Hibernate `@TenantId`/`@Filter` as a follow-up |
 | R7 | `auth_events` grows into a general audit log with a misleading name and identity-context ownership | Med | Low | Accept for this epic; revisit with ADR 0020 |
-| R8 | ADR 0019/0020 stay undecided, blocking Next/Later | Med | Med | Named as blockers; schedule decisions alongside MVP |
+| R8 | ADR 0019/0020 periods or limits turn out wrong for real customers or law | Low | Med | Both accepted 2026-10-02 with values held in config / one table; load test (ADR 0019 rule 2) and legal review (ADR 0020 rule 1) before GA |
 | R9 | Changing sign-in URLs (D1) breaks existing bookmarks / email links | Low | Med | US-027 AC4 keeps bootstrap-tenant behaviour |
 | R10 | Duplicate members UI between this epic and RBAC UI | Low (D8 approved) | Low | D8: one list in US-030 |
 | R11 | A deactivated member keeps API access until their access token expires (≤ 15 min) | High (by design today) | Med | US-030 AC2 names it; Gate 2 decides whether to add a per-request user-status check alongside US-026's tenant check |
