@@ -860,6 +860,44 @@ Supersedes the US-016 stub filed under this epic's Open Decisions item 7. Closes
 
 ---
 
+### US-018 — Harden RBAC for production readiness (principal-architect review remediation)
+
+| TYPE | PRIORITY | STORY POINTS | EPIC LINK | SPRINT | ASSIGNEE |
+|------|----------|--------------|-----------|--------|----------|
+| Feature | P0 for Group A (Epic 3 / GA blockers); P1 for Groups B–D | _(unestimated — pending Gate 1)_ | EPIC-002: RBAC Foundation | _(unscheduled — Group A must land before Epic 3 kickoff)_ | _(Tech lead assigns)_ |
+
+### User Story
+As a platform security owner,
+I want the RBAC module's authorization model, audit trail, revocation latency, operability and API completeness brought to production grade,
+So that Nexus can onboard enterprise tenants with no open privilege-escalation paths, a complete and provable audit trail, near-immediate access revocation, and a supported way to recover a tenant's administration.
+
+### Background / Context
+Full story: `docs/story/2-rbac/US-018.md`. A principal-architect review of US-009 – US-017 (2026-09-26) rated the RBAC module **6.5 / 10 for production readiness**: engineering rigor and tenant isolation are strong, but the authorization model, audit, operability and API completeness are not GA-ready. The headline finding is that the epic never adopted the grant-subset (no-escalation) rule — *a caller may only grant or attach permissions they already hold* — and that `user:write` doubles as the role-assignment permission. That is why US-015 → US-017 accumulated layered ANY/ALL "dangerous permission" predicates while US-016 RES-1(b) / T-E27 (High) and US-017 RES-13 remain open.
+
+### Acceptance Criteria — summary (full DoD in `US-018.md`)
+| Group | Criteria | Scope |
+|---|---|---|
+| **A — Critical/High** (Epic 3 / GA blockers) | A1–A11 | Separate role-assignment permission; grant-subset rule on assign and attach; no self-assignment for non-admins; retire superseded ANY/ALL machinery via ADR; audit written atomically with the change; first-admin bootstrap and break-glass; deny-by-default ArchUnit rule + `@PublicEndpoint` (closes Open Decision #4); permissions epoch for near-immediate revocation; cache fan-out on role-permission edits; stricter token-claim validation |
+| **B — Medium** | B1–B8 | 404 (not 403) for cross-tenant targets; composite FK for tenant consistency; no `tenantId` metric tags; object-level authorization decision; typed permission catalogue (backend + frontend); justify or remove the permission cache; new permissions reach every tenant's `TENANT_ADMIN`; throttle scoping |
+| **C — Missing features** | C1–C6 | Role update/delete; pagination; access-review endpoints (SOC 2 CC6.2/6.3); time-limited assignments decision; `MEMBER` default-role decision; frontend 403 → Access Denied routing |
+| **D — Documentation** | D1–D5 | Move status logs out of this epic; fix stale statements; plain-language security comments; developer guide; keep US-016/US-017 staging items tracked |
+
+### Dependencies
+- Blocked by: none
+- Blocks: Epic 3 kickoff (Group A); GA / enterprise onboarding (Groups A–C)
+- Related: Open Decision #4 (closed by A8); US-016 RES-1(b) / T-E27 and US-017 RES-13 (closed by A2–A4 — the 2026-11-27 owner review date still applies until then)
+
+### Risks
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|-----------|
+| Too large for one delivery unit (30 criteria) | High | High | Gate 1 splits it into implementation-sized stories (proposed split in `US-018.md` Risks); `US-018.md` remains the traceability anchor |
+| Retiring US-016/US-017 controls (A5) removes protection on a path A1–A4 don't cover | Med | Critical | Every removal justified in a new ADR and re-checked by a threat-model pass |
+
+### Implementation Status (2026-09-26)
+**DRAFT — pending Gate 1.** Not yet analysed, designed or estimated.
+
+---
+
 ## Recommended Sprint Order
 
 | Sprint | Stories | Points | Notes |
@@ -868,6 +906,7 @@ Supersedes the US-016 stub filed under this epic's Open Decisions item 7. Closes
 | Sprint 4 | US-011, US-012, US-014 | 13 | Enforcement + assignment API + audit; Epic 3 gate met |
 | Sprint 5 | US-013, US-015 | 12 | Frontend guards + role/permission management API; non-gating, can parallel-stream with Epic 3 start |
 | Sprint 6 | US-016 | _(TBD at Gate 1)_ | Closes the D15/R-3 residual risk from US-015; hard deadline before Epic 3 kickoff, not just "recommended" |
+| _(TBD)_ | US-018 | _(TBD at Gate 1)_ | Production-readiness remediation; Group A must land before Epic 3 kickoff; to be split into smaller stories at Gate 1 |
 
 ## Open Decisions
 
@@ -876,7 +915,7 @@ _Resolved during feasibility review (see updates above), plus forward-tracked en
 1. **`metadata` column on `auth_events`** — ~~add in V3 migration (US-009) or a separate V4 patch?~~ **RESOLVED: no action needed.** The column already exists (added in EPIC-001's `V2__identity_schema.sql`, ahead of the `V4__auth_events_add_user_agent.sql` patch). US-014 uses it as-is.
 2. **Role + permission management API** — ~~confirm these are in Epic 2 scope or deferred to Epic 3 UI~~ **RESOLVED (revised): kept in Epic 2, as new story US-015, non-gating.** `POST /roles`, `GET/POST/DELETE /roles/{id}/permissions`, and `GET /roles` / `GET /permissions` are `rbac`-bounded-context CRUD, not a Tenant Management concern — building them now reuses the context/controllers/services US-009–US-012 already establish, rather than requiring a context-switch back into `rbac` from a not-yet-scoped Epic 3. US-015 does **not** block the Epic 3 kickoff gate (still just US-009 + US-012) and is scheduled in Sprint 5. Epic point total corrected from the original 34 to 33 (24 core stories + 9 for US-015) accordingly (see ARC effort estimate).
 3. **ADR-0013** (RBAC model + permission naming convention) — corrected from "ADR-003" in the original draft, which collides with the existing `0003-flyway-schema-migrations.md`; 0013 is the next free number in `docs/adr/`. **RESOLVED: Accepted.** `docs/adr/0013-rbac-data-model-and-enforcement-contract.md` covers the permission naming convention, the `active_key` generated-column technique (US-009), the `InsufficientPermissionException` approach (US-011), and the cache-fan-out default (US-015). Sprint 3 gate cleared.
-4. **Epic-3 entry criterion — controller-must-be-annotated ArchUnit rule (deferred from US-011)** — **OPEN — gates Epic 3 kickoff.** US-011 (`@RequiresPermission` enforcement) deliberately deferred the ArchUnit rule requiring every `@RestController` method to carry `@RequiresPermission` or an explicit `@PublicEndpoint` opt-out — there are no protected production controllers yet, and today's `identity` auth endpoints are legitimately `permitAll`/unguarded (design `docs/features/US-011/03-design.md` §B8; threat model `docs/features/US-011/03b-threat-model.md` finding T-03, verdict Condition 3). **The first protected controller in Epic 3 (Tenant Management) cannot merge until all three of the following exist:** (a) the ArchUnit rule itself — every `@RestController` method must carry `@RequiresPermission` or `@PublicEndpoint`; (b) the `@PublicEndpoint` opt-out annotation/convention; (c) a same-class self-invocation lint/ArchUnit check flagging direct calls to `@RequiresPermission` methods (folded in per threat-model Condition 4/T-05, so both deferred method-security gaps close together). Tracked here, not built in US-011 — see US-011 task `docs/features/US-011/04-tasks.md` T-011.
+4. **Epic-3 entry criterion — controller-must-be-annotated ArchUnit rule (deferred from US-011)** — **OPEN — gates Epic 3 kickoff.** US-011 (`@RequiresPermission` enforcement) deliberately deferred the ArchUnit rule requiring every `@RestController` method to carry `@RequiresPermission` or an explicit `@PublicEndpoint` opt-out — there are no protected production controllers yet, and today's `identity` auth endpoints are legitimately `permitAll`/unguarded (design `docs/features/US-011/03-design.md` §B8; threat model `docs/features/US-011/03b-threat-model.md` finding T-03, verdict Condition 3). **The first protected controller in Epic 3 (Tenant Management) cannot merge until all three of the following exist:** (a) the ArchUnit rule itself — every `@RestController` method must carry `@RequiresPermission` or `@PublicEndpoint`; (b) the `@PublicEndpoint` opt-out annotation/convention; (c) a same-class self-invocation lint/ArchUnit check flagging direct calls to `@RequiresPermission` methods (folded in per threat-model Condition 4/T-05, so both deferred method-security gaps close together). Tracked here, not built in US-011 — see US-011 task `docs/features/US-011/04-tasks.md` T-011. **[2026-09-26] Now scoped as US-018 AC A8** — still OPEN until that lands.
 5. **Epic-3 entry criterion — `CrossTenantPermissionIT` as a merge-blocking CI gate (T-010, US-011)** — **RESOLVED — gate is live, confirmed in CI, not just documented intent.** `CrossTenantPermissionIT` (`com.example.nexus.rbac.security`, written under US-011 T-014) is the epic's only end-to-end proof of the Critical no-cross-tenant-privilege-escalation property — both its 403-denial and 200-positive-control tests are green. It runs automatically in the `backend-build` job's `mvn verify` (Failsafe's default `*IT`-suffix convention picks it up; no per-test CI configuration exists or is needed), and `backend-build` is already a required status check on `main` (branch protection: `strict: true`, `enforce_admins: true` — confirmed live via the GitHub API, not just `nexus-scripts/setup-branch-protection.sh`'s committed intent). No CI workflow or branch-protection changes were needed for T-010 — both already satisfied the "hard gate" requirement before this task started; the workflow file now carries an inline comment naming this test so a future `-DskipITs` or test-exclusion change can't silently weaken it. **Distinct from item 4 above** (the deferred ArchUnit `@RequiresPermission`-coverage rule, still **OPEN**): both are Epic-3 entry criteria, but this one is closed.
 6. **US-016 successor story (D15 condition C3, US-015 Gate 2)** — **RESOLVED: filed and now formally tracked in this epic.** `docs/story/2-rbac/US-016.md` was filed pre-merge per US-015's threat model requirement that a named successor exist before that story merged; US-015 has since merged (`76470e2`). US-016 is added above as a full epic entry and to the sprint order (Sprint 6). It remains a **DRAFT stub pending its own Gate 1** — deliberately not pre-scoped, per D15/C3's own reasoning — and is a **hard, date-bound entry criterion for Epic 3 kickoff** (review by 2026-11-27 or Epic 3 kickoff, whichever is earlier), distinct from item 4's ArchUnit gate. Epic point total remains unrevised pending US-016's Gate-1 estimate.
 7. **RES-3 successor story (US-016 Gate 1 #8, merge-checklist item)** — **RESOLVED: filed and now formally tracked in this epic.** `docs/story/2-rbac/US-017.md` — "Extend last-admin lockout protection to admin-equivalent custom roles" — is filed pre-merge per US-016's own threat-model/design merge checklist (`docs/features/US-016/03-design.md` §12.2 item 14, §12.3 RES-3, §14), following the US-016 stub precedent in item 6 above. It is a **DRAFT stub pending its own Gate 1**, deliberately not pre-scoped, and is paired with RES-9 (US-016 §12.3) as one Epic-3 question — see US-017's Background section. Not a hard date-bound gate the way item 6 is; US-016's design records RES-3 as Med severity, accepted out of scope, with the backlog story's existence (not its completion) being the merge blocker for US-016 itself. **[US-017, 2026-09-24] Superseded by the full story entry above.** Gate 1 (2026-09-17), Gate 2 (threat model closed 2026-09-18) and Gate 3 (8-task breakdown) are complete; the stub's "paired with RES-9 as one Epic-3 question" framing is resolved as RES-3 closed end to end and RES-9 closed for the assign/revoke caller test only, with RES-13 carrying the mint-side remainder forward — see the "US-017" section above for current implementation status and the merge checklist, which is not yet fully satisfied.
