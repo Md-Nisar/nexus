@@ -16,7 +16,9 @@ import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
+import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.domain.UserRole;
+import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import io.micrometer.core.instrument.Counter;
@@ -76,6 +78,7 @@ class DangerousPermissionHolderSignalIT {
   @Autowired private RoleManagementService roleManagementService;
   @Autowired private JpaRoleRepository roleRepository;
   @Autowired private JpaUserRoleRepository userRoleRepository;
+  @Autowired private JpaRolePermissionRepository rolePermissionRepository;
   @Autowired private JpaUserRepository userRepository;
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private MeterRegistry meterRegistry;
@@ -98,6 +101,8 @@ class DangerousPermissionHolderSignalIT {
     // Epic-3-required administrative action (AC11 passes). This retroactively makes the
     // existing holder's assignment dangerous, with no gate re-evaluation at this moment.
     Role adminRole = seedRole("ADMIN", tenantId, "TENANT_ADMIN");
+    // US-018 A3: the admin must also hold the permission they attach.
+    rolePermissionRepository.save(new RolePermission(adminRole.getId(), DANGEROUS_PERMISSION_ID));
     User adminUser = seedUser("admin", tenantId);
     UUID adminUserId = adminUser.getId();
     seedActiveAssignment(tenantId, adminRole.getId(), adminUserId, adminUserId);

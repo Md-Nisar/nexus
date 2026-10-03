@@ -6,14 +6,21 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.example.nexus.TestcontainersConfiguration;
 import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.security.InsufficientPermissionException;
+import com.example.nexus.identity.domain.EmailCipher;
+import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
+import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
 import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.domain.DuplicateRoleNameException;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
+import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.domain.RoleView;
 import com.example.nexus.rbac.domain.SystemRoleImmutableException;
+import com.example.nexus.rbac.domain.UserRole;
+import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
+import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import java.nio.ByteBuffer;
 import java.util.Map;
 import java.util.UUID;
@@ -44,7 +51,8 @@ class RoleManagementAuditIT {
   // role:read for the plain grant/revoke success-path scenarios (12/13) -- role:write is one of
   // AC11's 3 dangerous permissions and requires an active TENANT_ADMIN caller, which these tests
   // don't set up. DANGEROUS_PERMISSION_ID (role:write) is used deliberately, and only, by the
-  // AC11-denial negative test below.
+  // AC11-denial negative test below. US-018 A3: the attaching caller must hold the permission, so
+  // the success paths use seedActorHolding.
   private static final UUID SAFE_PERMISSION_ID =
       UUID.fromString("019f6839-1804-7000-8000-000000000005");
   private static final UUID DANGEROUS_PERMISSION_ID =
@@ -52,6 +60,9 @@ class RoleManagementAuditIT {
 
   @Autowired private RoleManagementService roleManagementService;
   @Autowired private JpaRoleRepository roleRepository;
+  @Autowired private JpaRolePermissionRepository rolePermissionRepository;
+  @Autowired private JpaUserRepository userRepository;
+  @Autowired private JpaUserRoleRepository userRoleRepository;
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private JdbcTemplate jdbc;
 
@@ -98,7 +109,7 @@ class RoleManagementAuditIT {
   @Test
   void should_writeRolePermissionGrantedEventWithCorrectFields_when_attachPermissionSucceeds() {
     UUID tenantId = uuidGenerator.newId();
-    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
+    RoleChangeActor actor = seedActorHolding(tenantId, SAFE_PERMISSION_ID);
     Role role = seedRole("GRANT", tenantId);
     RequestContext ctx = requestContext();
 
@@ -120,7 +131,7 @@ class RoleManagementAuditIT {
   @Test
   void should_writeRolePermissionRevokedEventWithRevokedByField_when_detachPermissionSucceeds() {
     UUID tenantId = uuidGenerator.newId();
-    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
+    RoleChangeActor actor = seedActorHolding(tenantId, SAFE_PERMISSION_ID);
     Role role = seedRole("REVOKE", tenantId);
     roleManagementService.attachPermission(actor, role.getId(), SAFE_PERMISSION_ID, requestContext());
     RequestContext ctx = requestContext();
@@ -190,6 +201,25 @@ class RoleManagementAuditIT {
     return roleRepository.save(
         new Role(uuidGenerator.newId(), tenantId, "RMA-" + tag + "-" + UUID.randomUUID(), null,
             false));
+  }
+
+  /**
+   * US-018 A3: an actor who holds {@code permissionId} through an active assignment of a fresh
+   * custom role, so the attach under test is not denied {@code GRANT_EXCEEDS_CALLER}.
+   */
+  private RoleChangeActor seedActorHolding(UUID tenantId, UUID permissionId) {
+    String email = "rma-actor-" + UUID.randomUUID() + "@example.com";
+    String hmac = "hmac-" + UUID.randomUUID().toString().replace("-", "");
+    User user =
+        userRepository.save(
+            new User(
+                uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac, "test-hash", null));
+    Role holderRole = seedRole("ACTOR-HOLDS", tenantId);
+    rolePermissionRepository.save(new RolePermission(holderRole.getId(), permissionId));
+    userRoleRepository.save(
+        new UserRole(
+            uuidGenerator.newId(), user.getId(), holderRole.getId(), tenantId, user.getId()));
+    return new RoleChangeActor(user.getId(), tenantId);
   }
 
   private RequestContext requestContext() {

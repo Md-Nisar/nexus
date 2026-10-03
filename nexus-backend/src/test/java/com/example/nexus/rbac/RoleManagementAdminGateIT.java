@@ -16,7 +16,9 @@ import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
+import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.domain.UserRole;
+import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import java.nio.ByteBuffer;
@@ -85,10 +87,13 @@ class RoleManagementAdminGateIT {
 
   private static final UUID ROLE_WRITE_PERMISSION_ID =
       UUID.fromString("019f6839-1805-7000-8000-000000000006");
+  private static final UUID AUDIT_READ_PERMISSION_ID =
+      UUID.fromString("019f6839-1806-7000-8000-000000000007");
 
   @Autowired private RoleManagementService roleManagementService;
   @Autowired private JpaRoleRepository roleRepository;
   @Autowired private JpaUserRoleRepository userRoleRepository;
+  @Autowired private JpaRolePermissionRepository rolePermissionRepository;
   @Autowired private JpaUserRepository userRepository;
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private JdbcTemplate jdbc;
@@ -109,6 +114,8 @@ class RoleManagementAdminGateIT {
   void should_attachSucceed_when_callerIsActiveTenantAdmin() {
     UUID tenantId = uuidGenerator.newId();
     Role adminRole = seedNamedRole(tenantId, "TENANT_ADMIN", "positive-admin-role");
+    // US-018 A3: AC11's active admin must also hold the permission being attached.
+    grantPermission(adminRole.getId(), ROLE_WRITE_PERMISSION_ID);
     UUID adminUserId = seedUser("positive-admin", tenantId).getId();
     seedActiveAssignment(tenantId, adminRole.getId(), adminUserId, adminUserId);
     RoleChangeActor actor = new RoleChangeActor(adminUserId, tenantId);
@@ -148,6 +155,38 @@ class RoleManagementAdminGateIT {
                     .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
 
     assertThat(rolePermissionCount(targetRole.getId(), ROLE_WRITE_PERMISSION_ID))
+        .as("a denied attach must never leave a role_permissions row")
+        .isZero();
+  }
+
+  // ── US-018 A3: attaching any permission requires the caller to hold it ─────────────────
+
+  /**
+   * The non-dangerous attach gap A3 closes: {@code audit:read} never reaches AC11, so before A3 a
+   * {@code role:write} holder could attach it without holding it.
+   */
+  @Test
+  void should_throwGrantExceedsCaller_when_roleWriteHolderWithoutAuditReadAttachesAuditRead() {
+    UUID tenantId = uuidGenerator.newId();
+    Role callerRole = seedRole("a3-caller-role", tenantId);
+    grantPermission(callerRole.getId(), ROLE_WRITE_PERMISSION_ID);
+    UUID callerUserId = seedUser("a3-caller", tenantId).getId();
+    seedActiveAssignment(tenantId, callerRole.getId(), callerUserId, callerUserId);
+    RoleChangeActor actor = new RoleChangeActor(callerUserId, tenantId);
+    Role targetRole = seedRole("a3-target", tenantId);
+
+    assertThatThrownBy(
+            () ->
+                roleManagementService.attachPermission(
+                    actor, targetRole.getId(), AUDIT_READ_PERMISSION_ID, requestContext()))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> {
+              assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER);
+              assertThat(e.getRequiredPermission()).isEqualTo("role:write");
+            });
+
+    assertThat(rolePermissionCount(targetRole.getId(), AUDIT_READ_PERMISSION_ID))
         .as("a denied attach must never leave a role_permissions row")
         .isZero();
   }
@@ -266,6 +305,10 @@ class RoleManagementAdminGateIT {
   /** Overload for the literal role name {@code "TENANT_ADMIN"} AC11 matches on. */
   private Role seedNamedRole(UUID tenantId, String literalName, String tag) {
     return roleRepository.save(new Role(uuidGenerator.newId(), tenantId, literalName, tag, false));
+  }
+
+  private void grantPermission(UUID roleId, UUID permissionId) {
+    rolePermissionRepository.save(new RolePermission(roleId, permissionId));
   }
 
   private UserRole seedActiveAssignment(UUID tenantId, UUID roleId, UUID assigneeId, UUID assignedById) {

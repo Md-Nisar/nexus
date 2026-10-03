@@ -14,6 +14,8 @@ import com.example.nexus.rbac.domain.UserRole;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.List;
@@ -44,7 +46,11 @@ import org.springframework.web.client.RestTemplate;
  * /api/v1/users/{userId}/roles}, end to end through the real filter chain, real RS256 JWTs and
  * Testcontainers MySQL. A caller holding {@code user:role:assign} may assign a role only when they
  * hold every permission it carries (A2). US-018 T-002 adds A4: a caller may assign a role to
- * themselves only if they are an administrator (one role carrying the whole catalogue).
+ * themselves only if they are an administrator (one role carrying the whole catalogue). US-018
+ * T-003 adds A3 on {@code POST /api/v1/roles/{roleId}/permissions}: a caller may attach a
+ * permission only if they hold it. A3 denials write no {@code auth_events} row; they are observable
+ * as a WARN and as {@code nexus.rbac.permission_denied{permission=role:write,
+ * reason=GRANT_EXCEEDS_CALLER}}.
  *
  * <p><b>M2 precedence note.</b> Until M3 retires it, the legacy US-016/017 gate runs before A2, so
  * a non-administrator assigning a role that carries a legacy "dangerous" permission ({@code
@@ -79,6 +85,7 @@ class GrantSubsetIT {
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private JwtPort jwtPort;
   @Autowired private JdbcTemplate jdbc;
+  @Autowired private MeterRegistry meterRegistry;
 
   private RestTemplate restTemplate;
 
@@ -294,6 +301,67 @@ class GrantSubsetIT {
     assertThat(activeAssignmentCount(caller.getId(), role.getId())).isZero();
   }
 
+  // ── US-018 T-003: A3 attach requires the caller to hold the permission ───────────────
+
+  /**
+   * TS-2: a {@code role:write} holder attaches {@code audit:read}, which they do not hold, to a
+   * custom role. {@code audit:read} is not a legacy "dangerous" permission, so AC11 does not fire
+   * and the denial observed is A3's own.
+   */
+  @Test
+  void should_return403AndNoAuditRow_when_callerAttachesPermissionTheyDoNotHold() {
+    UUID tenantId = uuidGenerator.newId();
+    User caller = seedUserWithPermissions(tenantId, "ts2-caller", ROLE_WRITE_PERMISSION_ID);
+    Role role = seedRoleWithPermissions(tenantId, "TS2-TARGET");
+    double before = permissionDeniedCount("role:write", "GRANT_EXCEEDS_CALLER");
+
+    ResponseEntity<Map> resp =
+        postAttach(mintToken(caller), role.getId(), AUDIT_READ_PERMISSION_ID);
+
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(resp.getBody())
+        .containsEntry("code", "RBAC_001")
+        .containsEntry("requiredPermission", "role:write");
+    assertThat(permissionDeniedCount("role:write", "GRANT_EXCEEDS_CALLER") - before)
+        .as("nexus.rbac.permission_denied{role:write,GRANT_EXCEEDS_CALLER} must increment by 1")
+        .isEqualTo(1.0);
+    assertThat(rolePermissionCount(role.getId(), AUDIT_READ_PERMISSION_ID)).isZero();
+    assertThat(authEventCount(tenantId))
+        .as("an A3 denial writes no auth_events row, matching the shipped attach gate")
+        .isZero();
+  }
+
+  @Test
+  void should_return201_when_callerHoldsPermissionBeingAttached() {
+    UUID tenantId = uuidGenerator.newId();
+    User caller =
+        seedUserWithPermissions(
+            tenantId, "a3-pos-caller", ROLE_WRITE_PERMISSION_ID, AUDIT_READ_PERMISSION_ID);
+    Role role = seedRoleWithPermissions(tenantId, "A3-POS-TARGET");
+
+    ResponseEntity<Map> resp =
+        postAttach(mintToken(caller), role.getId(), AUDIT_READ_PERMISSION_ID);
+
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+    assertThat(rolePermissionCount(role.getId(), AUDIT_READ_PERMISSION_ID)).isEqualTo(1);
+  }
+
+  /** A3 runs before the duplicate check, so the 409 is no attachment-state oracle. */
+  @Test
+  void should_return403Not409_when_permissionAlreadyAttachedAndCallerDoesNotHoldIt() {
+    UUID tenantId = uuidGenerator.newId();
+    User caller = seedUserWithPermissions(tenantId, "a3-dup-caller", ROLE_WRITE_PERMISSION_ID);
+    Role role = seedRoleWithPermissions(tenantId, "A3-DUP-TARGET", AUDIT_READ_PERMISSION_ID);
+
+    ResponseEntity<Map> resp =
+        postAttach(mintToken(caller), role.getId(), AUDIT_READ_PERMISSION_ID);
+
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(resp.getBody())
+        .containsEntry("code", "RBAC_001")
+        .containsEntry("requiredPermission", "role:write");
+  }
+
   // ── Fixtures ─────────────────────────────────────────────────────────
 
   /** Every permission id in the catalogue, read live so the fixture follows future migrations. */
@@ -352,6 +420,47 @@ class GrantSubsetIT {
         HttpMethod.POST,
         new HttpEntity<>(Map.of("roleId", roleId.toString()), headers),
         Map.class);
+  }
+
+  private ResponseEntity<Map> postAttach(String token, UUID roleId, UUID permissionId) {
+    HttpHeaders headers = new HttpHeaders();
+    headers.setBearerAuth(token);
+    headers.setContentType(MediaType.APPLICATION_JSON);
+    return restTemplate.exchange(
+        "http://localhost:" + port + "/api/v1/roles/" + roleId + "/permissions",
+        HttpMethod.POST,
+        new HttpEntity<>(Map.of("permissionId", permissionId.toString()), headers),
+        Map.class);
+  }
+
+  /** Modelled on {@code RolePermissionSecurityIT}'s helper: callers assert before/after deltas. */
+  private double permissionDeniedCount(String permission, String reason) {
+    Counter counter =
+        meterRegistry
+            .find("nexus.rbac.permission_denied")
+            .tag("permission", permission)
+            .tag("reason", reason)
+            .counter();
+    return counter == null ? 0.0 : counter.count();
+  }
+
+  private int rolePermissionCount(UUID roleId, UUID permissionId) {
+    Integer count =
+        jdbc.queryForObject(
+            "SELECT COUNT(*) FROM role_permissions WHERE role_id = ? AND permission_id = ?",
+            Integer.class,
+            toBytes(roleId),
+            toBytes(permissionId));
+    return count == null ? 0 : count;
+  }
+
+  private int authEventCount(UUID tenantId) {
+    Integer count =
+        jdbc.queryForObject(
+            "SELECT COUNT(*) FROM auth_events WHERE tenant_id = ?",
+            Integer.class,
+            toBytes(tenantId));
+    return count == null ? 0 : count;
   }
 
   private List<Map<String, Object>> denialRows(UUID targetUserId) {

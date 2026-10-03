@@ -4,9 +4,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import ch.qos.logback.classic.Level;
@@ -26,6 +28,8 @@ import com.example.nexus.rbac.domain.DuplicateRolePermissionException;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.ReservedRoleNameException;
 import com.example.nexus.rbac.domain.RoleChangeActor;
+import com.example.nexus.rbac.domain.RolePermissionName;
+import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.RoleLimitExceededException;
 import com.example.nexus.rbac.domain.RoleView;
 import com.example.nexus.rbac.domain.SystemRoleImmutableException;
@@ -293,13 +297,16 @@ class RoleManagementServiceTest {
     PermissionView permission = benignPermission();
     when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
     when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
+    stubCallerHolds(permissionId);
     when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
 
     PermissionView result = service.attachPermission(actor, roleId, permissionId, ctx);
 
     assertThat(result).isEqualTo(permission);
     verify(roleManagementPort).attachPermission(roleId, permissionId);
-    verifyNoInteractions(userRoleAssignmentPort);
+    // A3's M13 read is the only collaborator call on the non-dangerous path.
+    verify(userRoleAssignmentPort).findHeldRolePermissionIdsForAuthorization(actorId, tenantId);
+    verifyNoMoreInteractions(userRoleAssignmentPort);
     verify(userRoleAssignmentPort, never()).findActiveUserIdsForRole(any());
   }
 
@@ -314,6 +321,7 @@ class RoleManagementServiceTest {
         .thenReturn(Optional.of(adminRoleId));
     when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
         .thenReturn(true);
+    stubCallerHolds(permissionId);
     when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
 
     PermissionView result = service.attachPermission(actor, roleId, permissionId, ctx);
@@ -440,12 +448,15 @@ class RoleManagementServiceTest {
     PermissionView permission = benignPermission();
     when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
     when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
+    stubCallerHolds(permissionId);
     when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
 
     service.attachPermission(actor, roleId, permissionId, ctx);
 
     verify(roleManagementPort, never()).findRoleIdByName(any(), any());
-    verifyNoInteractions(userRoleAssignmentPort);
+    // A3's M13 read is the only collaborator call on the non-dangerous path.
+    verify(userRoleAssignmentPort).findHeldRolePermissionIdsForAuthorization(actorId, tenantId);
+    verifyNoMoreInteractions(userRoleAssignmentPort);
   }
 
   @Test
@@ -510,6 +521,7 @@ class RoleManagementServiceTest {
     PermissionView permission = benignPermission();
     when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
     when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
+    stubCallerHolds(permissionId);
     when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(true);
 
     assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
@@ -525,6 +537,7 @@ class RoleManagementServiceTest {
     PermissionView permission = benignPermission();
     when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
     when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
+    stubCallerHolds(permissionId);
     when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
     doThrow(new DuplicateRolePermissionException())
         .when(roleManagementPort)
@@ -546,6 +559,7 @@ class RoleManagementServiceTest {
         .thenReturn(Optional.of(adminRoleId));
     when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
         .thenReturn(true);
+    stubCallerHolds(permissionId);
     when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
     when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId)).thenReturn(List.of());
 
@@ -588,6 +602,7 @@ class RoleManagementServiceTest {
         .thenReturn(Optional.of(adminRoleId));
     when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
         .thenReturn(true);
+    stubCallerHolds(permissionId);
     when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
     when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId))
         .thenReturn(List.of(UUID.randomUUID()));
@@ -630,6 +645,7 @@ class RoleManagementServiceTest {
         .thenReturn(Optional.of(adminRoleId));
     when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
         .thenReturn(true);
+    stubCallerHolds(permissionId);
     when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
     when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId)).thenReturn(holders);
 
@@ -675,6 +691,7 @@ class RoleManagementServiceTest {
         .thenReturn(Optional.of(adminRoleId));
     when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
         .thenReturn(true);
+    stubCallerHolds(permissionId);
     when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
     when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId)).thenReturn(holders);
 
@@ -710,6 +727,7 @@ class RoleManagementServiceTest {
     PermissionView permission = benignPermission();
     when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
     when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
+    stubCallerHolds(permissionId);
     when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
 
     ListAppender<ILoggingEvent> appender = startLogCapture();
@@ -741,6 +759,7 @@ class RoleManagementServiceTest {
         .thenReturn(Optional.of(adminRoleId));
     when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
         .thenReturn(true);
+    stubCallerHolds(permissionId);
     when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
     when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId))
         .thenReturn(List.of(UUID.randomUUID()));
@@ -791,6 +810,7 @@ class RoleManagementServiceTest {
         .thenReturn(Optional.of(adminRoleId));
     when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
         .thenReturn(true);
+    stubCallerHolds(permissionId);
     when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
     when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId)).thenReturn(List.of());
     when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
@@ -824,6 +844,7 @@ class RoleManagementServiceTest {
     PermissionView permission = benignPermission();
     when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
     when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
+    stubCallerHolds(permissionId);
     when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
 
     service.attachPermission(actor, roleId, permissionId, ctx);
@@ -831,6 +852,207 @@ class RoleManagementServiceTest {
     verify(userRoleAssignmentPort, never()).findPermissionNamesForRole(any());
     assertThat(meterRegistry.find("nexus.rbac.role_became_fully_admin_equivalent").counter())
         .isNull();
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // US-018 T-003: A3 -- attaching a permission requires the caller to hold it (FR-A3.a)
+  // ---------------------------------------------------------------------------------------
+
+  /** The A3 gap the story closes: a non-dangerous permission never reached AC11 before. */
+  @Test
+  void should_throwGrantExceedsCallerWithRoleWrite_when_callerDoesNotHoldNonDangerousPermission() {
+    RoleView role = customRole(tenantId);
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId))
+        .thenReturn(Optional.of(benignPermission()));
+    stubCallerHolds(UUID.randomUUID());
+
+    assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> {
+              assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER);
+              assertThat(e.getRequiredPermission()).isEqualTo(ROLE_WRITE);
+            });
+
+    verify(roleManagementPort, never()).attachPermission(any(), any());
+  }
+
+  @Test
+  void should_throwGrantExceedsCaller_when_callerHoldsNoPermissions() {
+    RoleView role = customRole(tenantId);
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId))
+        .thenReturn(Optional.of(benignPermission()));
+    stubCallerHolds();
+
+    assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    verify(roleManagementPort, never()).attachPermission(any(), any());
+  }
+
+  /** The held id sits in the second of several refs: A3 checks the union, not the first role. */
+  @Test
+  void should_attachPermission_when_callerHoldsPermissionThroughAnyActiveRole() {
+    RoleView role = customRole(tenantId);
+    PermissionView permission = benignPermission();
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
+    stubCallerHolds(UUID.randomUUID(), permissionId, UUID.randomUUID());
+    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
+
+    PermissionView result = service.attachPermission(actor, roleId, permissionId, ctx);
+
+    assertThat(result).isEqualTo(permission);
+    verify(roleManagementPort).attachPermission(roleId, permissionId);
+  }
+
+  /** A3 runs before the duplicate check: a denied caller learns nothing about attachment state. */
+  @Test
+  void should_denyGrantExceedsCallerAndNeverCheckDuplicate_when_permissionAlreadyAttachedButNotHeld() {
+    RoleView role = customRole(tenantId);
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId))
+        .thenReturn(Optional.of(benignPermission()));
+    stubCallerHolds(UUID.randomUUID());
+
+    assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    verify(roleManagementPort, never()).hasPermission(any(), any());
+    verify(roleManagementPort, never()).attachPermission(any(), any());
+  }
+
+  /** M13 failure must never be read as "allow". */
+  @Test
+  void should_propagateAndNotAttach_when_heldPermissionReadThrows() {
+    RoleView role = customRole(tenantId);
+    RuntimeException readFailure = new IllegalStateException("M13 read failed");
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId))
+        .thenReturn(Optional.of(benignPermission()));
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenThrow(readFailure);
+
+    assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
+        .isSameAs(readFailure);
+
+    verify(roleManagementPort, never()).attachPermission(any(), any());
+    verifyNoInteractions(rbacAuditPort);
+  }
+
+  /** Decision 7: one WARN carrying exactly the four ids -- no role or permission names. */
+  @Test
+  void should_logAttachExceedsCallerWarnWithIdsOnly_when_a3Denies() {
+    RoleView role = customRole(tenantId);
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId))
+        .thenReturn(Optional.of(benignPermission()));
+    stubCallerHolds(UUID.randomUUID());
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
+          .isInstanceOf(InsufficientPermissionException.class);
+
+      var warnEvents = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
+      assertThat(warnEvents).hasSize(1);
+      assertThat(keyValueMap(warnEvents.get(0)))
+          .containsOnly(
+              Map.entry("event", "RBAC_ATTACH_EXCEEDS_CALLER"),
+              Map.entry("tenantId", tenantId),
+              Map.entry("actorUserId", actorId),
+              Map.entry("roleId", roleId),
+              Map.entry("permissionId", permissionId));
+    } finally {
+      stopLogCapture(appender);
+    }
+  }
+
+  /** Matches the shipped attach-gate posture: no auth_events row on an A3 denial. */
+  @Test
+  void should_neverRecordAudit_when_a3Denies() {
+    RoleView role = customRole(tenantId);
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId))
+        .thenReturn(Optional.of(benignPermission()));
+    stubCallerHolds();
+
+    assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
+        .isInstanceOf(InsufficientPermissionException.class);
+
+    verifyNoInteractions(rbacAuditPort);
+  }
+
+  /** AC11 passing is not enough: an active TENANT_ADMIN must also hold the dangerous one. */
+  @Test
+  void should_denyGrantExceedsCaller_when_activeTenantAdminDoesNotHoldDangerousPermission() {
+    RoleView role = customRole(tenantId);
+    UUID adminRoleId = UUID.randomUUID();
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId))
+        .thenReturn(Optional.of(dangerousPermission()));
+    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
+        .thenReturn(Optional.of(adminRoleId));
+    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
+        .thenReturn(true);
+    stubCallerHolds(UUID.randomUUID());
+
+    assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    verify(roleManagementPort, never()).attachPermission(any(), any());
+    verify(userRoleAssignmentPort, never()).findActiveUserIdsForRole(any());
+  }
+
+  /** AC11 precedes A3: an AC11 denial keeps NOT_TENANT_ADMIN and never pays for the M13 read. */
+  @Test
+  void should_neverReadHeldPermissions_when_ac11Denies() {
+    RoleView role = customRole(tenantId);
+    UUID adminRoleId = UUID.randomUUID();
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId))
+        .thenReturn(Optional.of(dangerousPermission()));
+    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
+        .thenReturn(Optional.of(adminRoleId));
+    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
+        .thenReturn(false);
+
+    assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> assertThat(e.getReason()).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
+
+    verify(userRoleAssignmentPort, never()).findHeldRolePermissionIdsForAuthorization(any(), any());
+  }
+
+  /** M13 is the only authorization read: M12 (the canary's name-based read) is never consulted. */
+  @Test
+  void should_denyGrantExceedsCaller_when_m12ReportsPermissionButM13DoesNot() {
+    RoleView role = customRole(tenantId);
+    PermissionView permission = benignPermission();
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
+    lenient()
+        .when(
+            userRoleAssignmentPort.findPermissionNamesForActiveAssignmentsOfUser(actorId, tenantId))
+        .thenReturn(List.of(new RolePermissionName(UUID.randomUUID(), permission.name())));
+    stubCallerHolds();
+
+    assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    verify(userRoleAssignmentPort, never())
+        .findPermissionNamesForActiveAssignmentsOfUser(any(), any());
   }
 
   // ---------------------------------------------------------------------------------------
@@ -1045,6 +1267,19 @@ class RoleManagementServiceTest {
   // ---------------------------------------------------------------------------------------
   // Test infrastructure
   // ---------------------------------------------------------------------------------------
+
+  /**
+   * Stubs M13 for the actor so the caller holds exactly {@code heldPermissionIds}, each through
+   * its own (random) role. A3 requires every successful attach to find the attached id here.
+   */
+  private void stubCallerHolds(UUID... heldPermissionIds) {
+    List<RolePermissionRef> refs = new ArrayList<>();
+    for (UUID heldPermissionId : heldPermissionIds) {
+      refs.add(new RolePermissionRef(UUID.randomUUID(), heldPermissionId));
+    }
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(refs);
+  }
 
   private ListAppender<ILoggingEvent> startLogCapture() {
     Logger logger = (Logger) LoggerFactory.getLogger(RoleManagementService.class);
