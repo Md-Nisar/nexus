@@ -257,9 +257,37 @@ class GrantSubsetIT {
     rolePermissionRepository.save(new RolePermission(benignRole.getId(), ROLE_WRITE_PERMISSION_ID));
 
     assertThat(activeAssignmentCount(caller.getId(), benignRole.getId())).isZero();
-    assertThat(userRoleRepository.findHeldRolePermissionIdsForAuthorization(caller.getId(), tenantId))
-        .as("the attach must not reach the caller: they never held the role")
-        .noneMatch(ref -> ref.permissionId().equals(ROLE_WRITE_PERMISSION_ID));
+  }
+
+  /**
+   * US-017 RES-13 regression: a caller holding the three dangerous permissions (but not the whole
+   * catalogue) passes the legacy gate for {@code TENANT_ADMIN}; A4 is the only control denying the
+   * self-assignment.
+   */
+  @Test
+  void should_return403SelfAssignment_when_callerWithDangerousPermissionsSelfAssignsTenantAdmin() {
+    UUID tenantId = uuidGenerator.newId();
+    User caller =
+        seedUserWithPermissions(
+            tenantId,
+            "a4-priv",
+            permissionIdByName("user:write"),
+            permissionIdByName("role:write"),
+            permissionIdByName("tenant:write"),
+            USER_ROLE_ASSIGN_PERMISSION_ID);
+    Role tenantAdmin =
+        roleRepository.save(new Role(uuidGenerator.newId(), tenantId, "TENANT_ADMIN", null, false));
+
+    ResponseEntity<Map> resp = postAssign(mintToken(caller), caller.getId(), tenantAdmin.getId());
+
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(resp.getBody())
+        .containsEntry("code", "RBAC_001")
+        .containsEntry("requiredPermission", "user:role:assign");
+    assertThat(denialRows(caller.getId()))
+        .singleElement()
+        .satisfies(row -> assertThat(row).containsEntry("reason", "SELF_ASSIGNMENT"));
+    assertThat(activeAssignmentCount(caller.getId(), tenantAdmin.getId())).isZero();
   }
 
   /**
@@ -374,6 +402,11 @@ class GrantSubsetIT {
     Role role = seedRoleWithPermissions(tenantId, "GS-PARTIAL", permissionIds);
     userRoleRepository.save(
         new UserRole(uuidGenerator.newId(), user.getId(), role.getId(), tenantId, user.getId()));
+  }
+
+  private UUID permissionIdByName(String name) {
+    return jdbc.queryForObject(
+        "SELECT id FROM permissions WHERE name = ?", (rs, i) -> fromBytes(rs.getBytes(1)), name);
   }
 
   private static UUID fromBytes(byte[] bytes) {

@@ -38,7 +38,7 @@ public interface RbacAuditPort {
    * SELF_ASSIGNMENT} and {@code GRANT_EXCEEDS_CALLER}); never called for the 409 conflicts
    * or the 404s, and never from a read path — an "assignment denied" event for a read is a
    * semantic mislabel, and would also widen the emitting population to every {@code user:read}
-   * holder rather than the {@code user:write} holders this event type is scoped to.
+   * holder rather than the {@code user:role:assign} holders this event type is scoped to.
    *
    * @param operation the verb being denied, {@code "assign"} or {@code "revoke"} — persisted in
    *     the durable audit metadata (03-design.md D17/RC-13) so assign-side and revoke-side denials

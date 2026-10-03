@@ -77,8 +77,10 @@ public interface JpaRoleRepository extends JpaRepository<Role, UUID> {
    * served by the {@code roles} primary key and the {@code role_permissions} primary-key prefix.
    * Hosted here for the same reason as {@link #findPermissionNamesByRole}: the assignment adapter
    * reads it without a dependency on the repository that writes {@code role_permissions}. The
-   * {@code r.tenantId} predicate is defense in depth (T-S1): the caller has already tenant-verified
-   * {@code roleId}. No {@code @Lock} (MC-A).
+   * {@code r.tenantId} predicate satisfies the tenant-isolation ArchUnit gate (T-S1); it is NOT an
+   * authorization control. An empty result means no permissions OR a tenant mismatch, so callers
+   * must already have verified the role's tenant (via {@code resolveRoleInTenant}). No {@code
+   * @Lock} (MC-A).
    */
   @Query(
       "SELECT rp.id.permissionId FROM RolePermission rp, Role r "

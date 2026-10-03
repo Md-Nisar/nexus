@@ -40,6 +40,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Method;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -4052,6 +4053,59 @@ class RoleAssignmentServiceTest {
         .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.SELF_ASSIGNMENT));
 
     verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+  }
+
+  /**
+   * US-017 RES-13 regression: a caller holding the three dangerous permissions (but NOT the whole
+   * catalogue) passes the legacy privileged gate, so A4 is the only control that denies the
+   * self-assignment of a privileged role. The lock-hold timer must close with outcome=denied.
+   */
+  @Test
+  void should_denySelfAssignmentOfPrivilegedRole_when_legacyGatePassesButCallerHoldsPartOfCatalogue() {
+    UUID adminRoleId = UUID.randomUUID();
+    UUID heldRoleId = UUID.randomUUID();
+    Set<UUID> catalogue = new HashSet<>();
+    for (int i = 0; i < 9; i++) {
+      catalogue.add(UUID.randomUUID());
+    }
+    List<UUID> catalogueList = List.copyOf(catalogue);
+    when(userDirectoryPort.findTenantId(actorId)).thenReturn(Optional.of(tenantId));
+    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(customRole("BILLING_ADMIN")));
+    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
+        .thenReturn(List.of("role:write", "user:write", "tenant:write"));
+    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
+        .thenReturn(Optional.of(adminRoleId));
+    // The legacy gate (M5b) passes: the caller qualifies as an administrator by that test.
+    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(eq(actorId), any(), eq(tenantId)))
+        .thenReturn(true);
+    // M13: one role carrying four of the nine catalogue permissions -- not admin-defining.
+    when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(catalogue);
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(
+            catalogueList.subList(0, 4).stream()
+                .map(permissionId -> new RolePermissionRef(heldRoleId, permissionId))
+                .toList());
+
+    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.SELF_ASSIGNMENT));
+
+    verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), any());
+    verify(rbacAuditPort, times(1))
+        .recordRoleAssignmentDenied(
+            new RbacAuditEvent(tenantId, actorId, roleId, "BILLING_ADMIN", actorId, ctx),
+            DenialReason.SELF_ASSIGNMENT,
+            "assign");
+    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
+    verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+    var timer =
+        meterRegistry
+            .find("nexus.rbac.privileged_revoke_lock_hold")
+            .tags("outcome", "denied")
+            .timer();
+    assertThat(timer).isNotNull();
+    assertThat(timer.count()).isEqualTo(1L);
   }
 
   @Test

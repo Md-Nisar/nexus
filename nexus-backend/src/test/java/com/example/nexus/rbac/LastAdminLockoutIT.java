@@ -1121,9 +1121,10 @@ class LastAdminLockoutIT {
     return userRepository.save(user);
   }
 
-  /** A tenant-scoped role literally named {@code TENANT_ADMIN} (matches {@code RbacRoleNames}). */
   /**
-   * US-018 T-001 fixture churn: the fixture {@code TENANT_ADMIN} carries the whole permission
+   * A tenant-scoped role literally named {@code TENANT_ADMIN} (matches {@code RbacRoleNames}).
+   *
+   * <p>US-018 T-001 fixture churn: the fixture {@code TENANT_ADMIN} carries the whole permission
    * catalogue, as a real one does (V5 seed plus the B7 footer from V6 on). Without it, A2's
    * grant-subset check would deny this admin every assignment of a permissioned role.
    */

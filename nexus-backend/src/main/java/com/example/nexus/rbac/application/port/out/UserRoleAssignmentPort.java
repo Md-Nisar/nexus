@@ -147,9 +147,11 @@ public interface UserRoleAssignmentPort {
 
   /**
    * M14 (US-018, 03-design.md §4.3) — the ids of every permission attached to {@code roleId},
-   * provided the role belongs to {@code tenantId}; empty otherwise. The caller has already
-   * tenant-verified the role, so the tenant predicate is defense in depth (T-S1), not the primary
-   * check — and it keeps this read inside the tenant-isolation ArchUnit gate without an exemption.
+   * provided the role belongs to {@code tenantId}; empty otherwise. The tenant predicate satisfies
+   * the tenant-isolation ArchUnit gate without an exemption; it is NOT an authorization control. An
+   * empty result means either "the role has no permissions" or "tenant mismatch", and the two are
+   * indistinguishable, so a caller MUST already have verified the role's tenant (the assignment
+   * service does so via {@code resolveRoleInTenant}) before treating empty as "grants nothing".
    *
    * <p>MUST be a plain, NON-LOCKING read and MUST NEVER be annotated {@code @Lock} (MC-A).
    */

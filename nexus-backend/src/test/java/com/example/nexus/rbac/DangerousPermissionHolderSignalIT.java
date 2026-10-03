@@ -85,12 +85,12 @@ class DangerousPermissionHolderSignalIT {
   @Autowired private JdbcTemplate jdbc;
 
   @Test
-  void should_makeSoleHolderVisibleViaSignal_when_adminRetroactivelyAttachesDangerousPermissionToSelfAssignedBenignRole() {
+  void should_makeSoleHolderVisibleViaSignal_when_adminRetroactivelyAttachesDangerousPermissionToBenignRoleHeldViaSecondAccount() {
     UUID tenantId = uuidGenerator.newId();
 
     // Step 1: a non-admin comes to hold a BENIGN role. Since US-018 A4 a non-admin can no longer
-    // self-assign it, so the holding is seeded in the RES-26 shape: a second, non-admin account
-    // granted it (a legitimate non-self assign of an empty role, which A2 and A4 both allow).
+    // self-assign it, so the holding is modelled in the RES-26 shape (a second account granted
+    // it) and is seeded directly below, not routed through assign().
     User nonAdminUser = seedUser("holder", tenantId);
     UUID nonAdminUserId = nonAdminUser.getId();
     User secondAccount = seedUser("second-account", tenantId);

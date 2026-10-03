@@ -1714,3 +1714,13 @@ Story test scenarios: TS-1 T-001 · TS-2 T-003 · TS-3/TS-4 T-002 · TS-5 T-006 
 | O-4 | ADR numbering collision with existing `0019-tenant-fairness-and-quotas.md` / `0020-tenant-data-lifecycle.md` (A-2). **Closed at Gate 3:** renumbered to 0021–0025. | Architect |
 | O-5 | Marker and tag names the design leaves unnamed and this breakdown chose (A-14, A-15); confirm at M3 `/review`. | Architect |
 
+
+---
+
+## Deviations recorded at M2 review
+
+Recorded from `06-code-review.md` (T-001, T-002). Each is intentional; the reasons are sound.
+
+1. **M15 hosting (T-002(b)).** The catalogue read (M15, `findCatalogueIds`) lives on `JpaPermissionRepository`, not `JpaRoleRepository` as the design and T-002(b) say. This avoids a tenant-isolation ArchUnit exemption for a read of the global `permissions` table.
+2. **M14 signature (T-001(c)).** `findPermissionIdsForRole` / `findPermissionIdsByRoleAndTenantId` take `(roleId, tenantId)`, not `(UUID roleId)`. The tenant predicate satisfies `TenantIsolationArchitectureTest`; it is not an authorization control, and an empty result means no permissions or a tenant mismatch, so callers must first verify the role's tenant (`resolveRoleInTenant`).
+3. **Adapter constructor (T-001/§4.3).** `JpaUserRoleAssignmentAdapter`'s constructor changed (§4.3 says unchanged): it now also injects `JpaPermissionRepository`. Its inherited `save`/`delete` methods are therefore reachable from the adapter; this relies on the DB grants (`nexus_app` holds `SELECT` only on `permissions`) rather than on the type. The optional narrow `PermissionCatalogueReader` interface was deliberately not created.
