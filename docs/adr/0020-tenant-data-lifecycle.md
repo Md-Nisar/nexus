@@ -2,8 +2,8 @@
 
 **Status:** Accepted
 **Date:** 2026-09-28 (proposed) · **Decided:** 2026-10-02
-**Feature:** EPIC-003 (Tenant Management): US-036 (audit viewer), US-038 (export), US-039 (purge),
-US-040 (erasure), US-046 (retention jobs)
+**Feature:** EPIC-003 (Tenant Management): US-036 (audit viewer), US-038 (export), US-039 (purge and erasure;
+absorbed US-040 on 2026-10-04), US-046 (retention jobs), US-021 (`auth_events` partitioning, moved from US-046)
 **Decided by:** the product owner delegated this decision; recorded here with the research behind
 it. The retention periods in D1 are engineering defaults chosen against the standards cited. Legal
 should confirm them before GA (follow-on rule 1).
@@ -78,7 +78,7 @@ and being purged (D6), during which the tenant can be restored.
 
 For tenant data, the **customer (tenant) is the controller** and Nexus is the **processor**
 (Art. 28). Data-subject requests are therefore made to the tenant, and Nexus gives the tenant
-admin the tools to fulfil them (US-040). Nexus is controller only for its own operator accounts
+admin the tools to fulfil them (US-039). Nexus is controller only for its own operator accounts
 and platform security logs. _(This is the standard B2B SaaS model; contracts must say so — inferred,
 not reviewed by legal.)_
 
@@ -133,7 +133,7 @@ one, in its `03-design.md`. That replaces the interim rule of the proposed ADR.
 ### D3 — Data-subject erasure (Art. 17)
 
 1. **Who:**
-   - A tenant admin, acting for the person, erases a deactivated member (US-040).
+   - A tenant admin, acting for the person, erases a deactivated member (US-039).
    - Nexus completes the technical erasure within **7 days** of the admin's request, so the tenant
      can meet its one-month Art. 12(3) deadline.
 2. **Anonymise the `users` row instead of deleting it.** Deletion is impossible while
@@ -246,7 +246,7 @@ The restore runbook replays it, so restoring a backup never brings back erased d
 1. Legal confirms the D1 periods and the controller/processor wording before GA. Changing a period
    only updates D1's table; the mechanism stays.
 2. Every new table holding personal or tenant-owned data names its D1 row in `03-design.md`, and
-   US-039's purge and US-040's erasure are extended to cover it in the same change.
+   US-039's purge and erasure are extended to cover it in the same change.
 3. A backup-restore drill, including the `deletion_log` replay, runs before GA and then yearly.
 4. If audit events start storing richer personal data (names, free text), reopen D3 and consider
    crypto-shredding.

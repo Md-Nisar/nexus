@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-09-28 (proposed) · **Decided:** 2026-10-02
-**Feature:** EPIC-003 (Tenant Management) — US-034 (seat limits), US-035 (per-tenant rate limits)
+**Feature:** EPIC-003 (Tenant Management) — US-034 (plan limits: seats and per-tenant rate limits; absorbed US-035 on 2026-10-04)
 **Decided by:** the product owner delegated this decision; recorded here with the research behind it.
 **Related:** `docs/adr/0016-redis-infrastructure-dependency.md` (D3 keyspace, D4 failure modes),
 `docs/observability-standards.md` (Cardinality discipline, Service Level Objectives),
@@ -49,7 +49,7 @@ five questions the proposal left open.
 
 | Kind | Limited resource | Story |
 |---|---|---|
-| **Rate** | Authenticated API requests per tenant per minute | US-035 |
+| **Rate** | Authenticated API requests per tenant per minute | US-034 |
 | **Concurrency** | Expensive operations running at once per tenant: tenant data export (US-038) and any future bulk operation | US-038 (and each future bulk feature) |
 | **Hard quota** | Active members plus pending invitations (the D10 seat limit). Roles keep the existing global safety cap `nexus.rbac.max-roles-per-tenant` (500); it is **not** a plan limit | US-034 |
 
@@ -109,7 +109,7 @@ The operator tenant uses Enterprise rate limits and has no seat limit.
 - The IETF `RateLimit` / `RateLimit-Policy` headers are **not** sent yet. Adopt them when the
   draft becomes an RFC (follow-on rule 3).
 - Error codes follow the existing `GlobalExceptionHandler` scheme (`AUTH_001`, `RBAC_001`, …), in
-  a new `TENANT_` family. US-034 and US-035 design assign the numbers.
+  a new `TENANT_` family. US-034 design assigns the numbers.
 
 ### D5 — Visibility without a tenant-id metric label
 
@@ -119,7 +119,7 @@ The operator tenant uses Enterprise rate limits and has no seat limit.
   - `nexus_tenant_quota_rejections_total{tier,kind}`, where `kind` is `seat` or `concurrency`.
 - **Which tenant** is in the structured log event `TENANT_RATE_LIMITED` / `TENANT_QUOTA_REJECTED`,
   with `tenant_id` in MDC. On-call finds the noisy tenant with a log query, not a metric.
-- Alert when one tier's rejection rate is sustained. The threshold is set in US-035 design.
+- Alert when one tier's rejection rate is sustained. The threshold is set in US-034 design.
 - Tenant admins see "seats used / allowed" on the members page (US-034 AC3). Operators see each
   tenant's usage in the operator console (US-037).
 
