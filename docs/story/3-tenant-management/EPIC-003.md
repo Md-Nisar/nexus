@@ -3,7 +3,7 @@
 ```
 EPIC ID:       EPIC-003
 EPIC TITLE:    Tenant Management
-STATUS:        DRAFT — rewritten 2026-09-30, pending Gate 1 on each story
+STATUS:        APPROVED 2026-10-04 — all epic decisions closed; each story still passes Gate 1
 PRIORITY:      P0 (MVP slice) — later phases prioritised per story
 STORIES:       US-021 … US-046 (26 stories; 14 in MVP)
 BLOCKED BY:    EPIC-002 entry criteria (Open Decision #4 build checks — owner committed to land
@@ -19,6 +19,11 @@ BLOCKS:        Any customer-facing feature that stores tenant-owned data
 > deliberate change is listed in [§0.3](#03-what-changed-from-the-previous-draft-and-why).
 > Statements are **verified** against the code on branch state of 2026-09-30 unless marked
 > _(inferred)_ or _(unverified)_.
+>
+> **Approved 2026-10-04.** All epic-level decisions (§8.1 D1–D13) and open questions (§8.2) are
+> closed, and ADRs 0019 and 0020 are accepted. Remaining items are tracked, not blocking: the
+> §7 entry criteria, a load test of the ADR 0019 limits and legal review of the ADR 0020
+> retention periods before GA. Each story still goes through its own Gate 1.
 
 ---
 

@@ -6,7 +6,7 @@
 **Decided by:** the product owner delegated this decision; recorded here with the research behind it.
 **Related:** `docs/adr/0016-redis-infrastructure-dependency.md` (D3 keyspace, D4 failure modes),
 `docs/observability-standards.md` (Cardinality discipline, Service Level Objectives),
-`docs/story/3-tenant-management/EPIC-003-tenant-management_DRAFT.md` (decision D10: plan tiers)
+`docs/story/3-tenant-management/EPIC-003.md` (decision D10: plan tiers)
 
 ---
 

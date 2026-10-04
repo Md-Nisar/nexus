@@ -9,7 +9,7 @@ it. The retention periods in D1 are engineering defaults chosen against the stan
 should confirm them before GA (follow-on rule 1).
 **Related:** ADR 0006 (email encryption and blind index), ADR 0011 (audit writes), ADR 0012 (least-privilege
 `nexus_app`: no DDL, append-only `auth_events`), ADR 0016 (Redis keyspace),
-`docs/story/3-tenant-management/EPIC-003-tenant-management_DRAFT.md` (decision D6: 30-day grace period)
+`docs/story/3-tenant-management/EPIC-003.md` (decision D6: 30-day grace period)
 
 ---
 
