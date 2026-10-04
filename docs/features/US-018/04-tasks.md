@@ -1,7 +1,7 @@
 # US-018 — Task Breakdown: Harden RBAC for production readiness
 
 **Phase:** 4 (Task Breakdown), Gate 3
-**Status:** **Gate 3: APPROVED 2026-10-02** by the story owner. Decisions: ADRs renumbered to 0021–0025; `/docs` runs per milestone (before `/pre-pr-check`) for any milestone whose merge checklist gates on runbook or alert content, rather than all docs waiting for M11; no Jira sub-tasks.
+**Status:** **Gate 3:** approved 2026-10-02 by the story owner. Decisions: ADRs renumbered to 0021–0025; `/docs` runs per milestone (before `/pre-pr-check`) for any milestone whose merge checklist gates on runbook or alert content, rather than all docs waiting for M11; no Jira sub-tasks.
 **Epic:** EPIC-002 (RBAC Foundation)
 **Inputs (all read, binding):**
 - `docs/features/US-018/01-requirements.md`: the 30 ACs and §14 Gate 1 decisions (one story, delivered as milestones; each milestone is its own PR).

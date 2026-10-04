@@ -2,7 +2,7 @@
 
 **Story:** Harden RBAC for production readiness (principal-architect review remediation)
 **Epic:** EPIC-002 — RBAC Foundation
-**Status:** Draft · **Owner:** Business Analyst · **Gate 1:** APPROVED 2026-09-26 (see §14)
+**Status:** Draft · **Owner:** Business Analyst · **Gate 1:** approved 2026-09-26 (see §14)
 **Source documents:** `docs/story/2-rbac/US-018.md` (authoritative, 30 ACs in Groups A–D); `docs/story/2-rbac/EPIC-002.md` (§"US-018", "Recommended Sprint Order", "Open Decisions"); `docs/adr/0003, 0009, 0013–0018`; prior Gate 1 docs `docs/features/US-012` through `US-017/01-requirements.md`; verified against shipped code (`RoleAssignmentService.java`, `JwtRs256Service.java`, `JwtAuthenticationFilter.java`, `permission.guard.ts`, `api-error.interceptor.ts`, `V5__rbac_schema.sql`) on 2026-09-26 — citations below marked **[VERIFIED]** where independently re-checked in code, **[REPORTED]** where taken from the story/discovery notes without independent re-verification.
 **Status of story as received:** DRAFT, "not yet through Gate 1" — the story itself states it is too large to deliver as one unit and instructs Gate 1 to split it (US-018.md Risks row 1).
 

@@ -2,6 +2,7 @@
 
 **Epic:** EPIC-002 (RBAC Foundation)
 **Phase:** 3 (Solution Design), Gate 2 Step A
+**Gate 2:** approved 2026-10-02
 **Author:** Principal Architect
 **Status:** **Approved at Gate 2, Revision 3** (2026-10-02; RES-26 and RES-30 accepted by the story owner, owner-role confirmation at the M3 and M7 merges, `03b-threat-model.md` §13.8). Revision 3 dated 2026-10-01. Threat-modelled in `03b-threat-model.md` (conditional pass). Revision 1 folded in its required changes RC-23 to RC-40; Revision 2 folds in the delta review's RC-41 to RC-50 (`03b-threat-model.md` §11.7); Revision 3 folds in the spot-check's RC-51 to RC-54 (§12.6). The five Architect decisions Revision 1 was asked for are listed under "Revision 1 decisions for Gate 2" at the end of §0.
 
@@ -411,7 +412,7 @@ This gives up the "+0 statements on the benign path" property from US-016/017 (`
 `V6__rbac_user_role_assign_permission.sql` (the version number is assigned at merge; impact §12.1):
 1. `INSERT` permission `user:role:assign`, id `019f6839-1807-7000-8000-000000000008`, description "Assign and revoke roles for users in the tenant".
 2. **The B7 footer**, first instance, in two statements (Revision 1, RC-27.1):
-   - (a) **Admin-defining preservation.** For every `roles` row, system or custom, in any tenant, that carried **every permission of the pre-migration catalogue** (every `permissions` row except the ids this migration inserted), attach the permissions this migration inserted (`INSERT … SELECT … WHERE NOT EXISTS`). In V6 the pre-migration catalogue is the 8 V5 permissions, and the inserted id is `user:role:assign`. Soft-deleted roles (from V9 onward) are excluded.
+   - (a) **Admin-defining preservation.** For every `roles` row, system or custom, in any tenant, that carried **every permission of the pre-migration catalogue** (every `permissions` row except the ids this migration inserted), attach the permissions this migration inserted (`INSERT … SELECT … WHERE NOT EXISTS`). In V6 the pre-migration catalogue is the 7 V5 permissions, and the inserted id is `user:role:assign`. Soft-deleted roles (from V9 onward) are excluded.
      - **Template (Revision 2, RC-48).** The exclusion list differs per migration, so the footer is published as a template with **one placeholder**, `{{INSERTED_PERMISSION_IDS}}`: the literal id list of the `permissions` rows this file inserts. It is used in statement (a) as the pre-migration exclusion and as the set to attach. The template has two variants: before V9 (V6, which cannot reference `deleted_at`) and from V9 on (adds `r.deleted_at IS NULL`). The B7 scanner checks both properties (§10.7).
    - (b) **System re-sync.** For every `roles` row with `is_system_role = TRUE AND name = 'TENANT_ADMIN'` in **any** tenant, insert every `permissions` row not already attached. It grants *every* missing permission, not only the new one, so it also repairs any earlier drift.
    - Both statements are idempotent, and their order does not change the result. (a) touches only roles that were already full stand-ins. It is therefore not the `user:write` backfill Decision 3 rejects: a custom role that carries `user:write` but not the whole catalogue receives nothing.
@@ -440,7 +441,7 @@ Flagless; the parent flag `feature.nexus-us012-rbac-role-assignment` is off in t
 ### 4.11 Tests
 
 - **Changed:**
-  - `RbacSchemaMigrationIT` `:182-190` and `:193-206` (counts 8→9 and 7→8). Generalize T-E6 to "every system `TENANT_ADMIN` holds every permission" by seeding a second tenant's `TENANT_ADMIN` and re-executing the footer SQL. **Revision 1 (RC-27.1):** also seed a custom role that carries the whole pre-migration catalogue (it must gain the new permission) and a custom role that carries `user:write` but is one permission short (it must gain nothing).
+  - `RbacSchemaMigrationIT` `:182-190` and `:193-206` (permission count 7→8 at `:182-190`; system-role permission count 8→9 at `:193-206`). Generalize T-E6 to "every system `TENANT_ADMIN` holds every permission" by seeding a second tenant's `TENANT_ADMIN` and re-executing the footer SQL. **Revision 1 (RC-27.1):** also seed a custom role that carries the whole pre-migration catalogue (it must gain the new permission) and a custom role that carries `user:write` but is one permission short (it must gain nothing).
   - Every HTTP-level IT that seeds a caller with `user:write` to call POST or DELETE `/users/{id}/roles` (impact §15.1 list: `RoleAssignmentIT`, `RoleAssignmentAuditIT`, `RoleAssignmentCacheIT`, `RoleAssignmentSecurityIT`, `RoleRevocationSymmetryIT`, `RoleAssignmentEscalationIT`, `LastAdminLockoutIT`, `AdminEquivalentLockoutIT`) gets fixture churn only. **No assertion may be weakened.**
   - `RoleAssignmentServiceTest` and `RoleManagementServiceTest` get the new stubs.
   - `RoleManagementAdminGateIT` and `RoleManagementIT` cover A3 on non-dangerous permissions.
