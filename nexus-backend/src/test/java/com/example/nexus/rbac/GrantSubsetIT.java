@@ -8,6 +8,7 @@ import com.example.nexus.identity.domain.EmailCipher;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
+import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.domain.UserRole;
@@ -88,6 +89,7 @@ class GrantSubsetIT {
   @Autowired private JwtPort jwtPort;
   @Autowired private JdbcTemplate jdbc;
   @Autowired private MeterRegistry meterRegistry;
+  @Autowired private UserRoleAssignmentPort userRoleAssignmentPort;
 
   private RestTemplate restTemplate;
 
@@ -449,7 +451,136 @@ class GrantSubsetIT {
     assertThat(activeAssignmentCount(target.getId(), role.getId())).isZero();
   }
 
+  // ── US-018 07-security-review.md L-1: stale JWT, caller no longer holds the endpoint permission ──
+  //
+  // The token is minted while the caller holds the permission, then the caller's only assignment is
+  // revoked directly in the DB. The endpoint gate (JWT claims) still passes, so the denial observed
+  // is the service-level re-check against the live M13 holdings.
+
+  @Test
+  void should_return403PermissionAbsentAndWriteDenialRow_when_assignWithStaleTokenAfterCallerLosesRole() {
+    UUID tenantId = uuidGenerator.newId();
+    User caller = seedUserWithPermissions(tenantId, "l1-assign-caller", USER_ROLE_ASSIGN_PERMISSION_ID);
+    User target = seedUser(tenantId, "l1-assign-target");
+    Role role = seedRoleWithPermissions(tenantId, "L1-ASSIGN-EMPTY");
+    String staleToken = mintToken(caller);
+    revokeAllAssignmentsOf(caller);
+    double before = permissionDeniedCount("user:role:assign", "PERMISSION_ABSENT");
+
+    ResponseEntity<Map> resp = postAssign(staleToken, target.getId(), role.getId());
+
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(denialRows(target.getId()))
+        .singleElement()
+        .satisfies(
+            row ->
+                assertThat(row)
+                    .containsEntry("reason", "PERMISSION_ABSENT")
+                    .containsEntry("operation", "assign"));
+    assertThat(permissionDeniedCount("user:role:assign", "PERMISSION_ABSENT") - before)
+        .isEqualTo(1.0);
+    assertThat(activeAssignmentCount(target.getId(), role.getId())).isZero();
+  }
+
+  @Test
+  void should_return403PermissionAbsentAndKeepAssignment_when_revokeWithStaleTokenAfterCallerLosesRole() {
+    UUID tenantId = uuidGenerator.newId();
+    User caller = seedUserWithPermissions(tenantId, "l1-revoke-caller", USER_ROLE_ASSIGN_PERMISSION_ID);
+    User target = seedUser(tenantId, "l1-revoke-target");
+    Role role = seedRoleWithPermissions(tenantId, "L1-REVOKE-EMPTY");
+    userRoleRepository.save(
+        new UserRole(uuidGenerator.newId(), target.getId(), role.getId(), tenantId, caller.getId()));
+    String staleToken = mintToken(caller);
+    revokeAllAssignmentsOf(caller);
+    double before = permissionDeniedCount("user:role:assign", "PERMISSION_ABSENT");
+
+    ResponseEntity<Map> resp = deleteAssignment(staleToken, target.getId(), role.getId());
+
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(denialRows(target.getId()))
+        .singleElement()
+        .satisfies(
+            row ->
+                assertThat(row)
+                    .containsEntry("reason", "PERMISSION_ABSENT")
+                    .containsEntry("operation", "revoke"));
+    assertThat(permissionDeniedCount("user:role:assign", "PERMISSION_ABSENT") - before)
+        .isEqualTo(1.0);
+    assertThat(activeAssignmentCount(target.getId(), role.getId())).isEqualTo(1);
+  }
+
+  @Test
+  void should_return403PermissionAbsentAndAttachNothing_when_attachWithStaleTokenAfterCallerLosesRole() {
+    UUID tenantId = uuidGenerator.newId();
+    User caller =
+        seedUserWithPermissions(
+            tenantId, "l1-attach-caller", ROLE_WRITE_PERMISSION_ID, AUDIT_READ_PERMISSION_ID);
+    Role role = seedRoleWithPermissions(tenantId, "L1-ATTACH-TARGET");
+    String staleToken = mintToken(caller);
+    revokeAllAssignmentsOf(caller);
+    double before = permissionDeniedCount("role:write", "PERMISSION_ABSENT");
+
+    ResponseEntity<Map> resp = postAttach(staleToken, role.getId(), AUDIT_READ_PERMISSION_ID);
+
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(permissionDeniedCount("role:write", "PERMISSION_ABSENT") - before).isEqualTo(1.0);
+    assertThat(rolePermissionCount(role.getId(), AUDIT_READ_PERMISSION_ID)).isZero();
+    assertThat(authEventCount(tenantId)).as("attach denials write no auth_events row").isZero();
+  }
+
+  // ── US-018 07-security-review.md L-2: M14 fails closed, against the real JPQL (LEFT JOIN) ──
+
+  @Test
+  void should_returnEmptyOptional_when_roleBelongsToAnotherTenant() {
+    UUID tenantId = uuidGenerator.newId();
+    UUID otherTenantId = uuidGenerator.newId();
+    Role foreignRole =
+        seedRoleWithPermissions(otherTenantId, "L2-FOREIGN", AUDIT_READ_PERMISSION_ID);
+
+    assertThat(userRoleAssignmentPort.findPermissionIdsForRole(foreignRole.getId(), tenantId))
+        .as("a role outside the tenant is indistinguishable from none: empty, never 'grants nothing'")
+        .isEmpty();
+  }
+
+  @Test
+  void should_returnEmptyOptional_when_roleDoesNotExist() {
+    assertThat(
+            userRoleAssignmentPort.findPermissionIdsForRole(
+                uuidGenerator.newId(), uuidGenerator.newId()))
+        .isEmpty();
+  }
+
+  @Test
+  void should_returnPresentEmptySet_when_roleInTenantHasNoPermissions() {
+    UUID tenantId = uuidGenerator.newId();
+    Role role = seedRoleWithPermissions(tenantId, "L2-EMPTY");
+
+    assertThat(userRoleAssignmentPort.findPermissionIdsForRole(role.getId(), tenantId))
+        .hasValueSatisfying(ids -> assertThat(ids).isEmpty());
+  }
+
+  @Test
+  void should_returnEveryAttachedPermissionId_when_roleInTenantHasPermissions() {
+    UUID tenantId = uuidGenerator.newId();
+    Role role =
+        seedRoleWithPermissions(
+            tenantId, "L2-TWO", AUDIT_READ_PERMISSION_ID, ROLE_WRITE_PERMISSION_ID);
+
+    assertThat(userRoleAssignmentPort.findPermissionIdsForRole(role.getId(), tenantId))
+        .hasValueSatisfying(
+            ids ->
+                assertThat(ids)
+                    .containsExactlyInAnyOrder(AUDIT_READ_PERMISSION_ID, ROLE_WRITE_PERMISSION_ID));
+  }
+
   // ── Fixtures ─────────────────────────────────────────────────────────
+
+  /** Revokes every active assignment of {@code user} directly in the DB, leaving any JWT stale. */
+  private void revokeAllAssignmentsOf(User user) {
+    jdbc.update(
+        "UPDATE user_roles SET revoked_at = NOW(6) WHERE user_id = ? AND revoked_at IS NULL",
+        toBytes(user.getId()));
+  }
 
   /** Every permission id in the catalogue, read live so the fixture follows future migrations. */
   private UUID[] catalogueIds() {

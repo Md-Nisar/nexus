@@ -1104,8 +1104,17 @@ class LastAdminLockoutIT {
                 roleManagementService.attachPermission(
                     adminActor, customRole.getId(), ROLE_WRITE_PERMISSION_ID, requestContext()));
 
-    String m9Sql = findStatementMatching(flowBSql, List.of("user_roles"), List.of("force index"));
+    // US-018 A3 (attach-subset) adds M13 (caller's held role-permission ids) to this flow; it also
+    // touches user_roles, so M9 is identified by excluding role_permissions, and M13 is pinned
+    // separately (design MC-A: M13 never carries a locking clause).
+    String m9Sql =
+        findStatementMatching(
+            flowBSql, List.of("user_roles"), List.of("force index", "role_permissions"));
+    String m13Sql =
+        findStatementMatching(
+            flowBSql, List.of("user_roles", "role_permissions"), List.of("force index"));
     assertNoLockingClause(m9Sql, "M9 (findActiveUserIdsForRole, new caller)");
+    assertNoLockingClause(m13Sql, "M13 (findHeldRolePermissionIdsForAuthorization)");
   }
 
   // ── Shared seeding / assertion helpers ─────────────────────────────────────────────────

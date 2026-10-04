@@ -320,7 +320,9 @@ class RoleAssignmentCacheIT {
    */
   private RoleChangeActor seedActor(UUID tenantId, String tag) {
     User actorUser = seedUser(tenantId, tag + "-actor");
-    Role assignerRole = seedRole(tenantId, tag + "-ASSIGNER");
+    // Fixed short tag: seedRole appends a 36-char UUID, and roles.name is VARCHAR(64), so a
+    // caller-supplied tag here would overflow the column for the longer scenario tags.
+    Role assignerRole = seedRole(tenantId, "ASSIGNER");
     rolePermissionRepository.save(
         new RolePermission(assignerRole.getId(), RbacSeededPermissionIds.USER_ROLE_ASSIGN));
     userRoleRepository.save(
