@@ -26,7 +26,7 @@ import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.domain.UserRole;
-import com.example.nexus.rbac.infrastructure.persistence.JpaPermissionRepository;
+import com.example.nexus.rbac.infrastructure.persistence.JpaPermissionCatalogueRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
@@ -134,7 +134,7 @@ class LastAdminLockoutIT {
   @Autowired private JpaRoleRepository roleRepository;
   @Autowired private JpaUserRoleRepository userRoleRepository;
   @Autowired private JpaRolePermissionRepository rolePermissionRepository;
-  @Autowired private JpaPermissionRepository permissionRepository;
+  @Autowired private JpaPermissionCatalogueRepository permissionCatalogueRepository;
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private JdbcTemplate jdbc;
   @Autowired private MeterRegistry meterRegistry;
@@ -856,7 +856,12 @@ class LastAdminLockoutIT {
                 roleAssignmentService.revoke(
                     actor, holder1.getId(), dangerousRole.getId(), requestContext()));
 
-    String m10Sql = findStatementMatching(emittedSql, List.of("role_permissions", "tenant_id"), List.of());
+    // US-018 07-security-review.md M-1: revoke now also emits M13 (driven off user_roles) and M14
+    // (roles LEFT JOIN role_permissions, L-2), both of which touch role_permissions with a tenant
+    // predicate; neither is M10, so both are excluded by their own positive shape.
+    String m10Sql =
+        findStatementMatching(
+            emittedSql, List.of("role_permissions", "tenant_id"), List.of("user_roles", "left join"));
     assertNoLockingClause(m10Sql, "M10 (findPermissionNamesForTenantRoles)");
   }
 
@@ -921,14 +926,14 @@ class LastAdminLockoutIT {
   // ── Scenario 6f (US-018 T-002, 03-design.md §4.11 MC-A extended): M15 non-locking ──────────
 
   /**
-   * MC-A extended: M15 ({@code findCatalogueIds}, hosted on {@code JpaPermissionRepository}) is
+   * MC-A extended: M15 ({@code findCatalogueIds}, hosted on {@code JpaPermissionCatalogueRepository}) is
    * A4's catalogue read. It reads only {@code permissions}, on which {@code nexus_app} holds {@code
    * SELECT} only, so a locking form would be rejected in production yet pass every Testcontainers
    * IT (container superuser). Invoked directly against the repository bean.
    */
   @Test
   void should_neverEmitForShareOrForUpdate_when_capturingM15sSql_MCA() throws Exception {
-    List<String> emittedSql = captureHibernateSql(permissionRepository::findCatalogueIds);
+    List<String> emittedSql = captureHibernateSql(permissionCatalogueRepository::findCatalogueIds);
 
     assertThat(emittedSql).as("M15, captured from one action").hasSize(1);
     assertNoLockingClause(emittedSql.get(0), "M15 (findCatalogueIds)");

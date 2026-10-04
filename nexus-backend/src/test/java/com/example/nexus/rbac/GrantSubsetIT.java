@@ -50,7 +50,9 @@ import org.springframework.web.client.RestTemplate;
  * T-003 adds A3 on {@code POST /api/v1/roles/{roleId}/permissions}: a caller may attach a
  * permission only if they hold it. A3 denials write no {@code auth_events} row; they are observable
  * as a WARN and as {@code nexus.rbac.permission_denied{permission=role:write,
- * reason=GRANT_EXCEEDS_CALLER}}.
+ * reason=GRANT_EXCEEDS_CALLER}}. 07-security-review.md M-1 adds revoke-subset on {@code DELETE
+ * /api/v1/users/{userId}/roles/{roleId}}: a caller may revoke a role only when they hold every
+ * permission it carries.
  *
  * <p><b>M2 precedence note.</b> Until M3 retires it, the legacy US-016/017 gate runs before A2, so
  * a non-administrator assigning a role that carries a legacy "dangerous" permission ({@code
@@ -390,6 +392,63 @@ class GrantSubsetIT {
         .containsEntry("requiredPermission", "role:write");
   }
 
+  // ── US-018 07-security-review.md M-1: revoke-subset on DELETE /users/{userId}/roles/{roleId} ──
+
+  /**
+   * A delegated {@code user:role:assign} holder may not revoke a role carrying a permission they do
+   * not hold. {@code audit:read} is not legacy-"dangerous", so the legacy gate passes and the denial
+   * observed is revoke-subset's own: 403 {@code RBAC_001}, one {@code ROLE_ASSIGNMENT_DENIED} row
+   * with {@code GRANT_EXCEEDS_CALLER} and {@code operation=revoke}, and the assignment untouched.
+   */
+  @Test
+  void should_return403GrantExceedsCallerAndKeepAssignment_when_revokeTargetExceedsCallerHoldings() {
+    UUID tenantId = uuidGenerator.newId();
+    User caller =
+        seedUserWithPermissions(tenantId, "rs-neg-caller", USER_ROLE_ASSIGN_PERMISSION_ID);
+    User target = seedUser(tenantId, "rs-neg-target");
+    Role role = seedRoleWithPermissions(tenantId, "RS-NEG-AUDITOR", AUDIT_READ_PERMISSION_ID);
+    userRoleRepository.save(
+        new UserRole(uuidGenerator.newId(), target.getId(), role.getId(), tenantId, caller.getId()));
+    double before = permissionDeniedCount("user:role:assign", "GRANT_EXCEEDS_CALLER");
+
+    ResponseEntity<Map> resp = deleteAssignment(mintToken(caller), target.getId(), role.getId());
+
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(resp.getBody())
+        .containsEntry("code", "RBAC_001")
+        .containsEntry("requiredPermission", "user:role:assign");
+    List<Map<String, Object>> rows = denialRows(target.getId());
+    assertThat(rows).as("exactly one ROLE_ASSIGNMENT_DENIED row per request").hasSize(1);
+    assertThat(rows.get(0))
+        .containsEntry("reason", "GRANT_EXCEEDS_CALLER")
+        .containsEntry("operation", "revoke")
+        .containsEntry("missing_count", "1");
+    assertThat(permissionDeniedCount("user:role:assign", "GRANT_EXCEEDS_CALLER") - before)
+        .as("the central handler increments nexus.rbac.permission_denied exactly once")
+        .isEqualTo(1.0);
+    assertThat(activeAssignmentCount(target.getId(), role.getId()))
+        .as("a denied revoke must leave the assignment active")
+        .isEqualTo(1);
+  }
+
+  @Test
+  void should_return204AndRevoke_when_revokeTargetWithinCallerHoldings() {
+    UUID tenantId = uuidGenerator.newId();
+    User caller =
+        seedUserWithPermissions(
+            tenantId, "rs-pos-caller", USER_ROLE_ASSIGN_PERMISSION_ID, AUDIT_READ_PERMISSION_ID);
+    User target = seedUser(tenantId, "rs-pos-target");
+    Role role = seedRoleWithPermissions(tenantId, "RS-POS-AUDITOR", AUDIT_READ_PERMISSION_ID);
+    userRoleRepository.save(
+        new UserRole(uuidGenerator.newId(), target.getId(), role.getId(), tenantId, caller.getId()));
+
+    ResponseEntity<Map> resp = deleteAssignment(mintToken(caller), target.getId(), role.getId());
+
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+    assertThat(denialRows(target.getId())).isEmpty();
+    assertThat(activeAssignmentCount(target.getId(), role.getId())).isZero();
+  }
+
   // ── Fixtures ─────────────────────────────────────────────────────────
 
   /** Every permission id in the catalogue, read live so the fixture follows future migrations. */
@@ -452,6 +511,16 @@ class GrantSubsetIT {
         "http://localhost:" + port + "/api/v1/users/" + pathUserId + "/roles",
         HttpMethod.POST,
         new HttpEntity<>(Map.of("roleId", roleId.toString()), headers),
+        Map.class);
+  }
+
+  private ResponseEntity<Map> deleteAssignment(String token, UUID pathUserId, UUID roleId) {
+    HttpHeaders headers = new HttpHeaders();
+    headers.setBearerAuth(token);
+    return restTemplate.exchange(
+        "http://localhost:" + port + "/api/v1/users/" + pathUserId + "/roles/" + roleId,
+        HttpMethod.DELETE,
+        new HttpEntity<>(headers),
         Map.class);
   }
 

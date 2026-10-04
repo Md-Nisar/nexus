@@ -13,9 +13,11 @@ import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.RbacAdminEquivalence;
 import com.example.nexus.rbac.domain.RbacDangerousPermissions;
 import com.example.nexus.rbac.domain.RbacRoleNames;
+import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.ReservedRoleNameException;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RoleLimitExceededException;
+import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.RoleView;
 import com.example.nexus.rbac.domain.SystemRoleImmutableException;
 import io.micrometer.core.instrument.Counter;
@@ -428,14 +430,33 @@ public class RoleManagementService {
    * nexus.rbac.permission_denied} series is incremented centrally by the exception handler. Like
    * the AC11 gate, it writes <b>no</b> audit row: {@code ROLE_ASSIGNMENT_DENIED}'s contracted scope
    * is role assignment, not attach (Decision 7).
+   *
+   * <p>07-security-review.md L-1: the same M13 rows must also still contain the endpoint
+   * permission {@code role:write} (by its seeded id), since {@code @RequiresPermission} read it
+   * from a JWT that may predate a revoke. Missing is a 403 {@code PERMISSION_ABSENT} with WARN
+   * {@code RBAC_ENDPOINT_PERMISSION_NOT_HELD} (ids only), checked first, no extra read, and no
+   * audit row for the same Decision 7 reason.
    */
   private void requireCallerHoldsPermission(
       RoleChangeActor actor, RoleView role, UUID permissionId) {
+    List<RolePermissionRef> heldRolePermissions =
+        userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(
+            actor.userId(), actor.tenantId());
+    boolean stillHoldsRoleWrite =
+        heldRolePermissions.stream()
+            .anyMatch(ref -> RbacSeededPermissionIds.ROLE_WRITE.equals(ref.permissionId()));
+    if (!stillHoldsRoleWrite) {
+      log.atWarn()
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_ENDPOINT_PERMISSION_NOT_HELD")
+          .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+          .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+          .addKeyValue(LOG_KEY_ROLE_ID, role.id())
+          .addKeyValue(LOG_KEY_PERMISSION_ID, permissionId)
+          .log("Blocked attach by a caller whose live holdings lack the endpoint permission");
+      throw new InsufficientPermissionException(ROLE_WRITE, DenialReason.PERMISSION_ABSENT);
+    }
     boolean held =
-        userRoleAssignmentPort
-            .findHeldRolePermissionIdsForAuthorization(actor.userId(), actor.tenantId())
-            .stream()
-            .anyMatch(ref -> ref.permissionId().equals(permissionId));
+        heldRolePermissions.stream().anyMatch(ref -> ref.permissionId().equals(permissionId));
     if (!held) {
       log.atWarn()
           .addKeyValue(LOG_KEY_EVENT, "RBAC_ATTACH_EXCEEDS_CALLER")

@@ -147,20 +147,22 @@ public interface UserRoleAssignmentPort {
 
   /**
    * M14 (US-018, 03-design.md §4.3) — the ids of every permission attached to {@code roleId},
-   * provided the role belongs to {@code tenantId}; empty otherwise. The tenant predicate satisfies
-   * the tenant-isolation ArchUnit gate without an exemption; it is NOT an authorization control. An
-   * empty result means either "the role has no permissions" or "tenant mismatch", and the two are
-   * indistinguishable, so a caller MUST already have verified the role's tenant (the assignment
-   * service does so via {@code resolveRoleInTenant}) before treating empty as "grants nothing".
+   * provided the role belongs to {@code tenantId}.
+   *
+   * <p>Fails closed (07-security-review.md L-2): {@link Optional#empty()} means the role is NOT in
+   * {@code tenantId} (or does not exist), and a caller MUST deny on it, never read it as "grants
+   * nothing". A present, empty set means the role is in the tenant and has no permissions. The two
+   * cases are distinguished by one statement, so no caller depends on having run {@code
+   * resolveRoleInTenant} first for safety (it still does, for the 404/403 contract).
    *
    * <p>MUST be a plain, NON-LOCKING read and MUST NEVER be annotated {@code @Lock} (MC-A).
    */
-  Set<UUID> findPermissionIdsForRole(UUID roleId, UUID tenantId);
+  Optional<Set<UUID>> findPermissionIdsForRole(UUID roleId, UUID tenantId);
 
   /**
    * M15 (US-018, 03-design.md §2.1, §4.3) — the ids of the whole, global permission catalogue,
    * against which a role is admin-defining. Read only when needed: on {@code assign()}, only for a
-   * self-target (A4).
+   * self-target (A4). Backed by a read-only repository that cannot write {@code permissions} (L-5).
    *
    * <p>MUST be a plain, NON-LOCKING read and MUST NEVER be annotated {@code @Lock} (MC-A). A read
    * failure propagates; the caller must never treat it as "allow".

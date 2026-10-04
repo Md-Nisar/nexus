@@ -7,7 +7,6 @@ import com.example.nexus.rbac.domain.RolePermissionName;
 import com.example.nexus.rbac.domain.RoleView;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
@@ -77,15 +76,19 @@ public interface JpaRoleRepository extends JpaRepository<Role, UUID> {
    * served by the {@code roles} primary key and the {@code role_permissions} primary-key prefix.
    * Hosted here for the same reason as {@link #findPermissionNamesByRole}: the assignment adapter
    * reads it without a dependency on the repository that writes {@code role_permissions}. The
-   * {@code r.tenantId} predicate satisfies the tenant-isolation ArchUnit gate (T-S1); it is NOT an
-   * authorization control. An empty result means no permissions OR a tenant mismatch, so callers
-   * must already have verified the role's tenant (via {@code resolveRoleInTenant}). No {@code
-   * @Lock} (MC-A).
+   * {@code r.tenantId} predicate satisfies the tenant-isolation ArchUnit gate (T-S1).
+   *
+   * <p>Fail-closed shape (07-security-review.md L-2): driven off {@code roles} with a LEFT JOIN, so
+   * the two "nothing to grant" cases stay distinguishable in ONE statement. An EMPTY list means the
+   * role is not in {@code tenantId} (or does not exist); a role in the tenant with no permissions
+   * yields exactly one {@code null} element; otherwise one element per attached permission id. The
+   * adapter maps this to {@code Optional<Set<UUID>>}. No {@code @Lock} (MC-A).
    */
   @Query(
-      "SELECT rp.id.permissionId FROM RolePermission rp, Role r "
-          + "WHERE rp.id.roleId = r.id AND r.id = :roleId AND r.tenantId = :tenantId")
-  Set<UUID> findPermissionIdsByRoleAndTenantId(
+      "SELECT rp.id.permissionId FROM Role r "
+          + "LEFT JOIN RolePermission rp ON rp.id.roleId = r.id "
+          + "WHERE r.id = :roleId AND r.tenantId = :tenantId")
+  List<UUID> findPermissionIdsByRoleAndTenantId(
       @Param("roleId") UUID roleId, @Param("tenantId") UUID tenantId);
 
   /**

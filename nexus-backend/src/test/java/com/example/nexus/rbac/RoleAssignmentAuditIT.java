@@ -21,9 +21,14 @@ import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
 import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.application.port.out.RbacAuditEvent;
 import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
+import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
+import com.example.nexus.rbac.domain.RolePermission;
+import com.example.nexus.rbac.domain.UserRole;
+import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
+import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
@@ -112,6 +117,8 @@ class RoleAssignmentAuditIT {
   @Autowired private RoleAssignmentService roleAssignmentService;
   @Autowired private JpaUserRepository userRepository;
   @Autowired private JpaRoleRepository roleRepository;
+  @Autowired private JpaRolePermissionRepository rolePermissionRepository;
+  @Autowired private JpaUserRoleRepository userRoleRepository;
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private JdbcTemplate jdbc;
   @Autowired private SecureEventService secureEventService;
@@ -124,6 +131,7 @@ class RoleAssignmentAuditIT {
   void should_writeValidRoleAssignedEventWithCorrectFields_when_assignSucceeds() {
     UUID tenantId = uuidGenerator.newId();
     User actorUser = seedUser("audit-assign-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
     User target = seedUser("audit-assign-target", tenantId);
     Role role = seedRole("AUDIT-ASSIGN", tenantId);
     RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
@@ -159,6 +167,7 @@ class RoleAssignmentAuditIT {
   void should_writeValidRoleRevokedEventWithRevokedByField_when_revokeSucceeds() {
     UUID tenantId = uuidGenerator.newId();
     User actorUser = seedUser("audit-revoke-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
     User target = seedUser("audit-revoke-target", tenantId);
     Role role = seedRole("AUDIT-REVOKE", tenantId);
     RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
@@ -203,6 +212,7 @@ class RoleAssignmentAuditIT {
       String label, String roleName) {
     UUID tenantId = uuidGenerator.newId();
     User actorUser = seedUser("audit-adv-actor-" + label, tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
     User target = seedUser("audit-adv-target-" + label, tenantId);
     // roles.name is VARCHAR(64), unique per (tenant_id, name) — a fresh tenant per case means
     // no collision risk without needing to append random suffixes to the adversarial literal.
@@ -238,6 +248,7 @@ class RoleAssignmentAuditIT {
     UUID actorTenantId = uuidGenerator.newId();
     UUID targetTenantId = uuidGenerator.newId();
     User actorUser = seedUser("audit-403-actor", actorTenantId);
+    grantUserRoleAssign(actorTenantId, actorUser.getId());
     User target = seedUser("audit-403-target", targetTenantId);
     Role role = seedRole("AUDIT-403", actorTenantId);
     RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), actorTenantId);
@@ -262,6 +273,7 @@ class RoleAssignmentAuditIT {
   void should_writeExactlyOneAuditRow_notTwo_when_secondAssignFailsWithDuplicate() {
     UUID tenantId = uuidGenerator.newId();
     User actorUser = seedUser("audit-409-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
     User target = seedUser("audit-409-target", tenantId);
     Role role = seedRole("AUDIT-409", tenantId);
     RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
@@ -282,6 +294,7 @@ class RoleAssignmentAuditIT {
   void should_writeNoSecondRevokedRow_when_revokingAlreadyRevokedAssignment() {
     UUID tenantId = uuidGenerator.newId();
     User actorUser = seedUser("audit-404-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
     User target = seedUser("audit-404-target", tenantId);
     Role role = seedRole("AUDIT-404", tenantId);
     RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
@@ -308,6 +321,7 @@ class RoleAssignmentAuditIT {
     UUID actorTenantId = uuidGenerator.newId();
     UUID targetTenantId = uuidGenerator.newId();
     User actorUser = seedUser("audit-denied-403-actor", actorTenantId);
+    grantUserRoleAssign(actorTenantId, actorUser.getId());
     User target = seedUser("audit-denied-403-target", targetTenantId);
     Role role = seedRole("AUDIT-DENIED-403", actorTenantId);
     RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), actorTenantId);
@@ -352,6 +366,7 @@ class RoleAssignmentAuditIT {
     UUID actorTenantId = uuidGenerator.newId();
     UUID targetTenantId = uuidGenerator.newId();
     User actorUser = seedUser("audit-denied-revoke-actor", actorTenantId);
+    grantUserRoleAssign(actorTenantId, actorUser.getId());
     User target = seedUser("audit-denied-revoke-target", targetTenantId);
     Role role = seedRole("AUDIT-DENIED-REVOKE", actorTenantId);
     RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), actorTenantId);
@@ -383,6 +398,7 @@ class RoleAssignmentAuditIT {
   void should_writeRoleAssignmentDeniedRow_when_assignFailsWithNotTenantAdmin() {
     UUID tenantId = uuidGenerator.newId();
     User actorUser = seedUser("audit-denied-admin-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
     User target = seedUser("audit-denied-admin-target", tenantId);
     // seedRole prefixes names ("RAA-" + tag + "-" + randomUUID), which can never match
     // RbacRoleNames.TENANT_ADMIN under equalsIgnoreCase (03-design.md §0.1 item 5) -- the role
@@ -548,6 +564,7 @@ class RoleAssignmentAuditIT {
   void should_returnAssignThenRevokeInCreatedAtOrder_when_queryingRoleHistoryForUserInTenant() {
     UUID tenantA = uuidGenerator.newId();
     User actorA = seedUser("audit-history-a-actor", tenantA);
+    grantUserRoleAssign(tenantA, actorA.getId());
     User targetA = seedUser("audit-history-a-target", tenantA);
     Role roleA = seedRole("AUDIT-HISTORY-A", tenantA);
     RoleChangeActor changeActorA = new RoleChangeActor(actorA.getId(), tenantA);
@@ -555,6 +572,7 @@ class RoleAssignmentAuditIT {
     // Decoy in an unrelated tenant B -- must never appear in tenant A's history.
     UUID tenantB = uuidGenerator.newId();
     User actorB = seedUser("audit-history-b-actor", tenantB);
+    grantUserRoleAssign(tenantB, actorB.getId());
     User targetB = seedUser("audit-history-b-target", tenantB);
     Role roleB = seedRole("AUDIT-HISTORY-B", tenantB);
     roleAssignmentService.assign(
@@ -664,6 +682,19 @@ class RoleAssignmentAuditIT {
     User user =
         new User(uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac, "test-hash", null);
     return userRepository.save(user);
+  }
+
+  /**
+   * US-018 07-security-review.md L-1: {@code assign()}/{@code revoke()} re-check the actor's fresh
+   * M13 holdings for {@code user:role:assign}, so a service-level actor must actually hold it --
+   * through a fresh custom role carrying only that permission, never a dangerous one.
+   */
+  private void grantUserRoleAssign(UUID tenantId, UUID userId) {
+    Role assignerRole = seedRole("ASSIGNER", tenantId);
+    rolePermissionRepository.save(
+        new RolePermission(assignerRole.getId(), RbacSeededPermissionIds.USER_ROLE_ASSIGN));
+    userRoleRepository.save(
+        new UserRole(uuidGenerator.newId(), userId, assignerRole.getId(), tenantId, userId));
   }
 
   private Role seedRole(String tag, UUID tenantId) {

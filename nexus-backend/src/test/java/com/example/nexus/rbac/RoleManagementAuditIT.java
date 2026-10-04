@@ -12,6 +12,7 @@ import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
 import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.domain.DuplicateRoleNameException;
+import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RolePermission;
@@ -205,7 +206,9 @@ class RoleManagementAuditIT {
 
   /**
    * US-018 A3: an actor who holds {@code permissionId} through an active assignment of a fresh
-   * custom role, so the attach under test is not denied {@code GRANT_EXCEEDS_CALLER}.
+   * custom role, so the attach under test is not denied {@code GRANT_EXCEEDS_CALLER}. The same
+   * role also carries {@code role:write}, the endpoint permission attach re-checks in M13
+   * (07-security-review.md L-1).
    */
   private RoleChangeActor seedActorHolding(UUID tenantId, UUID permissionId) {
     String email = "rma-actor-" + UUID.randomUUID() + "@example.com";
@@ -216,6 +219,10 @@ class RoleManagementAuditIT {
                 uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac, "test-hash", null));
     Role holderRole = seedRole("ACTOR-HOLDS", tenantId);
     rolePermissionRepository.save(new RolePermission(holderRole.getId(), permissionId));
+    if (!RbacSeededPermissionIds.ROLE_WRITE.equals(permissionId)) {
+      rolePermissionRepository.save(
+          new RolePermission(holderRole.getId(), RbacSeededPermissionIds.ROLE_WRITE));
+    }
     userRoleRepository.save(
         new UserRole(
             uuidGenerator.newId(), user.getId(), holderRole.getId(), tenantId, user.getId()));

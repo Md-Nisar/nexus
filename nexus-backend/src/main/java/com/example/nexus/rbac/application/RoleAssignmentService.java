@@ -19,6 +19,7 @@ import com.example.nexus.rbac.domain.RbacAdminEquivalence;
 import com.example.nexus.rbac.domain.RbacAdministrators;
 import com.example.nexus.rbac.domain.RbacDangerousPermissions;
 import com.example.nexus.rbac.domain.RbacRoleNames;
+import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RolePermissionName;
@@ -221,8 +222,9 @@ public class RoleAssignmentService {
    * close RES-1(b); the second-account path is tracked as RES-26.
    *
    * <p><b>US-018 A4:</b> a self-assignment additionally requires the caller to be an administrator
-   * (03-design.md §2.1). Denials follow Decision 6: tenant checks, throttle, legacy gate, A4, A2,
-   * duplicate 409, with one denial row carrying the first reason. A4 removes only the literal
+   * (03-design.md §2.1). Denials follow Decision 6: tenant checks, throttle, legacy gate, the
+   * fresh {@code user:role:assign} check (07-security-review.md L-1), A4, A2, duplicate 409, with
+   * one denial row carrying the first reason. A4 removes only the literal
    * self-target step of RES-1(b); its primitive survives through a second account (RES-26).
    */
   @Transactional
@@ -282,13 +284,17 @@ public class RoleAssignmentService {
       // both before the duplicate 409, so a denied caller learns nothing about the target's
       // assignment state. Both take their input from this ONE M13 read, never two reads that
       // could disagree.
+      // 07-security-review.md L-1: before A4/A2, the same M13 read must still contain the
+      // endpoint permission itself -- the JWT that passed @RequiresPermission may predate a revoke.
       List<RolePermissionRef> heldRolePermissions =
           userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(
               actor.userId(), actor.tenantId());
+      requireCallerStillHoldsUserRoleAssign(
+          actor, targetUserId, role, heldRolePermissions, OPERATION_ASSIGN, requestContext);
       requireAdministratorForSelfAssignment(
           actor, targetUserId, role, heldRolePermissions, requestContext);
       requireGrantWithinCallerHoldings(
-          actor, targetUserId, role, heldRolePermissions, requestContext);
+          actor, targetUserId, role, heldRolePermissions, OPERATION_ASSIGN, requestContext);
 
       // 07-security-review.md M-1 (2026-09-24): the canary's M12-based caller-status read MUST
       // run BEFORE the INSERT below, never after. Reading it post-commit (as originally shipped)
@@ -464,6 +470,12 @@ public class RoleAssignmentService {
    * <p>See {@code docs/features/US-017/03-design.md} and ADR-0018.
    *
    * <p>See {@code docs/features/US-016/03-design.md} and ADR-0017.
+   *
+   * <p><b>US-018 revoke-subset (07-security-review.md M-1, L-1):</b> after the throttle and the
+   * legacy gate, the caller must still hold {@code user:role:assign} in M13 and must hold every
+   * permission of the role being revoked (M13 ⊇ M14); either denial is 403 {@code RBAC_001} with
+   * one {@code ROLE_ASSIGNMENT_DENIED} row, and both precede the last-admin 409. The 404 still
+   * precedes the throttle (L-6, deferred to M3).
    */
   @Transactional
   public void revoke(
@@ -530,6 +542,20 @@ public class RoleAssignmentService {
             actor, targetUserId, role, USER_ROLE_ASSIGN, OPERATION_REVOKE, nameMatch, roles,
             requestContext);
       }
+
+      // US-018 07-security-review.md M-1: revoke-subset, pulled forward from M3 -- the caller may
+      // revoke only a role whose every permission they hold (M13 ⊇ M14), so a delegated
+      // user:role:assign holder cannot strip access they could not have granted. After the
+      // throttle and the legacy gate, BEFORE the last-admin 409, so the 409 never tells a caller
+      // who may not revoke this role that it guards the last administrator. L-1 first, from the
+      // same M13 read.
+      List<RolePermissionRef> heldRolePermissions =
+          userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(
+              actor.userId(), actor.tenantId());
+      requireCallerStillHoldsUserRoleAssign(
+          actor, targetUserId, role, heldRolePermissions, OPERATION_REVOKE, requestContext);
+      requireGrantWithinCallerHoldings(
+          actor, targetUserId, role, heldRolePermissions, OPERATION_REVOKE, requestContext);
 
       // D5, AC5 widened: fires for ANY caller revoking the tenant's last DISTINCT HOLDER able
       // to pass the caller gate (H-1, 2026-09-24: caller-qualifying, not merely ANY
@@ -1056,12 +1082,51 @@ public class RoleAssignmentService {
   }
 
   /**
-   * US-018 A2 (ADR-0021 D2, 03-design.md §4.3, §4.4): denies unless every permission of the target
-   * role (M14) is in the union of the caller's held permission ids (M13). Ids only, from the one
+   * US-018 07-security-review.md L-1: {@code @RequiresPermission} reads the JWT's {@code
+   * permissions[]}, which can outlive a revoke for up to the token lifetime. This re-checks, from
+   * the SAME fresh M13 rows A4/A2/revoke-subset use (no extra read), that the caller still holds
+   * {@code user:role:assign} by its seeded id. Missing means deny: 403 {@code PERMISSION_ABSENT},
+   * one denial row, a throttle denial, and a WARN carrying ids only. M7 (epoch freshness) remains
+   * the systemic fix; this closes the window for these two verbs.
+   */
+  private void requireCallerStillHoldsUserRoleAssign(
+      RoleChangeActor actor,
+      UUID targetUserId,
+      Role role,
+      List<RolePermissionRef> heldRolePermissions,
+      String operation,
+      RequestContext requestContext) {
+    boolean stillHeld =
+        heldRolePermissions.stream()
+            .anyMatch(ref -> RbacSeededPermissionIds.USER_ROLE_ASSIGN.equals(ref.permissionId()));
+    if (stillHeld) {
+      return;
+    }
+    recordThrottleDenialAndMaybeWarn(actor, operation);
+    log.atWarn()
+        .addKeyValue(LOG_KEY_EVENT, "RBAC_ENDPOINT_PERMISSION_NOT_HELD")
+        .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+        .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+        .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
+        .addKeyValue(LOG_KEY_ROLE_ID, role.getId())
+        .addKeyValue(LOG_KEY_OPERATION, operation)
+        .log("Blocked a role change by a caller whose live holdings lack the endpoint permission");
+    recordDenial(
+        actor, targetUserId, role.getId(), role.getName(), DenialReason.PERMISSION_ABSENT,
+        operation, requestContext, null);
+    throw new InsufficientPermissionException(USER_ROLE_ASSIGN, DenialReason.PERMISSION_ABSENT);
+  }
+
+  /**
+   * US-018 A2 (ADR-0021 D2, 03-design.md §4.3, §4.4), and on {@code revoke()} the revoke-subset
+   * union check (07-security-review.md M-1): denies unless every permission of the target role
+   * (M14) is in the union of the caller's held permission ids (M13). Ids only, from the one
    * authorization read, never M12 or a JWT claim (MC-2).
    *
    * <p>Fails closed: a read failure propagates (500) and never allows; an empty M13 result denies
-   * any permissioned target. A target role with no permissions passes (EC7): it grants nothing.
+   * any permissioned target; an empty M14 {@code Optional} (role not in the caller's tenant, L-2)
+   * denies with {@code CROSS_TENANT_TARGET} and no role name. A target role with no permissions
+   * passes (EC7): it grants nothing.
    *
    * <p>The 403's {@code requiredPermission} is the endpoint permission, and the denial row and
    * WARN carry only the COUNT of missing permissions, never their ids, so neither is an oracle on
@@ -1072,9 +1137,27 @@ public class RoleAssignmentService {
       UUID targetUserId,
       Role role,
       List<RolePermissionRef> heldRolePermissions,
+      String operation,
       RequestContext requestContext) {
-    Set<UUID> targetPermissionIds =
+    Optional<Set<UUID>> targetPermissionIdsInTenant =
         userRoleAssignmentPort.findPermissionIdsForRole(role.getId(), actor.tenantId());
+    if (targetPermissionIdsInTenant.isEmpty()) {
+      // Unreachable today (resolveRoleInTenant ran first, in this transaction, and a role's tenant
+      // is immutable), so reaching it means an invariant broke: deny, never "grants nothing".
+      log.atWarn()
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_GRANT_CHECK_ROLE_NOT_IN_TENANT")
+          .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+          .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+          .addKeyValue(LOG_KEY_ROLE_ID, role.getId())
+          .addKeyValue(LOG_KEY_OPERATION, operation)
+          .log("Denied a role change: the role's permissions are not readable in the caller's tenant");
+      recordDenial(
+          actor, targetUserId, role.getId(), null, DenialReason.CROSS_TENANT_TARGET, operation,
+          requestContext, null);
+      throw new InsufficientPermissionException(
+          USER_ROLE_ASSIGN, DenialReason.CROSS_TENANT_TARGET);
+    }
+    Set<UUID> targetPermissionIds = targetPermissionIdsInTenant.get();
     Set<UUID> heldPermissionIds =
         heldRolePermissions.stream()
             .map(RolePermissionRef::permissionId)
@@ -1084,18 +1167,19 @@ public class RoleAssignmentService {
     if (missingCount == 0) {
       return;
     }
-    recordThrottleDenialAndMaybeWarn(actor, OPERATION_ASSIGN);
+    recordThrottleDenialAndMaybeWarn(actor, operation);
     log.atWarn()
         .addKeyValue(LOG_KEY_EVENT, "RBAC_GRANT_EXCEEDS_CALLER")
         .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
         .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
         .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
         .addKeyValue(LOG_KEY_ROLE_ID, role.getId())
+        .addKeyValue(LOG_KEY_OPERATION, operation)
         .addKeyValue(LOG_KEY_MISSING_COUNT, missingCount)
-        .log("Blocked a role assignment that grants permissions the caller does not hold");
+        .log("Blocked a role change involving permissions the caller does not hold");
     recordDenial(
         actor, targetUserId, role.getId(), role.getName(), DenialReason.GRANT_EXCEEDS_CALLER,
-        OPERATION_ASSIGN, requestContext, missingCount);
+        operation, requestContext, missingCount);
     throw new InsufficientPermissionException(
         USER_ROLE_ASSIGN, DenialReason.GRANT_EXCEEDS_CALLER);
   }

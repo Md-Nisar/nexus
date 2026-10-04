@@ -147,6 +147,9 @@ class RoleRevocationSymmetryIT {
   void should_revokeSuccessfully_when_activeAdminRevokesDangerousCustomRole() {
     UUID tenantId = uuidGenerator.newId();
     Role adminRole = seedRole(tenantId, "TENANT_ADMIN", "revsym-allow-dangerous");
+    // US-018 07-security-review.md M-1/L-1: revoke-subset needs the admin to hold user:role:assign
+    // and every permission of the revoked role (role:write): the admin role carries the catalogue.
+    grantWholeCatalogue(adminRole.getId());
     User adminCaller = seedUser(tenantId, "revsym-allow-dangerous-admin");
     seedActiveAssignment(tenantId, adminRole.getId(), adminCaller.getId(), adminCaller.getId());
     Role dangerousRole = seedRole(tenantId, "CUSTOM-DANGEROUS", "revsym-allow-dangerous");
@@ -170,6 +173,9 @@ class RoleRevocationSymmetryIT {
   void should_revokeSuccessfully_when_activeAdminRevokesTenantAdminAssignment() {
     UUID tenantId = uuidGenerator.newId();
     Role adminRole = seedRole(tenantId, "TENANT_ADMIN", "revsym-allow-admin");
+    // US-018 07-security-review.md M-1/L-1: the caller must hold user:role:assign and every
+    // permission of the revoked role; both hold the same (whole-catalogue) admin role.
+    grantWholeCatalogue(adminRole.getId());
     User adminCaller = seedUser(tenantId, "revsym-allow-admin-caller");
     seedActiveAssignment(tenantId, adminRole.getId(), adminCaller.getId(), adminCaller.getId());
     // A second active admin -- so revoking the target's assignment below leaves exactly one

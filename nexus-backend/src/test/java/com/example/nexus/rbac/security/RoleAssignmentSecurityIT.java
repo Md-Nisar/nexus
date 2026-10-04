@@ -303,6 +303,9 @@ class RoleAssignmentSecurityIT {
     Role tenantAdminRole = seedRole(tenantG, "TENANT_ADMIN", "revoke-pos");
     grantPermission(tenantAdminRole.getId(), USER_WRITE_PERMISSION_ID);
     grantPermission(tenantAdminRole.getId(), USER_ROLE_ASSIGN_PERMISSION_ID);
+    // US-018 07-security-review.md M-1: revoke-subset -- the admin must hold every permission of
+    // the role it revokes (role:write below).
+    grantPermission(tenantAdminRole.getId(), ROLE_WRITE_PERMISSION_ID);
     User admin = seedUser(tenantG, "revoke-pos-admin");
     seedActiveAssignment(tenantG, tenantAdminRole.getId(), admin.getId(), admin.getId());
     Role dangerousRole = seedRole(tenantG, "CUSTOM-DANGEROUS", "revoke-pos");

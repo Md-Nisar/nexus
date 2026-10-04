@@ -21,11 +21,14 @@ import com.example.nexus.rbac.application.port.out.UserDirectoryPort;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
+import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.ResolvedPermissions;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
+import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.domain.UserRole;
 import com.example.nexus.rbac.infrastructure.cache.RedisPermissionCacheAdapter;
+import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -80,6 +83,7 @@ class RoleAssignmentCacheIT {
   @Autowired private JpaUserRepository userRepository;
   @Autowired private JpaRoleRepository roleRepository;
   @Autowired private JpaUserRoleRepository userRoleRepository;
+  @Autowired private JpaRolePermissionRepository rolePermissionRepository;
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private StringRedisTemplate redisTemplate;
   @Autowired private PlatformTransactionManager transactionManager;
@@ -310,10 +314,19 @@ class RoleAssignmentCacheIT {
   /**
    * A bare {@code uuidGenerator.newId()} is NOT a valid actor id: {@code user_roles.assigned_by}
    * has an FK to {@code users.id} ({@code fk_user_roles_assigner}), so every actor must be a real,
-   * seeded {@link User} row, never a conjured UUID.
+   * seeded {@link User} row, never a conjured UUID. US-018 07-security-review.md L-1: the actor
+   * also holds {@code user:role:assign} through a fresh custom role, since {@code
+   * assign()}/{@code revoke()} re-check it in the caller's fresh M13 holdings.
    */
   private RoleChangeActor seedActor(UUID tenantId, String tag) {
     User actorUser = seedUser(tenantId, tag + "-actor");
+    Role assignerRole = seedRole(tenantId, tag + "-ASSIGNER");
+    rolePermissionRepository.save(
+        new RolePermission(assignerRole.getId(), RbacSeededPermissionIds.USER_ROLE_ASSIGN));
+    userRoleRepository.save(
+        new UserRole(
+            uuidGenerator.newId(), actorUser.getId(), assignerRole.getId(), tenantId,
+            actorUser.getId()));
     return new RoleChangeActor(actorUser.getId(), tenantId);
   }
 

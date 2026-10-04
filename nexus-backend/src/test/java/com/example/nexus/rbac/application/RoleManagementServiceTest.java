@@ -26,6 +26,7 @@ import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.domain.DuplicateRoleNameException;
 import com.example.nexus.rbac.domain.DuplicateRolePermissionException;
 import com.example.nexus.rbac.domain.PermissionView;
+import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.ReservedRoleNameException;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RolePermissionName;
@@ -37,6 +38,7 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -63,6 +65,7 @@ class RoleManagementServiceTest {
   private static final long MAX_ROLES_PER_TENANT = 500L;
   private static final String ROLE_WRITE = "role:write";
   private static final String ROLE_READ = "role:read";
+  private static final UUID ROLE_WRITE_ID = RbacSeededPermissionIds.ROLE_WRITE;
 
   @Mock private RoleManagementPort roleManagementPort;
   @Mock private UserRoleAssignmentPort userRoleAssignmentPort;
@@ -1055,6 +1058,57 @@ class RoleManagementServiceTest {
         .findPermissionNamesForActiveAssignmentsOfUser(any(), any());
   }
 
+  // -- 07-security-review.md L-1: role:write must still be in the fresh M13 read ------------
+
+  @Test
+  void should_throwPermissionAbsentWithRoleWrite_when_callerHoldsPermissionButNoLongerRoleWrite() {
+    RoleView role = customRole(tenantId);
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId))
+        .thenReturn(Optional.of(benignPermission()));
+    // A3 alone would pass: the caller holds the permission being attached.
+    stubCallerHoldsOnly(permissionId);
+
+    assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> {
+              assertThat(e.getReason()).isEqualTo(DenialReason.PERMISSION_ABSENT);
+              assertThat(e.getRequiredPermission()).isEqualTo(ROLE_WRITE);
+            });
+
+    verify(roleManagementPort, never()).hasPermission(any(), any());
+    verify(roleManagementPort, never()).attachPermission(any(), any());
+    verifyNoInteractions(rbacAuditPort);
+  }
+
+  @Test
+  void should_logEndpointPermissionNotHeldWarnWithIdsOnly_when_l1DeniesAttach() {
+    RoleView role = customRole(tenantId);
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId))
+        .thenReturn(Optional.of(benignPermission()));
+    stubCallerHoldsOnly(permissionId);
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
+          .isInstanceOf(InsufficientPermissionException.class);
+
+      var warnEvents = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
+      assertThat(warnEvents).hasSize(1);
+      assertThat(keyValueMap(warnEvents.get(0)))
+          .containsOnly(
+              Map.entry("event", "RBAC_ENDPOINT_PERMISSION_NOT_HELD"),
+              Map.entry("tenantId", tenantId),
+              Map.entry("actorUserId", actorId),
+              Map.entry("roleId", roleId),
+              Map.entry("permissionId", permissionId));
+    } finally {
+      stopLogCapture(appender);
+    }
+  }
+
   // ---------------------------------------------------------------------------------------
   // detachPermission() -- AC5, AC7, AC8, AC12
   // ---------------------------------------------------------------------------------------
@@ -1269,10 +1323,21 @@ class RoleManagementServiceTest {
   // ---------------------------------------------------------------------------------------
 
   /**
-   * Stubs M13 for the actor so the caller holds exactly {@code heldPermissionIds}, each through
-   * its own (random) role. A3 requires every successful attach to find the attached id here.
+   * Stubs M13 for the actor so the caller holds the endpoint permission {@code role:write}
+   * (07-security-review.md L-1) plus exactly {@code heldPermissionIds}, each through its own
+   * (random) role. A3 requires every successful attach to find the attached id here.
    */
   private void stubCallerHolds(UUID... heldPermissionIds) {
+    UUID[] withRoleWrite = Arrays.copyOf(heldPermissionIds, heldPermissionIds.length + 1);
+    withRoleWrite[heldPermissionIds.length] = ROLE_WRITE_ID;
+    stubCallerHoldsOnly(withRoleWrite);
+  }
+
+  /**
+   * Stubs M13 for the actor so the caller holds exactly {@code heldPermissionIds} and nothing else
+   * — not even {@code role:write} unless it is passed in.
+   */
+  private void stubCallerHoldsOnly(UUID... heldPermissionIds) {
     List<RolePermissionRef> refs = new ArrayList<>();
     for (UUID heldPermissionId : heldPermissionIds) {
       refs.add(new RolePermissionRef(UUID.randomUUID(), heldPermissionId));
