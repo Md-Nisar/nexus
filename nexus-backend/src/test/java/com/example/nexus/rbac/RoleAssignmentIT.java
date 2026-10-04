@@ -13,9 +13,14 @@ import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
 import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
+import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
+import com.example.nexus.rbac.domain.RolePermission;
+import com.example.nexus.rbac.domain.UserRole;
+import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
+import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import java.nio.ByteBuffer;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -68,6 +73,8 @@ class RoleAssignmentIT {
   @Autowired private RoleAssignmentService roleAssignmentService;
   @Autowired private JpaUserRepository userRepository;
   @Autowired private JpaRoleRepository roleRepository;
+  @Autowired private JpaRolePermissionRepository rolePermissionRepository;
+  @Autowired private JpaUserRoleRepository userRoleRepository;
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private JdbcTemplate jdbc;
 
@@ -79,6 +86,19 @@ class RoleAssignmentIT {
     User user =
         new User(uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac, "test-hash", null);
     return userRepository.save(user);
+  }
+
+  /**
+   * US-018 07-security-review.md L-1: {@code assign()}/{@code revoke()} re-check the actor's fresh
+   * M13 holdings for {@code user:role:assign}, so a service-level actor must actually hold it --
+   * through a fresh custom role carrying only that permission, never a dangerous one.
+   */
+  private void grantUserRoleAssign(UUID tenantId, UUID userId) {
+    Role assignerRole = seedRole("ASSIGNER", tenantId);
+    rolePermissionRepository.save(
+        new RolePermission(assignerRole.getId(), RbacSeededPermissionIds.USER_ROLE_ASSIGN));
+    userRoleRepository.save(
+        new UserRole(uuidGenerator.newId(), userId, assignerRole.getId(), tenantId, userId));
   }
 
   private Role seedRole(String tag, UUID tenantId) {
@@ -106,6 +126,7 @@ class RoleAssignmentIT {
   void should_createActiveAssignment_when_assigningValidRoleInSameTenant() {
     UUID tenantId = uuidGenerator.newId();
     User actorUser = seedUser("assign-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
     User target = seedUser("assign-target", tenantId);
     Role role = seedRole("ASSIGN", tenantId);
     RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
@@ -130,6 +151,7 @@ class RoleAssignmentIT {
   void should_setRevokedAtAndKeepRowPresent_when_revokingActiveAssignment() {
     UUID tenantId = uuidGenerator.newId();
     User actorUser = seedUser("revoke-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
     User target = seedUser("revoke-target", tenantId);
     Role role = seedRole("REVOKE", tenantId);
     RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
@@ -161,6 +183,7 @@ class RoleAssignmentIT {
   void should_allowReassignment_when_sameUserRolePairPreviouslyRevoked() {
     UUID tenantId = uuidGenerator.newId();
     User actorUser = seedUser("reassign-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
     User target = seedUser("reassign-target", tenantId);
     Role role = seedRole("REASSIGN", tenantId);
     RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
@@ -198,6 +221,7 @@ class RoleAssignmentIT {
   void should_throwDuplicateRoleAssignmentException_when_userAlreadyActivelyHoldsRole() {
     UUID tenantId = uuidGenerator.newId();
     User actorUser = seedUser("dup-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
     User target = seedUser("dup-target", tenantId);
     Role role = seedRole("DUP", tenantId);
     RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
@@ -237,6 +261,7 @@ class RoleAssignmentIT {
       throws Exception {
     UUID tenantId = uuidGenerator.newId();
     User actorUser = seedUser("conc-dup-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
     User target = seedUser("conc-dup-target", tenantId);
     Role role = seedRole("CONC-DUP", tenantId);
     RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
@@ -304,6 +329,7 @@ class RoleAssignmentIT {
   void should_throwResourceNotFound_when_assigningRoleToNonexistentUser() {
     UUID tenantId = uuidGenerator.newId();
     User actorUser = seedUser("404-user-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
     Role role = seedRole("404-USER", tenantId);
     RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
     UUID nonexistentUserId = uuidGenerator.newId();
@@ -321,6 +347,7 @@ class RoleAssignmentIT {
   void should_throwResourceNotFound_when_assigningNonexistentRole() {
     UUID tenantId = uuidGenerator.newId();
     User actorUser = seedUser("404-role-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
     User target = seedUser("404-role-target", tenantId);
     RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
     UUID nonexistentRoleId = uuidGenerator.newId();
@@ -338,6 +365,7 @@ class RoleAssignmentIT {
   void should_throwResourceNotFound_when_revokingRoleFromNonexistentUser() {
     UUID tenantId = uuidGenerator.newId();
     User actorUser = seedUser("404-revoke-user-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
     Role role = seedRole("404-REVOKE-USER", tenantId);
     RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
     UUID nonexistentUserId = uuidGenerator.newId();
@@ -355,6 +383,7 @@ class RoleAssignmentIT {
   void should_throwResourceNotFound_when_revokingNonexistentRole() {
     UUID tenantId = uuidGenerator.newId();
     User actorUser = seedUser("404-revoke-role-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
     User target = seedUser("404-revoke-role-target", tenantId);
     RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
     UUID nonexistentRoleId = uuidGenerator.newId();
@@ -372,6 +401,7 @@ class RoleAssignmentIT {
   void should_throwResourceNotFound_notSilentlySucceed_when_revokingAlreadyRevokedAssignment() {
     UUID tenantId = uuidGenerator.newId();
     User actorUser = seedUser("404-already-revoked-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
     User target = seedUser("404-already-revoked-target", tenantId);
     Role role = seedRole("404-ALREADY-REVOKED", tenantId);
     RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
@@ -397,6 +427,7 @@ class RoleAssignmentIT {
   void should_setRevokedAtWithMicrosecondPrecision_when_revokingImmediatelyAfterAssigning() {
     UUID tenantId = uuidGenerator.newId();
     User actorUser = seedUser("microsecond-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
     User target = seedUser("microsecond-target", tenantId);
     Role role = seedRole("MICROSECOND", tenantId);
     RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
@@ -437,6 +468,7 @@ class RoleAssignmentIT {
   void should_returnNonNullAssignedAt_when_assignmentSucceeds() {
     UUID tenantId = uuidGenerator.newId();
     User actorUser = seedUser("assignedat-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
     User target = seedUser("assignedat-target", tenantId);
     Role role = seedRole("ASSIGNEDAT", tenantId);
     RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
@@ -456,6 +488,7 @@ class RoleAssignmentIT {
   void should_persistCorrectProvenance_when_actorTargetRoleAndTenantAreAllDistinct() {
     UUID tenantId = uuidGenerator.newId();
     User actorUser = seedUser("provenance-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
     User target = seedUser("provenance-target", tenantId);
     Role role = seedRole("PROVENANCE", tenantId);
     RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);

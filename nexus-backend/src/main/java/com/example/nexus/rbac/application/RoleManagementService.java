@@ -13,9 +13,11 @@ import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.RbacAdminEquivalence;
 import com.example.nexus.rbac.domain.RbacDangerousPermissions;
 import com.example.nexus.rbac.domain.RbacRoleNames;
+import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.ReservedRoleNameException;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RoleLimitExceededException;
+import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.RoleView;
 import com.example.nexus.rbac.domain.SystemRoleImmutableException;
 import io.micrometer.core.instrument.Counter;
@@ -38,6 +40,10 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  * chain, threat model T-E14/T-E16) are enforced — {@code @RequiresPermission}/{@code
  * TenantAwarePermissionEvaluator} check nothing but flat JWT {@code permissions[]} membership and
  * cannot express any of them.
+ *
+ * <p>US-018 A3 (FR-A3.a) is enforced here too: attaching any permission to a role requires the
+ * caller to hold that permission through an active assignment (M13), so a {@code role:write} holder
+ * cannot mint a permission they do not have.
  *
  * <p><b>Design invariant, self-policed (not compiler-enforced), mirroring {@link
  * RoleAssignmentService}'s:</b> every public method on this class accepts only {@link
@@ -149,9 +155,11 @@ public class RoleManagementService {
   }
 
   /**
-   * AC4, AC7, AC8, AC11, AC12. The story's security-critical path, in the §8.6-pinned order:
-   * tenant resolution (404/403) &rarr; AC7 (409) &rarr; permission existence (404) &rarr; AC11
-   * (403, dangerous permissions only) &rarr; AC4's duplicate pre-check (409) &rarr; insert.
+   * AC4, AC7, AC8, AC11, AC12, US-018 A3. The story's security-critical path, in the
+   * §8.6-pinned order: tenant resolution (404/403) &rarr; AC7 (409) &rarr; permission existence
+   * (404) &rarr; AC11 (403, dangerous permissions only) &rarr; A3 (403, every permission, {@link
+   * #requireCallerHoldsPermission}) &rarr; AC4's duplicate pre-check (409) &rarr; insert. A3 sits
+   * before the duplicate check so a denied caller learns nothing about attachment state.
    *
    * <p><b>D13 / RC-8 (T-E21, US-016):</b> on the dangerous-permission path only, after the insert
    * this method counts how many users actively hold {@code roleId} at that moment via {@link
@@ -192,6 +200,8 @@ public class RoleManagementService {
           "RBAC_DANGEROUS_PERMISSION_ATTACH_BLOCKED",
           "Blocked dangerous-permission attach by a non-admin caller");
     }
+
+    requireCallerHoldsPermission(actor, role, permissionId);
 
     if (roleManagementPort.hasPermission(role.id(), permissionId)) {
       throw new DuplicateRolePermissionException();
@@ -409,6 +419,53 @@ public class RoleManagementService {
           .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
           .log(blockedLogMessage);
       throw new InsufficientPermissionException(ROLE_WRITE, DenialReason.NOT_TENANT_ADMIN);
+    }
+  }
+
+  /**
+   * US-018 A3 (FR-A3.a, ADR-0021 D2): the caller may attach {@code permissionId} only if they hold
+   * it through an active assignment in their tenant. One M13 read — the grant-subset authorization
+   * read, never M12 or a JWT claim; a read failure propagates and is never treated as "allow".
+   * Denial is WARN {@code RBAC_ATTACH_EXCEEDS_CALLER} (ids only) plus a 403 whose {@code
+   * nexus.rbac.permission_denied} series is incremented centrally by the exception handler. Like
+   * the AC11 gate, it writes <b>no</b> audit row: {@code ROLE_ASSIGNMENT_DENIED}'s contracted scope
+   * is role assignment, not attach (Decision 7).
+   *
+   * <p>07-security-review.md L-1: the same M13 rows must also still contain the endpoint
+   * permission {@code role:write} (by its seeded id), since {@code @RequiresPermission} read it
+   * from a JWT that may predate a revoke. Missing is a 403 {@code PERMISSION_ABSENT} with WARN
+   * {@code RBAC_ENDPOINT_PERMISSION_NOT_HELD} (ids only), checked first, no extra read, and no
+   * audit row for the same Decision 7 reason.
+   */
+  private void requireCallerHoldsPermission(
+      RoleChangeActor actor, RoleView role, UUID permissionId) {
+    List<RolePermissionRef> heldRolePermissions =
+        userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(
+            actor.userId(), actor.tenantId());
+    boolean stillHoldsRoleWrite =
+        heldRolePermissions.stream()
+            .anyMatch(ref -> RbacSeededPermissionIds.ROLE_WRITE.equals(ref.permissionId()));
+    if (!stillHoldsRoleWrite) {
+      log.atWarn()
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_ENDPOINT_PERMISSION_NOT_HELD")
+          .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+          .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+          .addKeyValue(LOG_KEY_ROLE_ID, role.id())
+          .addKeyValue(LOG_KEY_PERMISSION_ID, permissionId)
+          .log("Blocked attach by a caller whose live holdings lack the endpoint permission");
+      throw new InsufficientPermissionException(ROLE_WRITE, DenialReason.PERMISSION_ABSENT);
+    }
+    boolean held =
+        heldRolePermissions.stream().anyMatch(ref -> ref.permissionId().equals(permissionId));
+    if (!held) {
+      log.atWarn()
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_ATTACH_EXCEEDS_CALLER")
+          .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+          .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+          .addKeyValue(LOG_KEY_ROLE_ID, role.id())
+          .addKeyValue(LOG_KEY_PERMISSION_ID, permissionId)
+          .log("Blocked attach of a permission the caller does not hold");
+      throw new InsufficientPermissionException(ROLE_WRITE, DenialReason.GRANT_EXCEEDS_CALLER);
     }
   }
 

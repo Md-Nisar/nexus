@@ -196,6 +196,35 @@ class HexagonalArchitectureTest {
                             + "that is already injected. This rule turns that mistake into a "
                             + "build failure instead of a code-review-only expectation.");
 
+    // US-018 MC-2 (03-design.md §4.3, §4.11): grant-subset decisions read the caller's holdings
+    // only from M13 (findHeldRolePermissionIdsForAuthorization). M12 is documented "MUST NEVER be
+    // used for an authorization decision"; until M3 deletes it, its single permitted caller is the
+    // self-assignment canary helper, which records a signal for an already-decided request.
+    // Renaming that helper makes this rule fail, which is intended: the exemption must be
+    // re-reviewed, never widened silently.
+    @ArchTest
+    static final ArchRule m12_is_never_read_on_an_rbac_decision_path =
+            noClasses()
+                    .that().haveSimpleName("RoleAssignmentService")
+                    .or().haveSimpleName("RoleManagementService")
+                    .should().callMethodWhere(
+                            DescribedPredicate.describe(
+                                    "call UserRoleAssignmentPort."
+                                            + "findPermissionNamesForActiveAssignmentsOfUser (M12) "
+                                            + "from anywhere other than RoleAssignmentService."
+                                            + "callerHoldsActiveAdminEquivalentRole",
+                                    call -> call.getTarget().getName()
+                                                    .equals("findPermissionNamesForActiveAssignmentsOfUser")
+                                            && call.getTarget().getOwner()
+                                                    .isAssignableTo(UserRoleAssignmentPort.class)
+                                            && !(call.getOriginOwner().getSimpleName()
+                                                            .equals("RoleAssignmentService")
+                                                    && call.getOrigin().getName()
+                                                            .equals("callerHoldsActiveAdminEquivalentRole"))))
+                    .because("MC-2 (US-018 03-design.md §4.3): A2 and A3 must decide from M13 alone. "
+                            + "M12 is a non-authoritative canary read; reusing it, or the JWT, for a "
+                            + "grant decision re-opens FR-A2.b.");
+
     @ArchTest
     static final ArchRule no_field_injection =
             GeneralCodingRules.NO_CLASSES_SHOULD_USE_FIELD_INJECTION;

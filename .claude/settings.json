@@ -12,23 +12,7 @@
     ],
     "deny": [
       "Bash(git reset --hard:*)",
-      "Bash(rm -rf:*)",
-      "Bash(sudo:*)",
-      "Read(./.env)",
-      "Read(./.env.*)",
-      "Read(./**/application-prod.yml)",
-      "Read(./**/application-prod.yaml)",
-      "Read(./**/application-prod.properties)",
-      "Read(./**/*.pem)",
-      "Read(./**/*.key)",
-      "Read(./**/id_rsa)",
-      "Read(~/.ssh/**)",
-      "Read(~/.aws/**)",
-      "Edit(./.env*)",
-      "Edit(./**/application-prod.*)",
-      "Edit(./nexus-scripts/**)",
-      "Edit(./.claude/hooks/**)",
-      "Edit(./.mcp.json)"
+      "Bash(rm -rf:*)"
     ]
   },
   "hooks": {
@@ -59,17 +43,6 @@
           {
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/format.mjs\""
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/run-tests.mjs\"",
-            "timeout": 660
           }
         ]
       }

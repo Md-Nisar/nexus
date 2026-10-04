@@ -59,7 +59,8 @@ import org.springframework.web.bind.annotation.RestController;
 @Tag(name = "Role Assignment", description = "Tenant-scoped role assignment and revocation")
 public class UserRoleController {
 
-  private static final String USER_WRITE = "user:write";
+  // US-018 A1 (ADR-0021 D1): local constant until the typed catalogue (B5) lands.
+  private static final String USER_ROLE_ASSIGN = "user:role:assign";
   private static final String USER_READ = "user:read";
   private static final String PATH_PARAM_USER_ID = "userId";
 
@@ -82,13 +83,15 @@ public class UserRoleController {
    */
   @PostMapping("/{userId}/roles")
   @ResponseStatus(HttpStatus.CREATED)
-  @RequiresPermission(USER_WRITE)
+  @RequiresPermission(USER_ROLE_ASSIGN)
   @Operation(summary = "Assign a role to a user within the caller's tenant")
   @ApiResponse(responseCode = "201", description = "Assignment created")
   @ApiResponse(responseCode = "400", description = "Malformed path or body UUID")
   @ApiResponse(
       responseCode = "403",
-      description = "Missing permission, cross-tenant target, or caller is not an active TENANT_ADMIN")
+      description =
+          "Missing permission, cross-tenant target, caller is not an active TENANT_ADMIN, or the"
+              + " role carries a permission the caller does not hold")
   @ApiResponse(responseCode = "404", description = "User or role not found")
   @ApiResponse(responseCode = "409", description = "Duplicate active assignment")
   public ResponseEntity<RoleAssignmentResponse> assignRole(
@@ -96,7 +99,7 @@ public class UserRoleController {
       @Valid @RequestBody AssignRoleRequest request,
       Authentication authentication,
       HttpServletRequest httpRequest) {
-    RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, USER_WRITE);
+    RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, USER_ROLE_ASSIGN);
     UUID targetUserId = RbacControllerSupport.parsePathUuid(userId, PATH_PARAM_USER_ID);
     UUID roleId = RbacControllerSupport.parsePathUuid(request.roleId(), "roleId");
 
@@ -143,7 +146,7 @@ public class UserRoleController {
    */
   @DeleteMapping("/{userId}/roles/{roleId}")
   @ResponseStatus(HttpStatus.NO_CONTENT)
-  @RequiresPermission(USER_WRITE)
+  @RequiresPermission(USER_ROLE_ASSIGN)
   @Operation(summary = "Revoke a role from a user within the caller's tenant")
   @ApiResponse(responseCode = "204", description = "Role revoked")
   @ApiResponse(responseCode = "400", description = "Malformed path UUID")
@@ -155,7 +158,7 @@ public class UserRoleController {
       @PathVariable String roleId,
       Authentication authentication,
       HttpServletRequest httpRequest) {
-    RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, USER_WRITE);
+    RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, USER_ROLE_ASSIGN);
     UUID targetUserId = RbacControllerSupport.parsePathUuid(userId, PATH_PARAM_USER_ID);
     UUID parsedRoleId = RbacControllerSupport.parsePathUuid(roleId, "roleId");
 

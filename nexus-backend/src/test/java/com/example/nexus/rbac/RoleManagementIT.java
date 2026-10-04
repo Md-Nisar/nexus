@@ -6,16 +6,24 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.example.nexus.TestcontainersConfiguration;
 import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.domain.ResourceNotFoundException;
+import com.example.nexus.identity.domain.EmailCipher;
+import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
+import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
 import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.Role;
+import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RoleLimitExceededException;
 import com.example.nexus.rbac.domain.RoleView;
 import com.example.nexus.rbac.domain.ReservedRoleNameException;
 import com.example.nexus.rbac.domain.DuplicateRolePermissionException;
+import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
+import com.example.nexus.rbac.domain.UserRole;
+import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
+import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -52,7 +60,8 @@ class RoleManagementIT {
 
   // role:read, not role:write: role:write is one of AC11's 3 dangerous permissions, so
   // attaching it requires an active TENANT_ADMIN caller -- irrelevant machinery for this file's
-  // plain-CRUD scope. AC11 itself is RoleManagementAdminGateIT's job.
+  // plain-CRUD scope. AC11 itself is RoleManagementAdminGateIT's job. US-018 A3 still requires
+  // the attaching caller to hold the permission, so attach scenarios use seedActorHolding.
   private static final String SAFE_PERMISSION_NAME = "role:read";
   private static final UUID SAFE_PERMISSION_ID =
       UUID.fromString("019f6839-1804-7000-8000-000000000005");
@@ -61,6 +70,9 @@ class RoleManagementIT {
   @Autowired private JpaRoleRepository roleRepository;
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private JdbcTemplate jdbc;
+  @Autowired private JpaUserRepository userRepository;
+  @Autowired private JpaUserRoleRepository userRoleRepository;
+  @Autowired private JpaRolePermissionRepository rolePermissionRepository;
 
   // ── Scenario 1: create role in own tenant ──────────────────────────────────────────────
 
@@ -98,7 +110,7 @@ class RoleManagementIT {
   @Test
   void should_createRolePermissionsRow_when_attachingPermissionToCustomRole() {
     UUID tenantId = uuidGenerator.newId();
-    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
+    RoleChangeActor actor = seedActorHolding(tenantId, SAFE_PERMISSION_ID);
     Role role = seedRole("ATTACH", tenantId);
 
     PermissionView attached =
@@ -118,7 +130,7 @@ class RoleManagementIT {
   @Test
   void should_throwDuplicateRolePermissionException_when_attachingSamePermissionTwice() {
     UUID tenantId = uuidGenerator.newId();
-    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
+    RoleChangeActor actor = seedActorHolding(tenantId, SAFE_PERMISSION_ID);
     Role role = seedRole("ATTACH-DUP", tenantId);
     roleManagementService.attachPermission(
         actor, role.getId(), SAFE_PERMISSION_ID, requestContext());
@@ -135,7 +147,7 @@ class RoleManagementIT {
   @Test
   void should_removeRolePermissionsRow_when_detachingPermissionFromCustomRole() {
     UUID tenantId = uuidGenerator.newId();
-    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
+    RoleChangeActor actor = seedActorHolding(tenantId, SAFE_PERMISSION_ID);
     Role role = seedRole("DETACH", tenantId);
     roleManagementService.attachPermission(
         actor, role.getId(), SAFE_PERMISSION_ID, requestContext());
@@ -247,7 +259,7 @@ class RoleManagementIT {
   @Test
   void should_throwRolePermissionNotFound_when_detachingAlreadyDetachedPairing() {
     UUID tenantId = uuidGenerator.newId();
-    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
+    RoleChangeActor actor = seedActorHolding(tenantId, SAFE_PERMISSION_ID);
     Role role = seedRole("ALREADY-DETACHED", tenantId);
     roleManagementService.attachPermission(
         actor, role.getId(), SAFE_PERMISSION_ID, requestContext());
@@ -340,6 +352,31 @@ class RoleManagementIT {
     return roleRepository.save(
         new Role(uuidGenerator.newId(), tenantId, "RMIT-" + tag + "-" + UUID.randomUUID(), null,
             false));
+  }
+
+  /**
+   * US-018 A3: an actor who holds {@code permissionId} through an active assignment of a fresh
+   * custom role, so the attach under test is not denied {@code GRANT_EXCEEDS_CALLER}. The same
+   * role also carries {@code role:write}, the endpoint permission attach re-checks in M13
+   * (07-security-review.md L-1).
+   */
+  private RoleChangeActor seedActorHolding(UUID tenantId, UUID permissionId) {
+    String email = "rmit-actor-" + UUID.randomUUID() + "@example.com";
+    String hmac = "hmac-" + UUID.randomUUID().toString().replace("-", "");
+    User user =
+        userRepository.save(
+            new User(
+                uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac, "test-hash", null));
+    Role holderRole = seedRole("ACTOR-HOLDS", tenantId);
+    rolePermissionRepository.save(new RolePermission(holderRole.getId(), permissionId));
+    if (!RbacSeededPermissionIds.ROLE_WRITE.equals(permissionId)) {
+      rolePermissionRepository.save(
+          new RolePermission(holderRole.getId(), RbacSeededPermissionIds.ROLE_WRITE));
+    }
+    userRoleRepository.save(
+        new UserRole(
+            uuidGenerator.newId(), user.getId(), holderRole.getId(), tenantId, user.getId()));
+    return new RoleChangeActor(user.getId(), tenantId);
   }
 
   private RequestContext requestContext() {

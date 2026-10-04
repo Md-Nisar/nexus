@@ -26,6 +26,7 @@ import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.domain.UserRole;
+import com.example.nexus.rbac.infrastructure.persistence.JpaPermissionCatalogueRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
@@ -133,6 +134,7 @@ class LastAdminLockoutIT {
   @Autowired private JpaRoleRepository roleRepository;
   @Autowired private JpaUserRoleRepository userRoleRepository;
   @Autowired private JpaRolePermissionRepository rolePermissionRepository;
+  @Autowired private JpaPermissionCatalogueRepository permissionCatalogueRepository;
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private JdbcTemplate jdbc;
   @Autowired private MeterRegistry meterRegistry;
@@ -854,7 +856,12 @@ class LastAdminLockoutIT {
                 roleAssignmentService.revoke(
                     actor, holder1.getId(), dangerousRole.getId(), requestContext()));
 
-    String m10Sql = findStatementMatching(emittedSql, List.of("role_permissions", "tenant_id"), List.of());
+    // US-018 07-security-review.md M-1: revoke now also emits M13 (driven off user_roles) and M14
+    // (roles LEFT JOIN role_permissions, L-2), both of which touch role_permissions with a tenant
+    // predicate; neither is M10, so both are excluded by their own positive shape.
+    String m10Sql =
+        findStatementMatching(
+            emittedSql, List.of("role_permissions", "tenant_id"), List.of("user_roles", "left join"));
     assertNoLockingClause(m10Sql, "M10 (findPermissionNamesForTenantRoles)");
   }
 
@@ -885,6 +892,51 @@ class LastAdminLockoutIT {
     assertNoLockingClause(emittedSql.get(0), "FR-2(a) findTenantsWithAFullyAdminEquivalentRole");
     assertNoLockingClause(
         emittedSql.get(1), "FR-2(b) findTenantsWithActiveFullyAdminEquivalentHolders");
+  }
+
+  // ── Scenario 6d (US-018 T-001, 03-design.md §4.11 MC-A extended): M13/M14 non-locking ──────
+
+  /**
+   * MC-A extended: M13 ({@code findHeldRolePermissionIdsForAuthorization}) and M14 ({@code
+   * findPermissionIdsByRoleAndTenantId}) are the grant-subset reads (ADR-0021 D2). A locking read on M13
+   * would be a new acquisition outside the set-lock region (ADR-0018 D6), and either read would be
+   * rejected in production if it ever locked a {@code SELECT}-only table, yet would pass every
+   * Testcontainers IT (container superuser). Invoked directly against the repository beans,
+   * capturing both statements from one action.
+   */
+  @Test
+  void should_neverEmitForShareOrForUpdate_when_capturingM13AndM14sSql_MCA() throws Exception {
+    UUID tenantId = uuidGenerator.newId();
+    Role adminRole = seedTenantAdminRole(tenantId, "mca13");
+    User admin = seedUser(tenantId, "mca13-admin");
+    seedActiveAdminAssignment(tenantId, adminRole.getId(), admin.getId(), admin.getId());
+
+    List<String> emittedSql =
+        captureHibernateSql(
+            () -> {
+              userRoleRepository.findHeldRolePermissionIdsForAuthorization(admin.getId(), tenantId);
+              roleRepository.findPermissionIdsByRoleAndTenantId(adminRole.getId(), tenantId);
+            });
+
+    assertThat(emittedSql).as("M13 and M14, captured from one action").hasSize(2);
+    assertNoLockingClause(emittedSql.get(0), "M13 (findHeldRolePermissionIdsForAuthorization)");
+    assertNoLockingClause(emittedSql.get(1), "M14 (findPermissionIdsByRoleAndTenantId)");
+  }
+
+  // ── Scenario 6f (US-018 T-002, 03-design.md §4.11 MC-A extended): M15 non-locking ──────────
+
+  /**
+   * MC-A extended: M15 ({@code findCatalogueIds}, hosted on {@code JpaPermissionCatalogueRepository}) is
+   * A4's catalogue read. It reads only {@code permissions}, on which {@code nexus_app} holds {@code
+   * SELECT} only, so a locking form would be rejected in production yet pass every Testcontainers
+   * IT (container superuser). Invoked directly against the repository bean.
+   */
+  @Test
+  void should_neverEmitForShareOrForUpdate_when_capturingM15sSql_MCA() throws Exception {
+    List<String> emittedSql = captureHibernateSql(permissionCatalogueRepository::findCatalogueIds);
+
+    assertThat(emittedSql).as("M15, captured from one action").hasSize(1);
+    assertNoLockingClause(emittedSql.get(0), "M15 (findCatalogueIds)");
   }
 
   // ── Scenario 6e (US-017 T-006(c), 03-design.md §11.2 MC-C, RC-20.7): plan stability ─────
@@ -1052,8 +1104,17 @@ class LastAdminLockoutIT {
                 roleManagementService.attachPermission(
                     adminActor, customRole.getId(), ROLE_WRITE_PERMISSION_ID, requestContext()));
 
-    String m9Sql = findStatementMatching(flowBSql, List.of("user_roles"), List.of("force index"));
+    // US-018 A3 (attach-subset) adds M13 (caller's held role-permission ids) to this flow; it also
+    // touches user_roles, so M9 is identified by excluding role_permissions, and M13 is pinned
+    // separately (design MC-A: M13 never carries a locking clause).
+    String m9Sql =
+        findStatementMatching(
+            flowBSql, List.of("user_roles"), List.of("force index", "role_permissions"));
+    String m13Sql =
+        findStatementMatching(
+            flowBSql, List.of("user_roles", "role_permissions"), List.of("force index"));
     assertNoLockingClause(m9Sql, "M9 (findActiveUserIdsForRole, new caller)");
+    assertNoLockingClause(m13Sql, "M13 (findHeldRolePermissionIdsForAuthorization)");
   }
 
   // ── Shared seeding / assertion helpers ─────────────────────────────────────────────────
@@ -1074,9 +1135,21 @@ class LastAdminLockoutIT {
     return userRepository.save(user);
   }
 
-  /** A tenant-scoped role literally named {@code TENANT_ADMIN} (matches {@code RbacRoleNames}). */
+  /**
+   * A tenant-scoped role literally named {@code TENANT_ADMIN} (matches {@code RbacRoleNames}).
+   *
+   * <p>US-018 T-001 fixture churn: the fixture {@code TENANT_ADMIN} carries the whole permission
+   * catalogue, as a real one does (V5 seed plus the B7 footer from V6 on). Without it, A2's
+   * grant-subset check would deny this admin every assignment of a permissioned role.
+   */
   private Role seedTenantAdminRole(UUID tenantId, String tag) {
-    return roleRepository.save(new Role(uuidGenerator.newId(), tenantId, "TENANT_ADMIN", tag, false));
+    Role role =
+        roleRepository.save(new Role(uuidGenerator.newId(), tenantId, "TENANT_ADMIN", tag, false));
+    jdbc.update(
+        "INSERT INTO role_permissions (role_id, permission_id) "
+            + "SELECT UUID_TO_BIN(?), id FROM permissions",
+        role.getId().toString());
+    return role;
   }
 
   private UserRole seedActiveAdminAssignment(

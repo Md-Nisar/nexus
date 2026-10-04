@@ -48,6 +48,7 @@ class RoleResolutionServiceIT {
           "tenant:read",
           "tenant:write",
           "user:read",
+          "user:role:assign", // US-018 V6
           "user:write");
 
   @Autowired private RoleResolutionService roleResolutionService;
@@ -57,7 +58,7 @@ class RoleResolutionServiceIT {
   @Autowired private UuidGenerator uuidGenerator;
 
   @Test
-  void should_resolveAllSevenPermissions_when_userHasTenantAdminRole() {
+  void should_resolveEverySeededPermission_when_userHasTenantAdminRole() {
     User user = seedUser("role-res-admin");
     UserRole assignment = assignRole(user.getId(), TENANT_ADMIN_ROLE_ID);
 

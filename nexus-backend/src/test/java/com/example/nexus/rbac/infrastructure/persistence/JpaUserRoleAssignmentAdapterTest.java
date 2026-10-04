@@ -15,10 +15,14 @@ import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
 import com.example.nexus.rbac.domain.IdGenerator;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermissionName;
+import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.UserRole;
+import java.lang.reflect.Method;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -28,6 +32,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.repository.CrudRepository;
 
 /**
  * Unit tests for {@link JpaUserRoleAssignmentAdapter} — pure Mockito, no Spring context, per
@@ -56,6 +61,7 @@ class JpaUserRoleAssignmentAdapterTest {
 
   @Mock private JpaUserRoleRepository userRoleRepository;
   @Mock private JpaRoleRepository roleRepository;
+  @Mock private JpaPermissionCatalogueRepository permissionCatalogueRepository;
   @Mock private IdGenerator idGenerator;
 
   private JpaUserRoleAssignmentAdapter adapter;
@@ -67,7 +73,8 @@ class JpaUserRoleAssignmentAdapterTest {
 
   @BeforeEach
   void setUp() {
-    adapter = new JpaUserRoleAssignmentAdapter(userRoleRepository, roleRepository, idGenerator);
+    adapter = new JpaUserRoleAssignmentAdapter(
+            userRoleRepository, roleRepository, permissionCatalogueRepository, idGenerator);
     userId = UUID.randomUUID();
     roleId = UUID.randomUUID();
     tenantId = UUID.randomUUID();
@@ -191,6 +198,70 @@ class JpaUserRoleAssignmentAdapterTest {
 
     assertThat(result).containsExactly(pair);
     verify(userRoleRepository).findPermissionNamesForActiveAssignmentsOfUser(userId, tenantId);
+  }
+
+  @Test
+  void should_delegateToUserRoleRepository_when_findingHeldRolePermissionIdsForAuthorization() {
+    RolePermissionRef ref = new RolePermissionRef(roleId, UUID.randomUUID());
+    when(userRoleRepository.findHeldRolePermissionIdsForAuthorization(userId, tenantId))
+        .thenReturn(List.of(ref));
+
+    List<RolePermissionRef> result =
+        adapter.findHeldRolePermissionIdsForAuthorization(userId, tenantId);
+
+    assertThat(result).containsExactly(ref);
+    verify(userRoleRepository).findHeldRolePermissionIdsForAuthorization(userId, tenantId);
+  }
+
+  @Test
+  void should_returnPermissionIds_when_roleInTenantHasPermissions() {
+    UUID p1 = UUID.randomUUID();
+    UUID p2 = UUID.randomUUID();
+    when(roleRepository.findPermissionIdsByRoleAndTenantId(roleId, tenantId))
+        .thenReturn(List.of(p1, p2));
+
+    assertThat(adapter.findPermissionIdsForRole(roleId, tenantId))
+        .hasValueSatisfying(ids -> assertThat(ids).containsExactlyInAnyOrder(p1, p2));
+    verify(roleRepository).findPermissionIdsByRoleAndTenantId(roleId, tenantId);
+  }
+
+  /** L-2: the LEFT JOIN's single null row means "in tenant, no permissions" -- present and empty. */
+  @Test
+  void should_returnPresentEmptySet_when_roleInTenantHasNoPermissions() {
+    List<UUID> nullRow = new ArrayList<>();
+    nullRow.add(null);
+    when(roleRepository.findPermissionIdsByRoleAndTenantId(roleId, tenantId)).thenReturn(nullRow);
+
+    assertThat(adapter.findPermissionIdsForRole(roleId, tenantId))
+        .hasValueSatisfying(ids -> assertThat(ids).isEmpty());
+  }
+
+  /** L-2: no row at all means the role is not in this tenant -- empty, which callers deny. */
+  @Test
+  void should_returnEmptyOptional_when_roleNotInTenant() {
+    when(roleRepository.findPermissionIdsByRoleAndTenantId(roleId, tenantId))
+        .thenReturn(List.of());
+
+    assertThat(adapter.findPermissionIdsForRole(roleId, tenantId)).isEmpty();
+  }
+
+  @Test
+  void should_delegateToPermissionCatalogueRepository_when_findingCatalogueIds_M15() {
+    UUID permissionId = UUID.randomUUID();
+    when(permissionCatalogueRepository.findCatalogueIds()).thenReturn(Set.of(permissionId));
+
+    assertThat(adapter.findCatalogueIds()).containsExactly(permissionId);
+    verify(permissionCatalogueRepository).findCatalogueIds();
+  }
+
+  /** L-5: the catalogue dependency is read-only -- it exposes no save/delete at all. */
+  @Test
+  void should_exposeOnlyFindCatalogueIds_when_inspectingCatalogueRepository() {
+    assertThat(JpaPermissionCatalogueRepository.class.getMethods())
+        .extracting(Method::getName)
+        .containsExactly("findCatalogueIds");
+    assertThat(CrudRepository.class.isAssignableFrom(JpaPermissionCatalogueRepository.class))
+        .isFalse();
   }
 
   @Test

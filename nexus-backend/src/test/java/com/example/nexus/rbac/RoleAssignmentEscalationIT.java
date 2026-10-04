@@ -15,7 +15,9 @@ import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
+import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.domain.UserRole;
+import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import io.micrometer.core.instrument.Counter;
@@ -52,6 +54,7 @@ class RoleAssignmentEscalationIT {
   @Autowired private RoleManagementService roleManagementService;
   @Autowired private JpaRoleRepository roleRepository;
   @Autowired private JpaUserRoleRepository userRoleRepository;
+  @Autowired private JpaRolePermissionRepository rolePermissionRepository;
   @Autowired private JpaUserRepository userRepository;
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private MeterRegistry meterRegistry;
@@ -64,6 +67,11 @@ class RoleAssignmentEscalationIT {
     UUID tenantId = uuidGenerator.newId();
     User user = seedUser("no-perms", tenantId);
     UUID userId = user.getId();
+    // US-018 A4: only an administrator may self-assign, so the caller holds an admin-defining
+    // role (the whole catalogue).
+    Role adminDefiningRole = seedRole("ADMIN-DEFINING", tenantId);
+    grantWholeCatalogue(adminDefiningRole.getId());
+    seedActiveAssignment(tenantId, adminDefiningRole.getId(), userId, userId);
     // A plain custom role with zero attached permissions -- the counter must fire anyway.
     Role role = seedRole("NO-PERMS", tenantId);
     RoleChangeActor actor = new RoleChangeActor(userId, tenantId);
@@ -108,6 +116,8 @@ class RoleAssignmentEscalationIT {
   void should_denyAndAudit_when_nonAdminSelfAssignsANowDangerousRole() {
     UUID tenantId = uuidGenerator.newId();
     Role adminRole = seedRole("ADMIN", tenantId, "TENANT_ADMIN");
+    // US-018 A3: the admin must also hold the permission they attach.
+    rolePermissionRepository.save(new RolePermission(adminRole.getId(), ROLE_WRITE_PERMISSION_ID));
     User adminUser = seedUser("admin", tenantId);
     UUID adminUserId = adminUser.getId();
     seedActiveAssignment(tenantId, adminRole.getId(), adminUserId, adminUserId);
@@ -180,6 +190,13 @@ class RoleAssignmentEscalationIT {
   private UserRole seedActiveAssignment(UUID tenantId, UUID roleId, UUID assigneeId, UUID assignedById) {
     return userRoleRepository.save(
         new UserRole(uuidGenerator.newId(), assigneeId, roleId, tenantId, assignedById));
+  }
+
+  /** Makes {@code roleId} admin-defining (US-018 §2.1): attaches every catalogue permission. */
+  private void grantWholeCatalogue(UUID roleId) {
+    jdbc.update(
+        "INSERT INTO role_permissions (role_id, permission_id) SELECT ?, id FROM permissions",
+        toBytes(roleId));
   }
 
   private RequestContext requestContext() {

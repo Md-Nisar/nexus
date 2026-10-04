@@ -7,6 +7,22 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ## [Unreleased]
 
+### Added — US-018 Milestone 2 (RBAC grant-subset core: A1 to A4)
+
+**Backend**
+- New permission `user:role:assign` (V6 seed, id `019f6839-1807-7000-8000-000000000008`) now gates `POST` and `DELETE /api/v1/users/{userId}/roles[/{roleId}]` in place of `user:write`; `GET` stays on `user:read`. **Behaviour change:** holders of `user:write` alone can no longer assign or revoke roles. Roles intended to assign must have `user:role:assign` attached by an administrator; there is no automatic backfill (see `docs/features/US-018/deployment.md` for the pre-deploy detection query).
+- Grant-subset authorization (ADR-0021, proposed): **A2** a caller may assign only a role whose permissions they all hold; **A3** a caller may attach only a permission they hold (every permission, not only dangerous ones); **A4** a non-administrator cannot assign a role to themselves. "Administrator" is a user holding a role that alone carries every permission in the catalogue (`RbacAdministrators`). Reads are live, non-locking and id-based (M13/M14/M15); read failures return 500, never allow.
+- Security-review fixes folded in: **M-1** revoke-subset (a caller may revoke only a role whose permissions they all hold) pulled forward from M3; **L-1** `user:role:assign` and `role:write` must still be in the caller's live DB holdings, not only the JWT (403 `PERMISSION_ABSENT`); **L-2** the target-role permission read returns `Optional` and fails closed when the role is not in the caller's tenant; **L-5** the catalogue read lives on a read-only `JpaPermissionCatalogueRepository`.
+- `DenialReason` gains `GRANT_EXCEEDS_CALLER` and `SELF_ASSIGNMENT`; `nexus.rbac.permission_denied{permission,reason}` carries them. New WARN markers `RBAC_GRANT_EXCEEDS_CALLER`, `RBAC_SELF_ASSIGNMENT_DENIED`, `RBAC_ATTACH_EXCEEDS_CALLER`, `RBAC_ENDPOINT_PERMISSION_NOT_HELD`; `ROLE_ASSIGNMENT_DENIED` audit rows gain a `missingCount` metadata key (count only). A3 denials write no audit row.
+- V6 footer (first B7 instance): every system `TENANT_ADMIN`, and every role that already carried the whole pre-migration catalogue, gains the new permission, so administrator status survives catalogue growth. Data only; idempotent.
+- No new feature flag, error code or configuration property. Parent flags `feature.nexus-us012-rbac-role-assignment.enabled` and `feature.nexus-us015-rbac-role-management.enabled` remain `false` by default outside `dev` and `test`.
+- Build: Develocity build scans disabled in `nexus-backend/.mvn/jvm.config`.
+- RES-1(b) is reported as **"self path closed; transformed into RES-26"**: the second-account path is not closed in M2 (accepted at Gate 2, resolved in M3).
+- 1177 unit and 353 integration tests passing. Docs: `docs/features/US-018/09-technical.md`, `deployment.md`, `rollback.md`, `monitoring.md`, `runbook.md`. ADR: none new (covered by ADR-0021/0022).
+
+**Frontend**
+- None.
+
 ### Added — k6 performance-testing foundation
 
 - New `nexus-test/performance-test/` k6 suite: reusable scenarios (`platform-health`, authenticated `user-profile`) kept separate from workload profiles (smoke, load, stress, spike, soak), centralised `BASE_URL`-driven configuration, per-scenario p95/p99 threshold builder (interim values only — no SLAs), and JSON summaries in `results/`. See `nexus-test/README.md`.

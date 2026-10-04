@@ -14,11 +14,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.example.nexus.common.domain.RequestContext;
+import com.example.nexus.common.security.RequiresPermission;
 import com.example.nexus.common.web.GlobalExceptionHandler;
 import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.RoleChangeActor;
+import com.example.nexus.rbac.interfaces.rest.dto.AssignRoleRequest;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import jakarta.servlet.http.HttpServletRequest;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -126,6 +129,57 @@ class UserRoleControllerTest {
         .andExpect(jsonPath("$.code").value("RBAC_001"))
         .andExpect(jsonPath("$.requiredPermission").value("user:read"));
     assertDenialReasonRecorded("MALFORMED_AUTHENTICATION");
+  }
+
+  // US-018 A1 (ADR-0021 D1): assign and revoke require user:role:assign; listing stays user:read.
+  // Enforcement itself is covered by RoleAssignmentSecurityIT; these pin the declared contract.
+
+  @Test
+  void should_requireUserRoleAssign_when_postOrDelete() throws NoSuchMethodException {
+    assertThat(
+            requiredPermissionOf(
+                "assignRole",
+                String.class,
+                AssignRoleRequest.class,
+                Authentication.class,
+                HttpServletRequest.class))
+        .isEqualTo("user:role:assign");
+    assertThat(
+            requiredPermissionOf(
+                "revokeRole",
+                String.class,
+                String.class,
+                Authentication.class,
+                HttpServletRequest.class))
+        .isEqualTo("user:role:assign");
+  }
+
+  @Test
+  void should_requireUserRead_when_get() throws NoSuchMethodException {
+    assertThat(requiredPermissionOf("listRoles", String.class, Authentication.class))
+        .isEqualTo("user:read");
+  }
+
+  @Test
+  void should_reportUserRoleAssign_when_postPrincipalIsMalformed() throws Exception {
+    Authentication auth = authentication("not-a-uuid", TENANT_ID.toString());
+
+    mockMvc
+        .perform(
+            post("/api/v1/users/{userId}/roles", PATH_USER_ID)
+                .principal(auth)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"roleId\":\"" + ROLE_ID + "\"}"))
+        .andExpect(status().isForbidden())
+        .andExpect(jsonPath("$.requiredPermission").value("user:role:assign"));
+  }
+
+  private static String requiredPermissionOf(String methodName, Class<?>... parameterTypes)
+      throws NoSuchMethodException {
+    return UserRoleController.class
+        .getMethod(methodName, parameterTypes)
+        .getAnnotation(RequiresPermission.class)
+        .value();
   }
 
   @Test

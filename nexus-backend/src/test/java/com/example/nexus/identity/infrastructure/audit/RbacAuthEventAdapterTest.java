@@ -457,6 +457,41 @@ class RbacAuthEventAdapterTest {
     assertThat(metadata.get("attemptedBy").asString()).isEqualTo(ACTOR_USER_ID.toString());
   }
 
+  /**
+   * US-018 A2 (03-design.md §4.4): a grant-subset denial carries the NUMBER of missing permissions
+   * as {@code missingCount}, placed after {@code operation}, and nothing else new — never a
+   * permission id or name.
+   */
+  @Test
+  void should_includeMissingCountAfterOperation_when_grantExceedsCallerDenied() {
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-missing", "agent");
+    RbacAuditEvent event =
+        new RbacAuditEvent(TENANT_ID, TARGET_USER_ID, ROLE_ID, "SUPPORT", ACTOR_USER_ID, ctx);
+
+    adapter.recordRoleAssignmentDenied(event, DenialReason.GRANT_EXCEEDS_CALLER, "assign", 2);
+
+    AuthEvent captured = captureRecordedEvent();
+    JsonNode metadata = objectMapper.readTree(captured.getMetadata());
+    assertThat(metadata.get("reason").asString()).isEqualTo("GRANT_EXCEEDS_CALLER");
+    assertThat(metadata.get("missingCount").asInt()).isEqualTo(2);
+    String raw = captured.getMetadata();
+    assertThat(raw.indexOf("\"operation\"")).isLessThan(raw.indexOf("\"missingCount\""));
+    // traceId, roleId, roleName, reason, operation, missingCount, attemptedBy -- nothing else.
+    assertThat(metadata.size()).isEqualTo(7);
+  }
+
+  @Test
+  void should_omitMissingCountKey_when_threeArgumentDenialRecorded() {
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-no-missing", "agent");
+    RbacAuditEvent event =
+        new RbacAuditEvent(TENANT_ID, TARGET_USER_ID, ROLE_ID, "TENANT_ADMIN", ACTOR_USER_ID, ctx);
+
+    adapter.recordRoleAssignmentDenied(event, DenialReason.NOT_TENANT_ADMIN, "assign");
+
+    JsonNode metadata = objectMapper.readTree(captureRecordedEvent().getMetadata());
+    assertThat(metadata.has("missingCount")).isFalse();
+  }
+
   // ---------------------------------------------------------------------
   // US-015 AC12: RoleAuditEvent overload (recordRoleCreated / recordRolePermissionGranted /
   // recordRolePermissionRevoked)

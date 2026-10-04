@@ -1,7 +1,6 @@
 package com.example.nexus.rbac;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -13,12 +12,13 @@ import com.example.nexus.identity.domain.EmailCipher;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
-import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
+import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.domain.UserRole;
+import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import io.micrometer.core.instrument.Counter;
@@ -39,6 +39,11 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * US-016 T-018 (03-design.md §4.7/D13, §12.3; 03b-threat-model.md T-E21; 04-tasks.md T-018):
  * standing evidence for RES-1(b), the pre-positioning primitive.
  *
+ * <p><b>US-018 update.</b> A4 now denies the literal self-assignment by a non-admin, but the
+ * primitive survives through a second account (RES-26, T-E32): a second account grants the benign
+ * role instead. Step 1 below therefore seeds that holding directly; every signal assertion is
+ * unchanged. The rest of this Javadoc describes the original self-assign form of the same residual.
+ *
  * <p><b>This is the residual, made visible — not closed.</b> A non-admin self-assigning a benign
  * role today, followed by an administrator legitimately attaching {@code role:write} to that same
  * role tomorrow, is a silent, permanent, race-free escalation primitive that D13's mint-side
@@ -56,8 +61,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * as a silent diff. Doing so here, absent that story, would misrepresent an accepted, open
  * residual risk as fixed.
  *
- * <p>Service-layer test, both {@link RoleAssignmentService} and {@link RoleManagementService}
- * autowired directly against real Testcontainers MySQL — no HTTP layer needed, mirroring {@code
+ * <p>Service-layer test, {@link RoleManagementService} autowired directly against real Testcontainers MySQL — no HTTP layer needed, mirroring {@code
  * RoleAssignmentEscalationIT}'s and {@code RoleManagementAuditIT}'s pattern (that pattern's own
  * Javadoc already disclaims T-E21 and points here as its standing evidence).
  */
@@ -71,38 +75,34 @@ class DangerousPermissionHolderSignalIT {
   private static final UUID DANGEROUS_PERMISSION_ID =
       UUID.fromString("019f6839-1805-7000-8000-000000000006");
 
-  @Autowired private RoleAssignmentService roleAssignmentService;
   @Autowired private RoleManagementService roleManagementService;
   @Autowired private JpaRoleRepository roleRepository;
   @Autowired private JpaUserRoleRepository userRoleRepository;
+  @Autowired private JpaRolePermissionRepository rolePermissionRepository;
   @Autowired private JpaUserRepository userRepository;
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private MeterRegistry meterRegistry;
   @Autowired private JdbcTemplate jdbc;
 
   @Test
-  void should_makeSoleHolderVisibleViaSignal_when_adminRetroactivelyAttachesDangerousPermissionToSelfAssignedBenignRole() {
+  void should_makeSoleHolderVisibleViaSignal_when_adminRetroactivelyAttachesDangerousPermissionToBenignRoleHeldViaSecondAccount() {
     UUID tenantId = uuidGenerator.newId();
 
-    // Step 1: a non-admin self-assigns a BENIGN role. No permission is attached yet, so
-    // carriesDangerousPermission is false and the gate does not apply -- this MUST succeed.
-    // Legitimate, correctly ungated; asserting a denial here would contradict the design.
+    // Step 1: a non-admin comes to hold a BENIGN role. Since US-018 A4 a non-admin can no longer
+    // self-assign it, so the holding is modelled in the RES-26 shape (a second account granted
+    // it) and is seeded directly below, not routed through assign().
     User nonAdminUser = seedUser("holder", tenantId);
     UUID nonAdminUserId = nonAdminUser.getId();
+    User secondAccount = seedUser("second-account", tenantId);
     Role benignRole = seedRole("BENIGN", tenantId);
-    RoleChangeActor nonAdminActor = new RoleChangeActor(nonAdminUserId, tenantId);
-
-    assertThatCode(
-            () ->
-                roleAssignmentService.assign(
-                    nonAdminActor, nonAdminUserId, benignRole.getId(), requestContext()))
-        .as("step 1 is a legitimate benign self-assignment; the gate must not fire")
-        .doesNotThrowAnyException();
+    seedActiveAssignment(tenantId, benignRole.getId(), nonAdminUserId, secondAccount.getId());
 
     // Step 2: an active admin attaches role:write to that SAME role -- a legitimate,
     // Epic-3-required administrative action (AC11 passes). This retroactively makes the
     // existing holder's assignment dangerous, with no gate re-evaluation at this moment.
     Role adminRole = seedRole("ADMIN", tenantId, "TENANT_ADMIN");
+    // US-018 A3: the admin must also hold the permission they attach.
+    rolePermissionRepository.save(new RolePermission(adminRole.getId(), DANGEROUS_PERMISSION_ID));
     User adminUser = seedUser("admin", tenantId);
     UUID adminUserId = adminUser.getId();
     seedActiveAssignment(tenantId, adminRole.getId(), adminUserId, adminUserId);

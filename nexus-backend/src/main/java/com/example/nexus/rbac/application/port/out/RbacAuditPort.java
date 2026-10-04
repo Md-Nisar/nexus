@@ -33,11 +33,12 @@ public interface RbacAuditPort {
    *
    * <p>Called INLINE, before the caller throws, from a transaction that is about to roll back:
    * durability rests entirely on the implementation committing in an independent
-   * ({@code REQUIRES_NEW}) transaction. Scoped to the two 403 authorization denials
-   * ({@code CROSS_TENANT_TARGET}, {@code NOT_TENANT_ADMIN}); never called for the 409 conflicts
+   * ({@code REQUIRES_NEW}) transaction. Scoped to the 403 authorization denials
+   * ({@code CROSS_TENANT_TARGET}, {@code NOT_TENANT_ADMIN}, and from US-018 {@code
+   * SELF_ASSIGNMENT} and {@code GRANT_EXCEEDS_CALLER}); never called for the 409 conflicts
    * or the 404s, and never from a read path — an "assignment denied" event for a read is a
    * semantic mislabel, and would also widen the emitting population to every {@code user:read}
-   * holder rather than the {@code user:write} holders this event type is scoped to.
+   * holder rather than the {@code user:role:assign} holders this event type is scoped to.
    *
    * @param operation the verb being denied, {@code "assign"} or {@code "revoke"} — persisted in
    *     the durable audit metadata (03-design.md D17/RC-13) so assign-side and revoke-side denials
@@ -49,6 +50,19 @@ public interface RbacAuditPort {
    *     recorded.
    */
   void recordRoleAssignmentDenied(RbacAuditEvent event, DenialReason reason, String operation);
+
+  /**
+   * Same contract as {@link #recordRoleAssignmentDenied(RbacAuditEvent, DenialReason, String)},
+   * for a grant-subset denial ({@code GRANT_EXCEEDS_CALLER}, US-018 A2, 03-design.md §4.4) that
+   * also records how many of the target role's permissions the caller lacked.
+   *
+   * @param missingCount the NUMBER of missing permissions, persisted as {@code missingCount} in
+   *     the audit metadata. Never the ids or names themselves: {@code auth_events} is readable by
+   *     {@code audit:read} holders, and the ids would disclose the role's contents. {@code null}
+   *     omits the key.
+   */
+  void recordRoleAssignmentDenied(
+      RbacAuditEvent event, DenialReason reason, String operation, Integer missingCount);
 
   /**
    * Records a successful role creation (AC12). Must never throw or block. Invoked post-commit;

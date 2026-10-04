@@ -8,12 +8,16 @@ import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
 import com.example.nexus.rbac.domain.IdGenerator;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermissionName;
+import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.UserRole;
 import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 
@@ -32,20 +36,27 @@ import org.springframework.stereotype.Component;
  * injected; M10 delegates to {@code roleRepository}, and M11/M5b/M12 delegate to {@code
  * userRoleRepository}. {@code JpaRolePermissionRepository} is still not injected — ADR-0017 D2's
  * second half is unweakened by this story.
+ *
+ * <p><b>US-018 M15:</b> the catalogue read goes through {@link JpaPermissionCatalogueRepository},
+ * a read-only {@code Repository} that declares {@code findCatalogueIds()} and nothing else, so this
+ * adapter has no write capability over {@code permissions} either (07-security-review.md L-5).
  */
 @Component
 public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
 
   private final JpaUserRoleRepository userRoleRepository;
   private final JpaRoleRepository roleRepository;
+  private final JpaPermissionCatalogueRepository permissionCatalogueRepository;
   private final IdGenerator idGenerator;
 
   public JpaUserRoleAssignmentAdapter(
       JpaUserRoleRepository userRoleRepository,
       JpaRoleRepository roleRepository,
+      JpaPermissionCatalogueRepository permissionCatalogueRepository,
       IdGenerator idGenerator) {
     this.userRoleRepository = userRoleRepository;
     this.roleRepository = roleRepository;
+    this.permissionCatalogueRepository = permissionCatalogueRepository;
     this.idGenerator = idGenerator;
   }
 
@@ -110,6 +121,30 @@ public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
   public List<RolePermissionName> findPermissionNamesForActiveAssignmentsOfUser(
       UUID userId, UUID tenantId) {
     return userRoleRepository.findPermissionNamesForActiveAssignmentsOfUser(userId, tenantId);
+  }
+
+  @Override
+  public List<RolePermissionRef> findHeldRolePermissionIdsForAuthorization(
+      UUID userId, UUID tenantId) {
+    return userRoleRepository.findHeldRolePermissionIdsForAuthorization(userId, tenantId);
+  }
+
+  @Override
+  public Optional<Set<UUID>> findPermissionIdsForRole(UUID roleId, UUID tenantId) {
+    // L-2 (07-security-review.md): no row at all means the role is not in this tenant -> empty,
+    // which the caller denies. A role in the tenant always yields at least one row; its null
+    // element (the LEFT JOIN's "no permissions" row) is dropped, never mapped to an id.
+    List<UUID> rows = roleRepository.findPermissionIdsByRoleAndTenantId(roleId, tenantId);
+    if (rows.isEmpty()) {
+      return Optional.empty();
+    }
+    return Optional.of(
+        rows.stream().filter(Objects::nonNull).collect(Collectors.toUnmodifiableSet()));
+  }
+
+  @Override
+  public Set<UUID> findCatalogueIds() {
+    return permissionCatalogueRepository.findCatalogueIds();
   }
 
   @Override

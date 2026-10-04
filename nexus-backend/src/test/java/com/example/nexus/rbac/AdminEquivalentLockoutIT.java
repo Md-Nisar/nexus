@@ -12,6 +12,7 @@ import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.LastAdminRoleException;
+import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RolePermission;
@@ -119,6 +120,8 @@ class AdminEquivalentLockoutIT {
     grantPermission(dangerousRole.getId(), ROLE_WRITE_PERMISSION_ID);
     grantPermission(dangerousRole.getId(), USER_WRITE_PERMISSION_ID);
     grantPermission(dangerousRole.getId(), TENANT_WRITE_PERMISSION_ID);
+    // US-018 L-1: the self-revoking holder must still hold user:role:assign in M13.
+    grantPermission(dangerousRole.getId(), RbacSeededPermissionIds.USER_ROLE_ASSIGN);
     User dangerousHolder = seedUser(tenantId, "cross-role-dangerous-holder");
     seedActiveAssignment(tenantId, dangerousRole.getId(), dangerousHolder.getId(), admin.getId());
 
@@ -284,8 +287,16 @@ class AdminEquivalentLockoutIT {
     return userRepository.save(user);
   }
 
+  /**
+   * The literal {@code TENANT_ADMIN} role, carrying {@code user:role:assign}: US-018
+   * 07-security-review.md L-1 re-checks it in the revoking caller's fresh M13 holdings. It is not
+   * a dangerous permission, so it changes no admin-equivalence classification here.
+   */
   private Role seedTenantAdminRole(UUID tenantId, String tag) {
-    return roleRepository.save(new Role(uuidGenerator.newId(), tenantId, "TENANT_ADMIN", tag, false));
+    Role role =
+        roleRepository.save(new Role(uuidGenerator.newId(), tenantId, "TENANT_ADMIN", tag, false));
+    grantPermission(role.getId(), RbacSeededPermissionIds.USER_ROLE_ASSIGN);
+    return role;
   }
 
   private Role seedRole(UUID tenantId, String name, String tag) {

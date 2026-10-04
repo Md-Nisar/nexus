@@ -10,6 +10,7 @@ import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
 import com.example.nexus.rbac.application.RoleAssignmentService;
+import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RolePermission;
@@ -311,6 +312,9 @@ class RolePermissionSecurityIT {
     // @RequiresPermission("role:write") and reach the endpoint at all -- AC11's admin gate is a
     // SEPARATE, additional check inside the service, not a substitute for holding the permission.
     grantPermission(adminRole.getId(), ROLE_WRITE_PERMISSION_ID);
+    // US-018 07-security-review.md L-1: the service-level assign() below re-checks the admin's
+    // fresh M13 holdings for user:role:assign.
+    grantPermission(adminRole.getId(), RbacSeededPermissionIds.USER_ROLE_ASSIGN);
     User admin = seedUser(tenantId, "s10-admin");
     seedActiveAssignment(tenantId, adminRole.getId(), admin.getId(), admin.getId());
     String adminToken = mintToken(admin);

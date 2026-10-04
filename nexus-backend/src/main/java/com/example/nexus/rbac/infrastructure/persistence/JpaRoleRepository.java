@@ -72,6 +72,26 @@ public interface JpaRoleRepository extends JpaRepository<Role, UUID> {
   List<String> findPermissionNamesByRole(@Param("roleId") UUID roleId);
 
   /**
+   * M14 (US-018, 03-design.md §4.3) — the permission ids attached to one role of one tenant,
+   * served by the {@code roles} primary key and the {@code role_permissions} primary-key prefix.
+   * Hosted here for the same reason as {@link #findPermissionNamesByRole}: the assignment adapter
+   * reads it without a dependency on the repository that writes {@code role_permissions}. The
+   * {@code r.tenantId} predicate satisfies the tenant-isolation ArchUnit gate (T-S1).
+   *
+   * <p>Fail-closed shape (07-security-review.md L-2): driven off {@code roles} with a LEFT JOIN, so
+   * the two "nothing to grant" cases stay distinguishable in ONE statement. An EMPTY list means the
+   * role is not in {@code tenantId} (or does not exist); a role in the tenant with no permissions
+   * yields exactly one {@code null} element; otherwise one element per attached permission id. The
+   * adapter maps this to {@code Optional<Set<UUID>>}. No {@code @Lock} (MC-A).
+   */
+  @Query(
+      "SELECT rp.id.permissionId FROM Role r "
+          + "LEFT JOIN RolePermission rp ON rp.id.roleId = r.id "
+          + "WHERE r.id = :roleId AND r.tenantId = :tenantId")
+  List<UUID> findPermissionIdsByRoleAndTenantId(
+      @Param("roleId") UUID roleId, @Param("tenantId") UUID tenantId);
+
+  /**
    * Q12 — RC-4's per-tenant role cap check. Served by {@code uq_roles_tenant_name}'s leftmost
    * prefix — same index as Q1, no new cost (03-design.md §5.2).
    */
