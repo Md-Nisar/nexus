@@ -86,7 +86,9 @@ US-018 (one story, 12 PRs)
 
 # M2 — A1–A4 grant-subset core (PR 1, P0)
 
-**PR boundary.** T-001 → T-002 → T-003 in one PR on `feature/US-018-m2`. Contains V6 and nothing from any other milestone. Ends with `/review`, `/security-review`, `/test-validate` (full IT suite, Docker up), `/pre-pr-check`, then the PR.
+**Status (2026-10-04):** implementation, review, security review, test-validate and docs are done; PR and the ops/merge items below are open. See [STATUS.md](STATUS.md).
+
+**PR boundary.** T-001 → T-002 → T-003 in one PR on `feature/US-018/M2`. Contains V6 and nothing from any other milestone. Ends with `/review`, `/security-review`, `/test-validate` (full IT suite, Docker up), `/pre-pr-check`, then the PR.
 
 **Threats owned:** T-E32 (RC-23.1), T-E41 ✅, T-E42 ✅, T-E35 (RC-27.1 footer, first instance), T-T21 (RC-48 template, first instance), T-E36 (the M13 input; its fix lands in M3).
 
@@ -240,7 +242,7 @@ US-018 (one story, 12 PRs)
 
 # M1 — A8 deny-by-default (PR 2)
 
-**PR boundary.** T-004 alone, on `feature/US-018-m1`. Build-time controls only: no DB, API, UI or flag change. Must merge before M9 so C1/C3 handlers are classified from their first commit (design §3.3), and before M7 because T-009 consumes `PublicEndpointRequestMatcher`.
+**PR boundary.** T-004 alone, on `feature/US-018/M1`. Build-time controls only: no DB, API, UI or flag change. Must merge before M9 so C1/C3 handlers are classified from their first commit (design §3.3), and before M7 because T-009 consumes `PublicEndpointRequestMatcher`.
 
 **Threats owned:** T-E39 (RC-40.2), T-E45 (RC-44.1, RC-44.3; the filter half is T-009), RC-24.1 (one source for "public").
 
@@ -298,7 +300,7 @@ US-018 (one story, 12 PRs)
 
 # M6 — A11 token claim validation (PR 3)
 
-**PR boundary.** T-005 alone, on `feature/US-018-m6`. Must be **deployed on every instance** before M7's rolling deploy starts (design §1.2).
+**PR boundary.** T-005 alone, on `feature/US-018/M6`. Must be **deployed on every instance** before M7's rolling deploy starts (design §1.2).
 
 **Threats owned:** T-S10 (RC-40.1), T-E40 (the "accept v3 before it exists" part ✅).
 
@@ -345,7 +347,7 @@ US-018 (one story, 12 PRs)
 
 # M4 — A6 atomic audit (PR 4)
 
-**PR boundary.** T-006 alone, on `feature/US-018-m4`, rebased on merged M2 (same methods).
+**PR boundary.** T-006 alone, on `feature/US-018/M4`, rebased on merged M2 (same methods).
 
 **Threats owned:** T-D22 (RC-40.5).
 
@@ -403,7 +405,7 @@ US-018 (one story, 12 PRs)
 
 # M5 — A7 break-glass CLI (PR 5)
 
-**PR boundary.** T-007 → T-008, on `feature/US-018-m5`. Needs V6 (M2: the new administrator must hold `user:role:assign`) and M4's atomic-audit path. Artifact-only deploy: the CLI is never run during a deploy.
+**PR boundary.** T-007 → T-008, on `feature/US-018/M5`. Needs V6 (M2: the new administrator must hold `user:role:assign`) and M4's atomic-audit path. Artifact-only deploy: the CLI is never run during a deploy.
 
 **Threats owned:** T-S9 (RC-37.1, RC-37.2), T-R14 (RC-37.3), T-R15 (RC-37.4), T-S11 (RC-47), RC-37.5, RC-37.6 / RC-50(d), RC-54(a), L-6; EC2 (structural, with T-002).
 
@@ -517,7 +519,7 @@ US-018 (one story, 12 PRs)
 
 # M7 — A9 revocation epoch, A10 holder fan-out (PR 6)
 
-**PR boundary.** T-009 → T-014 in one PR on `feature/US-018-m7`. **Hard prerequisite:** M6 (T-005) deployed on every instance. Uses `PublicEndpointRequestMatcher` from M1 (T-004). This is the first Redis call on the authenticated hot path (design §2.4).
+**PR boundary.** T-009 → T-014 in one PR on `feature/US-018/M7`. **Hard prerequisite:** M6 (T-005) deployed on every instance. Uses `PublicEndpointRequestMatcher` from M1 (T-004). This is the first Redis call on the authenticated hot path (design §2.4).
 
 **Threats owned:** T-D17 (RC-24), T-E37 (RC-29), T-E38 (RC-30), T-D20 (RC-31), T-D19 (RC-32), T-T16 (RC-34.1), T-D23 ✅, T-E40 (RC-40.6), T-E43 (RC-41), T-E44 (RC-42), T-D24 (RC-43), T-E45 (RC-44.2, RC-44.4), RC-45, T-E46 (RC-51), RC-52, T-E47 (RC-53), L-1, L-2, L-3, L-4.
 
@@ -833,7 +835,7 @@ US-018 (one story, 12 PRs)
 
 # M3 — A5 retire superseded machinery, plus D3 (PR 8, risk: Critical)
 
-**PR boundary.** T-016 → T-019 in one PR on `feature/US-018-m3`. **Hard prerequisites:** M2 soaked in staging ≥ 1 sprint, M4 and M7 merged (design §1.2). Carries its **own threat-model re-pass** before merge.
+**PR boundary.** T-016 → T-019 in one PR on `feature/US-018/M3`. **Hard prerequisites:** M2 soaked in staging ≥ 1 sprint, M4 and M7 merged (design §1.2). Carries its **own threat-model re-pass** before merge.
 
 **Retirement rule (FR-A5.d, design §5, endorsed TM §5).** A test is *obsolete* only if ADR-0021 names the control that now enforces its assertion **and** an equivalent test against that control lands in the same PR. A test that goes green by inversion signals a lost control. Every task below lists the tests it retires and their replacements; each retirement needs the re-pass sign-off.
 
@@ -1030,7 +1032,7 @@ US-018 (one story, 12 PRs)
 
 # M8 — Group B hardening (PR 9)
 
-**PR boundary.** T-020 → T-024 on `feature/US-018-m8`, after M3 (B1/B8 edit the smaller post-A5 files) and M7 (B6 needs the epoch-keyed cache). Contains V7 and V8; **V8 runs in a maintenance window**. B4 has no task (A-11).
+**PR boundary.** T-020 → T-024 on `feature/US-018/M8`, after M3 (B1/B8 edit the smaller post-A5 files) and M7 (B6 needs the epoch-keyed cache). Contains V7 and V8; **V8 runs in a maintenance window**. B4 has no task (A-11).
 
 **Threats owned:** T-R13 (RC-39.2, RC-50(c)), T-D18 (RC-33.1), T-I18 (RC-33.2), T-T19 (RC-40.3), T-D21 (RC-40.4), T-T21 (RC-48.1 scanner), T-D25 (RC-49.1), RC-45.1 (shared-store half), RC-54(b), RC-34.2 (B6 consideration).
 
@@ -1256,7 +1258,7 @@ US-018 (one story, 12 PRs)
 
 # M9 — Group C missing features (PR 10)
 
-**PR boundary.** T-025 → T-030 on `feature/US-018-m9`, after M1 (new handlers classified from day one) and M8 (V7's `(role_id, tenant_id)` index for C3). Contains V9 (expand), which **runs in a maintenance window** (it rebuilds `roles`). Rollout order: code → grants per environment → (next release) V10 in T-031. New endpoints ride the existing `feature.nexus-us015-rbac-role-management` flag.
+**PR boundary.** T-025 → T-030 on `feature/US-018/M9`, after M1 (new handlers classified from day one) and M8 (V7's `(role_id, tenant_id)` index for C3). Contains V9 (expand), which **runs in a maintenance window** (it rebuilds `roles`). Rollout order: code → grants per environment → (next release) V10 in T-031. New endpoints ride the existing `feature.nexus-us015-rbac-role-management` flag.
 
 **Threats owned:** T-T17 (RC-35), T-T18 (RC-36), T-T20 (RC-46), T-I17 (RC-38), T-I19 (RC-40.7), T-D25 (RC-49.2), RC-37.5, RES-37, RES-45, L-5.
 
