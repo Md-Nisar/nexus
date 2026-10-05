@@ -898,6 +898,39 @@ Full story: `docs/story/2-rbac/US-018.md`. A principal-architect review of US-00
 
 ---
 
+### US-019 — Access Management console: role, permission and assignment UI for tenant administrators
+
+| TYPE | PRIORITY | STORY POINTS | EPIC LINK | SPRINT | ASSIGNEE |
+|------|----------|--------------|-----------|--------|----------|
+| Feature | P0 for Groups A–C, F; P1 Group D; P2 Group E | _(unestimated — pending Gate 1; expected to split)_ | EPIC-002: RBAC Foundation | _(unscheduled)_ | _(Tech lead assigns)_ |
+
+### User Story
+As a tenant administrator,
+I want an Access Management console to view roles, build custom roles from the permission catalogue, and grant or revoke roles for users — with the impact of each change shown before I commit it,
+So that I can run least-privilege access control without API calls or the risk of locking my tenant out of administration.
+
+### Background / Context
+Full story: `docs/story/2-rbac/US-019.md`. The RBAC backend is complete through US-018 M2, but no frontend screen calls any RBAC endpoint. **This story proposes moving "UI for role management" from Epic 3 into EPIC-002** (see Open Decision #10), on the same reasoning as Open Decision #2. It also adds one minimal backend slice, a tenant user directory, because no endpoint lists users today.
+
+### Acceptance Criteria — summary (full DoD in `US-019.md`)
+| Group | Criteria | Scope |
+|---|---|---|
+| **A — Shell, roles list, catalogue** | A1–A6 | `/admin/access` area behind `authGuard` + `permissionGuard`; roles list with System badges; permission catalogue grouped by resource with Sensitive badges; accessible permission matrix |
+| **B — Custom roles** | B1–B7 | Create, clone and edit with a staged diff and impact review; honest partial-failure handling; grant-subset and admin-only rules shown up front; system roles never editable |
+| **C — Assignment** | C1–C7 | Tenant user directory API (`user:read`, exact-email lookup only); users list; user access page; assign/revoke with self-assignment and last-admin lockout prevented up front |
+| **D — Members and lifecycle** | D1–D4 | Members tab, member counts, rename/delete, server paging. Needs US-018 M9 |
+| **E — Access review** | E1–E3 | Effective permissions with "via role", permission holders, CSV export. Needs US-018 C3 |
+| **F — Cross-cutting** | F1–F8 | WCAG 2.1 AA, ADR 0004 wrappers, propagation messaging, inline 403 handling, typed permissions, no PII in client logs |
+
+### Dependencies
+- Blocked by: none for Groups A–C and F; US-018 M9 for Groups D–E
+- Blocks: Epic 3 Tenant Management UI (reuses the shell, user directory and wrappers)
+
+### Implementation Status (2026-10-05)
+**DRAFT — pending Gate 1.**
+
+---
+
 ## Recommended Sprint Order
 
 | Sprint | Stories | Points | Notes |
@@ -907,6 +940,7 @@ Full story: `docs/story/2-rbac/US-018.md`. A principal-architect review of US-00
 | Sprint 5 | US-013, US-015 | 12 | Frontend guards + role/permission management API; non-gating, can parallel-stream with Epic 3 start |
 | Sprint 6 | US-016 | _(TBD at Gate 1)_ | Closes the D15/R-3 residual risk from US-015; hard deadline before Epic 3 kickoff, not just "recommended" |
 | _(TBD)_ | US-018 | _(TBD at Gate 1)_ | Production-readiness remediation; Group A must land before Epic 3 kickoff; to be split into smaller stories at Gate 1 |
+| _(TBD)_ | US-019 | _(TBD at Gate 1)_ | Access Management console; Groups A–C and F can run in parallel with US-018; Groups D–E follow US-018 M9 |
 
 ## Open Decisions
 
@@ -920,4 +954,4 @@ _Resolved during feasibility review (see updates above), plus forward-tracked en
 6. **US-016 successor story (D15 condition C3, US-015 Gate 2)** — **RESOLVED: filed and now formally tracked in this epic.** `docs/story/2-rbac/US-016.md` was filed pre-merge per US-015's threat model requirement that a named successor exist before that story merged; US-015 has since merged (`76470e2`). US-016 is added above as a full epic entry and to the sprint order (Sprint 6). It remains a **DRAFT stub pending its own Gate 1** — deliberately not pre-scoped, per D15/C3's own reasoning — and is a **hard, date-bound entry criterion for Epic 3 kickoff** (review by 2026-11-27 or Epic 3 kickoff, whichever is earlier), distinct from item 4's ArchUnit gate. Epic point total remains unrevised pending US-016's Gate-1 estimate.
 7. **RES-3 successor story (US-016 Gate 1 #8, merge-checklist item)** — **RESOLVED: filed and now formally tracked in this epic.** `docs/story/2-rbac/US-017.md` — "Extend last-admin lockout protection to admin-equivalent custom roles" — is filed pre-merge per US-016's own threat-model/design merge checklist (`docs/features/US-016/03-design.md` §12.2 item 14, §12.3 RES-3, §14), following the US-016 stub precedent in item 6 above. It is a **DRAFT stub pending its own Gate 1**, deliberately not pre-scoped, and is paired with RES-9 (US-016 §12.3) as one Epic-3 question — see US-017's Background section. Not a hard date-bound gate the way item 6 is; US-016's design records RES-3 as Med severity, accepted out of scope, with the backlog story's existence (not its completion) being the merge blocker for US-016 itself. **[US-017, 2026-09-24] Superseded by the full story entry above.** Gate 1 (2026-09-17), Gate 2 (threat model closed 2026-09-18) and Gate 3 (8-task breakdown) are complete; the stub's "paired with RES-9 as one Epic-3 question" framing is resolved as RES-3 closed end to end and RES-9 closed for the assign/revoke caller test only, with RES-13 carrying the mint-side remainder forward — see the "US-017" section above for current implementation status and the merge checklist, which is not yet fully satisfied.
 8. **RES-10 backlog observation (US-016 §12.3, T-D12)** — **RESOLVED: filed as an observation, not a story.** `RoleAssignmentService.assign(TENANT_ADMIN)` (S-lock on the caller's row, then an insert-intention lock in the `role_id = adminRoleId` gap) and `revoke(TENANT_ADMIN)` (M1's next-key range lock) can cycle under a mixed concurrent workload — pre-existing, **unrelated to and unchanged by US-016**. Recorded so that a future harness-C or production lock-wait failure under mixed `assign`/`revoke(TENANT_ADMIN)` traffic is not misattributed to this story. No successor story is filed for this item — it is deliberately **not a fix commitment**, per US-016 design §12.3 RES-10 ("Accepted as inherited... Filed as a separate backlog observation, not a US-016 fix"). Named in US-016's own `03-design.md` §7.2 property 3 and in `LastAdminLockoutIT`'s harness-C Javadoc. **[US-017, 2026-09-24] Closed at the root.** US-017 D7 closes this by making the tenant-wide union-lock acquisition order total across both verbs; the empirical exit gate for that fix (`LastAdminLockoutIT` harness C, ≥5 green runs under Docker, T-003(f)) is now satisfied (5/5 green, 2026-09-24). The harness's earlier failures traced to an unrelated Hikari connection-pool sizing artifact, not a surviving lock cycle — see `docs/features/US-016/03-design.md` §12.3 RES-10 for the full diagnosis. This backlog observation is now discharged, not merely status-updated.
-9. **Dependency-hygiene backlog item for `npm audit`'s 27 pre-existing frontend toolchain findings (US-017 §12.1/Editorial 5)** — **NEW, filed here as instructed by the design's own editorial note, since no dependency-hygiene backlog item existed for it prior to this entry.** `npm audit` on the frontend reports 27 pre-existing findings (1 critical, 7 high, 16 moderate, 3 low), all in the Angular build/toolchain dependency graph (`tar`, `undici`, `qs`, …) — re-verified independently by both US-017's requirements/impact pass and its Gate 2 threat model (`03b-threat-model.md` §0.1 item 19). **Not attributable to US-017**, which touches zero files under `nexus-frontend/`. Warranted **independently of any RBAC story** — whoever picks this up must respect the known npm-Windows lockfile-prune trap (`npm install` on Windows strips `@emnapi` entries from the frontend lockfile, breaking Linux CI) when working it. No story id assigned yet; tracked here as an open item, not a hard gate for any story in this epic.
+9. **Dependency-hygiene backlog item for `npm audit`'s 27 pre-existing frontend toolchain findings (US-017 §12.1/Editorial 5)** — **NEW, filed here as instructed by the design's own editorial note, since no dependency-hygiene backlog item existed for it prior to this entry.** `npm audit` on the frontend reports 27 pre-existing findings (1 critical, 7 high, 16 moderate, 3 low), all in the Angular build/toolchain dependency graph (`tar`, `undici`, `qs`, …) — re-verified independently by both US-017's requirements/impact pass and its Gate 2 threat model (`03b-threat-model.md` §0.1 item 19). **Not attributable to US-017**, which touches zero files under `nexus-frontend/`. Warranted **independently of any RBAC story** — whoever picks this up must respect the known npm-Windows lockfile-prune trap (`npm install` on Windows strips `@emnapi` entries from the frontend lockfile, breaking Linux CI) when working it. No story id assigned yet; tracked here as an open item, not a hard gate for any story in this epic.10. **Role-management UI ownership (US-019)** — **OPEN — PM to decide at US-019 Gate 1.** The [PM] scope boundary lists "UI for role management" as Epic 3. US-019 proposes moving it into EPIC-002, on the same reasoning as item 2: it consumes only `rbac`-context APIs built in this epic, and Epic 3 is not yet scoped. Epic 3 would keep tenant creation, tenant settings and user provisioning/invites. If the move is rejected, US-019 moves to Epic 3 unchanged.
