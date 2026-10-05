@@ -3,6 +3,7 @@ package com.example.nexus.identity.infrastructure.web;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
+import com.example.nexus.identity.interfaces.rest.JwksController;
 import com.example.nexus.identity.interfaces.rest.LoginController;
 import com.example.nexus.identity.interfaces.rest.UserProfileController;
 import com.example.nexus.identity.interfaces.rest.dto.LoginRequest;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.server.RequestPath;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.security.core.Authentication;
@@ -36,9 +38,12 @@ class PublicEndpointRequestMatcherTest {
   private static final String LOGIN = "/api/v1/auth/login";
   private static final String REFRESH = "/api/v1/auth/refresh";
   private static final String LOGOUT = "/api/v1/auth/logout";
+  private static final String ME = "/api/v1/users/me";
+  private static final String JWKS = "/.well-known/jwks.json";
 
   private final LoginController loginController = mock(LoginController.class);
   private final UserProfileController profileController = mock(UserProfileController.class);
+  private final JwksController jwksController = mock(JwksController.class);
   private RequestMappingHandlerMapping handlerMapping;
 
   @BeforeEach
@@ -48,7 +53,7 @@ class PublicEndpointRequestMatcherTest {
     registerPost(REFRESH, loginMethod("refresh", String.class));
     registerPost(LOGOUT, loginMethod("logout", String.class));
     handlerMapping.registerMapping(
-        RequestMappingInfo.paths("/api/v1/users/me").methods(RequestMethod.GET).build(),
+        RequestMappingInfo.paths(ME).methods(RequestMethod.GET).build(),
         profileController,
         meMethod());
   }
@@ -120,6 +125,41 @@ class PublicEndpointRequestMatcherTest {
         loginMethod("login", LoginRequest.class));
 
     assertThat(matcher().matches(request("POST", "/api/v1/auth/ant-style"))).isFalse();
+    // Such a mapping cannot be evaluated, so it counts as matching every request (fail closed).
+    assertThat(matcher().matches(request("POST", LOGIN))).isFalse();
+  }
+
+  @Test
+  void should_match_when_head_request_targets_public_get_endpoint() throws Exception {
+    handlerMapping.registerMapping(
+        RequestMappingInfo.paths(JWKS).methods(RequestMethod.GET).build(),
+        jwksController,
+        JwksController.class.getDeclaredMethod("jwks"));
+
+    assertThat(matcher().matches(request("HEAD", JWKS))).isTrue();
+  }
+
+  @Test
+  void should_match_when_cors_preflight_requests_post_on_public_endpoint() {
+    assertThat(matcher().matches(preflight(LOGIN, "POST"))).isTrue();
+  }
+
+  @Test
+  void should_not_match_when_cors_preflight_requests_get_on_authenticated_endpoint() {
+    assertThat(matcher().matches(preflight(ME, "GET"))).isFalse();
+  }
+
+  @Test
+  void should_not_match_when_plain_options_request_targets_public_endpoint() {
+    assertThat(matcher().matches(request("OPTIONS", LOGIN))).isFalse();
+  }
+
+  @Test
+  void should_match_when_request_has_valid_context_path() {
+    MockHttpServletRequest request = request("POST", "/nexus" + LOGIN);
+    request.setContextPath("/nexus");
+
+    assertThat(matcher().matches(request)).isTrue();
   }
 
   @Test
@@ -180,5 +220,12 @@ class PublicEndpointRequestMatcherTest {
 
   private static MockHttpServletRequest request(String method, String uri) {
     return new MockHttpServletRequest(method, uri);
+  }
+
+  private static MockHttpServletRequest preflight(String uri, String requestedMethod) {
+    MockHttpServletRequest request = request("OPTIONS", uri);
+    request.addHeader(HttpHeaders.ORIGIN, "http://localhost:2000");
+    request.addHeader(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, requestedMethod);
+    return request;
   }
 }

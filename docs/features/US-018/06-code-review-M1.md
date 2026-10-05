@@ -70,3 +70,21 @@ MVC binds an unannotated simple-type parameter as an implicit `@RequestParam`; t
 1. With Option B in force, should `@RequestParam String` (and `@ModelAttribute`) on an `@AuthenticatedEndpoint` handler be banned too? The house-style argument that led to banning all path variables applies equally. Story owner's call.
 2. Is recording the deviations in `09-technical.md` §6 deferred to Phase 9, or expected in this PR?
 3. For T-009: the matcher is a plain `@Component` in `identity.infrastructure.web`; `@WebMvcTest` slices will not load it once a filter depends on it. Is that planned for?
+
+## Resolution (2026-10-05)
+
+All findings fixed in a follow-up commit; no production behaviour changed (the `src/main` diff is Javadoc only). The fixes are verified by the gate only; no second fresh-context review has been run.
+
+| Finding | Resolution |
+|---|---|
+| M-1 | Marker rule now selects any concrete class with `@Controller` meta-present on the class, a superclass or an interface, and groups same-signature methods across the hierarchy. New negative fixtures: interface-declared mapping, inherited-from-base mapping, `@Controller` + `@ResponseBody`. `EndpointClassificationWebTest` adds a completeness sweep (exactly one marker per production handler via `AnnotatedElementUtils`) and defines "production" as any main-source class. |
+| M-2 + open question 1 | Identifier rule (name kept) now fails on any `@PathVariable`, `@RequestParam` (any type, String included), `@ModelAttribute`, `@MatrixVariable`, any `UUID` parameter, and any unannotated parameter that is not a principal/request/response type. Story owner decided "ban String too". `@RequestBody` identifiers remain out of scope. |
+| L-1 | Self-invocation rule also treats a target as guarded when a same-signature supertype/interface method carries `@RequiresPermission`; fixture added. |
+| L-2 | Matcher Javadoc states both limits; the web test resolves each public (method, pattern) through all `HandlerMapping` beans in `DispatcherServlet` order and asserts the first handler is the same `@PublicEndpoint` method. |
+| L-3 | `09-technical.md` §6 gains D-8 (identifier rule), D-9 (nested fixtures), D-10 (9 RBAC handlers, not 7). `03-design.md` and `04-tasks.md` untouched. |
+| L-4 | Test also asserts POST login does not match when a mapping has no path-patterns condition. |
+| Nits | `PublicEndpoint` Javadoc requires an explicit HTTP method; `ACCESS_MARKERS` moved above the rules; HEAD→GET, CORS preflight, plain `OPTIONS` and context-path cases pinned; public sweep also asserts not `ACCESS_DENIED`; `AuthenticatedEndpoint` Javadoc updated. `@DisplayName` was not used: ArchUnit's JUnit 5 engine ignores it on `@ArchTest` fields, so the rule's condition text and `because()` carry the wording. |
+
+Gate after fixes (JDK 25, enforcer active, Docker up): `./mvnw verify` — 1301 unit tests (1 skipped), 353 ITs, 0 failures; 0 Checkstyle violations; SpotBugs 0; JaCoCo met.
+
+Known limits left as is: the identifier rule selects only methods carrying `@AuthenticatedEndpoint` directly (a marker declared only on a supertype method is not checked); `GuardedTestController` (test sources) is component-scanned despite its Javadoc and has an unmarked `/internal-test/self-invoke` handler (never shipped; the scan check is narrowed to nested test classes rather than touching an unrelated file).

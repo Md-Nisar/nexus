@@ -13,6 +13,7 @@ import com.example.nexus.identity.infrastructure.web.JwtAuthenticationFilter;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.domain.JavaClass;
+import com.tngtech.archunit.core.domain.JavaCodeUnit;
 import com.tngtech.archunit.core.domain.JavaCodeUnitAccess;
 import com.tngtech.archunit.core.domain.JavaMethod;
 import com.tngtech.archunit.core.domain.JavaModifier;
@@ -25,17 +26,26 @@ import com.tngtech.archunit.lang.ArchRule;
 import com.tngtech.archunit.lang.ConditionEvents;
 import com.tngtech.archunit.lang.SimpleConditionEvent;
 import com.tngtech.archunit.library.GeneralCodingRules;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletResponse;
 import java.lang.annotation.Annotation;
 import java.security.Principal;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import org.springframework.security.core.Authentication;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.stereotype.Controller;
+import org.springframework.web.bind.annotation.MatrixVariable;
+import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
 import org.junit.jupiter.api.Tag;
 
 /**
@@ -239,17 +249,38 @@ class HexagonalArchitectureTest {
                             + "M12 is a non-authoritative canary read; reusing it, or the JWT, for a "
                             + "grant decision re-opens FR-A2.b.");
 
+    private static final List<Class<? extends Annotation>> ACCESS_MARKERS =
+            List.of(RequiresPermission.class, AuthenticatedEndpoint.class, PublicEndpoint.class);
+
+    /** Parameter annotations that bind a value of the request URI or query into the handler. */
+    private static final List<Class<? extends Annotation>> REQUEST_BOUND_IDENTIFIER_ANNOTATIONS =
+            List.of(PathVariable.class, RequestParam.class, ModelAttribute.class,
+                    MatrixVariable.class);
+
+    /** Parameter types MVC resolves from the security context or the servlet, never by binding. */
+    private static final List<Class<?>> FRAMEWORK_PARAMETER_TYPES =
+            List.of(Principal.class, ServletRequest.class, ServletResponse.class);
+
+    private static final String WEB_BIND_ANNOTATION_PACKAGE =
+            "org.springframework.web.bind.annotation";
+
     // US-018 A8 (03-design.md §3.1, FR-A8.a): deny-by-default is only as good as the
     // classification of every handler. Each one states its access requirement with exactly one
     // marker, so a new handler cannot silently inherit "authenticated, no permission" from
     // anyRequest().authenticated(). Empty is not allowed: zero handlers found means the predicate
     // broke, not that the application has no REST API.
+    //
+    // The selection follows what Spring MVC registers, not only what is declared in a
+    // @RestController (code review M-1): every concrete class that is, or has a superclass or
+    // interface that is, meta-annotated with @Controller (so @Controller + @ResponseBody too), and
+    // every method of it whose signature carries a @RequestMapping on the class itself, a
+    // superclass or an interface (so inherited and interface-declared mappings too). Markers are
+    // resolved through the same hierarchy, as AnnotatedElementUtils and Spring Security do.
     @ArchTest
     static final ArchRule rest_handlers_must_carry_exactly_one_access_marker =
-            methods()
-                    .that().areDeclaredInClassesThat().areMetaAnnotatedWith(RestController.class)
-                    .and().areMetaAnnotatedWith(RequestMapping.class)
-                    .should(carryExactlyOneAccessMarker())
+            classes()
+                    .that(areConcreteMvcHandlerClasses())
+                    .should(declareOnlyHandlersWithExactlyOneAccessMarker())
                     .because("US-018 A8 (FR-A8.a): every REST handler declares whether it is "
                             + "permission-guarded (@RequiresPermission), authenticated-only "
                             + "(@AuthenticatedEndpoint) or anonymous (@PublicEndpoint). An unmarked "
@@ -259,10 +290,12 @@ class HexagonalArchitectureTest {
     // US-018 A8 (03-design.md §3.1, FR-A8.b): Spring AOP does not intercept a call a bean makes
     // to itself, so a @RequiresPermission method reached that way runs unguarded (SECURITY.md
     // §3.1). "Itself" covers a plain call, a this::method reference, a call from a nested, inner,
-    // anonymous or lambda body of the class, and a call to an inherited annotated method. The
-    // check is deliberately conservative: a class calling the annotated method of a different
-    // instance of its own type (or a supertype) is also flagged; route such a call through the
-    // injected bean of another class instead.
+    // anonymous or lambda body of the class, and a call to an inherited annotated method. A target
+    // also counts as annotated when the class overrides a superclass or interface method that
+    // carries @RequiresPermission, because Spring Security finds the annotation there on proxied
+    // calls (code review L-1). The check is deliberately conservative: a class calling the
+    // annotated method of a different instance of its own type (or a supertype) is also flagged;
+    // route such a call through the injected bean of another class instead.
     @ArchTest
     static final ArchRule no_self_invocation_of_requires_permission_methods =
             classes()
@@ -272,16 +305,40 @@ class HexagonalArchitectureTest {
                             + "to itself — no error, no log, no failing test (SECURITY.md §3.1).");
 
     /**
-     * US-018 A8 (03-design.md §3.1, RC-40.2, FR-A8.c), deliberately strengthened beyond the design.
+     * US-018 A8 (03-design.md §3.1, RC-40.2, FR-A8.c), deliberately strengthened beyond the design:
+     * an {@code @AuthenticatedEndpoint} handler takes <b>no request-bound identifier of any
+     * type</b>. The constant keeps its original name for traceability; it no longer bans UUIDs
+     * only.
      *
-     * <p>The design bans only {@code UUID}-typed {@code @PathVariable} / {@code @RequestParam} on
-     * an {@code @AuthenticatedEndpoint} handler. The house style, however, declares path variables
-     * as {@code String} and parses them after validation (D15, {@code RoleController}), so a
-     * UUID-only ban would be bypassed by simply following the convention. With the story owner's
-     * approval (US-018 T-004 plan, Option B) this rule bans <b>any</b> {@code @PathVariable} on such
-     * a handler, plus any {@code UUID}-typed {@code @RequestParam}. An authenticated-only handler
-     * addresses the caller through the principal; an endpoint that takes another resource's
-     * identifier must be permission-guarded.
+     * <p>The design bans only {@code UUID}-typed {@code @PathVariable} / {@code @RequestParam}. The
+     * house style, however, declares identifiers as {@code String} and parses them after
+     * validation (D15, {@code RoleController}), and MVC binds an unannotated simple-type parameter
+     * as an implicit {@code @RequestParam}, so a UUID-only ban is bypassed by following the
+     * convention or by leaving the annotation off. With the story owner's approval (US-018 T-004,
+     * Option B, extended after code review M1 to {@code String}, {@code @ModelAttribute} and
+     * implicit binding; recorded as D-8 in 09-technical.md §6) the rule fails on any parameter
+     * that:
+     *
+     * <ul>
+     *   <li>carries {@code @PathVariable}, {@code @RequestParam}, {@code @ModelAttribute} or {@code
+     *       @MatrixVariable}, whatever its type;
+     *   <li>has the raw type {@code UUID}, whatever its annotations;
+     *   <li>carries no {@code org.springframework.web.bind.annotation} annotation and is not a
+     *       framework or principal type: MVC would bind it from the request, a simple type (as
+     *       {@code BeanUtils.isSimpleProperty} defines it: {@code String}, primitives and
+     *       wrappers, enums, {@code Number}, {@code CharSequence}, dates and temporals, {@code
+     *       UUID}, ...) as an implicit {@code @RequestParam} and any other type as an implicit
+     *       {@code @ModelAttribute}. This is fail-closed: an unannotated type the rule does not
+     *       know is flagged, not allowed.
+     * </ul>
+     *
+     * <p>Allowed: {@code Authentication}, {@code Principal}, {@code HttpServletRequest} / {@code
+     * HttpServletResponse} (any {@code Principal}, {@code ServletRequest} or {@code
+     * ServletResponse}), a parameter carrying {@code @AuthenticationPrincipal} (directly or as a
+     * meta-annotation), and {@code @RequestBody}. An identifier inside a {@code @RequestBody} is
+     * <b>out of scope</b> for this rule: the body is not addressed by the URI and needs review, not
+     * ArchUnit. An authenticated-only handler addresses the caller through the principal; an
+     * endpoint that takes another resource's identifier must be permission-guarded.
      *
      * <p>Zero {@code @AuthenticatedEndpoint} handlers is a legitimate state, hence {@code
      * allowEmptyShould(true)}.
@@ -290,14 +347,17 @@ class HexagonalArchitectureTest {
     static final ArchRule authenticated_endpoints_take_no_uuid_identifier =
             methods()
                     .that().areAnnotatedWith(AuthenticatedEndpoint.class)
-                    .should(declareNoPathVariableAndNoUuidRequestParam())
-                    .because("US-018 RC-40.2, strengthened with the story owner's approval (T-004, "
-                            + "Option B): an @AuthenticatedEndpoint handler has no permission check, "
-                            + "so it may only address the caller's own data through the principal. "
-                            + "Any @PathVariable is banned, not only UUID-typed ones, because the "
-                            + "house style (D15) declares identifiers as String path variables; a "
-                            + "UUID @RequestParam is banned for the same reason. An endpoint that "
-                            + "takes an identifier must use @RequiresPermission.")
+                    .should(takeNoRequestBoundIdentifier())
+                    .because("US-018 RC-40.2 (design §3: UUID-only), strengthened with the story "
+                            + "owner's approval (T-004 Option B, extended after code review M1; "
+                            + "D-8): an @AuthenticatedEndpoint handler has no permission check, so "
+                            + "it may only address the caller's own data through the principal. It "
+                            + "takes no request-bound identifier of ANY type: no @PathVariable, "
+                            + "@RequestParam, @ModelAttribute or @MatrixVariable parameter, no UUID "
+                            + "parameter, and no unannotated parameter that MVC would bind from the "
+                            + "request as an implicit @RequestParam or @ModelAttribute. Identifiers "
+                            + "in a @RequestBody are out of scope. An endpoint that takes an "
+                            + "identifier must use @RequiresPermission.")
                     .allowEmptyShould(true);
 
     @ArchTest
@@ -312,24 +372,50 @@ class HexagonalArchitectureTest {
     static final ArchRule no_java_util_logging =
             GeneralCodingRules.NO_CLASSES_SHOULD_USE_JAVA_UTIL_LOGGING;
 
-    private static final List<Class<? extends Annotation>> ACCESS_MARKERS =
-            List.of(RequiresPermission.class, AuthenticatedEndpoint.class, PublicEndpoint.class);
+    private static DescribedPredicate<JavaClass> areConcreteMvcHandlerClasses() {
+        return DescribedPredicate.describe(
+                "are concrete classes meta-annotated with @Controller on themselves, a superclass "
+                        + "or an interface",
+                javaClass -> !javaClass.isInterface()
+                        && !javaClass.getModifiers().contains(JavaModifier.ABSTRACT)
+                        && typeHierarchy(javaClass)
+                                .anyMatch(type -> type.isMetaAnnotatedWith(Controller.class)));
+    }
 
-    private static ArchCondition<JavaMethod> carryExactlyOneAccessMarker() {
-        return new ArchCondition<>(
-                "carry exactly one of @RequiresPermission, @AuthenticatedEndpoint, @PublicEndpoint") {
+    private static ArchCondition<JavaClass> declareOnlyHandlersWithExactlyOneAccessMarker() {
+        return new ArchCondition<>("have handler methods (own, inherited or interface-declared "
+                + "mappings) that each carry exactly one of @RequiresPermission, "
+                + "@AuthenticatedEndpoint, @PublicEndpoint") {
             @Override
-            public void check(JavaMethod method, ConditionEvents events) {
-                List<String> markers = ACCESS_MARKERS.stream()
-                        .filter(marker -> method.isAnnotatedWith(marker))
-                        .map(Class::getSimpleName)
-                        .toList();
-                if (markers.size() != 1) {
-                    String problem = markers.isEmpty()
-                            ? "carries no access marker"
-                            : "carries more than one access marker " + markers;
-                    events.add(SimpleConditionEvent.violated(
-                            method, method.getFullName() + " " + problem));
+            public void check(JavaClass handlerClass, ConditionEvents events) {
+                Map<String, List<JavaMethod>> methodsBySignature = typeHierarchy(handlerClass)
+                        .flatMap(type -> type.getMethods().stream())
+                        .filter(method -> !method.getModifiers().contains(JavaModifier.STATIC))
+                        .collect(Collectors.groupingBy(HexagonalArchitectureTest::signature,
+                                LinkedHashMap::new, Collectors.toList()));
+                for (List<JavaMethod> sameSignature : methodsBySignature.values()) {
+                    if (sameSignature.stream().noneMatch(
+                            method -> method.isMetaAnnotatedWith(RequestMapping.class))) {
+                        continue;
+                    }
+                    List<String> markers = ACCESS_MARKERS.stream()
+                            .filter(marker -> sameSignature.stream()
+                                    .anyMatch(method -> method.isAnnotatedWith(marker)))
+                            .map(Class::getSimpleName)
+                            .toList();
+                    if (markers.size() != 1) {
+                        // Nearest declaration first: the class itself, then superclasses, then
+                        // interfaces, so a directly declared handler is named as before.
+                        JavaMethod handler = sameSignature.get(0);
+                        String location = handler.getOwner().equals(handlerClass)
+                                ? handler.getFullName()
+                                : handlerClass.getName() + " handler " + handler.getFullName();
+                        String problem = markers.isEmpty()
+                                ? "carries no access marker"
+                                : "carries more than one access marker " + markers;
+                        events.add(SimpleConditionEvent.violated(
+                                handlerClass, location + " " + problem));
+                    }
                 }
             }
         };
@@ -343,13 +429,49 @@ class HexagonalArchitectureTest {
                 for (JavaCodeUnitAccess<?> access : origin.getCodeUnitAccessesFromSelf()) {
                     if (isOwnOrEnclosingType(origin, access.getTargetOwner())
                             && access.getTarget().resolveMember()
-                                    .map(target -> target.isAnnotatedWith(RequiresPermission.class))
+                                    .map(HexagonalArchitectureTest::carriesRequiresPermission)
                                     .orElse(false)) {
                         events.add(SimpleConditionEvent.violated(access, access.getDescription()));
                     }
                 }
             }
         };
+    }
+
+    /**
+     * True when {@code target} carries {@code @RequiresPermission} itself or is a method that
+     * overrides a superclass or interface method carrying it (Spring Security resolves the
+     * annotation through that hierarchy).
+     */
+    private static boolean carriesRequiresPermission(JavaCodeUnit target) {
+        if (target.isAnnotatedWith(RequiresPermission.class)) {
+            return true;
+        }
+        if (!(target instanceof JavaMethod method)) {
+            return false;
+        }
+        JavaClass owner = method.getOwner();
+        String signature = signature(method);
+        return Stream.concat(
+                        owner.getAllRawSuperclasses().stream(),
+                        owner.getAllRawInterfaces().stream())
+                .flatMap(type -> type.getMethods().stream())
+                .anyMatch(candidate -> signature(candidate).equals(signature)
+                        && candidate.isAnnotatedWith(RequiresPermission.class));
+    }
+
+    /** The class itself, then its superclasses nearest first, then all of its interfaces. */
+    private static Stream<JavaClass> typeHierarchy(JavaClass javaClass) {
+        return Stream.concat(
+                Stream.concat(Stream.of(javaClass), javaClass.getAllRawSuperclasses().stream()),
+                javaClass.getAllRawInterfaces().stream());
+    }
+
+    /** Name plus raw parameter types: equal for a method and the methods it overrides. */
+    private static String signature(JavaMethod method) {
+        return method.getName() + method.getRawParameterTypes().stream()
+                .map(JavaClass::getName)
+                .collect(Collectors.joining(",", "(", ")"));
     }
 
     /**
@@ -368,21 +490,46 @@ class HexagonalArchitectureTest {
         return false;
     }
 
-    private static ArchCondition<JavaMethod> declareNoPathVariableAndNoUuidRequestParam() {
-        return new ArchCondition<>("declare no @PathVariable and no UUID @RequestParam") {
+    private static ArchCondition<JavaMethod> takeNoRequestBoundIdentifier() {
+        return new ArchCondition<>("take no request-bound identifier of any type (no "
+                + "@PathVariable, @RequestParam, @ModelAttribute or @MatrixVariable parameter, no "
+                + "UUID parameter, no unannotated parameter MVC would bind from the request)") {
             @Override
             public void check(JavaMethod method, ConditionEvents events) {
                 for (JavaParameter parameter : method.getParameters()) {
-                    if (parameter.isAnnotatedWith(PathVariable.class)) {
-                        events.add(SimpleConditionEvent.violated(method, method.getFullName()
-                                + " declares @PathVariable parameter #" + parameter.getIndex()));
-                    } else if (parameter.isAnnotatedWith(RequestParam.class)
-                            && parameter.getRawType().isEquivalentTo(UUID.class)) {
-                        events.add(SimpleConditionEvent.violated(method, method.getFullName()
-                                + " declares UUID @RequestParam parameter #" + parameter.getIndex()));
-                    }
+                    requestBoundIdentifierProblem(parameter).ifPresent(problem ->
+                            events.add(SimpleConditionEvent.violated(
+                                    method, method.getFullName() + " " + problem)));
                 }
             }
         };
+    }
+
+    private static Optional<String> requestBoundIdentifierProblem(JavaParameter parameter) {
+        int index = parameter.getIndex();
+        for (Class<? extends Annotation> annotation : REQUEST_BOUND_IDENTIFIER_ANNOTATIONS) {
+            if (parameter.isAnnotatedWith(annotation)) {
+                return Optional.of("declares @" + annotation.getSimpleName() + " parameter #"
+                        + index);
+            }
+        }
+        JavaClass type = parameter.getRawType();
+        if (type.isEquivalentTo(UUID.class)) {
+            return Optional.of("declares UUID parameter #" + index);
+        }
+        if (parameter.isAnnotatedWith(RequestBody.class)
+                || parameter.isMetaAnnotatedWith(AuthenticationPrincipal.class)
+                || FRAMEWORK_PARAMETER_TYPES.stream().anyMatch(type::isAssignableTo)) {
+            return Optional.empty();
+        }
+        boolean hasBindingAnnotation = parameter.getAnnotations().stream()
+                .anyMatch(annotation -> annotation.getRawType().getPackageName()
+                        .equals(WEB_BIND_ANNOTATION_PACKAGE));
+        if (!hasBindingAnnotation) {
+            return Optional.of("declares unannotated parameter #" + index + " of type "
+                    + type.getName() + ", which MVC binds from the request as an implicit "
+                    + "@RequestParam or @ModelAttribute");
+        }
+        return Optional.empty();
     }
 }

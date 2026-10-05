@@ -19,10 +19,18 @@ import java.lang.annotation.Target;
  * <p>{@code PublicEndpointRequestMatcher} is built from the handlers carrying this annotation and
  * is the single source of "is this request public" for request filters (RC-24.1).
  *
- * <p>Every handler in a {@code @RestController} carries exactly one of {@link RequiresPermission},
- * {@link AuthenticatedEndpoint} or this annotation; {@code HexagonalArchitectureTest} fails the
- * build otherwise. Do not use this for an endpoint that needs a signed-in caller but no
- * permission; that is {@link AuthenticatedEndpoint}.
+ * <p>Every {@code @PublicEndpoint} handler must declare an explicit HTTP method (for example
+ * {@code @PostMapping}, or {@code @RequestMapping(method = ...)}), not a bare {@code
+ * @RequestMapping}. {@code PublicEndpointRequestMatcher} treats a handler without a method
+ * condition as non-public (fail closed), so {@code EndpointClassificationWebTest}'s
+ * matcher-equivalence sweep fails for it.
+ *
+ * <p>Every MVC handler (any {@code @Controller}, including {@code @Controller} + {@code
+ * @ResponseBody}, and mappings inherited from a base class or declared on an interface) carries
+ * exactly one of {@link RequiresPermission}, {@link AuthenticatedEndpoint} or this annotation;
+ * {@code HexagonalArchitectureTest} and {@code EndpointClassificationWebTest} fail the build
+ * otherwise. Do not use this for an endpoint that needs a signed-in caller but no permission; that
+ * is {@link AuthenticatedEndpoint}.
  */
 @Documented
 @Target(ElementType.METHOD)

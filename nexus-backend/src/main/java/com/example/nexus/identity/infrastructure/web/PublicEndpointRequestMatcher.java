@@ -41,6 +41,22 @@ import org.springframework.web.util.ServletRequestPathUtils;
  *
  * <p>The request's cached parsed path is restored afterwards, so calling this from a filter does
  * not change what later MVC dispatch sees.
+ *
+ * <p><b>Limits.</b> "Public" here means public <i>according to the {@code
+ * requestMappingHandlerMapping} contents at construction time</i>, nothing wider:
+ *
+ * <ul>
+ *   <li>Another {@link org.springframework.web.servlet.HandlerMapping} with higher precedence (for
+ *       example actuator's, order -100) is not consulted. If it maps a request that matches a
+ *       public pattern, it wins dispatch while this matcher still answers {@code true}.
+ *   <li>A mapping added later through {@code registerMapping} is not seen, because the mapping
+ *       list is copied once in the constructor.
+ * </ul>
+ *
+ * <p>Neither overlaps a public pattern today. {@code EndpointClassificationWebTest} resolves every
+ * public {@code (method, pattern)} through the ordered handler mappings that {@code
+ * DispatcherServlet} uses and fails if the first one to answer is not the same {@code
+ * @PublicEndpoint} handler. A runtime {@code registerMapping} call needs review.
  */
 @Component
 public class PublicEndpointRequestMatcher {
