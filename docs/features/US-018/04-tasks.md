@@ -2,6 +2,11 @@
 
 **Phase:** 4 (Task Breakdown), Gate 3
 **Status:** **Gate 3:** approved 2026-10-02 by the story owner. Decisions: ADRs renumbered to 0021–0025; `/docs` runs per milestone (before `/pre-pr-check`) for any milestone whose merge checklist gates on runbook or alert content, rather than all docs waiting for M11; no Jira sub-tasks.
+**Decision 2026-10-05 (no staging, no deployment):** the app is not deployed and no environment exists, and work starts without one. Consequences, all recorded in `STATUS.md`:
+- **M3's "M2 soaked in staging ≥ 1 sprint" gate is waived for starting M3.** The soak, the "no `RbacAdministrators` anomalies" check and the zero-admin sweep are not dropped: they become conditions on the **first staging deployment**, before any production traffic. M4 and M7 merged, and M3's own threat-model re-pass, still gate M3.
+- **Rollout-order waits are vacuous until a deployment exists:** "M6 deployed on every instance before M7", "M7 on every instance ≥ 900 s before M7b" and "M9 live everywhere before M9-contract" reduce to "merged earlier". The PRs stay separate.
+- **Environment-dependent checklist items** (staging drills, per-environment queries, cache flushes, Ops sign-offs, and the k6 gates that name "the staging topology") are **deferred to the first deployment** and remain required before production. Where such an item is marked merge-blocking (T-009's k6 hot-path run, T-023's B6 benchmark), the story owner decides before that PR whether to run it on a local topology or defer it; it is not silently waived.
+
 **Epic:** EPIC-002 (RBAC Foundation)
 **Inputs (all read, binding):**
 - `docs/features/US-018/01-requirements.md`: the 30 ACs and §14 Gate 1 decisions (one story, delivered as milestones; each milestone is its own PR).
@@ -86,7 +91,7 @@ US-018 (one story, 12 PRs)
 
 # M2 — A1–A4 grant-subset core (PR 1, P0)
 
-**Status (2026-10-04):** implementation, review, security review, test-validate and docs are done; PR and the ops/merge items below are open. See [STATUS.md](STATUS.md).
+**Status (2026-10-05):** merged to `main` as PR #81 (2026-10-04). The ops/deploy items below are deferred to the first deployment (no environment exists, see the Decision at the top). See [STATUS.md](STATUS.md).
 
 **PR boundary.** T-001 → T-002 → T-003 in one PR on `feature/US-018/M2`. Contains V6 and nothing from any other milestone. Ends with `/review`, `/security-review`, `/test-validate` (full IT suite, Docker up), `/pre-pr-check`, then the PR.
 
@@ -101,7 +106,7 @@ US-018 (one story, 12 PRs)
 - [ ] **Permset cache flush** (`SCAN`/`DEL nexus:rbac:permset:*`) after V6 applies (design §4.8).
 - [x] **ADR numbering collision resolved** (A-2): renumbered to 0021–0025 at Gate 3.
 - [ ] V6 version number confirmed at merge (impact §12.1).
-- [ ] Exit criterion: V6 applied; `GrantSubsetIT` green in staging; the staging soak that gates M3 (≥ 1 sprint) starts.
+- [ ] Exit criterion: V6 applied; `GrantSubsetIT` green in staging; the staging soak that gates M3 (≥ 1 sprint) starts. *(2026-10-05: M2 merged as PR #81; no environment exists, so "applied", "in staging" and the soak move to the first deployment. `GrantSubsetIT` is part of the 353 ITs that pass in the local full `./mvnw verify`.)*
 - [ ] Non-regression contract unmodified: `CrossTenantPermissionIT`, `UserRolesAppendOnlyIT`, `UserRolesPrivilegeIT`, `ActiveAssignmentIT`, `TenantAwarePermissionEvaluatorTest`, the four `permission.guard.spec.ts` fail-open tests, and the `LastAdminLockoutIT` outcome scenarios (design §15).
 
 ### T-001 — Role assignment requires `user:role:assign`, and assign grants only permissions the caller holds (A1, A2)
@@ -835,7 +840,7 @@ US-018 (one story, 12 PRs)
 
 # M3 — A5 retire superseded machinery, plus D3 (PR 8, risk: Critical)
 
-**PR boundary.** T-016 → T-019 in one PR on `feature/US-018/M3`. **Hard prerequisites:** M2 soaked in staging ≥ 1 sprint, M4 and M7 merged (design §1.2). Carries its **own threat-model re-pass** before merge.
+**PR boundary.** T-016 → T-019 in one PR on `feature/US-018/M3`. **Hard prerequisites:** ~~M2 soaked in staging ≥ 1 sprint~~ (waived 2026-10-05, no environment exists; the soak moves to the first staging deployment, see the Decision at the top), M4 and M7 merged (design §1.2). Carries its **own threat-model re-pass** before merge.
 
 **Retirement rule (FR-A5.d, design §5, endorsed TM §5).** A test is *obsolete* only if ADR-0021 names the control that now enforces its assertion **and** an equivalent test against that control lands in the same PR. A test that goes green by inversion signals a lost control. Every task below lists the tests it retires and their replacements; each retirement needs the re-pass sign-off.
 
@@ -844,7 +849,7 @@ US-018 (one story, 12 PRs)
 **Merge checklist (M3):**
 - [ ] **Step B re-pass** signs off each ledger row (design §5.1, TM §5) against the code.
 - [ ] **RES-26:** the Platform Security Owner confirms the story owner's Gate 2 acceptance at this re-pass (TM §13.8); review date 2026-11-27 and Epic-3 hard expiry unchanged.
-- [ ] M2 soaked in staging for ≥ 1 sprint with no `RbacAdministrators` anomalies; M4 and M7 merged.
+- [ ] M4 and M7 merged. ~~M2 soaked in staging for ≥ 1 sprint with no `RbacAdministrators` anomalies~~ waived for the merge on 2026-10-05 (no environment); the soak and the anomaly check are now conditions on the first staging deployment.
 - [ ] **Harness C** (`LastAdminLockoutIT`) passes repeatedly with the re-scoped lock set, the benign thread and the **RC-25.3** race case; **MC-H'** green.
 - [ ] **Zero-admin sweep** under the new definition in every environment where either parent flag was ever `true`, done forensically (US-017 RC-21 pattern); a remediation ticket or written acceptance per affected tenant before production deploy.
 - [ ] **RES-6:** Ops retention sign-off for `RBAC_ATTACH_ESCALATES_NON_ADMIN_ASSIGNED_HOLDERS`, `RBAC_SELF_ASSIGN_ADMIN_DISAGREEMENT`, `RBAC_ATTACH_PROVENANCE_REFUSED` and the role-subset denial WARN (design §2.3; A-8).
