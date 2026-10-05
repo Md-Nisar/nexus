@@ -38,7 +38,7 @@ HTTP Basic in `SecurityConfig` is a **placeholder**. Until the `auth` bounded co
 
 ## 3. Authorization
 
-- **Default deny** (implemented). Every endpoint opts in.
+- **Default deny** (implemented). Every endpoint opts in; every REST handler is classified at build time — see §3.2.
 - **Method-level permission checks:** `@RequiresPermission("resource:action")` — see §3.1 below.
 - **Object-level (IDOR):** every resource fetch verifies the caller owns/may access that specific object. Return **404, not 403**, for inaccessible resources to prevent enumeration.
 - **Tenant id comes from the JWT** — never from request body or path. Admin endpoints require an explicit admin-role check, not just authentication.
@@ -117,6 +117,26 @@ See `GuardedTestController` (`src/test/java/.../support/web/`) for a working, mi
 | `RBAC_006` | Active | 409 — duplicate role name within the tenant | US-015 |
 | `RBAC_007` | Active | 409 — role name is reserved for a system role | US-015 |
 | `RBAC_008` | Active | 409 — tenant has reached its configured role limit (`nexus.rbac.max-roles-per-tenant`) | US-015 |
+
+### 3.2 Classify every REST handler — `@PublicEndpoint`, `@AuthenticatedEndpoint` or `@RequiresPermission`
+
+"Default deny" is enforced at build time: every REST handler must say who may call it. Each handler method carries **exactly one** of these markers (`com.example.nexus.common.security`), and the build fails if it carries none or more than one:
+
+| Marker | Meaning | Enforcement |
+|---|---|---|
+| `@RequiresPermission("resource:action")` | Signed-in caller who holds that permission (§3.1) | Method-security proxy |
+| `@AuthenticatedEndpoint` | Signed-in caller, **no permission** — the handler may only read or change the caller's own data, addressed through the authenticated principal | `SecurityConfig` `anyRequest().authenticated()`; marker only, no AOP |
+| `@PublicEndpoint` | Anonymous callers allowed (login, refresh, registration, JWKS, …) | `SecurityConfig` `permitAll` list; marker only, no AOP |
+
+Rules the build enforces (`HexagonalArchitectureTest`, plus `EndpointClassificationWebTest` at runtime):
+
+- **Exactly one marker per handler**, including mappings inherited from a base class or declared on an interface, `@Controller` + `@ResponseBody` classes, `static` methods and `@HttpExchange` mappings.
+- **No handlers outside annotated controllers.** Functional endpoints (`RouterFunction`), `HttpRequestHandler` and `mvc.Controller` beans bypass the classification, so production code may not use them.
+- **`@AuthenticatedEndpoint` handlers bind no caller-chosen identifier.** No `@PathVariable`, `@RequestParam`, `@ModelAttribute`, `@MatrixVariable`, `@RequestHeader` or `@CookieValue` (of any type, `String` included), no `UUID` parameter, no `HttpServletRequest` parameter and no unannotated implicitly-bound parameter. Identifiers inside a `@RequestBody` are **not** covered by the rule — review them by hand. A handler that takes the id of another resource must use `@RequiresPermission`.
+- **No self-invocation of `@RequiresPermission` methods**, and an override of a `@RequiresPermission` method must stay `public`, non-`final` and non-`static` so the proxy applies (§3.1).
+- **Adding a public endpoint is a security decision.** `@PublicEndpoint` also needs the path added to `SecurityConfig`'s `permitAll` list, which currently matches on path only (not HTTP method); `EndpointClassificationWebTest` fails when the two disagree. `PublicEndpointRequestMatcher` is the single in-code source of "public" for request filters; no filter should keep its own list of anonymous paths.
+
+Not covered by these rules: actuator endpoints, springdoc, and Boot's error handler (outside the handler classification); authorization decisions made inside a handler body.
 
 ## 4. Input validation & output encoding
 

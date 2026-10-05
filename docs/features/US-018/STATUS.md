@@ -22,8 +22,8 @@ Next in delivery order after M1: M6 (T-005), then M4 (T-006).
 | `/security-review` (`07-security-review-M1.md`) | Done, APPROVED. F-1..F-5 fixed afterwards. No second security review of the fixes was run. P-1 and P-2 (pre-existing, outside the diff) not fixed, see open items. |
 | `/test-validate` (`08-test-audit-M1.md`) | Done, PASS: 1423 unit (1 skipped), 353 IT, 0 failures, JDK 25; frontend 210/210. |
 | `/docs` | Not run. M1's merge checklist does not gate on runbook or alert content. Deviations D-8..D-14 are recorded in `09-technical.md` §6. |
-| `/pre-pr-check` | Run 2026-10-05: all executable gates and artifact records PASS; **one Definition of Done item open** (SECURITY.md does not document the three handler markers). Not ready to open the PR until it is closed. |
-| Open PR | **Pending** (only on request). |
+| `/pre-pr-check` | Re-run 2026-10-05: **PASS**. `./mvnw verify` on JDK 25 with Docker up (1423 unit, 353 IT, 0 failures; Checkstyle, SpotBugs, JaCoCo green), artifact records present, diff hygiene clean, Definition of Done walked. The one open item (handler markers undocumented) is closed by `SECURITY.md` §3.2. Frontend gates not applicable (no frontend change). |
+| Open PR | **Ready to open, pending the user's go-ahead** (not opened). |
 
 M1 was developed on the session branch `ccr-76994a18-now72v`, not on `feature/US-018/M1`.
 
@@ -38,7 +38,6 @@ M1 was developed on the session branch `ccr-76994a18-now72v`, not on `feature/US
 ## Open items
 
 Before or at the M1 PR:
-- **Close the open Definition of Done item:** SECURITY.md §3.1 documents only `@RequiresPermission`. Add a short subsection (and a line in `docs/coding-standards.md` if it lists handler conventions) saying every REST handler must carry exactly one of `@RequiresPermission`, `@PublicEndpoint` or `@AuthenticatedEndpoint`, that `@AuthenticatedEndpoint` handlers take no request-bound identifier, and that the build enforces both. No ADR is planned for A8 in the design; the D-8..D-14 deviations are in `09-technical.md`. Then re-run `/pre-pr-check`.
 - PR title as a Conventional Commit, e.g. `feat(security): classify every REST handler as public, authenticated or permission-guarded (US-018 M1)`; description covers what, why and how to test.
 - Decide whether the PR body must say that F-5's root cause (path-only `permitAll`) is deferred to T-009.
 
