@@ -1,6 +1,7 @@
 package com.example.nexus.identity.interfaces.rest;
 
 import com.example.nexus.common.domain.RequestContext;
+import com.example.nexus.common.security.PublicEndpoint;
 import com.example.nexus.identity.application.RegisterUserUseCase;
 import com.example.nexus.identity.application.ResendVerificationUseCase;
 import com.example.nexus.identity.application.VerifyEmailUseCase;
@@ -70,6 +71,7 @@ public class RegistrationController {
    * @throws FieldValidationException if email format is invalid (400)
    */
   @PostMapping("/register")
+  @PublicEndpoint
   @ResponseStatus(HttpStatus.CREATED)
   @Operation(summary = "Register a new user account")
   @ApiResponse(
@@ -98,6 +100,7 @@ public class RegistrationController {
    * @throws TokenExpiredException if the user account is in an invalid state (410)
    */
   @PostMapping("/verify-email")
+  @PublicEndpoint
   @Operation(summary = "Verify an email address using the one-time token")
   @ApiResponse(responseCode = "200", description = "Email verified successfully")
   @ApiResponse(
@@ -119,6 +122,7 @@ public class RegistrationController {
    * @throws RateLimitException if too many resend requests have been made for this email/IP (429)
    */
   @PostMapping("/resend-verification")
+  @PublicEndpoint
   @Operation(summary = "Request a new verification email")
   @ApiResponse(
       responseCode = "200",

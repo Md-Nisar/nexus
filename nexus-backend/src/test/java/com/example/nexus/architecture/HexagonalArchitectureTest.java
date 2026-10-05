@@ -6,22 +6,36 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.methods;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noMethods;
 
+import com.example.nexus.common.security.AuthenticatedEndpoint;
+import com.example.nexus.common.security.PublicEndpoint;
 import com.example.nexus.common.security.RequiresPermission;
 import com.example.nexus.identity.infrastructure.web.JwtAuthenticationFilter;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.domain.JavaClass;
+import com.tngtech.archunit.core.domain.JavaCodeUnitAccess;
+import com.tngtech.archunit.core.domain.JavaMethod;
 import com.tngtech.archunit.core.domain.JavaModifier;
+import com.tngtech.archunit.core.domain.JavaParameter;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
+import com.tngtech.archunit.lang.ArchCondition;
 import com.tngtech.archunit.lang.ArchRule;
+import com.tngtech.archunit.lang.ConditionEvents;
+import com.tngtech.archunit.lang.SimpleConditionEvent;
 import com.tngtech.archunit.library.GeneralCodingRules;
+import java.lang.annotation.Annotation;
 import java.security.Principal;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 import org.junit.jupiter.api.Tag;
 
 /**
@@ -225,6 +239,67 @@ class HexagonalArchitectureTest {
                             + "M12 is a non-authoritative canary read; reusing it, or the JWT, for a "
                             + "grant decision re-opens FR-A2.b.");
 
+    // US-018 A8 (03-design.md §3.1, FR-A8.a): deny-by-default is only as good as the
+    // classification of every handler. Each one states its access requirement with exactly one
+    // marker, so a new handler cannot silently inherit "authenticated, no permission" from
+    // anyRequest().authenticated(). Empty is not allowed: zero handlers found means the predicate
+    // broke, not that the application has no REST API.
+    @ArchTest
+    static final ArchRule rest_handlers_must_carry_exactly_one_access_marker =
+            methods()
+                    .that().areDeclaredInClassesThat().areMetaAnnotatedWith(RestController.class)
+                    .and().areMetaAnnotatedWith(RequestMapping.class)
+                    .should(carryExactlyOneAccessMarker())
+                    .because("US-018 A8 (FR-A8.a): every REST handler declares whether it is "
+                            + "permission-guarded (@RequiresPermission), authenticated-only "
+                            + "(@AuthenticatedEndpoint) or anonymous (@PublicEndpoint). An unmarked "
+                            + "handler is reachable by any signed-in caller with no permission check "
+                            + "and nobody decided that.");
+
+    // US-018 A8 (03-design.md §3.1, FR-A8.b): Spring AOP does not intercept a call a bean makes
+    // to itself, so a @RequiresPermission method reached that way runs unguarded (SECURITY.md
+    // §3.1). "Itself" covers a plain call, a this::method reference, a call from a nested, inner,
+    // anonymous or lambda body of the class, and a call to an inherited annotated method. The
+    // check is deliberately conservative: a class calling the annotated method of a different
+    // instance of its own type (or a supertype) is also flagged; route such a call through the
+    // injected bean of another class instead.
+    @ArchTest
+    static final ArchRule no_self_invocation_of_requires_permission_methods =
+            classes()
+                    .should(notInvokeOwnRequiresPermissionMethods())
+                    .because("US-018 A8 (FR-A8.b): Spring AOP does not intercept self-invocation, "
+                            + "so @RequiresPermission is SILENTLY not enforced on a call a bean makes "
+                            + "to itself — no error, no log, no failing test (SECURITY.md §3.1).");
+
+    /**
+     * US-018 A8 (03-design.md §3.1, RC-40.2, FR-A8.c), deliberately strengthened beyond the design.
+     *
+     * <p>The design bans only {@code UUID}-typed {@code @PathVariable} / {@code @RequestParam} on
+     * an {@code @AuthenticatedEndpoint} handler. The house style, however, declares path variables
+     * as {@code String} and parses them after validation (D15, {@code RoleController}), so a
+     * UUID-only ban would be bypassed by simply following the convention. With the story owner's
+     * approval (US-018 T-004 plan, Option B) this rule bans <b>any</b> {@code @PathVariable} on such
+     * a handler, plus any {@code UUID}-typed {@code @RequestParam}. An authenticated-only handler
+     * addresses the caller through the principal; an endpoint that takes another resource's
+     * identifier must be permission-guarded.
+     *
+     * <p>Zero {@code @AuthenticatedEndpoint} handlers is a legitimate state, hence {@code
+     * allowEmptyShould(true)}.
+     */
+    @ArchTest
+    static final ArchRule authenticated_endpoints_take_no_uuid_identifier =
+            methods()
+                    .that().areAnnotatedWith(AuthenticatedEndpoint.class)
+                    .should(declareNoPathVariableAndNoUuidRequestParam())
+                    .because("US-018 RC-40.2, strengthened with the story owner's approval (T-004, "
+                            + "Option B): an @AuthenticatedEndpoint handler has no permission check, "
+                            + "so it may only address the caller's own data through the principal. "
+                            + "Any @PathVariable is banned, not only UUID-typed ones, because the "
+                            + "house style (D15) declares identifiers as String path variables; a "
+                            + "UUID @RequestParam is banned for the same reason. An endpoint that "
+                            + "takes an identifier must use @RequiresPermission.")
+                    .allowEmptyShould(true);
+
     @ArchTest
     static final ArchRule no_field_injection =
             GeneralCodingRules.NO_CLASSES_SHOULD_USE_FIELD_INJECTION;
@@ -236,4 +311,78 @@ class HexagonalArchitectureTest {
     @ArchTest
     static final ArchRule no_java_util_logging =
             GeneralCodingRules.NO_CLASSES_SHOULD_USE_JAVA_UTIL_LOGGING;
+
+    private static final List<Class<? extends Annotation>> ACCESS_MARKERS =
+            List.of(RequiresPermission.class, AuthenticatedEndpoint.class, PublicEndpoint.class);
+
+    private static ArchCondition<JavaMethod> carryExactlyOneAccessMarker() {
+        return new ArchCondition<>(
+                "carry exactly one of @RequiresPermission, @AuthenticatedEndpoint, @PublicEndpoint") {
+            @Override
+            public void check(JavaMethod method, ConditionEvents events) {
+                List<String> markers = ACCESS_MARKERS.stream()
+                        .filter(marker -> method.isAnnotatedWith(marker))
+                        .map(Class::getSimpleName)
+                        .toList();
+                if (markers.size() != 1) {
+                    String problem = markers.isEmpty()
+                            ? "carries no access marker"
+                            : "carries more than one access marker " + markers;
+                    events.add(SimpleConditionEvent.violated(
+                            method, method.getFullName() + " " + problem));
+                }
+            }
+        };
+    }
+
+    private static ArchCondition<JavaClass> notInvokeOwnRequiresPermissionMethods() {
+        return new ArchCondition<>(
+                "not call or reference a @RequiresPermission method of their own instance") {
+            @Override
+            public void check(JavaClass origin, ConditionEvents events) {
+                for (JavaCodeUnitAccess<?> access : origin.getCodeUnitAccessesFromSelf()) {
+                    if (isOwnOrEnclosingType(origin, access.getTargetOwner())
+                            && access.getTarget().resolveMember()
+                                    .map(target -> target.isAnnotatedWith(RequiresPermission.class))
+                                    .orElse(false)) {
+                        events.add(SimpleConditionEvent.violated(access, access.getDescription()));
+                    }
+                }
+            }
+        };
+    }
+
+    /**
+     * True when {@code target} is {@code origin}, a supertype of it, or (transitively) the class
+     * enclosing it: in each case a call from {@code origin} reaches the bean's own instance
+     * without passing through its proxy.
+     */
+    private static boolean isOwnOrEnclosingType(JavaClass origin, JavaClass target) {
+        Optional<JavaClass> current = Optional.of(origin);
+        while (current.isPresent()) {
+            if (current.get().isAssignableTo(target.getName())) {
+                return true;
+            }
+            current = current.get().getEnclosingClass();
+        }
+        return false;
+    }
+
+    private static ArchCondition<JavaMethod> declareNoPathVariableAndNoUuidRequestParam() {
+        return new ArchCondition<>("declare no @PathVariable and no UUID @RequestParam") {
+            @Override
+            public void check(JavaMethod method, ConditionEvents events) {
+                for (JavaParameter parameter : method.getParameters()) {
+                    if (parameter.isAnnotatedWith(PathVariable.class)) {
+                        events.add(SimpleConditionEvent.violated(method, method.getFullName()
+                                + " declares @PathVariable parameter #" + parameter.getIndex()));
+                    } else if (parameter.isAnnotatedWith(RequestParam.class)
+                            && parameter.getRawType().isEquivalentTo(UUID.class)) {
+                        events.add(SimpleConditionEvent.violated(method, method.getFullName()
+                                + " declares UUID @RequestParam parameter #" + parameter.getIndex()));
+                    }
+                }
+            }
+        };
+    }
 }

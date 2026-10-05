@@ -1,5 +1,6 @@
 package com.example.nexus.identity.interfaces.rest;
 
+import com.example.nexus.common.security.PublicEndpoint;
 import com.example.nexus.identity.application.port.out.JwkSetPort;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -27,6 +28,7 @@ public class JwksController {
   }
 
   @GetMapping(value = "/.well-known/jwks.json", produces = MediaType.APPLICATION_JSON_VALUE)
+  @PublicEndpoint
   ResponseEntity<Map<String, Object>> jwks() {
     return ResponseEntity.ok()
         .cacheControl(CacheControl.maxAge(3600, TimeUnit.SECONDS))
