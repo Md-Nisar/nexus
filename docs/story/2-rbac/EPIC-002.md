@@ -929,7 +929,7 @@ Full story: `docs/story/2-rbac/US-019.md`. A gap review of the first console dra
 - Blocks: US-020
 
 ### Implementation Status (2026-10-05)
-**DRAFT — pending Gate 1.**
+**Story approved by the product owner (2026-10-05); pending Gate 1** (`/new-feature US-019`).
 
 ---
 
@@ -963,7 +963,7 @@ Full story: `docs/story/2-rbac/US-020.md`. The RBAC backend is complete through 
 - Blocks: Epic 3 Tenant Management UI (reuses the shell, the directory and the console patterns)
 
 ### Implementation Status (2026-10-05)
-**DRAFT — pending Gate 1.**
+**Story approved by the product owner (2026-10-05); pending Gate 1** (`/new-feature US-020`).
 
 ---
 
