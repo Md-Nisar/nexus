@@ -150,6 +150,20 @@ class AccessMarkerRuleFixturesTest {
   }
 
   @Test
+  void should_fail_marker_rule_when_interface_and_implementation_carry_different_markers() {
+    JavaClasses fixture =
+        new ClassFileImporter()
+            .importClasses(ConflictingMarkerController.class, PublicMarkedApi.class);
+
+    assertThatThrownBy(
+            () -> HexagonalArchitectureTest.rest_handlers_must_carry_exactly_one_access_marker
+                .check(fixture))
+        .isInstanceOf(AssertionError.class)
+        .hasMessageContaining(ConflictingMarkerController.class.getName() + ".handler()")
+        .hasMessageContaining("more than one access marker");
+  }
+
+  @Test
   void should_pass_marker_rule_when_interface_declares_mapping_and_marker() {
     JavaClasses fixture =
         new ClassFileImporter().importClasses(MarkedInterfaceController.class, MarkedApi.class);
@@ -202,6 +216,20 @@ class AccessMarkerRuleFixturesTest {
         .isInstanceOf(AssertionError.class)
         .hasMessageContaining(FinalClassOverrideController.class.getName() + ".handler()")
         .hasMessageContaining("final class");
+  }
+
+  @Test
+  void should_fail_override_rule_when_override_of_guarded_base_method_is_not_public() {
+    JavaClasses fixture =
+        new ClassFileImporter()
+            .importClasses(ProtectedOverrideService.class, ProtectedGuardedBase.class);
+
+    assertThatThrownBy(
+            () -> HexagonalArchitectureTest.requires_permission_overrides_must_be_proxyable
+                .check(fixture))
+        .isInstanceOf(AssertionError.class)
+        .hasMessageContaining(ProtectedOverrideService.class.getName() + ".guarded()")
+        .hasMessageContaining("is not public");
   }
 
   @Test
@@ -286,6 +314,31 @@ class AccessMarkerRuleFixturesTest {
                 .check(fixture))
         .isInstanceOf(AssertionError.class)
         .hasMessageContaining(SelfReferencingService.class.getName() + ".caller()");
+  }
+
+  @Test
+  void should_fail_self_invocation_rule_when_lambda_calls_own_requires_permission_method() {
+    JavaClasses fixture = new ClassFileImporter().importClasses(LambdaCallingService.class);
+
+    assertThatThrownBy(
+            () -> HexagonalArchitectureTest.no_self_invocation_of_requires_permission_methods
+                .check(fixture))
+        .isInstanceOf(AssertionError.class)
+        // ArchUnit attributes an access in a lambda body to the method declaring the lambda.
+        .hasMessageContaining(LambdaCallingService.class.getName() + ".caller()");
+  }
+
+  @Test
+  void should_fail_self_invocation_rule_when_anonymous_class_calls_outer_requires_permission_method() {
+    Class<?> anonymousTask = new AnonymousCallingService().task().getClass();
+    JavaClasses fixture =
+        new ClassFileImporter().importClasses(AnonymousCallingService.class, anonymousTask);
+
+    assertThatThrownBy(
+            () -> HexagonalArchitectureTest.no_self_invocation_of_requires_permission_methods
+                .check(fixture))
+        .isInstanceOf(AssertionError.class)
+        .hasMessageContaining(anonymousTask.getName() + ".run()");
   }
 
   @Test
@@ -560,6 +613,21 @@ class AccessMarkerRuleFixturesTest {
     }
   }
 
+  interface PublicMarkedApi {
+    @GetMapping("/fixture/conflicting-markers")
+    @PublicEndpoint
+    String handler();
+  }
+
+  @RestController
+  static class ConflictingMarkerController implements PublicMarkedApi {
+    @Override
+    @RequiresPermission("fixture:read")
+    public String handler() {
+      return "fixture: public on the interface, permission-guarded on the implementation";
+    }
+  }
+
   @RestController
   static class StaticGuardedController {
     @GetMapping("/fixture/static-guarded")
@@ -615,6 +683,18 @@ class AccessMarkerRuleFixturesTest {
     }
   }
 
+  abstract static class ProtectedGuardedBase {
+    @RequiresPermission("fixture:read")
+    protected abstract String guarded();
+  }
+
+  static class ProtectedOverrideService extends ProtectedGuardedBase {
+    @Override
+    protected String guarded() {
+      return "fixture: a protected override is never intercepted by the CGLIB proxy";
+    }
+  }
+
   static class RouterFunctionConfig {
     RouterFunction<ServerResponse> route() {
       return RouterFunctions.route()
@@ -657,6 +737,34 @@ class AccessMarkerRuleFixturesTest {
     public void caller() {
       Runnable task = this::guarded;
       task.run();
+    }
+  }
+
+  static class LambdaCallingService {
+    @RequiresPermission("fixture:read")
+    public void guarded() {
+      // fixture: target of the call from the lambda body
+    }
+
+    public void caller() {
+      Runnable task = () -> guarded();
+      task.run();
+    }
+  }
+
+  static class AnonymousCallingService {
+    @RequiresPermission("fixture:read")
+    public void guarded() {
+      // fixture: target of the call from the anonymous class
+    }
+
+    Runnable task() {
+      return new Runnable() {
+        @Override
+        public void run() {
+          guarded();
+        }
+      };
     }
   }
 

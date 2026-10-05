@@ -2,11 +2,16 @@ package com.example.nexus.config;
 
 import static java.util.stream.Collectors.toUnmodifiableSet;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request;
 
 import com.example.nexus.common.security.AuthenticatedEndpoint;
+import com.example.nexus.common.security.AuthenticationDetailKeys;
+import com.example.nexus.common.security.DenialReason;
+import com.example.nexus.common.security.InsufficientPermissionException;
 import com.example.nexus.common.security.PublicEndpoint;
 import com.example.nexus.common.security.RequiresPermission;
 import com.example.nexus.identity.application.service.LogoutUseCase;
@@ -20,8 +25,12 @@ import com.tngtech.archunit.core.importer.ImportOption;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.lang.annotation.Annotation;
+import java.lang.reflect.Array;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.net.URI;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -53,10 +62,13 @@ import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.http.server.PathContainer;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.authentication.AnonymousAuthenticationToken;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.authorization.AuthorizationManager;
 import org.springframework.security.authorization.AuthorizationResult;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.AuthorityUtils;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.web.FilterChainProxy;
 import org.springframework.security.web.access.intercept.AuthorizationFilter;
 import org.springframework.stereotype.Controller;
@@ -65,6 +77,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.util.ReflectionUtils;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
@@ -119,6 +132,11 @@ import org.springframework.web.util.pattern.PathPatternParser;
  * keeps the mirror in step with the configured chain, and {@link PermitAllOverlapProbe} proves the
  * sweep fails for such a handler.
  *
+ * <p>Two sweeps cover a signed-in caller holding no permission: every {@code
+ * @AuthenticatedEndpoint} handler passes the chain (neither 401 nor 403), and every {@code
+ * @RequiresPermission} handler, invoked on its method-security proxy, is denied with {@code
+ * PERMISSION_ABSENT} for the permission it declares.
+ *
  * <p>The matcher sweep checks {@link PublicEndpointRequestMatcher} against every mapping. The
  * fixture {@link SamePathOtherMethodController} maps {@code GET} on the public refresh pattern;
  * it is kept out of the anonymous sweep because {@code permitAll} matches on path only, so it is
@@ -166,6 +184,11 @@ class EndpointClassificationWebTest {
       new AnonymousAuthenticationToken(
           "endpoint-classification", "anonymousUser",
           AuthorityUtils.createAuthorityList("ROLE_ANONYMOUS"));
+
+  /** Fixed subject and tenant of the signed-in caller without permissions; synthetic values. */
+  private static final String NO_PERMISSION_SUBJECT = "0b6f3c1a-2d4e-4f5a-8b9c-1d2e3f4a5b6c";
+
+  private static final String NO_PERMISSION_TENANT = "7c1e2d3f-4a5b-4c6d-9e8f-0a1b2c3d4e5f";
 
   /**
    * Test-side mirror of the {@code permitAll} list in {@code SecurityConfig.apiSecurity} (security
@@ -412,6 +435,57 @@ class EndpointClassificationWebTest {
                   endpoint, ENTRY_POINT_CODE, response.getStatus(), response.getContentAsString())
               .isTrue();
         });
+  }
+
+  /**
+   * Authorization matrix, signed-in caller holding no permission (A8, Decision 1): an {@code
+   * @AuthenticatedEndpoint} handler needs a signed-in caller and nothing more, so the chain must
+   * neither challenge (401) nor deny (403) a caller whose token carries no permission. Under C5 a
+   * new user holds zero permissions, which is why {@code me()} is not permission-guarded.
+   */
+  @TestFactory
+  Stream<DynamicTest>
+      should_pass_security_when_caller_without_permissions_calls_authenticated_endpoint() {
+    return dynamicTests(
+        endpoints(Endpoint::isProduction).stream()
+            .filter(endpoint -> AnnotatedElementUtils.hasAnnotation(
+                endpoint.handler().getMethod(), AuthenticatedEndpoint.class))
+            .toList(),
+        endpoint -> {
+          MockHttpServletResponse response =
+              performAs(endpoint, authenticatedWithoutPermissions());
+          assertThat(response.getStatus())
+              .as("@AuthenticatedEndpoint %s for a caller with no permission; body %s",
+                  endpoint, response.getContentAsString())
+              .isNotIn(HttpStatus.UNAUTHORIZED.value(), HttpStatus.FORBIDDEN.value());
+        });
+  }
+
+  /**
+   * Authorization matrix, signed-in caller holding no permission (A8, FR-A8.b): a handler
+   * classified {@code @RequiresPermission} must be guarded at runtime, not only labelled. Each
+   * production handler is invoked on its registered bean (the method-security proxy) as a caller
+   * with no permission, and must be denied with {@code PERMISSION_ABSENT} for the permission it
+   * declares before its body runs. The call goes to the bean rather than through MockMvc because
+   * MVC validates a {@code @Valid @RequestBody} before it invokes the proxy, so a request with a
+   * placeholder body stops at 400 and never reaches the guard. The permission-holder outcome of
+   * each handler is covered by the rbac {@code *SecurityIT}s and {@code CrossTenantPermissionIT}.
+   */
+  @TestFactory
+  Stream<DynamicTest>
+      should_deny_permission_absent_when_caller_without_permissions_invokes_guarded_handler() {
+    List<HandlerMethod> guardedHandlers =
+        handlerMapping.getHandlerMethods().values().stream()
+            .filter(EndpointClassificationWebTest::isProductionHandler)
+            .filter(handler -> AnnotatedElementUtils.hasAnnotation(
+                handler.getMethod(), RequiresPermission.class))
+            .distinct()
+            .toList();
+    assertThat(guardedHandlers).as("production @RequiresPermission handlers").isNotEmpty();
+    return guardedHandlers.stream()
+        .map(handler -> DynamicTest.dynamicTest(
+            handler.getBeanType().getSimpleName() + "." + handler.getMethod().getName(),
+            () -> assertDeniedWithoutPermissions(handler)));
   }
 
   @Test
@@ -715,6 +789,64 @@ class EndpointClassificationWebTest {
       request.contentType(MediaType.APPLICATION_JSON).content("{}");
     }
     return mvc.perform(request).andReturn().getResponse();
+  }
+
+  private MockHttpServletResponse performAs(Endpoint endpoint, Authentication caller)
+      throws Exception {
+    MockHttpServletRequestBuilder request =
+        request(HttpMethod.valueOf(endpoint.method().name()), endpoint.uri())
+            .with(authentication(caller));
+    if (METHODS_WITH_BODY.contains(endpoint.method())) {
+      request.contentType(MediaType.APPLICATION_JSON).content("{}");
+    }
+    return mvc.perform(request).andReturn().getResponse();
+  }
+
+  /**
+   * A signed-in caller holding no permission, shaped like the {@code Authentication} that {@code
+   * JwtAuthenticationFilter} builds (UUID subject, tenant, token version, empty permissions).
+   */
+  private static Authentication authenticatedWithoutPermissions() {
+    UsernamePasswordAuthenticationToken caller =
+        UsernamePasswordAuthenticationToken.authenticated(
+            NO_PERMISSION_SUBJECT, null, List.of());
+    caller.setDetails(Map.of(
+        AuthenticationDetailKeys.TENANT_ID, NO_PERMISSION_TENANT,
+        AuthenticationDetailKeys.EMAIL_VERIFIED, true,
+        AuthenticationDetailKeys.TOKEN_VERSION, 2,
+        AuthenticationDetailKeys.PERMISSIONS, List.of()));
+    return caller;
+  }
+
+  private static void assertDeniedWithoutPermissions(HandlerMethod handler) {
+    Method method = handler.getMethod();
+    String required =
+        AnnotatedElementUtils.findMergedAnnotation(method, RequiresPermission.class).value();
+    Object bean = handler.createWithResolvedBean().getBean();
+    ReflectionUtils.makeAccessible(method);
+    SecurityContext context = SecurityContextHolder.createEmptyContext();
+    context.setAuthentication(authenticatedWithoutPermissions());
+    SecurityContextHolder.setContext(context);
+    try {
+      assertThatThrownBy(() -> method.invoke(bean, placeholderArguments(method)))
+          .as("%s invoked on bean %s by a caller with no permission",
+              handler, bean.getClass().getName())
+          .isInstanceOf(InvocationTargetException.class)
+          .cause()
+          .isInstanceOfSatisfying(InsufficientPermissionException.class, denied -> {
+            assertThat(denied.getRequiredPermission()).isEqualTo(required);
+            assertThat(denied.getReason()).isEqualTo(DenialReason.PERMISSION_ABSENT);
+          });
+    } finally {
+      SecurityContextHolder.clearContext();
+    }
+  }
+
+  /** Null for each reference parameter and the default value for each primitive one. */
+  private static Object[] placeholderArguments(Method method) {
+    return Arrays.stream(method.getParameterTypes())
+        .map(type -> type.isPrimitive() ? Array.get(Array.newInstance(type, 1), 0) : null)
+        .toArray();
   }
 
   /** The response written by {@code SecurityConfig.jwtAuthenticationEntryPoint}. */

@@ -1,6 +1,7 @@
 package com.example.nexus.identity.infrastructure.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.Mockito.mock;
 
 import com.example.nexus.identity.interfaces.rest.JwksController;
@@ -13,6 +14,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.server.RequestPath;
@@ -76,6 +78,37 @@ class PublicEndpointRequestMatcherTest {
     request.setContextPath("/not-a-prefix");
 
     assertThat(matcher().matches(request)).isFalse();
+  }
+
+  @Test
+  void should_not_match_when_condition_evaluation_throws_after_path_is_parsed() {
+    assertThat(matcher().matches(requestWhoseMethodThrows(LOGIN))).isFalse();
+  }
+
+  @Test
+  void should_leave_no_cached_request_path_when_condition_evaluation_throws() {
+    // Precondition: the path itself parses, so matches() caches it before evaluation throws.
+    assertThatCode(() -> ServletRequestPathUtils.parseAndCache(requestWhoseMethodThrows(LOGIN)))
+        .doesNotThrowAnyException();
+    MockHttpServletRequest request = requestWhoseMethodThrows(LOGIN);
+
+    matcher().matches(request);
+
+    assertThat(request.getAttribute(ServletRequestPathUtils.PATH_ATTRIBUTE)).isNull();
+  }
+
+  // Each request addresses no handler under MVC dispatch, so none may be public (fail closed).
+  @ParameterizedTest
+  @CsvSource({
+    "POST, /api/v1/auth/login/",
+    "POST, /API/V1/AUTH/LOGIN",
+    "POST, /api/v1//auth/login",
+    "post, /api/v1/auth/login",
+    "PROPFIND, /api/v1/auth/login"
+  })
+  void should_not_match_when_request_is_not_canonical_public_method_and_path(
+      String method, String path) {
+    assertThat(matcher().matches(request(method, path))).isFalse();
   }
 
   @Test
@@ -220,6 +253,19 @@ class PublicEndpointRequestMatcherTest {
 
   private static MockHttpServletRequest request(String method, String uri) {
     return new MockHttpServletRequest(method, uri);
+  }
+
+  /**
+   * A request whose path parses, but whose {@code getMethod()} throws: the method condition reads
+   * it, so evaluation fails after {@code parseAndCache} has cached the parsed path.
+   */
+  private static MockHttpServletRequest requestWhoseMethodThrows(String uri) {
+    return new MockHttpServletRequest("POST", uri) {
+      @Override
+      public String getMethod() {
+        throw new IllegalStateException("fixture: method unavailable");
+      }
+    };
   }
 
   private static MockHttpServletRequest preflight(String uri, String requestedMethod) {
