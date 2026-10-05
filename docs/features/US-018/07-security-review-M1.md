@@ -107,3 +107,19 @@ Pre-existing, outside the diff and not counted: 1 Medium (P-1), 1 Low (P-2).
 - **Public patterns:** nothing stops a broad `@PublicEndpoint` pattern (`/**`, `{*rest}`), the third T-E45 vector; consider a rule that `@PublicEndpoint` patterns are literal.
 - **Remaining gaps by design:** identifiers inside `@RequestBody` on `@AuthenticatedEndpoint` (accepted in D-8) and `@AuthenticatedEndpoint` declared only on a supertype not being checked for the implementation's parameters (accepted known limit); both stay review-only.
 - **Before M9:** land F-1, and ideally F-2 and F-3, so the C1/C3 handlers are added under complete controls.
+
+## Resolution (2026-10-05)
+
+F-1 to F-5 fixed in a follow-up commit; test code, Javadoc and `09-technical.md` only (D-8 updated, D-11 to D-14 added). Verified by the gate only; no second fresh-context security review has been run.
+
+| Finding | Resolution |
+|---|---|
+| F-1 | New ArchUnit rule `no_handlers_outside_annotated_controllers` (empty allowlist) forbids production use of `RouterFunction`, `HttpRequestHandler` and `mvc.Controller`. The web test pins the `HandlerMapping` bean types and what each holds; the silent `isProduction()` exclusion is replaced by `NON_PRODUCTION_HANDLER_ALLOWLIST` (each entry with a reason), and an unlisted handler type fails every sweep. |
+| F-2 | Static mapped methods are selected and always flagged; `@HttpExchange` counts as a mapping; the public/non-final rule also requires non-static. |
+| F-3 | New rule `requires_permission_overrides_must_be_proxyable`: a concrete override of a `@RequiresPermission` supertype or interface method must be public, non-final, non-static, in a non-final class. |
+| F-4 | `@RequestHeader` and `@CookieValue` banned on `@AuthenticatedEndpoint`; allowed framework parameter types narrowed to `Principal` and `ServletResponse` (`ServletRequest` dropped). |
+| F-5 | New sweep over each `permitAll` entry × 7 HTTP methods through the ordered `HandlerMapping`s; the first handler must be absent, `@PublicEndpoint` or allowlisted. The `permitAll` list is a labelled test mirror (`PERMIT_ALL_PATTERNS`) with a two-way drift guard against the chain's own `AuthorizationManager`; a nested probe with `@AuthenticatedEndpoint @GetMapping("/api/v1/auth/{action}")` proves the sweep fires. The root cause (path-only `permitAll`) stays for T-009. |
+
+Left open on purpose: I-1 (`GuardedTestController` Javadoc, unrelated file), I-2 (fail-closed counter, T-009), P-1 and P-2 (pre-existing, separate tickets).
+
+Gate after fixes (JDK 25, enforcer active, Docker up): `./mvnw verify` — 1402 unit tests (1 skipped), 353 ITs, 0 failures; 0 Checkstyle violations; SpotBugs 0; JaCoCo met.

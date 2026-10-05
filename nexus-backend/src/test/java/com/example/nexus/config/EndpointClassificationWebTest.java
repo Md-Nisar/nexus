@@ -2,6 +2,7 @@ package com.example.nexus.config;
 
 import static java.util.stream.Collectors.toUnmodifiableSet;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.request;
 
@@ -16,6 +17,8 @@ import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.domain.JavaModifier;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
 import java.lang.annotation.Annotation;
 import java.net.URI;
 import java.util.ArrayList;
@@ -23,11 +26,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.UUID;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
@@ -45,7 +50,15 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.http.server.PathContainer;
 import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.security.authentication.AnonymousAuthenticationToken;
+import org.springframework.security.authorization.AuthorizationManager;
+import org.springframework.security.authorization.AuthorizationResult;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.authority.AuthorityUtils;
+import org.springframework.security.web.FilterChainProxy;
+import org.springframework.security.web.access.intercept.AuthorizationFilter;
 import org.springframework.stereotype.Controller;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -59,10 +72,17 @@ import org.springframework.web.context.WebApplicationContext;
 import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.servlet.HandlerExecutionChain;
 import org.springframework.web.servlet.HandlerMapping;
+import org.springframework.web.servlet.function.support.RouterFunctionMapping;
+import org.springframework.web.servlet.handler.AbstractHandlerMethodMapping;
+import org.springframework.web.servlet.handler.AbstractUrlHandlerMapping;
+import org.springframework.web.servlet.handler.BeanNameUrlHandlerMapping;
+import org.springframework.web.servlet.handler.SimpleUrlHandlerMapping;
 import org.springframework.web.servlet.mvc.method.RequestMappingInfo;
 import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping;
+import org.springframework.web.servlet.resource.ResourceHttpRequestHandler;
 import org.springframework.web.util.ServletRequestPathUtils;
 import org.springframework.web.util.UriTemplate;
+import org.springframework.web.util.pattern.PathPatternParser;
 
 /**
  * Runtime drift guard between the access markers and {@link SecurityConfig} (US-018 A8, design
@@ -83,17 +103,27 @@ import org.springframework.web.util.UriTemplate;
  * instance}).
  *
  * <p>The sweeps are limited to production handlers, those whose bean type is a main-source class
- * (any class, not only {@code @RestController}s): the handler mapping also holds springdoc's and
- * Spring Boot's handlers, and the test-only fixture below. The completeness sweep asserts that
- * every production handler carries exactly one access marker as Spring resolves it; the anonymous
- * sweep checks the public ones against {@link SecurityConfig} and against the ordered handler
- * mappings {@code DispatcherServlet} consults.
+ * (any class, not only {@code @RestController}s). Every other handler type must be named in
+ * {@link #NON_PRODUCTION_HANDLER_ALLOWLIST} with a reason (springdoc, Spring Boot, the test-only
+ * fixtures); an unlisted one fails the sweeps (security review F-1). The completeness sweep
+ * asserts that every production handler carries exactly one access marker as Spring resolves it;
+ * the anonymous sweep checks the public ones against {@link SecurityConfig} and against the
+ * ordered handler mappings {@code DispatcherServlet} consults. {@link #HANDLER_MAPPING_TYPES} pins
+ * the handler mappings themselves, so a handler that {@code requestMappingHandlerMapping} does not
+ * serve (a functional endpoint, a bean-name handler) cannot escape the sweeps.
+ *
+ * <p>The {@code permitAll} sweep (security review F-5) sends every HTTP method to each path of
+ * {@link #PERMIT_ALL_PATTERNS}, the test-side mirror of {@code SecurityConfig}'s list, because
+ * {@code permitAll} matches on path only: a non-public pattern that also matches a permitted
+ * literal would be reachable anonymously while the per-pattern sweeps stay green. A drift guard
+ * keeps the mirror in step with the configured chain, and {@link PermitAllOverlapProbe} proves the
+ * sweep fails for such a handler.
  *
  * <p>The matcher sweep checks {@link PublicEndpointRequestMatcher} against every mapping. The
  * fixture {@link SamePathOtherMethodController} maps {@code GET} on the public refresh pattern;
  * it is kept out of the anonymous sweep because {@code permitAll} matches on path only, so it is
- * reachable anonymously today. That is outside this test's scope: the fixture proves the matcher
- * does not repeat it.
+ * reachable anonymously today (it is allowlisted, and so accepted by the {@code permitAll}
+ * sweep, for that reason). The fixture proves the matcher does not repeat it.
  */
 @SpringBootTest(
     webEnvironment = WebEnvironment.MOCK,
@@ -123,6 +153,105 @@ class EndpointClassificationWebTest {
       Set.of(RequestMethod.POST, RequestMethod.PUT, RequestMethod.PATCH);
   private static final List<Class<? extends Annotation>> ACCESS_MARKERS =
       List.of(RequiresPermission.class, AuthenticatedEndpoint.class, PublicEndpoint.class);
+
+  /** The HTTP methods swept on each {@code permitAll} path (Tomcat rejects TRACE by default). */
+  private static final List<RequestMethod> ALL_METHODS =
+      List.of(RequestMethod.GET, RequestMethod.HEAD, RequestMethod.POST, RequestMethod.PUT,
+          RequestMethod.PATCH, RequestMethod.DELETE, RequestMethod.OPTIONS);
+
+  /** Fills path variables and wildcards of probe paths; fixed, so test names are stable. */
+  private static final String PROBE_SEGMENT = "5f0c2d1e-9a7b-4c3d-8e6f-0a1b2c3d4e5f";
+
+  private static final Authentication ANONYMOUS =
+      new AnonymousAuthenticationToken(
+          "endpoint-classification", "anonymousUser",
+          AuthorityUtils.createAuthorityList("ROLE_ANONYMOUS"));
+
+  /**
+   * Test-side mirror of the {@code permitAll} list in {@code SecurityConfig.apiSecurity} (security
+   * review F-5), in the same order. Spring Security exposes the configured matchers through no
+   * public API (they sit in private fields of {@code RequestMatcherDelegatingAuthorizationManager},
+   * behind {@code ObservationAuthorizationManager}), so the list is copied rather than read by
+   * reflection, and {@link #should_permit_anonymous_request_only_when_path_is_on_permit_all_list}
+   * fails as soon as the copy and the configured chain disagree in either direction. Change both
+   * together; a pattern with a wildcard other than a trailing {@code /**} fails {@link
+   * #samplePaths} until that method can sample it.
+   */
+  private static final List<String> PERMIT_ALL_PATTERNS =
+      List.of(
+          "/actuator/health/**", "/actuator/info",
+          "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html",
+          "/api/v1/auth/register", "/api/v1/auth/verify-email",
+          "/api/v1/auth/resend-verification",
+          "/api/v1/auth/login", "/api/v1/auth/refresh", "/api/v1/auth/logout",
+          "/api/v1/auth/password/forgot", "/api/v1/auth/password/reset",
+          "/.well-known/jwks.json");
+
+  /**
+   * {@code HandlerMapping} bean types this context may hold (security review F-1), each with what
+   * it may serve. Only {@code requestMappingHandlerMapping} may hold main-source handlers, and
+   * every sweep reads it; {@link #should_hold_only_reviewed_handlers_when_handler_mapping_is_registered}
+   * checks that the others stay empty or framework-only. A new mapping type fails {@link
+   * #should_register_only_reviewed_handler_mapping_types_when_context_starts} until it is
+   * reviewed and listed here with a reason.
+   */
+  private static final Set<String> HANDLER_MAPPING_TYPES =
+      Set.of(
+          // Annotated controllers: the only mapping allowed to hold main-source handlers.
+          RequestMappingHandlerMapping.class.getName(),
+          // Actuator operations under /actuator (exposure: management.endpoints.web.exposure,
+          // outside A8, security review P-2) and health groups on additional paths (none here).
+          "org.springframework.boot.webmvc.actuate.endpoint.web.WebMvcEndpointHandlerMapping",
+          "org.springframework.boot.webmvc.actuate.endpoint.web"
+              + ".AdditionalHealthEndpointPathsWebMvcHandlerMapping",
+          // Actuator @ControllerEndpoint beans: may hold no main-source handler (none today).
+          "org.springframework.boot.webmvc.actuate.endpoint.web.ControllerEndpointHandlerMapping",
+          // Functional endpoints: must have no RouterFunction; HexagonalArchitectureTest
+          // .no_handlers_outside_annotated_controllers bans one in production code.
+          RouterFunctionMapping.class.getName(),
+          // HttpRequestHandler / mvc.Controller beans named "/...": must stay empty (same rule).
+          BeanNameUrlHandlerMapping.class.getName(),
+          // Static resources (spring.web.resources, springdoc's swagger-ui assets) only.
+          SimpleUrlHandlerMapping.class.getName(),
+          // Welcome page (index.html or an index template): there is none, so both stay empty.
+          "org.springframework.boot.webmvc.autoconfigure.WelcomePageHandlerMapping",
+          "org.springframework.boot.webmvc.autoconfigure.WelcomePageNotAcceptableHandlerMapping");
+
+  /**
+   * Handler types that are not main-source classes and may be registered: the sweeps leave them
+   * out on purpose, for the reason given. Any other non-production handler type fails the sweeps
+   * (security review F-1). Never add a main-source class; add an entry only with a reason and
+   * security-reviewer sign-off.
+   */
+  private static final Set<String> NON_PRODUCTION_HANDLER_ALLOWLIST =
+      Set.of(
+          // springdoc: the OpenAPI document (JSON, YAML) and the UI's config; permitAll in
+          // SecurityConfig, and springdoc.api-docs.enabled=false in the prod profile.
+          "org.springdoc.webmvc.api.OpenApiWebMvcResource",
+          "org.springdoc.webmvc.ui.SwaggerConfigResource",
+          // springdoc: /swagger-ui.html, a redirect to the UI's static resources.
+          "org.springdoc.webmvc.ui.SwaggerWelcomeWebMvc",
+          // Spring Boot: /error renders the failed request's error attributes; not an API handler.
+          "org.springframework.boot.webmvc.autoconfigure.error.BasicErrorController",
+          // Spring Boot actuator: endpoint operations and the /actuator links page (exposure is
+          // management.endpoints.web.exposure, outside A8: security review P-2).
+          "org.springframework.boot.webmvc.actuate.endpoint.web"
+              + ".AbstractWebMvcEndpointHandlerMapping$OperationHandler",
+          "org.springframework.boot.webmvc.actuate.endpoint.web"
+              + ".WebMvcEndpointHandlerMapping$WebMvcLinksHandler",
+          // Spring MVC: static classpath resources (/**, /webjars/**, swagger-ui assets); runs no
+          // application code.
+          ResourceHttpRequestHandler.class.getName(),
+          // Spring MVC: answers a plain OPTIONS with the Allow header of the matching mappings;
+          // invokes no controller.
+          "org.springframework.web.servlet.mvc.method.RequestMappingInfoHandlerMapping"
+              + "$HttpOptionsHandler",
+          // Test sources: component-scanned into every @SpringBootTest context (security review
+          // I-1), never packaged; its handlers prove @RequiresPermission enforcement.
+          "com.example.nexus.support.web.GuardedTestController",
+          // This class's matcher fixture, imported only here. GET on the refresh path, so it is
+          // reachable anonymously while permitAll is path-only (see the class Javadoc).
+          SamePathOtherMethodController.class.getName());
 
   /**
    * Every main-source class under {@code com.example.nexus}: the same import scope as the ArchUnit
@@ -213,7 +342,7 @@ class EndpointClassificationWebTest {
   Stream<DynamicTest> should_carry_exactly_one_access_marker_when_handler_is_production() {
     List<HandlerMethod> productionHandlers =
         handlerMapping.getHandlerMethods().values().stream()
-            .filter(handler -> PRODUCTION_CLASS_NAMES.contains(handler.getBeanType().getName()))
+            .filter(EndpointClassificationWebTest::isProductionHandler)
             .toList();
     assertThat(productionHandlers).as("production handlers").isNotEmpty();
     return productionHandlers.stream()
@@ -254,12 +383,7 @@ class EndpointClassificationWebTest {
    */
   @TestFactory
   Stream<DynamicTest> should_dispatch_to_public_handler_when_resolved_through_ordered_mappings() {
-    List<HandlerMapping> orderedMappings =
-        new ArrayList<>(
-            BeanFactoryUtils.beansOfTypeIncludingAncestors(
-                    context, HandlerMapping.class, true, false)
-                .values());
-    AnnotationAwareOrderComparator.sort(orderedMappings);
+    List<HandlerMapping> orderedMappings = orderedHandlerMappings(context);
     return dynamicTests(
         publicProductionEndpoints(),
         endpoint -> {
@@ -288,6 +412,78 @@ class EndpointClassificationWebTest {
                   endpoint, ENTRY_POINT_CODE, response.getStatus(), response.getContentAsString())
               .isTrue();
         });
+  }
+
+  @Test
+  void should_register_only_reviewed_handler_mapping_types_when_context_starts() {
+    assertThat(orderedHandlerMappings(context))
+        .extracting(mapping -> mapping.getClass().getName())
+        .as("HandlerMapping bean types (review a new one, then list it in HANDLER_MAPPING_TYPES)")
+        .isNotEmpty()
+        .allMatch(HANDLER_MAPPING_TYPES::contains);
+  }
+
+  /**
+   * Security review F-1: what each handler mapping holds. Functional endpoints and bean-name
+   * handlers are absent, URL mappings serve static resources only, and a main-source handler is
+   * registered only in {@code requestMappingHandlerMapping}, the mapping every sweep reads.
+   */
+  @TestFactory
+  Stream<DynamicTest> should_hold_only_reviewed_handlers_when_handler_mapping_is_registered() {
+    return orderedHandlerMappings(context).stream()
+        .map(mapping -> DynamicTest.dynamicTest(
+            mapping.getClass().getSimpleName(), () -> assertReviewedHandlers(mapping)));
+  }
+
+  @Test
+  void should_not_allowlist_production_type_when_handler_is_non_production() {
+    assertThat(NON_PRODUCTION_HANDLER_ALLOWLIST)
+        .as("NON_PRODUCTION_HANDLER_ALLOWLIST entries that are main-source classes")
+        .doesNotContainAnyElementsOf(PRODUCTION_CLASS_NAMES);
+  }
+
+  /**
+   * Drift guard for {@link #PERMIT_ALL_PATTERNS} (security review F-5). It asks the configured
+   * chain's own {@code AuthorizationManager}, the one {@code AuthorizationFilter} consults, about
+   * an anonymous caller: for every path of every handler mapping, each sample of the mirror, and
+   * the sibling and child of each entry, every HTTP method must be granted exactly when a mirror
+   * entry matches the path. A {@code permitAll} entry added, removed or widened in {@code
+   * SecurityConfig} without the mirror fails here.
+   */
+  @TestFactory
+  Stream<DynamicTest> should_permit_anonymous_request_only_when_path_is_on_permit_all_list() {
+    AuthorizationManager<HttpServletRequest> authorization = authorizationManager(context);
+    return driftProbePaths().stream()
+        .map(path -> DynamicTest.dynamicTest(path, () -> {
+          boolean listed = PERMIT_ALL_PATTERNS.stream()
+              .anyMatch(pattern -> PathPatternParser.defaultInstance.parse(pattern)
+                  .matches(PathContainer.parsePath(path)));
+          List<String> mismatches = ALL_METHODS.stream()
+              .filter(method -> isGrantedAnonymously(authorization, method, path) != listed)
+              .map(method -> method + " " + path)
+              .toList();
+          assertThat(mismatches)
+              .as("anonymous access differs from PERMIT_ALL_PATTERNS (on the list: %s); change "
+                  + "the mirror together with SecurityConfig", listed)
+              .isEmpty();
+        }));
+  }
+
+  /**
+   * Security review F-5: {@code permitAll} matches on path only, so every HTTP method on every
+   * {@code permitAll} path is resolved the way {@code DispatcherServlet} resolves it (ordered
+   * handler mappings) and must reach no handler, a {@code @PublicEndpoint} handler, or an
+   * allowlisted non-production handler. A non-public pattern such as {@code
+   * /api/v1/auth/{action}} that also matches a permitted literal fails here.
+   */
+  @TestFactory
+  Stream<DynamicTest> should_reach_only_public_handler_when_request_hits_permit_all_path() {
+    List<HandlerMapping> orderedMappings = orderedHandlerMappings(context);
+    return permitAllSamplePaths().stream()
+        .map(path -> DynamicTest.dynamicTest(path, () ->
+            assertThat(permitAllDispatchViolations(orderedMappings, path))
+                .as("methods on permitAll path %s that reach a non-public handler", path)
+                .isEmpty()));
   }
 
   @TestFactory
@@ -329,15 +525,187 @@ class EndpointClassificationWebTest {
     return endpoints(Endpoint::isProduction).stream().filter(Endpoint::isPublic).toList();
   }
 
+  /**
+   * The handler {@code DispatcherServlet} would invoke, or {@code null} when no mapping returns
+   * one or the first mapping that matches the path rejects the request ({@code
+   * HttpRequestMethodNotSupportedException} and the other {@code ServletException}s a mapping
+   * throws become a 4xx error response before any handler runs).
+   */
   private static Object firstHandler(List<HandlerMapping> orderedMappings,
       MockHttpServletRequest request) throws Exception {
     for (HandlerMapping mapping : orderedMappings) {
-      HandlerExecutionChain chain = mapping.getHandler(request);
+      HandlerExecutionChain chain;
+      try {
+        chain = mapping.getHandler(request);
+      } catch (ServletException rejected) {
+        return null;
+      }
       if (chain != null) {
         return chain.getHandler();
       }
     }
     return null;
+  }
+
+  private static List<HandlerMapping> orderedHandlerMappings(WebApplicationContext context) {
+    List<HandlerMapping> orderedMappings =
+        new ArrayList<>(
+            BeanFactoryUtils.beansOfTypeIncludingAncestors(
+                    context, HandlerMapping.class, true, false)
+                .values());
+    AnnotationAwareOrderComparator.sort(orderedMappings);
+    return orderedMappings;
+  }
+
+  private void assertReviewedHandlers(HandlerMapping mapping) {
+    switch (mapping) {
+      case RouterFunctionMapping functional ->
+          assertThat(functional.getRouterFunction()).as("functional endpoints").isNull();
+      case SimpleUrlHandlerMapping resources -> {
+        assertThat(resources.getHandlerMap().values())
+            .as("handlers of %s", resources)
+            .allMatch(ResourceHttpRequestHandler.class::isInstance);
+        assertThat(resources.getRootHandler()).as("root handler of %s", resources).isNull();
+      }
+      // BeanNameUrlHandlerMapping and the welcome-page mappings
+      case AbstractUrlHandlerMapping urls -> {
+        assertThat(urls.getHandlerMap()).as("handlers of %s", urls).isEmpty();
+        assertThat(urls.getRootHandler()).as("root handler of %s", urls).isNull();
+      }
+      case AbstractHandlerMethodMapping<?> methods ->
+          assertThat(methods.getHandlerMethods().values())
+              .as("handlers of %s: a main-source handler only in requestMappingHandlerMapping, "
+                  + "any other handler allowlisted", methods)
+              .allMatch(handler -> PRODUCTION_CLASS_NAMES.contains(handler.getBeanType().getName())
+                  ? methods == handlerMapping
+                  : NON_PRODUCTION_HANDLER_ALLOWLIST.contains(handler.getBeanType().getName()));
+      default -> fail("unreviewed HandlerMapping type %s", mapping.getClass().getName());
+    }
+  }
+
+  /**
+   * True for a main-source handler; false for an allowlisted non-production one. Any other
+   * handler fails the calling sweep instead of being left out silently (security review F-1).
+   */
+  private static boolean isProductionHandler(HandlerMethod handler) {
+    String beanType = handler.getBeanType().getName();
+    boolean production = PRODUCTION_CLASS_NAMES.contains(beanType);
+    assertThat(production || NON_PRODUCTION_HANDLER_ALLOWLIST.contains(beanType))
+        .as("handler %s is neither a main-source class nor in NON_PRODUCTION_HANDLER_ALLOWLIST",
+            handler)
+        .isTrue();
+    return production;
+  }
+
+  /**
+   * Each HTTP method on {@code path} whose first handler in {@code DispatcherServlet} order is
+   * neither absent, a {@code @PublicEndpoint} handler method, nor an allowlisted non-production
+   * handler, described as {@code "<METHOD> <path> -> <handler>"}.
+   */
+  private static List<String> permitAllDispatchViolations(
+      List<HandlerMapping> orderedMappings, String path) throws Exception {
+    List<String> violations = new ArrayList<>();
+    for (RequestMethod method : ALL_METHODS) {
+      MockHttpServletRequest request = new MockHttpServletRequest(method.name(), path);
+      if (METHODS_WITH_BODY.contains(method)) {
+        request.setContentType(MediaType.APPLICATION_JSON_VALUE);
+      }
+      ServletRequestPathUtils.parseAndCache(request);
+      Object handler = firstHandler(orderedMappings, request);
+      if (!mayServePermitAllPath(handler)) {
+        violations.add(method + " " + path + " -> " + describe(handler));
+      }
+    }
+    return violations;
+  }
+
+  private static boolean mayServePermitAllPath(Object handler) {
+    if (handler == null) {
+      return true;
+    }
+    if (handler instanceof HandlerMethod handlerMethod) {
+      return handlerMethod.hasMethodAnnotation(PublicEndpoint.class)
+          || isAllowlistedNonProduction(handlerMethod.getBeanType());
+    }
+    return isAllowlistedNonProduction(handler.getClass());
+  }
+
+  private static boolean isAllowlistedNonProduction(Class<?> handlerType) {
+    return !PRODUCTION_CLASS_NAMES.contains(handlerType.getName())
+        && NON_PRODUCTION_HANDLER_ALLOWLIST.contains(handlerType.getName());
+  }
+
+  private static String describe(Object handler) {
+    return handler instanceof HandlerMethod handlerMethod
+        ? handlerMethod.getBeanType().getSimpleName() + "." + handlerMethod.getMethod().getName()
+        : handler.getClass().getName();
+  }
+
+  private static AuthorizationManager<HttpServletRequest> authorizationManager(
+      WebApplicationContext context) {
+    List<AuthorizationManager<HttpServletRequest>> managers =
+        context.getBean(FilterChainProxy.class).getFilterChains().stream()
+            .flatMap(chain -> chain.getFilters().stream())
+            .filter(AuthorizationFilter.class::isInstance)
+            .map(filter -> ((AuthorizationFilter) filter).getAuthorizationManager())
+            .toList();
+    assertThat(managers).as("AuthorizationFilters in the security filter chains").hasSize(1);
+    return managers.get(0);
+  }
+
+  private static boolean isGrantedAnonymously(
+      AuthorizationManager<HttpServletRequest> authorization, RequestMethod method, String path) {
+    AuthorizationResult result =
+        authorization.authorize(() -> ANONYMOUS, new MockHttpServletRequest(method.name(), path));
+    return result != null && result.isGranted();
+  }
+
+  /** Request paths covering one {@code permitAll} pattern. */
+  private static List<String> samplePaths(String pattern) {
+    if (pattern.endsWith("/**")) {
+      String base = pattern.substring(0, pattern.length() - "/**".length());
+      return List.of(base, base + "/" + PROBE_SEGMENT);
+    }
+    assertThat(pattern)
+        .as("permitAll pattern with a wildcard other than a trailing /** (extend samplePaths)")
+        .doesNotContain("*", "{");
+    return List.of(pattern);
+  }
+
+  private static Set<String> permitAllSamplePaths() {
+    Set<String> paths = new TreeSet<>();
+    PERMIT_ALL_PATTERNS.forEach(pattern -> paths.addAll(samplePaths(pattern)));
+    return paths;
+  }
+
+  /**
+   * The {@code permitAll} samples, the sibling and child of each (they catch an entry widened to a
+   * wildcard), and every pattern of every handler-method mapping with its variables and
+   * wildcards filled.
+   */
+  private Set<String> driftProbePaths() {
+    Set<String> paths = new TreeSet<>(permitAllSamplePaths());
+    for (String sample : permitAllSamplePaths()) {
+      paths.add(sample + "/" + PROBE_SEGMENT);
+      paths.add(sample.substring(0, sample.lastIndexOf('/')) + "/" + PROBE_SEGMENT);
+    }
+    for (HandlerMapping mapping : orderedHandlerMappings(context)) {
+      if (mapping instanceof AbstractHandlerMethodMapping<?> methods) {
+        methods.getHandlerMethods().keySet().stream()
+            .filter(RequestMappingInfo.class::isInstance)
+            .flatMap(info -> ((RequestMappingInfo) info).getPatternValues().stream())
+            .map(EndpointClassificationWebTest::probePath)
+            .forEach(paths::add);
+      }
+    }
+    return paths;
+  }
+
+  private static String probePath(String pattern) {
+    UriTemplate template = new UriTemplate(pattern.replace("/**", "/" + PROBE_SEGMENT));
+    Map<String, String> variables = new HashMap<>();
+    template.getVariableNames().forEach(name -> variables.put(name, PROBE_SEGMENT));
+    return template.expand(variables).getRawPath();
   }
 
   private MockHttpServletResponse performAnonymously(Endpoint endpoint) throws Exception {
@@ -405,7 +773,7 @@ class EndpointClassificationWebTest {
     }
 
     boolean isProduction() {
-      return PRODUCTION_CLASS_NAMES.contains(handler.getBeanType().getName());
+      return isProductionHandler(handler);
     }
 
     MockHttpServletRequest servletRequest() {
@@ -434,6 +802,49 @@ class EndpointClassificationWebTest {
     @Bean
     SamePathOtherMethodController samePathOtherMethodController() {
       return new SamePathOtherMethodController();
+    }
+  }
+
+  // ── probe: a non-public pattern that matches permitAll literals (F-5) ──────
+
+  /**
+   * Proves {@link #should_reach_only_public_handler_when_request_hits_permit_all_path} fails for
+   * the security review F-5 case. This dedicated context is the sweep context plus {@link
+   * AuthSegmentProbeController}, whose authenticated-only {@code GET /api/v1/auth/{action}} binds
+   * no identifier (so it passes the ArchUnit rules) and gets the entry-point 401 for the
+   * per-pattern sweep's {@code /api/v1/auth/<uuid>}, yet serves anonymous {@code GET
+   * /api/v1/auth/login}. The probe is imported only here, never into the sweep context: it is
+   * imported as a plain class because Spring Boot adds every static nested {@code
+   * @TestConfiguration} of a test class to that class's own context.
+   */
+  @Nested
+  @Import(AuthSegmentProbeController.class)
+  class PermitAllOverlapProbe {
+
+    @Autowired private WebApplicationContext probeContext;
+
+    @Test
+    void should_report_permit_all_violation_when_non_public_pattern_matches_public_literal()
+        throws Exception {
+      List<HandlerMapping> orderedMappings = orderedHandlerMappings(probeContext);
+      List<String> violations = new ArrayList<>();
+      for (String path : permitAllSamplePaths()) {
+        violations.addAll(permitAllDispatchViolations(orderedMappings, path));
+      }
+      String probe = " -> " + AuthSegmentProbeController.class.getSimpleName() + ".segment";
+
+      assertThat(violations)
+          .contains("GET /api/v1/auth/login" + probe, "HEAD /api/v1/auth/login" + probe)
+          .allMatch(violation -> violation.endsWith(probe));
+    }
+  }
+
+  @RestController
+  static class AuthSegmentProbeController {
+    @GetMapping("/api/v1/auth/{action}")
+    @AuthenticatedEndpoint
+    public String segment(Authentication authentication) {
+      return "probe: never invoked; only its mapping matters";
     }
   }
 }

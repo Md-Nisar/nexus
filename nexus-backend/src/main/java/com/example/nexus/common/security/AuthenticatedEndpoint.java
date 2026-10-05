@@ -15,10 +15,12 @@ import java.lang.annotation.Target;
  * read or change the caller's own data, addressed through the authenticated principal.
  *
  * <p>{@code HexagonalArchitectureTest} turns "own data only" into a build rule: a handler carrying
- * this annotation binds no identifier from the request URL. It declares no {@code @PathVariable},
- * {@code @RequestParam}, {@code @ModelAttribute} or {@code @MatrixVariable} of any type (String
- * included), no {@code UUID}-typed parameter, and no unannotated parameter that MVC would bind
- * implicitly. Identifiers inside a {@code @RequestBody} are not covered by the rule. An endpoint
+ * this annotation binds no caller-chosen identifier from the request. It declares no {@code
+ * @PathVariable}, {@code @RequestParam}, {@code @ModelAttribute}, {@code @MatrixVariable}, {@code
+ * @RequestHeader} or {@code @CookieValue} of any type (String included), no {@code UUID}-typed
+ * parameter, no {@code ServletRequest} ({@code HttpServletRequest}) parameter, and no unannotated
+ * parameter that MVC would bind implicitly. Identifiers inside a {@code @RequestBody} are not
+ * covered by the rule. An endpoint
  * that takes an identifier of another resource must use {@link RequiresPermission} instead.
  *
  * <p>Every handler of a controller, including mappings inherited from a base class or declared on

@@ -17,15 +17,23 @@ import org.junit.jupiter.api.Test;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.stereotype.Controller;
+import org.springframework.web.HttpRequestHandler;
+import org.springframework.web.bind.annotation.CookieValue;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.MatrixVariable;
 import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.service.annotation.GetExchange;
+import org.springframework.web.servlet.ModelAndView;
+import org.springframework.web.servlet.function.RouterFunction;
+import org.springframework.web.servlet.function.RouterFunctions;
+import org.springframework.web.servlet.function.ServerResponse;
 
 /**
  * Proves that each US-018 A8 rule in {@link HexagonalArchitectureTest} fires (design §3.4): every
@@ -106,12 +114,152 @@ class AccessMarkerRuleFixturesTest {
   }
 
   @Test
+  void should_fail_marker_rule_when_static_handler_carries_requires_permission() {
+    JavaClasses fixture = new ClassFileImporter().importClasses(StaticGuardedController.class);
+
+    assertThatThrownBy(
+            () -> HexagonalArchitectureTest.rest_handlers_must_carry_exactly_one_access_marker
+                .check(fixture))
+        .isInstanceOf(AssertionError.class)
+        .hasMessageContaining(StaticGuardedController.class.getName() + ".handler()")
+        .hasMessageContaining("static handler method");
+  }
+
+  @Test
+  void should_fail_marker_rule_when_static_handler_has_no_marker() {
+    JavaClasses fixture = new ClassFileImporter().importClasses(StaticUnmarkedController.class);
+
+    assertThatThrownBy(
+            () -> HexagonalArchitectureTest.rest_handlers_must_carry_exactly_one_access_marker
+                .check(fixture))
+        .isInstanceOf(AssertionError.class)
+        .hasMessageContaining(StaticUnmarkedController.class.getName() + ".handler()")
+        .hasMessageContaining("static handler method");
+  }
+
+  @Test
+  void should_fail_marker_rule_when_http_exchange_handler_has_no_marker() {
+    JavaClasses fixture = new ClassFileImporter().importClasses(HttpExchangeController.class);
+
+    assertThatThrownBy(
+            () -> HexagonalArchitectureTest.rest_handlers_must_carry_exactly_one_access_marker
+                .check(fixture))
+        .isInstanceOf(AssertionError.class)
+        .hasMessageContaining(HttpExchangeController.class.getName() + ".handler()")
+        .hasMessageContaining("no access marker");
+  }
+
+  @Test
   void should_pass_marker_rule_when_interface_declares_mapping_and_marker() {
     JavaClasses fixture =
         new ClassFileImporter().importClasses(MarkedInterfaceController.class, MarkedApi.class);
 
     assertThatCode(
             () -> HexagonalArchitectureTest.rest_handlers_must_carry_exactly_one_access_marker
+                .check(fixture))
+        .doesNotThrowAnyException();
+  }
+
+  // ── requires_permission_methods_must_be_public_and_non_final ───────────────
+
+  @Test
+  void should_fail_public_non_final_rule_when_requires_permission_method_is_static() {
+    JavaClasses fixture = new ClassFileImporter().importClasses(StaticGuardedController.class);
+
+    assertThatThrownBy(
+            () -> HexagonalArchitectureTest.requires_permission_methods_must_be_public_and_non_final
+                .check(fixture))
+        .isInstanceOf(AssertionError.class)
+        .hasMessageContaining(StaticGuardedController.class.getName() + ".handler()")
+        .hasMessageContaining("STATIC");
+  }
+
+  // ── requires_permission_overrides_must_be_proxyable ────────────────────────
+
+  @Test
+  void should_fail_override_rule_when_implementation_of_guarded_interface_method_is_final() {
+    JavaClasses fixture =
+        new ClassFileImporter()
+            .importClasses(FinalOverrideController.class, GuardedHandlerApi.class);
+
+    assertThatThrownBy(
+            () -> HexagonalArchitectureTest.requires_permission_overrides_must_be_proxyable
+                .check(fixture))
+        .isInstanceOf(AssertionError.class)
+        .hasMessageContaining(FinalOverrideController.class.getName() + ".handler()")
+        .hasMessageContaining("is final");
+  }
+
+  @Test
+  void should_fail_override_rule_when_class_implementing_guarded_interface_method_is_final() {
+    JavaClasses fixture =
+        new ClassFileImporter()
+            .importClasses(FinalClassOverrideController.class, GuardedHandlerApi.class);
+
+    assertThatThrownBy(
+            () -> HexagonalArchitectureTest.requires_permission_overrides_must_be_proxyable
+                .check(fixture))
+        .isInstanceOf(AssertionError.class)
+        .hasMessageContaining(FinalClassOverrideController.class.getName() + ".handler()")
+        .hasMessageContaining("final class");
+  }
+
+  @Test
+  void should_pass_override_rule_when_implementation_of_guarded_interface_method_is_proxyable() {
+    JavaClasses fixture =
+        new ClassFileImporter()
+            .importClasses(ProxyableOverrideController.class, GuardedHandlerApi.class);
+
+    assertThatCode(
+            () -> HexagonalArchitectureTest.requires_permission_overrides_must_be_proxyable
+                .check(fixture))
+        .doesNotThrowAnyException();
+  }
+
+  // ── no_handlers_outside_annotated_controllers ──────────────────────────────
+
+  @Test
+  void should_fail_handler_type_rule_when_class_declares_router_function() {
+    JavaClasses fixture = new ClassFileImporter().importClasses(RouterFunctionConfig.class);
+
+    assertThatThrownBy(
+            () -> HexagonalArchitectureTest.no_handlers_outside_annotated_controllers
+                .check(fixture))
+        .isInstanceOf(AssertionError.class)
+        .hasMessageContaining(RouterFunctionConfig.class.getName())
+        .hasMessageContaining(RouterFunction.class.getName());
+  }
+
+  @Test
+  void should_fail_handler_type_rule_when_class_implements_http_request_handler() {
+    JavaClasses fixture = new ClassFileImporter().importClasses(BeanNameRequestHandler.class);
+
+    assertThatThrownBy(
+            () -> HexagonalArchitectureTest.no_handlers_outside_annotated_controllers
+                .check(fixture))
+        .isInstanceOf(AssertionError.class)
+        .hasMessageContaining(BeanNameRequestHandler.class.getName())
+        .hasMessageContaining(HttpRequestHandler.class.getName());
+  }
+
+  @Test
+  void should_fail_handler_type_rule_when_class_implements_mvc_controller() {
+    JavaClasses fixture = new ClassFileImporter().importClasses(LegacyMvcController.class);
+
+    assertThatThrownBy(
+            () -> HexagonalArchitectureTest.no_handlers_outside_annotated_controllers
+                .check(fixture))
+        .isInstanceOf(AssertionError.class)
+        .hasMessageContaining(LegacyMvcController.class.getName())
+        .hasMessageContaining(org.springframework.web.servlet.mvc.Controller.class.getName());
+  }
+
+  @Test
+  void should_pass_handler_type_rule_when_class_is_annotated_controller() {
+    JavaClasses fixture = new ClassFileImporter().importClasses(MarkedInterfaceController.class);
+
+    assertThatCode(
+            () -> HexagonalArchitectureTest.no_handlers_outside_annotated_controllers
                 .check(fixture))
         .doesNotThrowAnyException();
   }
@@ -301,6 +449,42 @@ class AccessMarkerRuleFixturesTest {
   }
 
   @Test
+  void should_fail_uuid_rule_when_authenticated_endpoint_takes_request_header() {
+    JavaClasses fixture = new ClassFileImporter().importClasses(RequestHeaderController.class);
+
+    assertThatThrownBy(
+            () -> HexagonalArchitectureTest.authenticated_endpoints_take_no_uuid_identifier
+                .check(fixture))
+        .isInstanceOf(AssertionError.class)
+        .hasMessageContaining(RequestHeaderController.class.getName() + ".handler(")
+        .hasMessageContaining("@RequestHeader");
+  }
+
+  @Test
+  void should_fail_uuid_rule_when_authenticated_endpoint_takes_cookie_value() {
+    JavaClasses fixture = new ClassFileImporter().importClasses(CookieValueController.class);
+
+    assertThatThrownBy(
+            () -> HexagonalArchitectureTest.authenticated_endpoints_take_no_uuid_identifier
+                .check(fixture))
+        .isInstanceOf(AssertionError.class)
+        .hasMessageContaining(CookieValueController.class.getName() + ".handler(")
+        .hasMessageContaining("@CookieValue");
+  }
+
+  @Test
+  void should_fail_uuid_rule_when_authenticated_endpoint_takes_servlet_request() {
+    JavaClasses fixture = new ClassFileImporter().importClasses(ServletRequestController.class);
+
+    assertThatThrownBy(
+            () -> HexagonalArchitectureTest.authenticated_endpoints_take_no_uuid_identifier
+                .check(fixture))
+        .isInstanceOf(AssertionError.class)
+        .hasMessageContaining(ServletRequestController.class.getName() + ".handler(")
+        .hasMessageContaining("ServletRequest");
+  }
+
+  @Test
   void should_pass_uuid_rule_when_authenticated_endpoint_takes_only_principal_and_framework_types() {
     JavaClasses fixture = new ClassFileImporter().importClasses(PrincipalOnlyController.class);
 
@@ -373,6 +557,83 @@ class AccessMarkerRuleFixturesTest {
     @Override
     public void handler() {
       // fixture: mapping and marker both come from the interface, as MVC and Spring see them
+    }
+  }
+
+  @RestController
+  static class StaticGuardedController {
+    @GetMapping("/fixture/static-guarded")
+    @RequiresPermission("fixture:read")
+    public static String handler() {
+      return "fixture: MVC registers a static handler, but method security never intercepts it";
+    }
+  }
+
+  @RestController
+  static class StaticUnmarkedController {
+    @GetMapping("/fixture/static-unmarked")
+    public static void handler() {
+      // fixture: a static handler with no access marker
+    }
+  }
+
+  @RestController
+  static class HttpExchangeController {
+    @GetExchange("/fixture/get-exchange")
+    public void handler() {
+      // fixture: MVC registers an @HttpExchange (here @GetExchange) mapping on a controller
+    }
+  }
+
+  interface GuardedHandlerApi {
+    @GetMapping("/fixture/guarded-api")
+    @RequiresPermission("fixture:read")
+    String handler();
+  }
+
+  @RestController
+  static class FinalOverrideController implements GuardedHandlerApi {
+    @Override
+    public final String handler() {
+      return "fixture: the CGLIB proxy cannot override a final method, so the guard never runs";
+    }
+  }
+
+  @RestController
+  static final class FinalClassOverrideController implements GuardedHandlerApi {
+    @Override
+    public String handler() {
+      return "fixture: CGLIB cannot subclass a final class";
+    }
+  }
+
+  @RestController
+  static class ProxyableOverrideController implements GuardedHandlerApi {
+    @Override
+    public String handler() {
+      return "fixture: public, non-final, non-static, in a non-final class";
+    }
+  }
+
+  static class RouterFunctionConfig {
+    RouterFunction<ServerResponse> route() {
+      return RouterFunctions.route()
+          .GET("/fixture/router", request -> ServerResponse.ok().build())
+          .build();
+    }
+  }
+
+  static class BeanNameRequestHandler implements HttpRequestHandler {
+    @Override
+    public void handleRequest(HttpServletRequest request, HttpServletResponse response) {
+      // fixture: BeanNameUrlHandlerMapping serves an HttpRequestHandler bean named "/..."
+    }
+  }
+
+  static class LegacyMvcController implements org.springframework.web.servlet.mvc.Controller {
+    @Override
+    public ModelAndView handleRequest(HttpServletRequest request, HttpServletResponse response) {
+      return null;
     }
   }
 
@@ -536,6 +797,33 @@ class AccessMarkerRuleFixturesTest {
     }
   }
 
+  @RestController
+  static class RequestHeaderController {
+    @GetMapping("/fixture/request-header")
+    @AuthenticatedEndpoint
+    public void handler(@RequestHeader("X-Fixture-Subject") String subjectId) {
+      // fixture: an identifier taken from a request header chosen by the caller
+    }
+  }
+
+  @RestController
+  static class CookieValueController {
+    @GetMapping("/fixture/cookie-value")
+    @AuthenticatedEndpoint
+    public void handler(@CookieValue("fixture-subject") String subjectId) {
+      // fixture: an identifier taken from a cookie chosen by the caller
+    }
+  }
+
+  @RestController
+  static class ServletRequestController {
+    @GetMapping("/fixture/servlet-request")
+    @AuthenticatedEndpoint
+    public void handler(HttpServletRequest request) {
+      // fixture: the raw request exposes every header, cookie and parameter (getParameter(...))
+    }
+  }
+
   record FixtureBody(String note) {}
 
   @RestController
@@ -545,7 +833,6 @@ class AccessMarkerRuleFixturesTest {
     public void handler(
         Authentication authentication,
         Principal principal,
-        HttpServletRequest request,
         HttpServletResponse response,
         @AuthenticationPrincipal Object user,
         @RequestBody FixtureBody body) {
