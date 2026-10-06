@@ -22,6 +22,7 @@ import java.time.ZoneOffset;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeAll;
@@ -444,6 +445,15 @@ class JwtRs256ServiceTest {
     assertRejectedWithReason(signedToken(claims), "tenant_id");
   }
 
+  @Test
+  void should_rejectWithTenantIdReason_when_tenantIdIsUppercaseUuid() {
+    // issue() only ever mints UUID.toString() (lowercase); tenant_id must be canonical too.
+    Map<String, Object> claims = validClaims(2);
+    claims.put("tenant_id", UUID.randomUUID().toString().toUpperCase(Locale.ROOT));
+
+    assertRejectedWithReason(signedToken(claims), "tenant_id");
+  }
+
   // -----------------------------------------------------------------------
   // US-018 T-005: pre-existing rejection paths carry their reason tag
   // -----------------------------------------------------------------------
@@ -484,6 +494,20 @@ class JwtRs256ServiceTest {
         .extracting(counter -> counter.getId().getTag("reason"))
         .containsExactlyInAnyOrder("signature", "expired", "claims_missing", "schema_version",
             "tenant_id", "sub", "perm_epoch");
+  }
+
+  /**
+   * Distinct from the test above: that one proves all seven tags exist; this one proves each
+   * one's count is actually 0 right after construction, before any {@code verify()} call — the
+   * literal "report 0 from startup" claim, not just "the gauge is registered".
+   */
+  @Test
+  void should_reportZeroCount_when_serviceConstructedBeforeAnyVerifyCall() {
+    service(Clock.systemUTC());
+
+    assertThat(meterRegistry.find("nexus.auth.token_rejected").counters())
+        .hasSize(7)
+        .allSatisfy(counter -> assertThat(counter.count()).isZero());
   }
 
   // -----------------------------------------------------------------------
