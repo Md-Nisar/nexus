@@ -1,6 +1,6 @@
 # US-018 — Progress and handoff
 
-**Updated:** 2026-10-05 · **Source of truth for scope:** `04-tasks.md` (Gate 3 approved). This file only tracks where we are.
+**Updated:** 2026-10-06 · **Source of truth for scope:** `04-tasks.md` (Gate 3 approved). This file only tracks where we are.
 
 **Decision 2026-10-05 — no staging, no deployment.** The app is not deployed and no environment exists; work starts without one. The same decision is recorded at the top of `04-tasks.md`. In short: M3's staging-soak gate is waived for starting M3 and its soak moves to the first staging deployment; rollout-order waits become "merged earlier"; environment-dependent checklist items are deferred to the first deployment and stay required before production (see "Deferred to the first deployment" below).
 
@@ -9,11 +9,11 @@
 | Milestone | Tasks | State |
 |---|---|---|
 | **M2** A1–A4 grant-subset core | T-001..T-003 | **Merged to `main`** as PR #81 (squash, `9820d4e`, 2026-10-04). Its deploy-side items are deferred to the first deployment, see below. |
-| **M1** A8 deny-by-default | T-004 | **Code complete on the working branch; PR not yet opened.** Review, security review and test-validate done (below). |
+| **M1** A8 deny-by-default | T-004 | **Merged to `main`** as PR #82 (squash, `0da1597`, 2026-10-06). Review, security review and test-validate done (below). |
 | M3 | T-016..T-019 | **Blocked on M4 (T-006) and M7 (T-009..T-014) merging.** The staging-soak gate is waived (no environment); M3 still needs its own threat-model re-pass before merge. |
-| M4, M5, M6, M7, M7b, M8, M9, M9-contract | see `04-tasks.md` | Not started. M6 (T-005) has no dependencies; M4 (T-006) is unblocked now that M2 is merged. M5 needs M4; M7 needs M1 and M6 *merged* (no longer "deployed"); M7b follows M7 with no wait; M9-contract follows M9 with no wait. |
+| M4, M5, M6, M7, M7b, M8, M9, M9-contract | see `04-tasks.md` | Not started. M6 (T-005) has no dependencies; M4 (T-006) is unblocked now that M2 is merged. M1 and M6 are the remaining M7 prerequisites. M5 needs M4; M7 needs M1 (done) and M6 *merged* (no longer "deployed"); M7b follows M7 with no wait; M9-contract follows M9 with no wait. |
 
-Next in delivery order after M1: M6 (T-005), then M4 (T-006).
+Next in delivery order now that M1 and M2 are merged: M6 (T-005) and M4 (T-006) — both unblocked, neither depends on the other.
 
 ## M1 exit sequence
 
@@ -25,9 +25,9 @@ Next in delivery order after M1: M6 (T-005), then M4 (T-006).
 | `/test-validate` (`08-test-audit-M1.md`) | Done, PASS: 1423 unit (1 skipped), 353 IT, 0 failures, JDK 25; frontend 210/210. |
 | `/docs` | Not run. M1's merge checklist does not gate on runbook or alert content. Deviations D-8..D-14 are recorded in `09-technical.md` §6. |
 | `/pre-pr-check` | Re-run 2026-10-05: **PASS**. `./mvnw verify` on JDK 25 with Docker up (1423 unit, 353 IT, 0 failures; Checkstyle, SpotBugs, JaCoCo green), artifact records present, diff hygiene clean, Definition of Done walked. The one open item (handler markers undocumented) is closed by `SECURITY.md` §3.2. Frontend gates not applicable (no frontend change). |
-| Open PR | **Ready to open, pending the user's go-ahead** (not opened). |
+| Open PR | **Merged** as PR #82 (squash, `0da1597`, 2026-10-06). |
 
-M1 was developed on the session branch `ccr-76994a18-now72v`, not on `feature/US-018/M1`.
+M1 was developed on the session branch `ccr-76994a18-now72v`, not on `feature/US-018/M1`, and merged to `main` from there.
 
 ## M1 facts a new session needs
 
@@ -39,9 +39,7 @@ M1 was developed on the session branch `ccr-76994a18-now72v`, not on `feature/US
 
 ## Open items
 
-Before or at the M1 PR:
-- PR title as a Conventional Commit, e.g. `feat(security): classify every REST handler as public, authenticated or permission-guarded (US-018 M1)`; description covers what, why and how to test.
-- Decide whether the PR body must say that F-5's root cause (path-only `permitAll`) is deferred to T-009.
+M1 PR (#82) merged with the suggested Conventional Commit title verbatim. Whether its body covers F-5's deferral to T-009 was not independently re-verified here (GitHub API access was unavailable at update time).
 
 Ticket separately (pre-existing, outside the M1 diff, found by the security review):
 - **P-1 (Medium):** `LoginRateLimitFilter` matches paths by raw string, so `/api/v1/auth/%6Cogin` bypasses all four auth rate limits. Frontend nginx normalises the path, but direct backend traffic is exposed.
