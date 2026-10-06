@@ -1,5 +1,6 @@
 package com.example.nexus.identity.interfaces.rest;
 
+import com.example.nexus.common.security.AuthenticatedEndpoint;
 import com.example.nexus.common.security.AuthenticationDetailKeys;
 import com.example.nexus.identity.interfaces.rest.dto.MeResponse;
 import java.util.List;
@@ -20,6 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class UserProfileController {
 
   @GetMapping("/me")
+  @AuthenticatedEndpoint
   MeResponse me(Authentication authentication) {
     Map<?, ?> details = (Map<?, ?>) authentication.getDetails();
     List<String> roles = authentication.getAuthorities().stream()

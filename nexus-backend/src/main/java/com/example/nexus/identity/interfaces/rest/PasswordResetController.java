@@ -1,6 +1,7 @@
 package com.example.nexus.identity.interfaces.rest;
 
 import com.example.nexus.common.domain.RequestContext;
+import com.example.nexus.common.security.PublicEndpoint;
 import com.example.nexus.identity.application.ForgotPasswordUseCase;
 import com.example.nexus.identity.application.ResetPasswordUseCase;
 import com.example.nexus.identity.interfaces.rest.dto.ForgotPasswordRequest;
@@ -59,6 +60,7 @@ public class PasswordResetController {
    * @throws FieldValidationException if email format is invalid (400)
    */
   @PostMapping("/password/forgot")
+  @PublicEndpoint
   @ResponseStatus(HttpStatus.ACCEPTED)
   @Operation(summary = "Request a password-reset link via email")
   @ApiResponse(responseCode = "202", description = "Request accepted (anti-enumeration: same response whether account exists)")
@@ -86,6 +88,7 @@ public class PasswordResetController {
    * @throws FieldValidationException if the new password is identical to the current password (400)
    */
   @PostMapping("/password/reset")
+  @PublicEndpoint
   @Operation(summary = "Reset password using the one-time reset token")
   @ApiResponse(responseCode = "200", description = "Password reset successfully")
   @ApiResponse(responseCode = "410", description = "Token expired, already used, or not found")

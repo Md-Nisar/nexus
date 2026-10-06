@@ -2,6 +2,7 @@ package com.example.nexus.identity.interfaces.rest;
 
 import com.example.nexus.common.domain.AuthenticationException;
 import com.example.nexus.common.domain.RequestContext;
+import com.example.nexus.common.security.PublicEndpoint;
 import com.example.nexus.common.web.CorrelationIdFilter;
 import com.example.nexus.identity.application.service.LoginUseCase;
 import com.example.nexus.identity.application.service.LogoutUseCase;
@@ -83,6 +84,7 @@ public class LoginController {
    * @throws AccountNotVerifiedException if the account is pending email verification
    */
   @PostMapping("/login")
+  @PublicEndpoint
   ResponseEntity<LoginResponse> login(
       @Valid @RequestBody LoginRequest req, HttpServletRequest request) {
     LoginResult result = loginUseCase.execute(
@@ -104,6 +106,7 @@ public class LoginController {
    * @throws AuthenticationException if the token is invalid, revoked, or expired (AUTH_004)
    */
   @PostMapping("/refresh")
+  @PublicEndpoint
   ResponseEntity<LoginResponse> refresh(
       @CookieValue(value = "refresh_token", required = false) String cookieValue,
       HttpServletRequest request) {
@@ -127,6 +130,7 @@ public class LoginController {
    * @return 204 No Content with refresh cookie cleared (max-age=0)
    */
   @PostMapping("/logout")
+  @PublicEndpoint
   ResponseEntity<Void> logout(
       @CookieValue(value = "refresh_token", required = false) String cookieValue,
       HttpServletRequest request) {
