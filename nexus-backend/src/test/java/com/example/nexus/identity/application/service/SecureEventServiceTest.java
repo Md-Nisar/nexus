@@ -2,6 +2,7 @@ package com.example.nexus.identity.application.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
@@ -16,6 +17,7 @@ import com.example.nexus.identity.domain.AuthConstants;
 import com.example.nexus.identity.domain.AuthEvent;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
+import java.lang.reflect.Method;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
@@ -25,6 +27,8 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 @Tag("UnitTest")
 class SecureEventServiceTest {
@@ -259,6 +263,49 @@ class SecureEventServiceTest {
     service.revokeAllUserSessions(USER_ID, NOW);
 
     verify(refreshTokenPort).revokeByUserId(USER_ID, NOW);
+  }
+
+  // ---------------------------------------------------------------------------
+  // US-018 A6: recordEventInCurrentTransaction (MC-4) — MANDATORY propagation, delegates to
+  // AuthEventPort#recordOrThrow (never the best-effort #record)
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void should_delegateToRecordOrThrow_when_recordEventInCurrentTransactionCalled() {
+    AuthEvent event = new AuthEvent(UUID.randomUUID(), "ROLE_ASSIGNED", "SUCCESS");
+
+    service.recordEventInCurrentTransaction(event);
+
+    verify(authEventPort).recordOrThrow(event);
+    // Never the best-effort, REQUIRES_NEW path — recordEventInCurrentTransaction's whole point is
+    // to join the caller's transaction and propagate failures, not buffer them.
+    verify(authEventPort, never()).record(any());
+  }
+
+  @Test
+  void should_propagateException_when_recordOrThrowFails() {
+    AuthEvent event = new AuthEvent(UUID.randomUUID(), "ROLE_ASSIGNED", "SUCCESS");
+    doThrow(new RuntimeException("db down")).when(authEventPort).recordOrThrow(event);
+
+    assertThatThrownBy(() -> service.recordEventInCurrentTransaction(event))
+        .isInstanceOf(RuntimeException.class)
+        .hasMessage("db down");
+  }
+
+  /**
+   * MC-4: {@code recordEventInCurrentTransaction} must be annotated {@code MANDATORY} — it joins
+   * the caller's existing transaction rather than starting one ({@code REQUIRED}) or suspending it
+   * ({@code REQUIRES_NEW}), the propagation every other method on this service uses.
+   */
+  @Test
+  void should_beAnnotatedMandatoryPropagation_when_recordEventInCurrentTransactionDeclared()
+      throws NoSuchMethodException {
+    Method method = SecureEventService.class.getMethod("recordEventInCurrentTransaction", AuthEvent.class);
+
+    Transactional annotation = method.getAnnotation(Transactional.class);
+
+    assertThat(annotation).isNotNull();
+    assertThat(annotation.propagation()).isEqualTo(Propagation.MANDATORY);
   }
 
   // ---------------------------------------------------------------------------

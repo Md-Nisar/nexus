@@ -54,6 +54,23 @@ public class SecureEventService {
     authEventPort.record(event);
   }
 
+  /**
+   * Records {@code event} inside the CALLER's own transaction (US-018 A6, design §6.2) — the
+   * opposite propagation of every other method on this service. {@code MANDATORY} rather than
+   * {@code REQUIRED}: there must already be an active transaction for this event to join: calling
+   * it outside one is a programming error, not a condition to silently paper over by starting a
+   * new transaction.
+   *
+   * <p>Delegates to {@link AuthEventPort#recordOrThrow(AuthEvent)}, which flushes immediately and
+   * propagates any failure, so a lost audit write rolls back the mutation it was meant to record —
+   * atomicity is the entire point of this method existing (contrast {@link #recordEvent(AuthEvent)
+   * recordEvent}'s best-effort, never-throws contract).
+   */
+  @Transactional(propagation = Propagation.MANDATORY)
+  public void recordEventInCurrentTransaction(AuthEvent event) {
+    authEventPort.recordOrThrow(event);
+  }
+
   @Transactional(propagation = Propagation.REQUIRES_NEW)
   public void revokeFamily(UUID familyId, Instant revokedAt) {
     refreshTokenPort.revokeFamily(familyId, revokedAt);

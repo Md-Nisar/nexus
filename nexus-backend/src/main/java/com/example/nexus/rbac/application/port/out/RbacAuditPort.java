@@ -5,26 +5,43 @@ import com.example.nexus.common.security.DenialReason;
 /**
  * Outbound audit port for RBAC authorization changes (03-design.md §4.5, §6.2). Implemented by
  * {@code identity.infrastructure.audit.RbacAuthEventAdapter}, which delegates to {@code
- * SecureEventService} ({@code REQUIRES_NEW}) so {@code rbac} gets audit durability for free without
- * importing {@code identity}.
+ * SecureEventService} so {@code rbac} gets audit infrastructure for free without importing {@code
+ * identity}.
  *
- * <p><b>Contract (restating {@code AuthEventPort.record}'s guarantee): implementations MUST NEVER
- * throw and MUST NOT block.</b> On failure they must swallow their own failures — buffering for
- * bounded backed-off retry, or logging and continuing — and never propagate to the caller.
+ * <p><b>Two documented groups (Decision 9, US-018 A6):</b>
  *
- * <p><b>Five methods are invoked post-commit</b> ({@link #recordRoleAssigned}, {@link
- * #recordRoleRevoked}, {@link #recordRoleCreated}, {@link #recordRolePermissionGranted}, {@link
- * #recordRolePermissionRevoked}) — or, absent an active transaction, inline as a best-effort
- * fallback. <b>One method is the exception</b>: {@link #recordRoleAssignmentDenied} is invoked
- * inline, pre-throw, before the caller's transaction commits or rolls back — see its own Javadoc.
- * No caller handles exceptions from any of the six.
+ * <ul>
+ *   <li><b>Group A (atomic):</b> {@link #recordRoleAssigned}, {@link #recordRoleRevoked}, {@link
+ *       #recordRoleCreated}, {@link #recordRolePermissionGranted}, {@link
+ *       #recordRolePermissionRevoked} — called INLINE, inside the caller's own mutation
+ *       transaction, after the mutation and before the method returns. These join that
+ *       transaction ({@code SecureEventService#recordEventInCurrentTransaction}, {@code MANDATORY})
+ *       and <b>MUST THROW</b> on failure, so a lost audit write rolls back the mutation it was
+ *       meant to record (design §6.2). Cache eviction, INFO logs and timers remain post-commit;
+ *       only the audit write itself moved inline.
+ *   <li><b>Group B (best-effort):</b> {@link #recordRoleAssignmentDenied} — called INLINE,
+ *       pre-throw, from a transaction that is about to roll back. Durability rests entirely on
+ *       {@code SecureEventService#recordEvent}'s independent ({@code REQUIRES_NEW}) transaction.
+ *       <b>MUST NEVER throw and MUST NOT block</b> — on failure it must swallow its own failure
+ *       (buffering for bounded backed-off retry, or logging and continuing) and never propagate.
+ * </ul>
+ *
+ * No caller handles exceptions from the five Group B overload calls; Group A's five methods are
+ * called from within a {@code try}/{@code catch (RuntimeException)} that exists for other reasons
+ * (timer/outcome bookkeeping) and simply rethrows.
  */
 public interface RbacAuditPort {
 
-  /** Records a successful role assignment. Must never throw or block. */
+  /**
+   * Records a successful role assignment (Group A — atomic, US-018 A6). Joins the caller's
+   * transaction and MUST THROW on failure.
+   */
   void recordRoleAssigned(RbacAuditEvent event);
 
-  /** Records a successful role revocation. Must never throw or block. */
+  /**
+   * Records a successful role revocation (Group A — atomic, US-018 A6). Joins the caller's
+   * transaction and MUST THROW on failure.
+   */
   void recordRoleRevoked(RbacAuditEvent event);
 
   /**
@@ -65,21 +82,21 @@ public interface RbacAuditPort {
       RbacAuditEvent event, DenialReason reason, String operation, Integer missingCount);
 
   /**
-   * Records a successful role creation (AC12). Must never throw or block. Invoked post-commit;
-   * {@code event.permissionId()}/{@code event.permissionName()} are {@code null} — a freshly
-   * created role carries no permissions.
+   * Records a successful role creation (AC12, Group A — atomic, US-018 A6). Joins the caller's
+   * transaction and MUST THROW on failure. {@code event.permissionId()}/{@code
+   * event.permissionName()} are {@code null} — a freshly created role carries no permissions.
    */
   void recordRoleCreated(RoleAuditEvent event);
 
   /**
-   * Records a successful role-permission grant (AC12). Must never throw or block. Invoked
-   * post-commit.
+   * Records a successful role-permission grant (AC12, Group A — atomic, US-018 A6). Joins the
+   * caller's transaction and MUST THROW on failure.
    */
   void recordRolePermissionGranted(RoleAuditEvent event);
 
   /**
-   * Records a successful role-permission revocation (AC12). Must never throw or block. Invoked
-   * post-commit.
+   * Records a successful role-permission revocation (AC12, Group A — atomic, US-018 A6). Joins the
+   * caller's transaction and MUST THROW on failure.
    */
   void recordRolePermissionRevoked(RoleAuditEvent event);
 }

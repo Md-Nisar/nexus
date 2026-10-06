@@ -117,18 +117,18 @@ public class RoleManagementService {
     // DB-generated values (createdAt) directly (same M4a rationale as RoleAssignmentService).
     RoleView view = roleManagementPort.findRole(newRoleId).orElseThrow();
 
+    // US-018 A6 (design §6.2): the success-audit write moved INLINE, inside this transaction,
+    // after the insert and before return -- no longer post-commit. RbacAuditPort's Group A
+    // contract now REQUIRES the implementation to throw on failure (it no longer swallows), so a
+    // lost audit write propagates from here, rolls back this transaction, and surfaces as a 500
+    // rather than committing a role change with zero audit trail. The INFO log stays post-commit
+    // below -- only the audit write itself moved.
+    rbacAuditPort.recordRoleCreated(
+        new RoleAuditEvent(
+            actor.tenantId(), view.id(), view.name(), null, null, actor.userId(), ctx, null));
+
     registerPostCommitSideEffects(
         () -> {
-          rbacAuditPort.recordRoleCreated(
-              new RoleAuditEvent(
-                  actor.tenantId(),
-                  view.id(),
-                  view.name(),
-                  null,
-                  null,
-                  actor.userId(),
-                  ctx,
-                  null));
           log.atInfo()
               .addKeyValue(LOG_KEY_EVENT, "ROLE_CREATED")
               .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
@@ -219,18 +219,15 @@ public class RoleManagementService {
     // tips the role from not-fully-admin-equivalent to fully-admin-equivalent.
     boolean becameFullyAdminEquivalent = dangerous && becameFullyAdminEquivalent(role, permission);
 
+    // US-018 A6 (design §6.2): see the matching comment in createRole() above -- the success-audit
+    // write moved INLINE, inside this transaction, after the attach and before return.
+    rbacAuditPort.recordRolePermissionGranted(
+        new RoleAuditEvent(
+            actor.tenantId(), role.id(), role.name(), permission.id(), permission.name(),
+            actor.userId(), ctx, holderCount));
+
     registerPostCommitSideEffects(
         () -> {
-          rbacAuditPort.recordRolePermissionGranted(
-              new RoleAuditEvent(
-                  actor.tenantId(),
-                  role.id(),
-                  role.name(),
-                  permission.id(),
-                  permission.name(),
-                  actor.userId(),
-                  ctx,
-                  holderCount));
           var infoBuilder =
               log.atInfo()
                   .addKeyValue(LOG_KEY_EVENT, "ROLE_PERMISSION_GRANTED")
@@ -324,18 +321,15 @@ public class RoleManagementService {
 
     String permissionName = permission.map(PermissionView::name).orElse(null);
 
+    // US-018 A6 (design §6.2): see the matching comment in createRole() above -- the success-audit
+    // write moved INLINE, inside this transaction, after the detach and before return.
+    rbacAuditPort.recordRolePermissionRevoked(
+        new RoleAuditEvent(
+            actor.tenantId(), role.id(), role.name(), permissionId, permissionName,
+            actor.userId(), ctx, null));
+
     registerPostCommitSideEffects(
         () -> {
-          rbacAuditPort.recordRolePermissionRevoked(
-              new RoleAuditEvent(
-                  actor.tenantId(),
-                  role.id(),
-                  role.name(),
-                  permissionId,
-                  permissionName,
-                  actor.userId(),
-                  ctx,
-                  null));
           log.atInfo()
               .addKeyValue(LOG_KEY_EVENT, "ROLE_PERMISSION_REVOKED")
               .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())

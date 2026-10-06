@@ -174,12 +174,18 @@ class RoleAssignmentServiceTest {
     verify(userRoleAssignmentPort, never())
         .hasActiveAssignmentOfAnyRole(any(), any(), any()); // not TENANT_ADMIN, guard skipped
 
-    InOrder inOrder = Mockito.inOrder(permissionCachePort, rbacAuditPort);
-    inOrder.verify(permissionCachePort).evict(tenantId, targetUserId);
+    // US-018 A6: the audit write now happens INLINE, before registerPostCommitSideEffects even
+    // runs -- it precedes the cache eviction, the reverse of the pre-A6 post-commit order.
+    InOrder inOrder = Mockito.inOrder(rbacAuditPort, permissionCachePort);
     inOrder
         .verify(rbacAuditPort)
         .recordRoleAssigned(
             new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx));
+    inOrder.verify(permissionCachePort).evict(tenantId, targetUserId);
+    // MC-4 (RC-40.5): within this one call, Group A fires and Group B never does -- the ordering
+    // invariant (no Group B call follows a Group A call) holds trivially for a successful call.
+    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
+    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
   }
 
   // Load-bearing (US-014 Decision 2): this and the other 404/409 negative assertions in this
@@ -972,8 +978,10 @@ class RoleAssignmentServiceTest {
   /**
    * Inline-vs-afterCommit fallback (03-design.md §3.1 step 7): a plain Mockito unit test has no
    * active Spring transaction synchronization, so {@code registerPostCommitSideEffects} must run
-   * the cache-evict/audit side effects inline, synchronously, before {@code assign(...)} returns.
-   * This is the only kind of test that can observe that fallback directly.
+   * the cache-evict side effect inline, synchronously, before {@code assign(...)} returns. The
+   * audit write (US-018 A6) is unconditional now -- it is called inline, before {@code
+   * registerPostCommitSideEffects} even runs, regardless of synchronization state -- so this test
+   * no longer exercises the fallback for it, only for the cache eviction.
    */
   @Test
   void should_fireSideEffectsInlineSynchronously_when_noActiveTransactionSynchronization() {
@@ -1003,11 +1011,13 @@ class RoleAssignmentServiceTest {
 
   /**
    * Complements the test above: when a transaction synchronization IS active (as it would be
-   * under a real {@code @Transactional} call), the side effects must be deferred to {@code
-   * afterCommit} rather than fired inline.
+   * under a real {@code @Transactional} call), the cache-eviction side effect must be deferred to
+   * {@code afterCommit} rather than fired inline. The audit write (US-018 A6) is the opposite now:
+   * it fires inline, inside the transaction, regardless of synchronization state -- it is never
+   * deferred to {@code afterCommit}.
    */
   @Test
-  void should_deferSideEffectsUntilAfterCommit_when_transactionSynchronizationActive() {
+  void should_deferOnlyCacheEvictionUntilAfterCommit_when_transactionSynchronizationActive() {
     Role role = memberRole();
     Instant assignedAt = Instant.now();
     ActiveRoleAssignment view =
@@ -1024,7 +1034,10 @@ class RoleAssignmentServiceTest {
     try {
       service.assign(actor, targetUserId, roleId, ctx);
 
-      verifyNoInteractions(permissionCachePort, rbacAuditPort);
+      // US-018 A6: the audit write already happened, inline, before assign() returned -- only
+      // the cache eviction is still pending afterCommit.
+      verify(rbacAuditPort).recordRoleAssigned(any());
+      verifyNoInteractions(permissionCachePort);
 
       for (TransactionSynchronization synchronization :
           TransactionSynchronizationManager.getSynchronizations()) {
@@ -1032,7 +1045,6 @@ class RoleAssignmentServiceTest {
       }
 
       verify(permissionCachePort).evict(tenantId, targetUserId);
-      verify(rbacAuditPort).recordRoleAssigned(any());
     } finally {
       TransactionSynchronizationManager.clearSynchronization();
     }
@@ -1153,12 +1165,17 @@ class RoleAssignmentServiceTest {
     service.revoke(actor, targetUserId, roleId, ctx);
 
     verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
-    InOrder inOrder = Mockito.inOrder(permissionCachePort, rbacAuditPort);
-    inOrder.verify(permissionCachePort).evict(tenantId, targetUserId);
+    // US-018 A6: the audit write now happens INLINE, before registerPostCommitSideEffects even
+    // runs -- it precedes the cache eviction, the reverse of the pre-A6 post-commit order.
+    InOrder inOrder = Mockito.inOrder(rbacAuditPort, permissionCachePort);
     inOrder
         .verify(rbacAuditPort)
         .recordRoleRevoked(
             new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx));
+    inOrder.verify(permissionCachePort).evict(tenantId, targetUserId);
+    // MC-4 (RC-40.5): within this one call, Group A fires and Group B never does.
+    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
+    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
   }
 
   // Load-bearing (US-014 Decision 2) -- see the comment on

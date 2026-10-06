@@ -2,6 +2,7 @@ package com.example.nexus.identity.infrastructure.persistence;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -112,6 +113,47 @@ class JpaAuthEventAdapterTest {
     assertThat(warnMessages).isNotEmpty();
     assertThat(warnMessages.get(0)).contains("LOGIN_FAILURE").contains("DB error");
     assertThat(warnMessages.get(0)).doesNotContain(attackerUserAgent).doesNotContain("user_agent");
+  }
+
+  // ---------------------------------------------------------------------------
+  // US-018 A6: recordOrThrow — saveAndFlush, propagates, never enqueues to the retry buffer
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void recordOrThrow_savesAndFlushesEvent_onSuccess() {
+    JpaAuthEventAdapter adapter = adapterWith(enabledProps());
+    AuthEvent event = new AuthEvent(UUID.randomUUID(), "ROLE_ASSIGNED", "SUCCESS");
+
+    adapter.recordOrThrow(event);
+
+    verify(authEventRepository).saveAndFlush(event);
+    verifyNoInteractions(retryBuffer);
+  }
+
+  @Test
+  void recordOrThrow_propagatesException_insteadOfSwallowing() {
+    JpaAuthEventAdapter adapter = adapterWith(enabledProps());
+    AuthEvent event = new AuthEvent(UUID.randomUUID(), "ROLE_ASSIGNED", "SUCCESS");
+    doThrow(new DataIntegrityViolationException("DB error"))
+        .when(authEventRepository)
+        .saveAndFlush(event);
+
+    assertThatThrownBy(() -> adapter.recordOrThrow(event))
+        .isInstanceOf(DataIntegrityViolationException.class);
+  }
+
+  @Test
+  void recordOrThrow_doesNotEnqueueToRetryBuffer_whenSaveFails() {
+    JpaAuthEventAdapter adapter = adapterWith(enabledProps());
+    AuthEvent event = new AuthEvent(UUID.randomUUID(), "ROLE_ASSIGNED", "SUCCESS");
+    doThrow(new DataIntegrityViolationException("DB error"))
+        .when(authEventRepository)
+        .saveAndFlush(event);
+
+    assertThatThrownBy(() -> adapter.recordOrThrow(event))
+        .isInstanceOf(DataIntegrityViolationException.class);
+
+    verifyNoInteractions(retryBuffer);
   }
 
   private JpaAuthEventAdapter adapterWith(AuditRetryProperties properties) {

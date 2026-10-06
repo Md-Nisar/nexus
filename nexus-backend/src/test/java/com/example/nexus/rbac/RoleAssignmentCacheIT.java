@@ -191,8 +191,16 @@ class RoleAssignmentCacheIT {
     RoleAssignmentServiceWithBrokenCache broken = serviceWithBrokenCache();
 
     try {
+      // US-018 A6: the success-audit write is now inline and MANDATORY (it joins the caller's
+      // own transaction rather than opening its own REQUIRES_NEW one), so this un-proxied,
+      // never-@Transactional broken.service() instance needs a manually-opened transaction to
+      // satisfy it — same reason the revoke test below already opens one via TransactionTemplate,
+      // previously only for M6's bulk @Modifying UPDATE.
       ActiveRoleAssignment result =
-          broken.service().assign(actor, target.getId(), role.getId(), requestContext());
+          new TransactionTemplate(transactionManager)
+              .execute(
+                  status ->
+                      broken.service().assign(actor, target.getId(), role.getId(), requestContext()));
 
       assertThat(result.roleId())
           .as("assign must still complete and return the created assignment (fail-open)")
