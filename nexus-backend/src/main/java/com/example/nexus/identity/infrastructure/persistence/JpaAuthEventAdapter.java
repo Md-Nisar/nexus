@@ -60,4 +60,14 @@ public class JpaAuthEventAdapter implements AuthEventPort {
       }
     }
   }
+
+  /**
+   * US-018 A6: {@code saveAndFlush}, deliberately bypassing the {@code record(AuthEvent)} retry-
+   * buffer catch above — a failure here must propagate (and flush, rather than surfacing only at
+   * an eventual commit) so the caller's mutation transaction rolls back.
+   */
+  @Override
+  public void recordOrThrow(AuthEvent event) {
+    authEventRepository.saveAndFlush(event);
+  }
 }

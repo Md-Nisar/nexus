@@ -1,25 +1,21 @@
 package com.example.nexus.rbac;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import ch.qos.logback.classic.Level;
-import ch.qos.logback.classic.Logger;
-import ch.qos.logback.classic.spi.ILoggingEvent;
-import ch.qos.logback.core.read.ListAppender;
 import com.example.nexus.TestcontainersConfiguration;
 import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.security.DenialReason;
 import com.example.nexus.common.security.InsufficientPermissionException;
 import com.example.nexus.identity.application.service.SecureEventService;
+import com.example.nexus.identity.domain.AuthEvent;
 import com.example.nexus.identity.domain.EmailCipher;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.identity.infrastructure.audit.RbacAuthEventAdapter;
 import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
 import com.example.nexus.rbac.application.RoleAssignmentService;
-import com.example.nexus.rbac.application.port.out.RbacAuditEvent;
+import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
 import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
@@ -29,10 +25,8 @@ import com.example.nexus.rbac.domain.UserRole;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
-import io.micrometer.core.instrument.MeterRegistry;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -48,60 +42,42 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
-import tools.jackson.databind.ObjectMapper;
+import org.springframework.transaction.IllegalTransactionStateException;
 
 /**
- * US-012 T-021 (04-tasks.md; 03-design.md §6.3-§6.4; 03b-threat-model.md T-T5/T-R3): the sole
- * automated, end-to-end proof — against real Testcontainers MySQL, never H2 — that {@link
- * RbacAuthEventAdapter}'s audit write (a) actually round-trips a valid, correctly-keyed JSON
- * {@code metadata} payload through MySQL's native {@code JSON} column (T-T5), and (b) that the
- * T-R3 audit-write-loss handling (ERROR log + {@code nexus.rbac.audit_write_failed} counter)
- * genuinely fires on a real commit-boundary DB rejection, not merely against a mocked {@link
- * SecureEventService} — that is {@code RbacAuthEventAdapterTest}'s job (T-009) and is
+ * US-012 T-021 (04-tasks.md; 03-design.md §6.3-§6.4; 03b-threat-model.md T-T5) / US-018 T-006
+ * (04-tasks.md M4; design §6.2, TS-5): the sole automated, end-to-end proof — against real
+ * Testcontainers MySQL, never H2 — that {@link RbacAuthEventAdapter}'s audit write (a) actually
+ * round-trips a valid, correctly-keyed JSON {@code metadata} payload through MySQL's native {@code
+ * JSON} column (T-T5), and (b) that a genuine, real-MySQL Group A (atomic) audit-write failure
+ * rolls back the role-change mutation it accompanies (US-018 A6/TS-5), not merely against a mocked
+ * {@link SecureEventService} — that is {@code RbacAuthEventAdapterTest}'s job and is
  * <b>deliberately not re-duplicated here</b>.
  *
- * <p><b>Scope discipline (per T-021's own instructions):</b> {@code RbacAuthEventAdapterTest}
- * already exhaustively covers the field-mapping table and the full adversarial {@code roleName}
- * matrix (quote, backslash, newline, control character, lone surrogate, JSON-shaped payload, and
- * the duplicate-key {@code traceId} case) against a mocked {@link SecureEventService}. This class
- * does not repeat that matrix; it picks two representative adversarial cases and proves they
- * round-trip correctly through <b>MySQL's own</b> {@code JSON_VALID()}/{@code JSON_EXTRACT()} —
- * something a mock cannot verify, because MySQL's binary JSON type normalises key order and
- * validates JSON syntax at the storage layer (03b-threat-model.md T-T1/T-T5).
+ * <p><b>Scope discipline:</b> {@code RbacAuthEventAdapterTest} already exhaustively covers the
+ * field-mapping table and the full adversarial {@code roleName} matrix (quote, backslash, newline,
+ * control character, lone surrogate, JSON-shaped payload, and the duplicate-key {@code traceId}
+ * case) against a mocked {@link SecureEventService}. This class does not repeat that matrix; it
+ * picks two representative adversarial cases and proves they round-trip correctly through
+ * <b>MySQL's own</b> {@code JSON_VALID()}/{@code JSON_EXTRACT()} — something a mock cannot verify,
+ * because MySQL's binary JSON type normalises key order and validates JSON syntax at the storage
+ * layer (03b-threat-model.md T-T1/T-T5).
  *
- * <p><b>Scenario 5 (T-R3 forced-failure) mechanism, and why the obvious alternative is wrong:</b>
- * the naive approach — a {@code @MockitoSpyBean} on {@code JpaAuthEventRepository} throwing on
- * {@code save(...)} (the pattern {@code AuditStoreDownIT} uses) — does <b>not</b> reproduce the
- * T-R3 gap. A synchronous throw from {@code save()} is caught by {@code JpaAuthEventAdapter}'s own
- * {@code catch (DataAccessException)}, which enqueues the event onto the existing, already-durable
- * retry buffer — exactly the failure mode T-R3 says is <em>already handled</em>. T-R3's actual gap
- * is a failure that surfaces only when {@code SecureEventService}'s {@code REQUIRES_NEW}
- * transaction flushes/commits — <em>after</em> {@code JpaAuthEventAdapter.record()} has already
- * returned normally, so its {@code catch} never runs and {@code retryBuffer.enqueue} is never
- * called.
- *
- * <p>This class reproduces that exact commit-boundary shape with a genuine MySQL rejection, no
- * mocking of {@code SecureEventService} at all: {@link com.example.nexus.identity.domain.AuthEvent}
- * has an assigned (non-generated) {@code @Id}, so Spring Data's {@code save()} issues a {@code
- * merge()} rather than a {@code persist()}. By pre-inserting (via raw JDBC) a real, different
- * {@code auth_events} row under the exact id a stubbed {@link UuidGenerator} will hand back, {@code
- * merge()} finds that id already present, loads it, and marks it dirty — deferring the doomed
- * write to flush/commit time exactly as 03-design.md §6.4 describes. {@code auth_events}' own
- * {@code trg_auth_events_no_update} append-only trigger (V2__identity_schema.sql) then blocks that
- * {@code UPDATE} at commit, producing a genuine MySQL-level rejection that surfaces only after
- * control has returned to {@link RbacAuthEventAdapter}'s call site — structurally identical to the
- * design's own cited failure modes (a malformed-metadata {@code ERROR 3140}, a constraint
- * violation, or a transient connection loss at commit). A fresh (non-Spring-managed) {@code
- * RbacAuthEventAdapter} instance is constructed directly with the real, autowired {@code
- * SecureEventService}/{@code ObjectMapper}/{@code MeterRegistry} and only the {@code UuidGenerator}
- * swapped — mirroring the established "one broken collaborator, everything else real" technique
- * {@code RoleAssignmentCacheIT} already uses for its Redis-down case.
+ * <p><b>TS-5 mechanism (US-018 A6):</b> a test-only {@code BEFORE INSERT} trigger on {@code
+ * auth_events}, installed and dropped per-test, {@code SIGNAL}s only for the one RBAC success
+ * {@code event_type} under test — a genuine MySQL-level rejection of the Group A audit insert,
+ * surfacing exactly where {@code SecureEventService#recordEventInCurrentTransaction}'s {@code
+ * saveAndFlush} runs, inside the caller's own transaction. Because {@link RbacAuditPort}'s Group A
+ * methods now join that transaction and MUST THROW on failure (design §6.2), this failure
+ * propagates out of {@link RoleAssignmentService#assign}/{@code revoke} itself and rolls back the
+ * {@code user_roles} INSERT/UPDATE alongside the blocked audit row — never a half-atomic result.
+ * This replaces the pre-A6 mechanism (a merge-at-commit collision caught by the old best-effort
+ * swallow, which the old audit contract required and the new one forbids on this path).
  *
  * <p><b>Tested at the SERVICE layer for scenarios 1-4</b> (see {@link RoleAssignmentIT}'s Javadoc
  * for the rationale) — {@link RoleAssignmentService} is autowired directly, so its real,
@@ -122,8 +98,6 @@ class RoleAssignmentAuditIT {
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private JdbcTemplate jdbc;
   @Autowired private SecureEventService secureEventService;
-  @Autowired private MeterRegistry meterRegistry;
-  @Autowired private ObjectMapper objectMapper;
 
   // ── Scenario 1: successful assign writes a correctly-keyed ROLE_ASSIGNED row ──────────
 
@@ -607,71 +581,86 @@ class RoleAssignmentAuditIT {
         .isAfter(firstCreatedAt);
   }
 
-  // ── Scenario 5 (T-R3, the most important scenario in this file): forced real ───────────
-  // ── MySQL-level audit-write failure ─────────────────────────────────────────────────────
+  // ── Scenario 5 / TS-5 (US-018 A6, the most important scenario in this file): a blocked ───
+  // ── Group A (atomic) audit insert rolls back the mutation it accompanies — proven with a ──
+  // ── test-only BEFORE INSERT trigger on auth_events, installed and dropped by each test, ──
+  // ── that signals only for the RBAC success event type under test. Unlike the pre-A6 ───────
+  // ── mechanism this replaces (a merge-at-commit collision caught by the old swallow-catch), ─
+  // ── RbacAuditPort's Group A methods now MUST THROW on failure (design §6.2) — a genuine ───
+  // ── MySQL-level rejection must therefore propagate out of the SERVICE method, not just the ─
+  // ── adapter, and the mutation's own INSERT/UPDATE must be rolled back with it. ─────────────
 
   @Test
-  void should_logErrorAndIncrementCounter_when_auditWriteFailsAtRealMySqlCommitBoundary() {
-    UUID collidingId = uuidGenerator.newId();
-    // Pre-existing, DIFFERENT row under the exact id the stubbed UuidGenerator below will hand
-    // back. This forces Hibernate's merge() (AuthEvent has an assigned @Id) to find an existing
-    // row and mark it dirty, deferring the doomed write to flush/commit time — see this class's
-    // Javadoc for the full mechanism.
-    jdbc.update(
-        "INSERT INTO auth_events (id, event_type, outcome) VALUES (?, ?, ?)",
-        toBytes(collidingId), "LOGIN_FAILURE", "FAILURE");
-
+  void should_rollBackAssignmentAndWriteNoAuditRow_when_roleAssignedAuditInsertIsBlocked() {
     UUID tenantId = uuidGenerator.newId();
-    UUID targetUserId = uuidGenerator.newId();
-    UUID roleId = uuidGenerator.newId();
-    UUID actorUserId = uuidGenerator.newId();
-    RequestContext ctx = RequestContext.of("127.0.0.1", "trace-forced-failure", "JUnit");
-    RbacAuditEvent event =
-        new RbacAuditEvent(tenantId, targetUserId, roleId, "TENANT_ADMIN", actorUserId, ctx);
+    User actorUser = seedUser("ts5-assign-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
+    User target = seedUser("ts5-assign-target", tenantId);
+    Role role = seedRole("TS5-ASSIGN", tenantId);
+    RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
 
-    // Fresh, non-Spring-managed adapter instance: real (autowired) SecureEventService,
-    // ObjectMapper, and MeterRegistry — only the UuidGenerator is swapped, so the actual DB
-    // interaction and failure-handling code run for real against Testcontainers MySQL.
-    RbacAuthEventAdapter adapterWithForcedCollision =
-        new RbacAuthEventAdapter(secureEventService, () -> collidingId, objectMapper, meterRegistry);
-
-    double counterBefore = auditWriteFailedCount("assign");
-    ListAppender<ILoggingEvent> appender = startLogCapture();
+    installAuditBlockTrigger("ROLE_ASSIGNED");
     try {
-      assertThatCode(() -> adapterWithForcedCollision.recordRoleAssigned(event))
-          .as("T-R3: even a genuine commit-boundary MySQL rejection must never propagate out of"
-              + " the audit adapter")
-          .doesNotThrowAnyException();
+      assertThatThrownBy(
+              () ->
+                  roleAssignmentService.assign(
+                      actor, target.getId(), role.getId(), requestContext()))
+          .as("TS-5: a blocked Group A (atomic) audit write must propagate -- never be swallowed")
+          .isInstanceOf(RuntimeException.class);
 
-      var errorEvents = appender.list.stream().filter(e -> e.getLevel() == Level.ERROR).toList();
-      assertThat(errorEvents)
-          .as("a genuine MySQL-level audit-write failure must log RBAC_AUDIT_WRITE_LOST at ERROR")
-          .hasSize(1);
-      Map<String, Object> keyValues = keyValueMap(errorEvents.get(0));
-      assertThat(keyValues)
-          .containsEntry("event", "RBAC_AUDIT_WRITE_LOST")
-          .containsEntry("tenantId", tenantId)
-          .containsEntry("targetUserId", targetUserId)
-          .containsEntry("roleId", roleId)
-          .containsEntry("actorUserId", actorUserId)
-          .containsEntry("traceId", "trace-forced-failure");
+      assertThat(countActiveUserRoles(target.getId(), role.getId()))
+          .as("TS-5: the blocked ROLE_ASSIGNED audit insert must roll back the user_roles insert"
+              + " too -- a half-atomic result (role change committed, audit lost) is exactly"
+              + " what US-018 A6 closes")
+          .isZero();
+      assertThat(countAuditRows(target.getId(), "ROLE_ASSIGNED"))
+          .as("the blocked insert itself must never actually land")
+          .isZero();
     } finally {
-      stopLogCapture(appender);
+      dropAuditBlockTrigger();
     }
+  }
 
-    assertThat(auditWriteFailedCount("assign"))
-        .as("nexus.rbac.audit_write_failed{operation=assign} must increment on the real,"
-            + " commit-boundary MySQL failure")
-        .isEqualTo(counterBefore + 1.0);
+  @Test
+  void should_rollBackRevocationAndWriteNoAuditRow_when_roleRevokedAuditInsertIsBlocked() {
+    UUID tenantId = uuidGenerator.newId();
+    User actorUser = seedUser("ts5-revoke-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
+    User target = seedUser("ts5-revoke-target", tenantId);
+    Role role = seedRole("TS5-REVOKE", tenantId);
+    RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
+    roleAssignmentService.assign(actor, target.getId(), role.getId(), requestContext());
 
-    Map<String, Object> untouchedRow =
-        jdbc.queryForMap(
-            "SELECT event_type, outcome FROM auth_events WHERE id = ?", toBytes(collidingId));
-    assertThat(untouchedRow.get("event_type"))
-        .as("auth_events' append-only trigger must have blocked the UPDATE outright — the"
-            + " pre-existing row must be completely unchanged")
-        .isEqualTo("LOGIN_FAILURE");
-    assertThat(untouchedRow.get("outcome")).isEqualTo("FAILURE");
+    installAuditBlockTrigger("ROLE_REVOKED");
+    try {
+      assertThatThrownBy(
+              () ->
+                  roleAssignmentService.revoke(
+                      actor, target.getId(), role.getId(), requestContext()))
+          .as("TS-5: a blocked Group A (atomic) audit write must propagate -- never be swallowed")
+          .isInstanceOf(RuntimeException.class);
+
+      assertThat(countActiveUserRoles(target.getId(), role.getId()))
+          .as("TS-5: the blocked ROLE_REVOKED audit insert must roll back the revoke UPDATE too"
+              + " -- the assignment must remain ACTIVE, not half-revoked")
+          .isEqualTo(1);
+      assertThat(countAuditRows(target.getId(), "ROLE_REVOKED")).isZero();
+    } finally {
+      dropAuditBlockTrigger();
+    }
+  }
+
+  // ── MC-4 IT half (US-018 A6): recordEventInCurrentTransaction is MANDATORY, so calling it ──
+  // ── with no active transaction is a programming error, not a condition to paper over. ──────
+
+  @Test
+  void should_throwIllegalTransactionState_when_recordEventInCurrentTransactionCalledOutsideTransaction() {
+    AuthEvent event = new AuthEvent(uuidGenerator.newId(), "ROLE_ASSIGNED", "SUCCESS");
+
+    assertThatThrownBy(() -> secureEventService.recordEventInCurrentTransaction(event))
+        .as("MC-4: MANDATORY propagation must refuse to run outside an existing transaction,"
+            + " rather than silently starting one")
+        .isInstanceOf(IllegalTransactionStateException.class);
   }
 
   // ── Fixtures / helpers ───────────────────────────────────────────────────────────────────
@@ -751,30 +740,34 @@ class RoleAssignmentAuditIT {
     return count == null ? 0 : count;
   }
 
-  private double auditWriteFailedCount(String operation) {
-    var counter =
-        meterRegistry.find("nexus.rbac.audit_write_failed").tag("operation", operation).counter();
-    return counter != null ? counter.count() : 0.0;
+  /**
+   * TS-5 (US-018 A6): a test-only {@code BEFORE INSERT} trigger on {@code auth_events} that
+   * signals only for the given RBAC success {@code event_type}, simulating a genuine MySQL-level
+   * rejection of the Group A (atomic) audit insert. Installed per-test and always dropped in a
+   * {@code finally} block via {@link #dropAuditBlockTrigger()} -- {@code eventType} is an internal
+   * literal, never request-derived, so string-building the DDL here is safe.
+   */
+  private void installAuditBlockTrigger(String eventType) {
+    jdbc.execute(
+        "CREATE TRIGGER trg_ts5_block_rbac_success BEFORE INSERT ON auth_events FOR EACH ROW "
+            + "BEGIN IF NEW.event_type = '" + eventType + "' THEN "
+            + "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'TS-5 test-only block'; "
+            + "END IF; END");
   }
 
-  private ListAppender<ILoggingEvent> startLogCapture() {
-    Logger logger = (Logger) LoggerFactory.getLogger(RbacAuthEventAdapter.class);
-    ListAppender<ILoggingEvent> listAppender = new ListAppender<>();
-    listAppender.start();
-    logger.addAppender(listAppender);
-    return listAppender;
+  private void dropAuditBlockTrigger() {
+    jdbc.execute("DROP TRIGGER IF EXISTS trg_ts5_block_rbac_success");
   }
 
-  private void stopLogCapture(ListAppender<ILoggingEvent> listAppender) {
-    Logger logger = (Logger) LoggerFactory.getLogger(RbacAuthEventAdapter.class);
-    logger.detachAppender(listAppender);
-    listAppender.stop();
-  }
-
-  private static Map<String, Object> keyValueMap(ILoggingEvent event) {
-    Map<String, Object> map = new HashMap<>();
-    event.getKeyValuePairs().forEach(kv -> map.put(kv.key, kv.value));
-    return map;
+  private int countActiveUserRoles(UUID userId, UUID roleId) {
+    Integer count =
+        jdbc.queryForObject(
+            "SELECT COUNT(*) FROM user_roles WHERE user_id = ? AND role_id = ? AND revoked_at"
+                + " IS NULL",
+            Integer.class,
+            toBytes(userId),
+            toBytes(roleId));
+    return count == null ? 0 : count;
   }
 
   private static byte[] toBytes(UUID uuid) {

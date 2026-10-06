@@ -37,6 +37,12 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * ROLE_PERMISSION_GRANTED}/{@code ROLE_PERMISSION_REVOKED} audit rows round-trip through real
  * MySQL with the AC12 minimum field set, and that denied attempts (403/409) write no success row.
  *
+ * <p><b>US-018 T-006 / TS-5 (design §6.2):</b> also proves a genuine, real-MySQL Group A (atomic)
+ * audit-write failure rolls back the {@code createRole}/{@code attachPermission}/{@code
+ * detachPermission} mutation it accompanies -- a test-only {@code BEFORE INSERT} trigger on
+ * {@code auth_events}, installed and dropped per-test, signals only for the one RBAC success
+ * {@code event_type} under test (mirrors {@code RoleAssignmentAuditIT}'s identical mechanism).
+ *
  * <p>Structural mirror of {@code RoleAssignmentAuditIT}'s JSON-extraction-via-{@code JdbcTemplate}
  * pattern, adapted for the fact these three event types carry NO {@code user_id} ({@link
  * com.example.nexus.rbac.application.port.out.RoleAuditEvent} has no target user; {@code
@@ -196,6 +202,85 @@ class RoleManagementAuditIT {
         .isZero();
   }
 
+  // ── Scenario 15 / TS-5 (US-018 A6): a blocked Group A (atomic) audit insert rolls back ──────
+  // ── the role/permission mutation it accompanies — proven with a test-only BEFORE INSERT ────
+  // ── trigger on auth_events, installed and dropped per-test, that signals only for the one ──
+  // ── RBAC success event type under test (design §6.2). ───────────────────────────────────────
+
+  @Test
+  void should_rollBackRoleCreation_when_roleCreatedAuditInsertIsBlocked() {
+    UUID tenantId = uuidGenerator.newId();
+    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
+    String name = "TS5-CREATE-" + UUID.randomUUID();
+
+    installAuditBlockTrigger("ROLE_CREATED");
+    try {
+      assertThatThrownBy(() -> roleManagementService.createRole(actor, name, null, requestContext()))
+          .as("TS-5: a blocked Group A (atomic) audit write must propagate -- never be swallowed")
+          .isInstanceOf(RuntimeException.class);
+
+      assertThat(countRolesNamed(tenantId, name))
+          .as("TS-5: the blocked ROLE_CREATED audit insert must roll back the roles insert too"
+              + " -- a half-atomic result (role created, audit lost) is exactly what US-018 A6"
+              + " closes")
+          .isZero();
+      assertThat(countAuditRows(tenantId, "ROLE_CREATED")).isZero();
+    } finally {
+      dropAuditBlockTrigger();
+    }
+  }
+
+  @Test
+  void should_rollBackPermissionAttach_when_rolePermissionGrantedAuditInsertIsBlocked() {
+    UUID tenantId = uuidGenerator.newId();
+    RoleChangeActor actor = seedActorHolding(tenantId, SAFE_PERMISSION_ID);
+    Role role = seedRole("TS5-GRANT", tenantId);
+
+    installAuditBlockTrigger("ROLE_PERMISSION_GRANTED");
+    try {
+      assertThatThrownBy(
+              () ->
+                  roleManagementService.attachPermission(
+                      actor, role.getId(), SAFE_PERMISSION_ID, requestContext()))
+          .as("TS-5: a blocked Group A (atomic) audit write must propagate -- never be swallowed")
+          .isInstanceOf(RuntimeException.class);
+
+      assertThat(countRolePermissions(role.getId(), SAFE_PERMISSION_ID))
+          .as("TS-5: the blocked ROLE_PERMISSION_GRANTED audit insert must roll back the"
+              + " role_permissions insert too")
+          .isZero();
+      assertThat(countAuditRows(tenantId, "ROLE_PERMISSION_GRANTED")).isZero();
+    } finally {
+      dropAuditBlockTrigger();
+    }
+  }
+
+  @Test
+  void should_rollBackPermissionDetach_when_rolePermissionRevokedAuditInsertIsBlocked() {
+    UUID tenantId = uuidGenerator.newId();
+    RoleChangeActor actor = seedActorHolding(tenantId, SAFE_PERMISSION_ID);
+    Role role = seedRole("TS5-REVOKE", tenantId);
+    roleManagementService.attachPermission(actor, role.getId(), SAFE_PERMISSION_ID, requestContext());
+
+    installAuditBlockTrigger("ROLE_PERMISSION_REVOKED");
+    try {
+      assertThatThrownBy(
+              () ->
+                  roleManagementService.detachPermission(
+                      actor, role.getId(), SAFE_PERMISSION_ID, requestContext()))
+          .as("TS-5: a blocked Group A (atomic) audit write must propagate -- never be swallowed")
+          .isInstanceOf(RuntimeException.class);
+
+      assertThat(countRolePermissions(role.getId(), SAFE_PERMISSION_ID))
+          .as("TS-5: the blocked ROLE_PERMISSION_REVOKED audit insert must roll back the"
+              + " role_permissions delete too -- the attachment must still be present")
+          .isEqualTo(1);
+      assertThat(countAuditRows(tenantId, "ROLE_PERMISSION_REVOKED")).isZero();
+    } finally {
+      dropAuditBlockTrigger();
+    }
+  }
+
   // ── Fixtures / helpers ───────────────────────────────────────────────────────────────────
 
   private Role seedRole(String tag, UUID tenantId) {
@@ -256,6 +341,45 @@ class RoleManagementAuditIT {
             Integer.class,
             toBytes(tenantId),
             eventType);
+    return count == null ? 0 : count;
+  }
+
+  /**
+   * TS-5 (US-018 A6): a test-only {@code BEFORE INSERT} trigger on {@code auth_events} that
+   * signals only for the given RBAC success {@code event_type}, simulating a genuine MySQL-level
+   * rejection of the Group A (atomic) audit insert. Installed per-test and always dropped in a
+   * {@code finally} block via {@link #dropAuditBlockTrigger()} -- {@code eventType} is an internal
+   * literal, never request-derived, so string-building the DDL here is safe.
+   */
+  private void installAuditBlockTrigger(String eventType) {
+    jdbc.execute(
+        "CREATE TRIGGER trg_ts5_block_rbac_success BEFORE INSERT ON auth_events FOR EACH ROW "
+            + "BEGIN IF NEW.event_type = '" + eventType + "' THEN "
+            + "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'TS-5 test-only block'; "
+            + "END IF; END");
+  }
+
+  private void dropAuditBlockTrigger() {
+    jdbc.execute("DROP TRIGGER IF EXISTS trg_ts5_block_rbac_success");
+  }
+
+  private int countRolesNamed(UUID tenantId, String name) {
+    Integer count =
+        jdbc.queryForObject(
+            "SELECT COUNT(*) FROM roles WHERE tenant_id = ? AND name = ?",
+            Integer.class,
+            toBytes(tenantId),
+            name);
+    return count == null ? 0 : count;
+  }
+
+  private int countRolePermissions(UUID roleId, UUID permissionId) {
+    Integer count =
+        jdbc.queryForObject(
+            "SELECT COUNT(*) FROM role_permissions WHERE role_id = ? AND permission_id = ?",
+            Integer.class,
+            toBytes(roleId),
+            toBytes(permissionId));
     return count == null ? 0 : count;
   }
 

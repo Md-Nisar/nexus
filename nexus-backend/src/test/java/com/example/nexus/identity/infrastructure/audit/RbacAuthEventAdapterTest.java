@@ -2,10 +2,12 @@ package com.example.nexus.identity.infrastructure.audit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ch.qos.logback.classic.Level;
@@ -75,7 +77,7 @@ class RbacAuthEventAdapterTest {
 
     adapter.recordRoleAssigned(event);
 
-    AuthEvent captured = captureRecordedEvent();
+    AuthEvent captured = captureRecordedEventInCurrentTransaction();
     assertThat(captured.getId()).isEqualTo(GENERATED_ID);
     assertThat(captured.getEventType()).isEqualTo("ROLE_ASSIGNED");
     // Load-bearing (US-014 T-T8 item 5): the only guard that the ROLE_ASSIGNED call site still
@@ -104,7 +106,7 @@ class RbacAuthEventAdapterTest {
 
     adapter.recordRoleRevoked(event);
 
-    AuthEvent captured = captureRecordedEvent();
+    AuthEvent captured = captureRecordedEventInCurrentTransaction();
     assertThat(captured.getEventType()).isEqualTo("ROLE_REVOKED");
     // Load-bearing (US-014 T-T8 item 5) -- see the comment on
     // should_mapAllFieldsCorrectly_when_recordRoleAssignedCalled above.
@@ -125,7 +127,7 @@ class RbacAuthEventAdapterTest {
 
     adapter.recordRoleAssigned(event);
 
-    AuthEvent captured = captureRecordedEvent();
+    AuthEvent captured = captureRecordedEventInCurrentTransaction();
     JsonNode metadata = objectMapper.readTree(captured.getMetadata());
     assertThat(metadata.has("traceId")).isFalse();
     // never a JSON null either
@@ -274,7 +276,7 @@ class RbacAuthEventAdapterTest {
 
     adapter.recordRoleAssigned(event);
 
-    AuthEvent captured = captureRecordedEvent();
+    AuthEvent captured = captureRecordedEventInCurrentTransaction();
     // Must round-trip as valid JSON with the role name preserved as a plain string value —
     // never interpreted as JSON structure.
     JsonNode metadata = objectMapper.readTree(captured.getMetadata());
@@ -302,83 +304,181 @@ class RbacAuthEventAdapterTest {
   }
 
   // ---------------------------------------------------------------------
-  // T-R3: never-throws + ERROR log + counter on audit-write failure
+  // US-018 A6 / Group A (atomic): propagates on failure -- logs RBAC_AUDIT_WRITE_FAILED and
+  // increments the {mode="atomic"} counter, then RETHROWS (contrast T-R3's Group B swallow below).
   // ---------------------------------------------------------------------
 
   @Test
-  void should_notPropagateException_when_secureEventServiceThrowsOnAssign() {
-    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+  void should_propagateException_when_secureEventServiceThrowsOnAssign() {
+    doThrow(new RuntimeException("db down"))
+        .when(secureEventService)
+        .recordEventInCurrentTransaction(any());
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
     RbacAuditEvent event =
         new RbacAuditEvent(TENANT_ID, TARGET_USER_ID, ROLE_ID, "TENANT_ADMIN", ACTOR_USER_ID, ctx);
 
-    assertThatCode(() -> adapter.recordRoleAssigned(event)).doesNotThrowAnyException();
+    assertThatThrownBy(() -> adapter.recordRoleAssigned(event))
+        .isInstanceOf(RuntimeException.class)
+        .hasMessage("db down");
   }
 
   @Test
-  void should_logErrorWithLostAuditMarker_when_secureEventServiceThrowsOnAssign() {
-    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+  void should_logErrorWithFailedMarker_when_secureEventServiceThrowsOnAssign() {
+    doThrow(new RuntimeException("db down"))
+        .when(secureEventService)
+        .recordEventInCurrentTransaction(any());
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
     RbacAuditEvent event =
         new RbacAuditEvent(TENANT_ID, TARGET_USER_ID, ROLE_ID, "TENANT_ADMIN", ACTOR_USER_ID, ctx);
 
     ListAppender<ILoggingEvent> appender = startLogCapture();
     try {
-      adapter.recordRoleAssigned(event);
+      assertThatThrownBy(() -> adapter.recordRoleAssigned(event)).isInstanceOf(RuntimeException.class);
 
       var errorEvents =
           appender.list.stream().filter(e -> e.getLevel() == Level.ERROR).toList();
       assertThat(errorEvents).hasSize(1);
       Map<String, Object> keyValues = keyValueMap(errorEvents.get(0));
       assertThat(keyValues)
-          .containsEntry("event", "RBAC_AUDIT_WRITE_LOST")
+          .containsEntry("event", "RBAC_AUDIT_WRITE_FAILED")
           .containsEntry("tenantId", TENANT_ID)
-          .containsEntry("targetUserId", TARGET_USER_ID)
           .containsEntry("roleId", ROLE_ID)
           .containsEntry("actorUserId", ACTOR_USER_ID)
-          .containsEntry("traceId", "trace-fail");
+          .containsEntry("operation", "assign");
     } finally {
       stopLogCapture(appender);
     }
   }
 
   @Test
-  void should_incrementAuditWriteFailedCounterWithAssignTag_when_recordRoleAssignedFails() {
-    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+  void should_incrementAuditWriteFailedCounterWithAssignTagAndAtomicMode_when_recordRoleAssignedFails() {
+    doThrow(new RuntimeException("db down"))
+        .when(secureEventService)
+        .recordEventInCurrentTransaction(any());
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
     RbacAuditEvent event =
         new RbacAuditEvent(TENANT_ID, TARGET_USER_ID, ROLE_ID, "TENANT_ADMIN", ACTOR_USER_ID, ctx);
 
-    adapter.recordRoleAssigned(event);
+    assertThatThrownBy(() -> adapter.recordRoleAssigned(event)).isInstanceOf(RuntimeException.class);
 
     double count =
-        meterRegistry.get("nexus.rbac.audit_write_failed").tag("operation", "assign").counter().count();
+        meterRegistry
+            .get("nexus.rbac.audit_write_failed")
+            .tag("operation", "assign")
+            .tag("mode", "atomic")
+            .counter()
+            .count();
     assertThat(count).isEqualTo(1.0);
   }
 
   @Test
-  void should_incrementAuditWriteFailedCounterWithRevokeTag_when_recordRoleRevokedFails() {
-    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+  void should_incrementAuditWriteFailedCounterWithRevokeTagAndAtomicMode_when_recordRoleRevokedFails() {
+    doThrow(new RuntimeException("db down"))
+        .when(secureEventService)
+        .recordEventInCurrentTransaction(any());
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
     RbacAuditEvent event =
         new RbacAuditEvent(TENANT_ID, TARGET_USER_ID, ROLE_ID, "TENANT_ADMIN", ACTOR_USER_ID, ctx);
 
-    adapter.recordRoleRevoked(event);
+    assertThatThrownBy(() -> adapter.recordRoleRevoked(event)).isInstanceOf(RuntimeException.class);
 
     double count =
-        meterRegistry.get("nexus.rbac.audit_write_failed").tag("operation", "revoke").counter().count();
+        meterRegistry
+            .get("nexus.rbac.audit_write_failed")
+            .tag("operation", "revoke")
+            .tag("mode", "atomic")
+            .counter()
+            .count();
     assertThat(count).isEqualTo(1.0);
   }
 
   @Test
-  void should_notPropagateException_when_secureEventServiceThrowsOnRevoke() {
-    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+  void should_propagateException_when_secureEventServiceThrowsOnRevoke() {
+    doThrow(new RuntimeException("db down"))
+        .when(secureEventService)
+        .recordEventInCurrentTransaction(any());
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
     RbacAuditEvent event =
         new RbacAuditEvent(TENANT_ID, TARGET_USER_ID, ROLE_ID, "TENANT_ADMIN", ACTOR_USER_ID, ctx);
 
-    assertThatCode(() -> adapter.recordRoleRevoked(event)).doesNotThrowAnyException();
+    assertThatThrownBy(() -> adapter.recordRoleRevoked(event)).isInstanceOf(RuntimeException.class);
   }
+
+  /**
+   * US-018 A6: the repository exception that reaches the adapter through {@code
+   * secureEventService.recordEventInCurrentTransaction} (e.g. from {@code saveAndFlush}) is a
+   * second, independent failure mode from the metadata-serialization one below -- both must
+   * propagate, neither was previously distinguished under the old swallow-all catch.
+   */
+  @Test
+  void should_propagateRepositoryException_when_recordRoleCreatedFails() {
+    doThrow(new RuntimeException("repository save failed"))
+        .when(secureEventService)
+        .recordEventInCurrentTransaction(any());
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-repo-fail", "agent");
+    RoleAuditEvent event =
+        new RoleAuditEvent(TENANT_ID, ROLE_ID, "Billing Manager", null, null, ACTOR_USER_ID, ctx, null);
+
+    assertThatThrownBy(() -> adapter.recordRoleCreated(event))
+        .isInstanceOf(RuntimeException.class)
+        .hasMessage("repository save failed");
+  }
+
+  /**
+   * US-018 A6 (task c): a metadata JSON-serialization failure must propagate exactly like a
+   * repository failure -- previously both were swallowed by the same catch-all. Forces the
+   * failure with a mocked {@link ObjectMapper} rather than relying on an adversarial input, since
+   * the real Jackson 3 mapper does not reliably fail to serialize plain strings.
+   */
+  @Test
+  void should_propagateSerializationException_when_recordRoleAssignedMetadataFailsToSerialize() {
+    ObjectMapper throwingMapper = mock(ObjectMapper.class);
+    when(throwingMapper.writeValueAsString(any()))
+        .thenThrow(new RuntimeException("serialization broke"));
+    RbacAuthEventAdapter throwingAdapter =
+        new RbacAuthEventAdapter(secureEventService, uuidGenerator, throwingMapper, meterRegistry);
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-ser-fail", "agent");
+    RbacAuditEvent event =
+        new RbacAuditEvent(TENANT_ID, TARGET_USER_ID, ROLE_ID, "TENANT_ADMIN", ACTOR_USER_ID, ctx);
+
+    assertThatThrownBy(() -> throwingAdapter.recordRoleAssigned(event))
+        .isInstanceOf(RuntimeException.class)
+        .hasMessage("serialization broke");
+    // Failed before the port was ever called -- the failure is in metadata construction, not
+    // persistence.
+    verifyNoInteractions(secureEventService);
+
+    double count =
+        meterRegistry
+            .get("nexus.rbac.audit_write_failed")
+            .tag("operation", "assign")
+            .tag("mode", "atomic")
+            .counter()
+            .count();
+    assertThat(count).isEqualTo(1.0);
+  }
+
+  /** @see #should_propagateSerializationException_when_recordRoleAssignedMetadataFailsToSerialize() */
+  @Test
+  void should_propagateSerializationException_when_recordRoleCreatedMetadataFailsToSerialize() {
+    ObjectMapper throwingMapper = mock(ObjectMapper.class);
+    when(throwingMapper.writeValueAsString(any()))
+        .thenThrow(new RuntimeException("serialization broke"));
+    RbacAuthEventAdapter throwingAdapter =
+        new RbacAuthEventAdapter(secureEventService, uuidGenerator, throwingMapper, meterRegistry);
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-ser-fail-role", "agent");
+    RoleAuditEvent event =
+        new RoleAuditEvent(TENANT_ID, ROLE_ID, "Billing Manager", null, null, ACTOR_USER_ID, ctx, null);
+
+    assertThatThrownBy(() -> throwingAdapter.recordRoleCreated(event))
+        .isInstanceOf(RuntimeException.class)
+        .hasMessage("serialization broke");
+    verifyNoInteractions(secureEventService);
+  }
+
+  // ---------------------------------------------------------------------
+  // T-R3: never-throws + ERROR log + counter on audit-write failure (Group B — best-effort)
+  // ---------------------------------------------------------------------
 
   @Test
   void should_notPropagateException_when_secureEventServiceThrowsOnDenied() {
@@ -505,7 +605,7 @@ class RbacAuthEventAdapterTest {
 
     adapter.recordRoleCreated(event);
 
-    AuthEvent captured = captureRecordedEvent();
+    AuthEvent captured = captureRecordedEventInCurrentTransaction();
     assertThat(captured.getId()).isEqualTo(GENERATED_ID);
     assertThat(captured.getEventType()).isEqualTo("ROLE_CREATED");
     assertThat(captured.getOutcome()).isEqualTo("SUCCESS");
@@ -531,7 +631,7 @@ class RbacAuthEventAdapterTest {
 
     adapter.recordRoleCreated(event);
 
-    AuthEvent captured = captureRecordedEvent();
+    AuthEvent captured = captureRecordedEventInCurrentTransaction();
     JsonNode metadata = objectMapper.readTree(captured.getMetadata());
     assertThat(metadata.has("permissionId")).isFalse();
     assertThat(metadata.has("permissionName")).isFalse();
@@ -555,7 +655,7 @@ class RbacAuthEventAdapterTest {
 
     adapter.recordRolePermissionGranted(event);
 
-    AuthEvent captured = captureRecordedEvent();
+    AuthEvent captured = captureRecordedEventInCurrentTransaction();
     assertThat(captured.getEventType()).isEqualTo("ROLE_PERMISSION_GRANTED");
     assertThat(captured.getOutcome()).isEqualTo("SUCCESS");
     assertThat(captured.getUserId()).isNull();
@@ -585,7 +685,7 @@ class RbacAuthEventAdapterTest {
 
     adapter.recordRolePermissionGranted(event);
 
-    AuthEvent captured = captureRecordedEvent();
+    AuthEvent captured = captureRecordedEventInCurrentTransaction();
     JsonNode metadata = objectMapper.readTree(captured.getMetadata());
     assertThat(metadata.get("holderCount").asInt()).isEqualTo(3);
     String raw = captured.getMetadata();
@@ -601,7 +701,7 @@ class RbacAuthEventAdapterTest {
 
     adapter.recordRolePermissionGranted(event);
 
-    AuthEvent captured = captureRecordedEvent();
+    AuthEvent captured = captureRecordedEventInCurrentTransaction();
     JsonNode metadata = objectMapper.readTree(captured.getMetadata());
     assertThat(metadata.has("holderCount")).isFalse();
     // never a JSON null either
@@ -625,7 +725,7 @@ class RbacAuthEventAdapterTest {
 
     adapter.recordRolePermissionRevoked(event);
 
-    AuthEvent captured = captureRecordedEvent();
+    AuthEvent captured = captureRecordedEventInCurrentTransaction();
     assertThat(captured.getEventType()).isEqualTo("ROLE_PERMISSION_REVOKED");
     assertThat(captured.getOutcome()).isEqualTo("SUCCESS");
     assertThat(captured.getUserId()).isNull();
@@ -662,7 +762,7 @@ class RbacAuthEventAdapterTest {
 
     adapter.recordRolePermissionGranted(event);
 
-    AuthEvent captured = captureRecordedEvent();
+    AuthEvent captured = captureRecordedEventInCurrentTransaction();
     // Must round-trip as valid JSON with both fields preserved as plain string values — never
     // interpreted as JSON structure.
     JsonNode metadata = objectMapper.readTree(captured.getMetadata());
@@ -676,36 +776,43 @@ class RbacAuthEventAdapterTest {
   }
 
   @Test
-  void should_notPropagateException_when_secureEventServiceThrowsOnCreateRole() {
-    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+  void should_propagateException_when_secureEventServiceThrowsOnCreateRole() {
+    doThrow(new RuntimeException("db down"))
+        .when(secureEventService)
+        .recordEventInCurrentTransaction(any());
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
     RoleAuditEvent event =
         new RoleAuditEvent(TENANT_ID, ROLE_ID, "Billing Manager", null, null, ACTOR_USER_ID, ctx, null);
 
-    assertThatCode(() -> adapter.recordRoleCreated(event)).doesNotThrowAnyException();
+    assertThatThrownBy(() -> adapter.recordRoleCreated(event)).isInstanceOf(RuntimeException.class);
   }
 
   @Test
-  void should_incrementAuditWriteFailedCounterWithCreateRoleTag_when_recordRoleCreatedFails() {
-    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+  void should_incrementAuditWriteFailedCounterWithCreateRoleTagAndAtomicMode_when_recordRoleCreatedFails() {
+    doThrow(new RuntimeException("db down"))
+        .when(secureEventService)
+        .recordEventInCurrentTransaction(any());
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
     RoleAuditEvent event =
         new RoleAuditEvent(TENANT_ID, ROLE_ID, "Billing Manager", null, null, ACTOR_USER_ID, ctx, null);
 
-    adapter.recordRoleCreated(event);
+    assertThatThrownBy(() -> adapter.recordRoleCreated(event)).isInstanceOf(RuntimeException.class);
 
     double count =
         meterRegistry
             .get("nexus.rbac.audit_write_failed")
             .tag("operation", "createRole")
+            .tag("mode", "atomic")
             .counter()
             .count();
     assertThat(count).isEqualTo(1.0);
   }
 
   @Test
-  void should_notPropagateException_when_secureEventServiceThrowsOnGrantPermission() {
-    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+  void should_propagateException_when_secureEventServiceThrowsOnGrantPermission() {
+    doThrow(new RuntimeException("db down"))
+        .when(secureEventService)
+        .recordEventInCurrentTransaction(any());
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
     RoleAuditEvent event =
         new RoleAuditEvent(
@@ -718,12 +825,15 @@ class RbacAuthEventAdapterTest {
             ctx,
             null);
 
-    assertThatCode(() -> adapter.recordRolePermissionGranted(event)).doesNotThrowAnyException();
+    assertThatThrownBy(() -> adapter.recordRolePermissionGranted(event))
+        .isInstanceOf(RuntimeException.class);
   }
 
   @Test
-  void should_incrementAuditWriteFailedCounterWithGrantPermissionTag_when_recordRolePermissionGrantedFails() {
-    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+  void should_incrementAuditWriteFailedCounterWithGrantPermissionTagAndAtomicMode_when_recordRolePermissionGrantedFails() {
+    doThrow(new RuntimeException("db down"))
+        .when(secureEventService)
+        .recordEventInCurrentTransaction(any());
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
     RoleAuditEvent event =
         new RoleAuditEvent(
@@ -736,20 +846,24 @@ class RbacAuthEventAdapterTest {
             ctx,
             null);
 
-    adapter.recordRolePermissionGranted(event);
+    assertThatThrownBy(() -> adapter.recordRolePermissionGranted(event))
+        .isInstanceOf(RuntimeException.class);
 
     double count =
         meterRegistry
             .get("nexus.rbac.audit_write_failed")
             .tag("operation", "grantPermission")
+            .tag("mode", "atomic")
             .counter()
             .count();
     assertThat(count).isEqualTo(1.0);
   }
 
   @Test
-  void should_logErrorWithLostAuditMarker_when_secureEventServiceThrowsOnGrantPermission() {
-    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+  void should_logErrorWithFailedMarker_when_secureEventServiceThrowsOnGrantPermission() {
+    doThrow(new RuntimeException("db down"))
+        .when(secureEventService)
+        .recordEventInCurrentTransaction(any());
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
     RoleAuditEvent event =
         new RoleAuditEvent(
@@ -764,26 +878,29 @@ class RbacAuthEventAdapterTest {
 
     ListAppender<ILoggingEvent> appender = startLogCapture();
     try {
-      adapter.recordRolePermissionGranted(event);
+      assertThatThrownBy(() -> adapter.recordRolePermissionGranted(event))
+          .isInstanceOf(RuntimeException.class);
 
       var errorEvents =
           appender.list.stream().filter(e -> e.getLevel() == Level.ERROR).toList();
       assertThat(errorEvents).hasSize(1);
       Map<String, Object> keyValues = keyValueMap(errorEvents.get(0));
       assertThat(keyValues)
-          .containsEntry("event", "RBAC_AUDIT_WRITE_LOST")
+          .containsEntry("event", "RBAC_AUDIT_WRITE_FAILED")
           .containsEntry("tenantId", TENANT_ID)
           .containsEntry("roleId", ROLE_ID)
           .containsEntry("actorUserId", ACTOR_USER_ID)
-          .containsEntry("traceId", "trace-fail");
+          .containsEntry("operation", "grantPermission");
     } finally {
       stopLogCapture(appender);
     }
   }
 
   @Test
-  void should_notPropagateException_when_secureEventServiceThrowsOnRevokePermission() {
-    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+  void should_propagateException_when_secureEventServiceThrowsOnRevokePermission() {
+    doThrow(new RuntimeException("db down"))
+        .when(secureEventService)
+        .recordEventInCurrentTransaction(any());
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
     RoleAuditEvent event =
         new RoleAuditEvent(
@@ -796,12 +913,15 @@ class RbacAuthEventAdapterTest {
             ctx,
             null);
 
-    assertThatCode(() -> adapter.recordRolePermissionRevoked(event)).doesNotThrowAnyException();
+    assertThatThrownBy(() -> adapter.recordRolePermissionRevoked(event))
+        .isInstanceOf(RuntimeException.class);
   }
 
   @Test
-  void should_incrementAuditWriteFailedCounterWithRevokePermissionTag_when_recordRolePermissionRevokedFails() {
-    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+  void should_incrementAuditWriteFailedCounterWithRevokePermissionTagAndAtomicMode_when_recordRolePermissionRevokedFails() {
+    doThrow(new RuntimeException("db down"))
+        .when(secureEventService)
+        .recordEventInCurrentTransaction(any());
     RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
     RoleAuditEvent event =
         new RoleAuditEvent(
@@ -814,12 +934,14 @@ class RbacAuthEventAdapterTest {
             ctx,
             null);
 
-    adapter.recordRolePermissionRevoked(event);
+    assertThatThrownBy(() -> adapter.recordRolePermissionRevoked(event))
+        .isInstanceOf(RuntimeException.class);
 
     double count =
         meterRegistry
             .get("nexus.rbac.audit_write_failed")
             .tag("operation", "revokePermission")
+            .tag("mode", "atomic")
             .counter()
             .count();
     assertThat(count).isEqualTo(1.0);
@@ -829,9 +951,21 @@ class RbacAuthEventAdapterTest {
   // Helpers
   // ---------------------------------------------------------------------
 
+  /** Group B (best-effort, {@code REQUIRES_NEW}) capture — {@link #recordRoleAssignmentDenied}. */
   private AuthEvent captureRecordedEvent() {
     ArgumentCaptor<AuthEvent> captor = ArgumentCaptor.forClass(AuthEvent.class);
     verify(secureEventService).recordEvent(captor.capture());
+    return captor.getValue();
+  }
+
+  /**
+   * Group A (atomic, {@code MANDATORY}) capture (US-018 A6) — {@link #recordRoleAssigned}, {@link
+   * #recordRoleRevoked}, {@link #recordRoleCreated}, {@link #recordRolePermissionGranted}, {@link
+   * #recordRolePermissionRevoked}.
+   */
+  private AuthEvent captureRecordedEventInCurrentTransaction() {
+    ArgumentCaptor<AuthEvent> captor = ArgumentCaptor.forClass(AuthEvent.class);
+    verify(secureEventService).recordEventInCurrentTransaction(captor.capture());
     return captor.getValue();
   }
 

@@ -336,19 +336,20 @@ public class RoleAssignmentService {
               .findActiveAssignmentView(targetUserId, roleId, actor.tenantId())
               .orElseThrow(); // structurally impossible: the row was just inserted above
 
+      // US-018 A6 (design §6.2): the success-audit write moved INLINE, inside this transaction,
+      // after the insert and before return -- no longer post-commit. RbacAuditPort's Group A
+      // contract now REQUIRES the implementation to throw on failure (it no longer swallows), so
+      // a lost audit write propagates from here, rolls back this transaction, and surfaces as a
+      // 500 rather than committing a role change with zero audit trail. Cache eviction, the INFO
+      // log and the lock-hold timer stay post-commit below -- only the audit write itself moved.
+      rbacAuditPort.recordRoleAssigned(
+          new RbacAuditEvent(
+              actor.tenantId(), targetUserId, roleId, role.getName(), actor.userId(),
+              requestContext));
+
       registerPostCommitSideEffects(
           () -> {
             permissionCachePort.evict(actor.tenantId(), targetUserId);
-            rbacAuditPort.recordRoleAssigned(
-                new RbacAuditEvent(
-                    actor.tenantId(),
-                    targetUserId,
-                    roleId,
-                    role.getName(),
-                    actor.userId(),
-                    requestContext));
-            // Operator-visible confirmation independent of the audit table's own availability
-            // (the audit write above is itself best-effort — see RbacAuditPort's contract).
             log.atInfo()
                 .addKeyValue(LOG_KEY_EVENT, "ROLE_ASSIGNED")
                 .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
@@ -599,17 +600,16 @@ public class RoleAssignmentService {
         throw assignmentNotFound();
       }
 
+      // US-018 A6 (design §6.2): see the matching comment in assign() above -- the success-audit
+      // write moved INLINE, inside this transaction, after the revoke and before return.
+      rbacAuditPort.recordRoleRevoked(
+          new RbacAuditEvent(
+              actor.tenantId(), targetUserId, roleId, role.getName(), actor.userId(),
+              requestContext));
+
       registerPostCommitSideEffects(
           () -> {
             permissionCachePort.evict(actor.tenantId(), targetUserId);
-            rbacAuditPort.recordRoleRevoked(
-                new RbacAuditEvent(
-                    actor.tenantId(),
-                    targetUserId,
-                    roleId,
-                    role.getName(),
-                    actor.userId(),
-                    requestContext));
             log.atInfo()
                 .addKeyValue(LOG_KEY_EVENT, "ROLE_REVOKED")
                 .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
