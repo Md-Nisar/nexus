@@ -14,6 +14,7 @@ import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jws;
 import io.jsonwebtoken.JwsHeader;
 import io.jsonwebtoken.Jwts;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.security.PublicKey;
 import java.time.Clock;
 import java.util.List;
@@ -52,7 +53,12 @@ class JwtClaimsContractTest {
         .thenReturn(new ResolvedPermissions(List.of("USER"), List.of()));
     service =
         new JwtRs256Service(
-            rsaKeyConfig, UUID::randomUUID, Clock.systemUTC(), 900L, roleResolutionService);
+            rsaKeyConfig,
+            UUID::randomUUID,
+            Clock.systemUTC(),
+            900L,
+            roleResolutionService,
+            new SimpleMeterRegistry());
 
     testUser = mock(User.class);
     when(testUser.getId()).thenReturn(UUID.randomUUID());

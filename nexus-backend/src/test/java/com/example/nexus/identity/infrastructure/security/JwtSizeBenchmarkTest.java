@@ -10,6 +10,7 @@ import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UserStatus;
 import com.example.nexus.rbac.application.RoleResolutionService;
 import com.example.nexus.rbac.domain.ResolvedPermissions;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.util.List;
@@ -50,7 +51,7 @@ class JwtSizeBenchmarkTest {
 
     JwtRs256Service svc =
         new JwtRs256Service(rsaKeyConfig, UUID::randomUUID, Clock.systemUTC(), 900L,
-            roleResolutionService);
+            roleResolutionService, new SimpleMeterRegistry());
 
     User user = mock(User.class);
     when(user.getId()).thenReturn(UUID.randomUUID());
