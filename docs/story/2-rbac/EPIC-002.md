@@ -28,9 +28,11 @@
 
 **Success metrics (post-launch):** zero privilege-escalation findings in pre-GA pen test; RBAC overhead adds < 5ms to p95 API response time; at least one Epic 3 endpoint protected on day one with no contract changes to the RBAC layer.
 
-**Scope boundary — explicitly OUT:** UI for role management (that is a Tenant Management UI concern, Epic 3); platform-wide / super-admin roles; permission inheritance / hierarchical roles; ABAC; dynamic permission creation at runtime (permissions are code-defined, not DB-configured); user provisioning / bulk role assignment.
+**Scope boundary — explicitly OUT:** platform-wide / super-admin roles; permission inheritance / hierarchical roles; ABAC; dynamic permission creation at runtime (permissions are code-defined, not DB-configured); user provisioning / bulk role assignment.
 
-**PM flag:** "Tenant Admin assigns roles" touches the Tenant Management boundary. In Epic 2 the assignment API is built and secured; the UI surface for a Tenant Admin to use it lives in Epic 3. The API must exist now so Epic 3 has something to call.
+**Scope boundary — moved IN (2026-10-05, product-owner decision, Open Decision #10):** the tenant-admin UI for role management (Access Management console). Its prerequisites are US-019 and the UI itself is US-020. Epic 3 keeps tenant creation, tenant settings and user provisioning/invites.
+
+**PM flag:** "Tenant Admin assigns roles" touches the Tenant Management boundary. In Epic 2 the assignment API is built and secured; the UI surface for a Tenant Admin to use it lives in Epic 3. The API must exist now so Epic 3 has something to call. **[2026-10-05] Superseded:** the role-management UI moved into this epic (US-019 prerequisites, US-020 UI), see Open Decision #10.
 
 ---
 
@@ -75,7 +77,7 @@
 
 ## [UX] — User Experience
 
-**Scope note:** No role management UI in Epic 2 (that is Epic 3). UX scope here covers: the 403 experience, frontend route guards as a pattern, and the Angular permission directive used by all future feature UIs.
+**Scope note:** ~~No role management UI in Epic 2 (that is Epic 3).~~ **[2026-10-05] The role-management UI is now in Epic 2: US-020, specified in `US-020.md`, with prerequisites in US-019.** The original UX scope below still covers: the 403 experience, frontend route guards as a pattern, and the Angular permission directive used by all future feature UIs.
 
 **403 — Insufficient permissions state:**
 - API returns `403 + RBAC_001 + { "required_permission": "tenant:write", "message": "You do not have permission to perform this action" }`
@@ -206,7 +208,9 @@ EPIC TITLE: RBAC Foundation
 Description: Delivers a Roles + Permissions model scoped to tenants. Populates
 the JWT roles[] and permissions[] claims, enforces permission checks on all API
 endpoints via @RequiresPermission, and provides Angular route guards and
-directives for frontend access control. Unblocks Epic 3 (Tenant Management).
+directives for frontend access control, and a tenant-admin Access
+Management console (US-019 prerequisites, US-020 UI). Unblocks Epic 3
+(Tenant Management).
 Business Goal: Zero unguarded endpoints from Epic 3 onward; role assignment
 audited from day one.
 Success Metric: Zero privilege-escalation findings in pre-GA pen test; RBAC
@@ -898,6 +902,71 @@ Full story: `docs/story/2-rbac/US-018.md`. A principal-architect review of US-00
 
 ---
 
+### US-019 — Close the prerequisites and gaps before the RBAC Access Management UI (US-020)
+
+| TYPE | PRIORITY | STORY POINTS | EPIC LINK | SPRINT | ASSIGNEE |
+|------|----------|--------------|-----------|--------|----------|
+| Enabler | P0 items block US-020 kickoff; P1/P2 for the rest | _(unestimated — pending Gate 1; expected to split)_ | EPIC-002: RBAC Foundation | _(unscheduled — before US-020)_ | _(Tech lead assigns)_ |
+
+### User Story
+As the team building the Access Management console (US-020),
+I want every missing API, frontend foundation, test fixture and product decision the console depends on to be in place first,
+So that US-020 is a pure UI story on a correct, tested platform.
+
+### Background / Context
+Full story: `docs/story/2-rbac/US-019.md`. A gap review of the first console draft against the code at `9820d4e` found work a UI story cannot absorb. It includes a **verified `permissionGuard` cold-start defect**: Angular runs guards in one `canActivate` array concurrently, so `[authGuard, permissionGuard]` sends an entitled user who reloads the page to `/access-denied`.
+
+### Acceptance Criteria — summary (full DoD in `US-019.md`)
+| Group | Criteria | Scope |
+|---|---|---|
+| **A — Frontend platform** | A1–A11 | Guard cold-start fix; authenticated app shell; missing `shared/ui` wrappers and `NxTable` extensions; typed `Permission` catalogue (US-018 B5 FE half); 403 redirect with opt-out (US-018 C6); Not Found route; page titles; Access Denied page per UX spec; login `returnUrl`; typed API contract |
+| **B — Backend API** | B1–B10 | Tenant user directory and batch lookup; `GET /roles/{id}`; live caller authorization profile with `isAdministrator`; `isSensitive` on permissions; role member/permission counts; caller-facing denial reason (decision); atomic `PUT /roles/{id}/permissions`; US-018 M9 scheduling; OpenAPI error docs |
+| **C — Environments and test** | C1–C4 | Dev/e2e seed personas (incl. a second tenant); Playwright persona fixtures; feature-flag rollout plan; CI e2e against a real backend |
+| **D — Decisions** | D1–D6 | Epic ownership (resolved); UX designs; content deck; propagation wording (≈ 30 min worst case); privacy/security sign-off; developer guide |
+
+### Dependencies
+- Blocked by: none
+- Blocks: US-020
+
+### Implementation Status (2026-10-05)
+**Story approved by the product owner (2026-10-05); pending Gate 1** (`/new-feature US-019`).
+
+---
+
+### US-020 — Access Management console: role, permission and assignment UI for tenant administrators
+
+| TYPE | PRIORITY | STORY POINTS | EPIC LINK | SPRINT | ASSIGNEE |
+|------|----------|--------------|-----------|--------|----------|
+| Feature | P0 for Groups A–C, F, G; P1 Group D; P2 Group E | _(unestimated — pending Gate 1; expected to split)_ | EPIC-002: RBAC Foundation | _(unscheduled — after US-019 P0 items)_ | _(Tech lead assigns)_ |
+
+### User Story
+As a tenant administrator,
+I want an Access Management console to view roles, build custom roles from the permission catalogue, and grant or revoke roles for users — with the impact of each change shown before I commit it,
+So that I can run least-privilege access control without API calls or the risk of locking my tenant out of administration.
+
+### Background / Context
+Full story: `docs/story/2-rbac/US-020.md`. The RBAC backend is complete through US-018 M2, but no frontend screen calls any RBAC endpoint. This story is UI only; every prerequisite is in US-019.
+
+### Acceptance Criteria — summary (full DoD in `US-020.md`)
+| Group | Criteria | Scope |
+|---|---|---|
+| **A — Area, roles list, catalogue** | A1–A6 | `/admin/access` under the app shell; roles list with System badges; permission catalogue grouped by resource with Sensitive badges; accessible permission matrix |
+| **B — Custom roles** | B1–B7 | Create, clone and edit with a staged diff and impact review; partial-failure honesty; grant rules shown up front; system roles never editable |
+| **C — Assignment** | C1–C6 | Users list; user access page; assign/revoke with self-assignment and last-admin lockout prevented up front |
+| **D — Members and lifecycle** | D1–D4 | Members tab, unused-role signal, rename/delete, server paging (needs US-018 M9) |
+| **E — Access review** | E1–E3 | Effective permissions with "via role", permission holders, CSV export (needs US-018 C3) |
+| **F — Cross-cutting** | F1–F8 | WCAG 2.1 AA in both themes, ADR 0004, propagation messaging, inline 403 handling, typed permissions, no PII in client logs, performance |
+| **G — Resilience and edge states** | G1–G11 | URL state, titles/breadcrumbs, concurrent edits, session expiry drafts, no double submits, own-access changes, entry point, long content, output safety, failure states, in-product help |
+
+### Dependencies
+- Blocked by: US-019 P0 items; US-018 M9 for Groups D–E
+- Blocks: Epic 3 Tenant Management UI (reuses the shell, the directory and the console patterns)
+
+### Implementation Status (2026-10-05)
+**Story approved by the product owner (2026-10-05); pending Gate 1** (`/new-feature US-020`).
+
+---
+
 ## Recommended Sprint Order
 
 | Sprint | Stories | Points | Notes |
@@ -907,6 +976,8 @@ Full story: `docs/story/2-rbac/US-018.md`. A principal-architect review of US-00
 | Sprint 5 | US-013, US-015 | 12 | Frontend guards + role/permission management API; non-gating, can parallel-stream with Epic 3 start |
 | Sprint 6 | US-016 | _(TBD at Gate 1)_ | Closes the D15/R-3 residual risk from US-015; hard deadline before Epic 3 kickoff, not just "recommended" |
 | _(TBD)_ | US-018 | _(TBD at Gate 1)_ | Production-readiness remediation; Group A must land before Epic 3 kickoff; to be split into smaller stories at Gate 1 |
+| _(TBD)_ | US-019 | _(TBD at Gate 1)_ | Prerequisites for the console; P0 items gate US-020 kickoff; can run in parallel with US-018 |
+| _(TBD)_ | US-020 | _(TBD at Gate 1)_ | Access Management console; Groups A–C, F, G after US-019 P0 items; Groups D–E follow US-018 M9 |
 
 ## Open Decisions
 
@@ -921,3 +992,4 @@ _Resolved during feasibility review (see updates above), plus forward-tracked en
 7. **RES-3 successor story (US-016 Gate 1 #8, merge-checklist item)** — **RESOLVED: filed and now formally tracked in this epic.** `docs/story/2-rbac/US-017.md` — "Extend last-admin lockout protection to admin-equivalent custom roles" — is filed pre-merge per US-016's own threat-model/design merge checklist (`docs/features/US-016/03-design.md` §12.2 item 14, §12.3 RES-3, §14), following the US-016 stub precedent in item 6 above. It is a **DRAFT stub pending its own Gate 1**, deliberately not pre-scoped, and is paired with RES-9 (US-016 §12.3) as one Epic-3 question — see US-017's Background section. Not a hard date-bound gate the way item 6 is; US-016's design records RES-3 as Med severity, accepted out of scope, with the backlog story's existence (not its completion) being the merge blocker for US-016 itself. **[US-017, 2026-09-24] Superseded by the full story entry above.** Gate 1 (2026-09-17), Gate 2 (threat model closed 2026-09-18) and Gate 3 (8-task breakdown) are complete; the stub's "paired with RES-9 as one Epic-3 question" framing is resolved as RES-3 closed end to end and RES-9 closed for the assign/revoke caller test only, with RES-13 carrying the mint-side remainder forward — see the "US-017" section above for current implementation status and the merge checklist, which is not yet fully satisfied.
 8. **RES-10 backlog observation (US-016 §12.3, T-D12)** — **RESOLVED: filed as an observation, not a story.** `RoleAssignmentService.assign(TENANT_ADMIN)` (S-lock on the caller's row, then an insert-intention lock in the `role_id = adminRoleId` gap) and `revoke(TENANT_ADMIN)` (M1's next-key range lock) can cycle under a mixed concurrent workload — pre-existing, **unrelated to and unchanged by US-016**. Recorded so that a future harness-C or production lock-wait failure under mixed `assign`/`revoke(TENANT_ADMIN)` traffic is not misattributed to this story. No successor story is filed for this item — it is deliberately **not a fix commitment**, per US-016 design §12.3 RES-10 ("Accepted as inherited... Filed as a separate backlog observation, not a US-016 fix"). Named in US-016's own `03-design.md` §7.2 property 3 and in `LastAdminLockoutIT`'s harness-C Javadoc. **[US-017, 2026-09-24] Closed at the root.** US-017 D7 closes this by making the tenant-wide union-lock acquisition order total across both verbs; the empirical exit gate for that fix (`LastAdminLockoutIT` harness C, ≥5 green runs under Docker, T-003(f)) is now satisfied (5/5 green, 2026-09-24). The harness's earlier failures traced to an unrelated Hikari connection-pool sizing artifact, not a surviving lock cycle — see `docs/features/US-016/03-design.md` §12.3 RES-10 for the full diagnosis. This backlog observation is now discharged, not merely status-updated.
 9. **Dependency-hygiene backlog item for `npm audit`'s 27 pre-existing frontend toolchain findings (US-017 §12.1/Editorial 5)** — **NEW, filed here as instructed by the design's own editorial note, since no dependency-hygiene backlog item existed for it prior to this entry.** `npm audit` on the frontend reports 27 pre-existing findings (1 critical, 7 high, 16 moderate, 3 low), all in the Angular build/toolchain dependency graph (`tar`, `undici`, `qs`, …) — re-verified independently by both US-017's requirements/impact pass and its Gate 2 threat model (`03b-threat-model.md` §0.1 item 19). **Not attributable to US-017**, which touches zero files under `nexus-frontend/`. Warranted **independently of any RBAC story** — whoever picks this up must respect the known npm-Windows lockfile-prune trap (`npm install` on Windows strips `@emnapi` entries from the frontend lockfile, breaking Linux CI) when working it. No story id assigned yet; tracked here as an open item, not a hard gate for any story in this epic.
+10. **Role-management UI ownership** — **RESOLVED 2026-10-05: in EPIC-002** (product-owner decision). The [PM] scope boundary listed "UI for role management" as Epic 3. It moves into this epic on the same reasoning as item 2: it consumes only `rbac`-context APIs built here, and Epic 3 is not yet scoped. Delivered as **US-019** (prerequisites and gaps) and **US-020** (the console). Epic 3 keeps tenant creation, tenant settings and user provisioning/invites. The [PM] scope boundary, the PM flag and the [UX] scope note are updated accordingly.
