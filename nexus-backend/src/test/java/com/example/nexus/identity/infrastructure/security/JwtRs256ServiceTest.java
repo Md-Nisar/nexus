@@ -19,6 +19,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -471,6 +472,22 @@ class JwtRs256ServiceTest {
   void should_rejectWithClaimsMissingReason_when_rolesClaimAbsent() {
     Map<String, Object> claims = validClaims(2);
     claims.remove("roles");
+
+    assertRejectedWithReason(signedToken(claims), "claims_missing");
+  }
+
+  @Test
+  void should_rejectWithClaimsMissingReason_when_rolesContainsNullElement() {
+    Map<String, Object> claims = validClaims(2);
+    claims.put("roles", Collections.singletonList(null));
+
+    assertRejectedWithReason(signedToken(claims), "claims_missing");
+  }
+
+  @Test
+  void should_rejectWithClaimsMissingReason_when_permissionsContainsNonStringElement() {
+    Map<String, Object> claims = validClaims(2);
+    claims.put("permissions", List.of(1));
 
     assertRejectedWithReason(signedToken(claims), "claims_missing");
   }

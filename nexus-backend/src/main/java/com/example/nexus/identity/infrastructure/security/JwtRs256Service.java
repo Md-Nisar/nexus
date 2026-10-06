@@ -190,10 +190,8 @@ public class JwtRs256Service implements JwtPort {
       Date iatDate = payload.getIssuedAt();
       Date expDate = payload.getExpiration();
       String jti = payload.getId();
-      @SuppressWarnings("unchecked")
-      List<String> roles = (List<String>) payload.get("roles");
-      @SuppressWarnings("unchecked")
-      List<String> permissions = (List<String>) payload.get("permissions");
+      List<String> roles = stringList(payload.get("roles"));
+      List<String> permissions = stringList(payload.get("permissions"));
       Integer tokenVersion = payload.get("token_version", Integer.class);
       if (iatDate == null || expDate == null || jti == null
           || roles == null || permissions == null || tokenVersion == null) {
@@ -229,6 +227,27 @@ public class JwtRs256Service implements JwtPort {
       // A required claim is present with the wrong JSON type.
       throw reject(RejectionReason.CLAIMS_MISSING);
     }
+  }
+
+  /**
+   * Casts to {@code List<String>}, rejecting a non-null, non-String element. A missing claim
+   * (non-{@link List} value, including {@code null}) returns {@code null} for the caller's
+   * existing missing-claims check; a wrong element type throws {@link ClassCastException},
+   * caught by {@link #validatedClaims(Claims)} as {@code CLAIMS_MISSING} instead of surfacing as
+   * a 500 downstream (e.g. in {@code List.copyOf} or a {@code "ROLE_" + r} mapping).
+   */
+  private static List<String> stringList(Object value) {
+    if (!(value instanceof List<?> list)) {
+      return null;
+    }
+    for (Object element : list) {
+      if (!(element instanceof String)) {
+        throw new ClassCastException("list element is not a String");
+      }
+    }
+    @SuppressWarnings("unchecked")
+    List<String> stringElements = (List<String>) list;
+    return stringElements;
   }
 
   /**
