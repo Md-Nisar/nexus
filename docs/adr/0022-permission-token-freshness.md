@@ -125,6 +125,7 @@ After M7, keep the permission cache only if it lowers refresh p95 by at least 5 
 - The refresh rate limit is loosened per IP for successful refreshes only.
 - Per-instance degraded state can flap; flapping no longer restarts the window, and it pages.
 - A Redis outage longer than the window is a platform-wide authenticated 503 (RES-30; acceptance by SRE and PM pending at Gate 2).
+- **Residual risk: epoch regression after key loss plus failover (M7 review L-4).** `max(old + 1, Redis TIME)` keeps the value monotonic across key loss only while the Redis server's clock does not go backwards. If an epoch key is lost (TTL, eviction, flush) and Sentinel then fails over to a replica whose clock lags the old primary's, the next bump can produce a value lower than an epoch already embedded in a live token, and that token stays fresh. The window is at most one access-token TTL, needs both events together, and is accepted. Mitigations: NTP on every Redis node, and `noeviction` (ADR-0016 D1).
 
 **Redis is authorization state (Revision 1, RC-34).** Redis write access equals **permission injection at mint** (write a permset entry, then refresh; pre-existing under ADR-0016) and, from this ADR, **revocation suppression** (delete an epoch key) and a targeted denial of service (set an epoch far ahead). **Redis write access therefore equals authorization** (RES-32). Production prerequisites:
 - Redis authentication, with an ACL user limited to the `nexus:*` key patterns, or at minimum `requirepass`;
