@@ -165,6 +165,17 @@ class TokenFreshnessIT {
   }
 
   @Test
+  void should_keepOtherUsersTokenFresh_when_anotherUserRevoked() {
+    Holder revoked = seedHolder("iso-gone");
+    Holder bystander = seedHolder("iso-by");
+    Session bystanderSession = login(bystander.email());
+    revoke(revoked);
+
+    assertThat(get(GUARDED, bystanderSession.accessToken()).getStatusCode().value())
+        .isEqualTo(200);
+  }
+
+  @Test
   void should_return401Auth003_when_staleEpochBearerOnNonPublicHandlerWhileHealthy() {
     Holder holder = seedHolder("stale-guarded");
     Session session = login(holder.email());

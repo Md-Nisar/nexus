@@ -1,6 +1,8 @@
 package com.example.nexus.rbac.infrastructure.cache;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 import com.example.nexus.rbac.infrastructure.cache.EpochRedisConfig.EpochTemplates;
 import io.lettuce.core.resource.ClientResources;
@@ -20,6 +22,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.data.redis.autoconfigure.DataRedisConnectionDetails;
+import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.RedisCallback;
@@ -183,6 +186,121 @@ class RedisPermissionEpochAdapterIT {
 
     for (UUID userId : users) {
       assertThat(adapter(templates).current(tenantId, userId).orElseThrow()).isPositive();
+    }
+  }
+
+  @Test
+  void should_returnEmpty_when_storedValueUnparseable() {
+    UUID tenantId = UUID.randomUUID();
+    UUID userId = UUID.randomUUID();
+    templates.read().opsForValue().set(key(tenantId, userId), "not-a-number");
+
+    OptionalLong current = adapter(templates).current(tenantId, userId);
+
+    assertThat(current).isEmpty();
+  }
+
+  @Test
+  void should_returnStoredValue_when_epochIsLongMaxValue() {
+    UUID tenantId = UUID.randomUUID();
+    UUID userId = UUID.randomUUID();
+    templates.read().opsForValue().set(key(tenantId, userId), Long.toString(Long.MAX_VALUE));
+
+    OptionalLong current = adapter(templates).current(tenantId, userId);
+
+    assertThat(current).hasValue(Long.MAX_VALUE);
+  }
+
+  @Test
+  void should_recoverToRedisTime_when_unparseableValueBumped() {
+    UUID tenantId = UUID.randomUUID();
+    UUID userId = UUID.randomUUID();
+    templates.read().opsForValue().set(key(tenantId, userId), "not-a-number");
+    long before = redisTimeMillis();
+
+    adapter(templates).bump(tenantId, List.of(userId));
+
+    assertThat(adapter(templates).current(tenantId, userId).orElseThrow())
+        .isGreaterThanOrEqualTo(before);
+  }
+
+  @Test
+  void should_refreshTtl_when_bumpedAgain() {
+    UUID tenantId = UUID.randomUUID();
+    UUID userId = UUID.randomUUID();
+    adapter(templates).bump(tenantId, List.of(userId));
+    templates.read().expire(key(tenantId, userId), Duration.ofSeconds(10));
+
+    adapter(templates).bump(tenantId, List.of(userId));
+
+    assertThat(templates.read().getExpire(key(tenantId, userId)))
+        .isBetween(KEY_TTL_SECONDS - 5, KEY_TTL_SECONDS);
+  }
+
+  @Test
+  void should_createNoKey_when_bumpGivenNoUsers() {
+    UUID tenantId = UUID.randomUUID();
+
+    adapter(templates).bump(tenantId, List.of());
+
+    assertThat(templates.read().keys(KEY_PREFIX + ":rbac:epoch:" + tenantId + ":*")).isEmpty();
+  }
+
+  @Test
+  void should_loseNoIncrement_when_bumpedConcurrently() throws Exception {
+    int threads = 8;
+    int bumpsPerThread = 5;
+    UUID tenantId = UUID.randomUUID();
+    UUID userId = UUID.randomUUID();
+    // Far ahead of Redis time, so every bump is old + 1 and a lost update shows as a short total.
+    long start = redisTimeMillis() + 3_600_000L;
+    templates.read().opsForValue().set(key(tenantId, userId), Long.toString(start));
+    RedisPermissionEpochAdapter adapter = adapter(templates);
+    ExecutorService pool = Executors.newFixedThreadPool(threads);
+    try {
+      CountDownLatch go = new CountDownLatch(1);
+      List<Future<?>> bumps = new ArrayList<>();
+      for (int t = 0; t < threads; t++) {
+        bumps.add(pool.submit(() -> {
+          go.await();
+          for (int i = 0; i < bumpsPerThread; i++) {
+            adapter.bump(tenantId, List.of(userId));
+          }
+          return null;
+        }));
+      }
+
+      go.countDown();
+      for (Future<?> bump : bumps) {
+        bump.get(10, TimeUnit.SECONDS);
+      }
+
+      assertThat(adapter.current(tenantId, userId)).hasValue(start + (long) threads * bumpsPerThread);
+    } finally {
+      pool.shutdownNow();
+    }
+  }
+
+  @Test
+  void should_throwDataAccessExceptionWithoutHanging_when_bumpAgainstPausedRedis() {
+    try (GenericContainer<?> paused = new GenericContainer<>(REDIS_IMAGE).withExposedPorts(6379)) {
+      paused.start();
+      EpochTemplates pausedTemplates = templatesFor(paused);
+      awaitReady(pausedTemplates);
+      try {
+        RedisPermissionEpochAdapter adapter = adapter(pausedTemplates);
+        paused.getDockerClient().pauseContainerCmd(paused.getContainerId()).exec();
+        try {
+          // The bound is 500 ms; the 5 s ceiling only turns an unbounded wait into a failure.
+          assertThatThrownBy(() -> assertTimeoutPreemptively(Duration.ofSeconds(5),
+              () -> adapter.bump(UUID.randomUUID(), List.of(UUID.randomUUID()))))
+              .isInstanceOf(DataAccessException.class);
+        } finally {
+          paused.getDockerClient().unpauseContainerCmd(paused.getContainerId()).exec();
+        }
+      } finally {
+        pausedTemplates.destroy();
+      }
     }
   }
 

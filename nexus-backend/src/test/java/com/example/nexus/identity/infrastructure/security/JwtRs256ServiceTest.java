@@ -18,6 +18,7 @@ import com.example.nexus.rbac.domain.ResolvedPermissions;
 import io.jsonwebtoken.Jwts;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.math.BigInteger;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -361,6 +362,31 @@ class JwtRs256ServiceTest {
     claims.put("perm_epoch", 7);
 
     assertThat(service(Clock.systemUTC()).verify(signedToken(claims)).permEpoch()).isEqualTo(7L);
+  }
+
+  @Test
+  void should_returnPermEpoch_when_v3TokenEpochIsLongMaxValue() {
+    Map<String, Object> claims = validClaims(3);
+    claims.put("perm_epoch", Long.MAX_VALUE);
+
+    assertThat(service(Clock.systemUTC()).verify(signedToken(claims)).permEpoch())
+        .isEqualTo(Long.MAX_VALUE);
+  }
+
+  @Test
+  void should_rejectWithPermEpochReason_when_v3PermEpochExceedsLongRange() {
+    Map<String, Object> claims = validClaims(3);
+    claims.put("perm_epoch", BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE));
+
+    assertRejectedWithReason(signedToken(claims), "perm_epoch");
+  }
+
+  @Test
+  void should_ignorePermEpochClaim_when_v2TokenCarriesOne() {
+    Map<String, Object> claims = validClaims(2);
+    claims.put("perm_epoch", 1_759_000_000_000L);
+
+    assertThat(service(Clock.systemUTC()).verify(signedToken(claims)).permEpoch()).isZero();
   }
 
   // -----------------------------------------------------------------------

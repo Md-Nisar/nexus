@@ -190,6 +190,21 @@ class EpochRedisConfigTest {
   }
 
   @Test
+  void should_failStartup_when_connectionDetailsDeclareMasterReplica() {
+    DataRedisConnectionDetails details = new DataRedisConnectionDetails() {
+      @Override
+      public MasterReplica getMasterReplica() {
+        return () -> List.of(new Node("node-a", 6379));
+      }
+    };
+
+    assertThatThrownBy(
+            () -> EpochRedisConfig.dedicatedFactory(
+                details, plainMain(), clientResources, Duration.ofMillis(50)))
+        .isInstanceOf(IllegalStateException.class);
+  }
+
+  @Test
   void should_useSslWithBundleOptionsAndClientName_when_mainFactoryUsesSslBundle() throws Exception {
     SslOptions bundleOptions = SslOptions.builder()
         .keyManager(KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()))
