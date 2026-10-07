@@ -114,7 +114,7 @@ class RefreshTokenPermissionResolutionIT {
   void should_mintV3WithCurrentPermEpoch_when_tokenRefreshedAfterEpochBump() {
     User user = seedActiveUser("refresh-epoch");
     String rawToken = seedRefreshToken(user);
-    permissionFreshness.invalidateUser(TENANT_ID, user.getId());
+    permissionFreshness.invalidateUser(TENANT_ID, user.getId(), "revoke");
     long current = permissionFreshness.epochForMint(TENANT_ID, user.getId());
 
     LoginResult refreshed = refreshTokenUseCase.execute(rawToken, "127.0.0.1");

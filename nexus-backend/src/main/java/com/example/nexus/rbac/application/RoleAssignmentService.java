@@ -630,7 +630,7 @@ public class RoleAssignmentService {
             // US-018 A9 (MC-7b): every token the target holds becomes stale. After commit only, so
             // a mint in the gap cannot read the new epoch with pre-commit permissions; after the
             // timer, so the bump's Redis latency does not inflate the lock-hold measurement.
-            permissionFreshnessService.invalidateUser(actor.tenantId(), targetUserId);
+            permissionFreshnessService.invalidateUser(actor.tenantId(), targetUserId, OPERATION_REVOKE);
           });
     } catch (InsufficientPermissionException e) {
       stopLockHoldTimer(lockHoldSample, OPERATION_REVOKE, OUTCOME_DENIED);

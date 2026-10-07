@@ -6,14 +6,22 @@ import com.example.nexus.rbac.infrastructure.cache.EpochRedisConfig.EpochTemplat
 import io.lettuce.core.resource.ClientResources;
 import io.lettuce.core.resource.DefaultClientResources;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.OptionalLong;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.data.redis.autoconfigure.DataRedisConnectionDetails;
+import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
+import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.RedisCallback;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.junit.jupiter.Container;
@@ -44,6 +52,7 @@ class RedisPermissionEpochAdapterIT {
   static void setUpRedis() {
     clientResources = DefaultClientResources.create();
     templates = templatesFor(REDIS);
+    awaitReady(templates);
   }
 
   @AfterAll
@@ -59,9 +68,27 @@ class RedisPermissionEpochAdapterIT {
         return Standalone.of(redis.getHost(), redis.getMappedPort(6379));
       }
     };
+    LettuceConnectionFactory main = new LettuceConnectionFactory(
+        new RedisStandaloneConfiguration(redis.getHost(), redis.getMappedPort(6379)));
     return new EpochTemplates(
-        EpochRedisConfig.dedicatedFactory(details, clientResources, Duration.ofMillis(50)),
-        EpochRedisConfig.dedicatedFactory(details, clientResources, Duration.ofMillis(500)));
+        EpochRedisConfig.dedicatedFactory(details, main, clientResources, Duration.ofMillis(50)),
+        EpochRedisConfig.dedicatedFactory(details, main, clientResources, Duration.ofMillis(500)));
+  }
+
+  /** The first connection is opened off-thread, so wait for it before using the templates. */
+  private static void awaitReady(EpochTemplates epochTemplates) {
+    long deadline = System.nanoTime() + Duration.ofSeconds(15).toNanos();
+    while (!(epochTemplates.readReady() && epochTemplates.bumpReady())) {
+      if (System.nanoTime() > deadline) {
+        throw new AssertionError("epoch templates not ready within 15 s");
+      }
+      try {
+        Thread.sleep(25);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        throw new AssertionError("interrupted while waiting for epoch templates", e);
+      }
+    }
   }
 
   private static RedisPermissionEpochAdapter adapter(EpochTemplates epochTemplates) {
@@ -122,7 +149,7 @@ class RedisPermissionEpochAdapterIT {
     adapter.bump(tenantId, List.of(userId));
 
     long second = adapter.current(tenantId, userId).orElseThrow();
-    assertThat(second).isGreaterThanOrEqualTo(beforeSecond).isGreaterThanOrEqualTo(first);
+    assertThat(second).isGreaterThanOrEqualTo(beforeSecond).isGreaterThan(first);
   }
 
   @Test
@@ -164,6 +191,7 @@ class RedisPermissionEpochAdapterIT {
     try (GenericContainer<?> paused = new GenericContainer<>(REDIS_IMAGE).withExposedPorts(6379)) {
       paused.start();
       EpochTemplates pausedTemplates = templatesFor(paused);
+      awaitReady(pausedTemplates);
       try {
         RedisPermissionEpochAdapter adapter = adapter(pausedTemplates);
         UUID tenantId = UUID.randomUUID();
@@ -183,6 +211,54 @@ class RedisPermissionEpochAdapterIT {
           paused.getDockerClient().unpauseContainerCmd(paused.getContainerId()).exec();
         }
       } finally {
+        pausedTemplates.destroy();
+      }
+    }
+  }
+
+  @Test
+  void should_neverBlockRequestThreads_when_startedAgainstPausedRedisThenRecover()
+      throws Exception {
+    int callers = 50;
+    long readBoundMs = 50;
+    try (GenericContainer<?> paused = new GenericContainer<>(REDIS_IMAGE).withExposedPorts(6379)) {
+      paused.start();
+      paused.getDockerClient().pauseContainerCmd(paused.getContainerId()).exec();
+      boolean unpaused = false;
+      EpochTemplates pausedTemplates = templatesFor(paused);
+      ExecutorService callersPool = Executors.newFixedThreadPool(callers);
+      try {
+        RedisPermissionEpochAdapter adapter = adapter(pausedTemplates);
+        UUID tenantId = UUID.randomUUID();
+        CountDownLatch go = new CountDownLatch(1);
+        List<Future<Long>> latencies = new ArrayList<>();
+        for (int i = 0; i < callers; i++) {
+          latencies.add(callersPool.submit(() -> {
+            go.await();
+            long start = System.nanoTime();
+            OptionalLong current = adapter.current(tenantId, UUID.randomUUID());
+            long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+            assertThat(current).isEmpty();
+            return elapsedMs;
+          }));
+        }
+
+        go.countDown();
+        long maxMs = 0;
+        for (Future<Long> latency : latencies) {
+          maxMs = Math.max(maxMs, latency.get(10, TimeUnit.SECONDS));
+        }
+
+        assertThat(maxMs).isLessThan(2 * readBoundMs);
+        paused.getDockerClient().unpauseContainerCmd(paused.getContainerId()).exec();
+        unpaused = true;
+        awaitReady(pausedTemplates);
+        assertThat(adapter.current(tenantId, UUID.randomUUID())).hasValue(0L);
+      } finally {
+        if (!unpaused) {
+          paused.getDockerClient().unpauseContainerCmd(paused.getContainerId()).exec();
+        }
+        callersPool.shutdownNow();
         pausedTemplates.destroy();
       }
     }

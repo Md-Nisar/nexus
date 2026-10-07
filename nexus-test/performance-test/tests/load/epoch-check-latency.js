@@ -16,8 +16,10 @@ import { constantArrivalRate } from '../../workloads/constant-arrival-rate.js';
  * - server-side `nexus.rbac.epoch.check.latency` p95 <= 2 ms, read from /actuator/prometheus in
  *   teardown(). Micrometer computes it over a sliding window of about 2 minutes, so the run must
  *   hold the rate for at least 3 minutes (default 5m) and the value describes the run's end.
- * - zero `nexus.rbac.epoch.check{outcome="skipped_error"}`: a failing Redis read is fast, so a run
- *   that measured failures instead of reads is invalid.
+ * - zero new `nexus.rbac.epoch.check{outcome="skipped_error"}`: the counter is read in setup() and
+ *   again in teardown(), and the gate is the difference, because the counter totals the JVM's
+ *   lifetime. A failing Redis read is fast, so a run that measured failures instead of reads is
+ *   invalid.
  * - endpoint p95 regression < 5 ms against BASELINE_P95_MS (EPIC-002 RBAC overhead), the p95 of
  *   the same test run in baseline mode on the build without the epoch check.
  * - every arrival served (`dropped_iterations` = 0), so the rate really was 200/s.
@@ -60,15 +62,23 @@ export const options = {
 };
 
 export function setup() {
-  return { accessToken: obtainAccessToken() };
+  const accessToken = obtainAccessToken();
+  return { accessToken, skippedErrorBefore: gate ? scrape(accessToken).skippedError : 0 };
 }
 
 export function teardown(data) {
   if (!gate) {
     return;
   }
+  const { p95Seconds, skippedError } = scrape(data.accessToken);
+  epochCheckP95Ms.add(p95Seconds * 1000);
+  epochCheckSkippedError.add(skippedError - data.skippedErrorBefore);
+}
+
+/** Reads the epoch-check p95 (seconds) and the cumulative skipped_error count from Prometheus. */
+function scrape(accessToken) {
   const res = get('/actuator/prometheus', {
-    headers: { ...bearer(data.accessToken).headers, Accept: 'text/plain;version=0.0.4' },
+    headers: { ...bearer(accessToken).headers, Accept: 'text/plain;version=0.0.4' },
   });
   if (res.status !== 200) {
     fail(`GET /actuator/prometheus returned HTTP ${res.status}`);
@@ -78,8 +88,7 @@ export function teardown(data) {
   if (p95Seconds === undefined || skippedError === undefined) {
     fail('nexus.rbac.epoch.check metrics not found; is this the T-009 build?');
   }
-  epochCheckP95Ms.add(p95Seconds * 1000);
-  epochCheckSkippedError.add(skippedError);
+  return { p95Seconds, skippedError };
 }
 
 /** The value of the first Prometheus sample of `name` whose labels contain `label`. */

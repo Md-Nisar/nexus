@@ -1193,7 +1193,7 @@ class RoleAssignmentServiceTest {
           .as("invalidateUser called with an active synchronization outside afterCommit (MC-7b)")
           .isTrue();
       return null;
-    }).when(permissionFreshness).invalidateUser(any(), any());
+    }).when(permissionFreshness).invalidateUser(any(), any(), any());
 
     TransactionSynchronizationManager.initSynchronization();
     try {
@@ -1209,7 +1209,7 @@ class RoleAssignmentServiceTest {
       TransactionSynchronizationManager.clearSynchronization();
     }
 
-    verify(permissionFreshness).invalidateUser(tenantId, targetUserId);
+    verify(permissionFreshness).invalidateUser(tenantId, targetUserId, "revoke");
   }
 
   @Test
@@ -1246,8 +1246,8 @@ class RoleAssignmentServiceTest {
 
     service.revoke(actor, targetUserId, roleId, ctx);
 
-    verify(permissionFreshness).invalidateUser(tenantId, targetUserId);
-    verify(permissionFreshness, never()).invalidateUser(tenantId, actorId);
+    verify(permissionFreshness).invalidateUser(tenantId, targetUserId, "revoke");
+    verify(permissionFreshness, never()).invalidateUser(tenantId, actorId, "revoke");
   }
 
   @Test

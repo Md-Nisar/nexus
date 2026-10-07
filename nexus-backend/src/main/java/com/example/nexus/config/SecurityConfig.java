@@ -84,6 +84,8 @@ public class SecurityConfig {
         .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
         .addFilterBefore(rateLimitFilter, JwtAuthenticationFilter.class)
         .authorizeHttpRequests(auth -> auth
+            // Runs again after the JWT filter on purpose: caching the answer on the request could
+            // outlive a forward or error dispatch to another path, and this matcher must fail closed.
             .requestMatchers(publicEndpoints::matches).permitAll()
             .requestMatchers(
                 "/actuator/health/**", "/actuator/info",

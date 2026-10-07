@@ -129,7 +129,8 @@ same machine, Redis and JVM settings:
    `http_req_duration{scenario:epoch_check}` p95 from the summary.
 2. **Gate**, on the T-009 build: `BASELINE_P95_MS=<that p95>`. It fails unless the server-side
    `nexus.rbac.epoch.check.latency` p95 (read from `/actuator/prometheus` in `teardown()`) is at
-   most 2 ms, no epoch read failed (`skipped_error` = 0), the endpoint p95 is under the baseline
+   most 2 ms, no epoch read failed during the run (the `skipped_error` counter is read in `setup()` and `teardown()`
+   and its increase must be 0), the endpoint p95 is under the baseline
    plus 5 ms, and no arrival was dropped.
 
 The server computes the p95 over a sliding window of about 2 minutes, so keep `DURATION` at 3m or

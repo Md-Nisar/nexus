@@ -11,7 +11,6 @@ import java.util.OptionalLong;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Service;
 
 /**
@@ -63,11 +62,18 @@ public class PermissionFreshnessService {
    *
    * @param tenantId the user's tenant
    * @param userId the user
-   * @return the current epoch; {@code 0} when none is stored or the store cannot answer (a token
-   *     minted with 0 against a later-recovered epoch is rejected once, which is safe)
+   * @return the current epoch; {@code 0} when none is stored or the store still cannot answer
+   *     after one retry (a token minted with 0 against a later-recovered epoch is rejected once,
+   *     which is safe)
    */
   public long epochForMint(UUID tenantId, UUID userId) {
-    return epochPort.current(tenantId, userId).orElse(0L);
+    // One retry: a single 50 ms read failure would otherwise mint perm_epoch=0 for a recently
+    // revoked user, who is then rejected, refreshes and is rejected again.
+    OptionalLong current = epochPort.current(tenantId, userId);
+    if (current.isEmpty()) {
+      current = epochPort.current(tenantId, userId);
+    }
+    return current.orElse(0L);
   }
 
   /**
@@ -104,14 +110,19 @@ public class PermissionFreshnessService {
    *
    * @param tenantId the user's tenant
    * @param userId the user whose permissions were reduced
+   * @param operation what reduced them (for example {@code revoke}); logged on failure
    */
-  public void invalidateUser(UUID tenantId, UUID userId) {
+  public void invalidateUser(UUID tenantId, UUID userId, String operation) {
+    // Runs in afterCommit, so the JDBC connection is still held for up to the bump timeout
+    // (500 ms) while Redis is slow.
     try {
       epochPort.bump(tenantId, List.of(userId));
-    } catch (DataAccessException e) {
+    } catch (RuntimeException e) {
+      // Not only DataAccessException: a stopped factory or a bad script result must not turn a
+      // committed change into a 500 either.
       log.atError()
           .addKeyValue("event", "RBAC_EPOCH_BUMP_FAILED")
-          .addKeyValue("operation", "revoke")
+          .addKeyValue("operation", operation)
           .addKeyValue("tenantId", tenantId)
           .addKeyValue("userCount", 1)
           .addKeyValue("exception", e.getClass().getSimpleName())
