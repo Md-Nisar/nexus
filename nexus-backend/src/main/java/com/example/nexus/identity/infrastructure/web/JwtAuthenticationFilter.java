@@ -97,8 +97,17 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
       reject(req, res, e);
       return;
     }
-    FreshnessVerdict verdict = permissionFreshness.check(
-        UUID.fromString(claims.tenantId()), UUID.fromString(claims.sub()), claims.permEpoch());
+    UUID tenantId;
+    UUID userId;
+    try {
+      tenantId = UUID.fromString(claims.tenantId());
+      userId = UUID.fromString(claims.sub());
+    } catch (IllegalArgumentException e) {
+      // verify() already guarantees canonical UUIDs (RC-40.1); another JwtPort might not.
+      reject(req, res, new AuthenticationException(AUTH_003, "Token identifiers are malformed"));
+      return;
+    }
+    FreshnessVerdict verdict = permissionFreshness.check(tenantId, userId, claims.permEpoch());
     boolean stale = switch (verdict) {
       case STALE -> true;
       case FRESH, SKIPPED_ERROR -> false;

@@ -5,13 +5,22 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 
+import com.example.nexus.common.security.TokenClockSkew;
 import io.lettuce.core.ClientOptions;
+import io.lettuce.core.SslOptions;
 import io.lettuce.core.resource.ClientResources;
 import java.time.Duration;
 import java.util.List;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.TrustManagerFactory;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration;
 import org.springframework.boot.data.redis.autoconfigure.DataRedisConnectionDetails;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
+import org.springframework.data.redis.connection.lettuce.LettuceClientConfiguration;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 
 /**
@@ -60,6 +69,25 @@ class EpochRedisConfigTest {
         .doesNotThrowAnyException();
   }
 
+  @Test
+  void should_start_when_keyTtlEqualsTokenTtlPlusSkewPlusMargin() {
+    long tokenTtl = 1_000;
+    long minimum = tokenTtl + TokenClockSkew.SECONDS + EpochRedisConfig.MIN_KEY_TTL_MARGIN_SECONDS;
+
+    assertThatCode(() -> new EpochRedisConfig(minimum, tokenTtl, CACHE_TTL))
+        .doesNotThrowAnyException();
+  }
+
+  @Test
+  void should_failStartup_when_keyTtlOneBelowTokenTtlPlusSkewPlusMargin() {
+    long tokenTtl = 1_000;
+    long belowMinimum =
+        tokenTtl + TokenClockSkew.SECONDS + EpochRedisConfig.MIN_KEY_TTL_MARGIN_SECONDS - 1;
+
+    assertThatThrownBy(() -> new EpochRedisConfig(belowMinimum, tokenTtl, CACHE_TTL))
+        .isInstanceOf(IllegalStateException.class);
+  }
+
   // --- dedicated factories ---
 
   @Test
@@ -67,9 +95,9 @@ class EpochRedisConfigTest {
     DataRedisConnectionDetails details = standalone("redis.internal", 6380, 2, "app", "s3cret");
 
     LettuceConnectionFactory read =
-        EpochRedisConfig.dedicatedFactory(details, clientResources, Duration.ofMillis(50));
+        EpochRedisConfig.dedicatedFactory(details, plainMain(), clientResources, Duration.ofMillis(50));
     LettuceConnectionFactory bump =
-        EpochRedisConfig.dedicatedFactory(details, clientResources, Duration.ofMillis(500));
+        EpochRedisConfig.dedicatedFactory(details, plainMain(), clientResources, Duration.ofMillis(500));
 
     for (LettuceConnectionFactory factory : List.of(read, bump)) {
       assertThat(factory.getStandaloneConfiguration().getHostName()).isEqualTo("redis.internal");
@@ -88,7 +116,7 @@ class EpochRedisConfigTest {
   @Test
   void should_boundConnectTimeoutAndRejectWhileDisconnected_when_factoryBuilt() {
     LettuceConnectionFactory read = EpochRedisConfig.dedicatedFactory(
-        standalone("localhost", 6379, 0, null, null), clientResources, Duration.ofMillis(50));
+        standalone("localhost", 6379, 0, null, null), plainMain(), clientResources, Duration.ofMillis(50));
 
     ClientOptions options = read.getClientConfiguration().getClientOptions().orElseThrow();
     assertThat(options.getSocketOptions().getConnectTimeout()).isEqualTo(Duration.ofMillis(50));
@@ -137,7 +165,7 @@ class EpochRedisConfigTest {
     };
 
     LettuceConnectionFactory factory =
-        EpochRedisConfig.dedicatedFactory(details, clientResources, Duration.ofMillis(50));
+        EpochRedisConfig.dedicatedFactory(details, plainMain(), clientResources, Duration.ofMillis(50));
 
     assertThat(factory.getSentinelConfiguration()).isNotNull();
     assertThat(factory.getSentinelConfiguration().getMaster().getName()).isEqualTo("primary");
@@ -156,8 +184,64 @@ class EpochRedisConfigTest {
     };
 
     assertThatThrownBy(
-            () -> EpochRedisConfig.dedicatedFactory(details, clientResources, Duration.ofMillis(50)))
+            () -> EpochRedisConfig.dedicatedFactory(
+                details, plainMain(), clientResources, Duration.ofMillis(50)))
         .isInstanceOf(IllegalStateException.class);
+  }
+
+  @Test
+  void should_useSslWithBundleOptionsAndClientName_when_mainFactoryUsesSslBundle() throws Exception {
+    SslOptions bundleOptions = SslOptions.builder()
+        .keyManager(KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()))
+        .trustManager(TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()))
+        .cipherSuites("TLS_AES_256_GCM_SHA384")
+        .protocols("TLSv1.3")
+        .build();
+    LettuceConnectionFactory main = new LettuceConnectionFactory(
+        new RedisStandaloneConfiguration("redis.internal", 6380),
+        LettuceClientConfiguration.builder()
+            .useSsl()
+            .and()
+            .clientName("nexus-main")
+            .clientOptions(ClientOptions.builder().sslOptions(bundleOptions).build())
+            .build());
+
+    LettuceConnectionFactory read = EpochRedisConfig.dedicatedFactory(
+        standalone("redis.internal", 6380, 0, null, null), main, clientResources,
+        Duration.ofMillis(50));
+
+    LettuceClientConfiguration client = read.getClientConfiguration();
+    assertThat(client.isUseSsl()).isTrue();
+    assertThat(client.getClientName()).contains("nexus-main");
+    SslOptions options = client.getClientOptions().orElseThrow().getSslOptions();
+    assertThat(options.getCipherSuites()).containsExactly("TLS_AES_256_GCM_SHA384");
+    assertThat(options.getProtocols()).containsExactly("TLSv1.3");
+    assertThat(client.getCommandTimeout()).isEqualTo(Duration.ofMillis(50));
+  }
+
+  @Test
+  void should_useSsl_when_mainFactoryAutoConfiguredFromRedissUrl() {
+    new ApplicationContextRunner()
+        .withConfiguration(AutoConfigurations.of(DataRedisAutoConfiguration.class))
+        .withPropertyValues("spring.data.redis.url=rediss://redis.internal:6380")
+        .run(context -> {
+          LettuceConnectionFactory main = context.getBean(LettuceConnectionFactory.class);
+          DataRedisConnectionDetails details = context.getBean(DataRedisConnectionDetails.class);
+
+          LettuceConnectionFactory read = EpochRedisConfig.dedicatedFactory(
+              details, main, clientResources, Duration.ofMillis(50));
+          LettuceConnectionFactory bump = EpochRedisConfig.dedicatedFactory(
+              details, main, clientResources, Duration.ofMillis(500));
+
+          assertThat(main.getClientConfiguration().isUseSsl()).isTrue();
+          assertThat(read.getClientConfiguration().isUseSsl()).isTrue();
+          assertThat(bump.getClientConfiguration().isUseSsl()).isTrue();
+          assertThat(read.getStandaloneConfiguration().getHostName()).isEqualTo("redis.internal");
+        });
+  }
+
+  private static LettuceConnectionFactory plainMain() {
+    return new LettuceConnectionFactory(new RedisStandaloneConfiguration("main", 6379));
   }
 
   private static DataRedisConnectionDetails standalone(

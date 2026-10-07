@@ -257,6 +257,24 @@ class JwtAuthenticationFilterTest {
   }
 
   @Test
+  void should_return401AndNeverThrow_when_verifiedClaimsHaveNonUuidSubject() throws Exception {
+    MockHttpServletRequest req = bearerRequest("odd.jwt");
+    MockHttpServletResponse res = new MockHttpServletResponse();
+    FilterChain chain = mock(FilterChain.class);
+    JwtClaims valid = claims();
+    when(jwtPort.verify("odd.jwt")).thenReturn(new JwtClaims(
+        "not-a-uuid", valid.tenantId(), valid.emailVerified(), valid.roles(), valid.permissions(),
+        valid.iat(), valid.exp(), valid.jti(), valid.tokenVersion(), valid.schemaVersion(),
+        valid.permEpoch()));
+
+    filter.doFilterInternal(req, res, chain);
+
+    verify(entryPoint).commence(eq(req), eq(res), any());
+    verify(chain, never()).doFilter(any(), any());
+    verify(freshness, never()).check(any(), any(), anyLong());
+  }
+
+  @Test
   void should_notCheckEpoch_when_verificationFails() throws Exception {
     when(jwtPort.verify("bad.jwt"))
         .thenThrow(new AuthenticationException("AUTH_003", "Invalid token"));

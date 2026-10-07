@@ -6,9 +6,14 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.example.nexus.rbac.application.port.out.PermissionEpochPort;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.List;
@@ -17,6 +22,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.QueryTimeoutException;
 
 /** Unit tests for {@link PermissionFreshnessService} (US-018 T-009, design §9.2, §9.9). */
@@ -157,10 +163,28 @@ class PermissionFreshnessServiceTest {
   }
 
   @Test
-  void should_returnZero_when_epochForMintReadFails() {
+  void should_returnZero_when_epochForMintReadFailsTwice() {
     when(port.current(TENANT, USER)).thenReturn(OptionalLong.empty());
 
     assertThat(service.epochForMint(TENANT, USER)).isZero();
+  }
+
+  @Test
+  void should_returnCurrentEpoch_when_epochForMintReadFailsThenSucceeds() {
+    when(port.current(TENANT, USER))
+        .thenReturn(OptionalLong.empty())
+        .thenReturn(OptionalLong.of(EPOCH));
+
+    assertThat(service.epochForMint(TENANT, USER)).isEqualTo(EPOCH);
+  }
+
+  @Test
+  void should_readOnce_when_epochForMintFirstReadSucceeds() {
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+
+    service.epochForMint(TENANT, USER);
+
+    verify(port, times(1)).current(TENANT, USER);
   }
 
   @Test
@@ -176,7 +200,7 @@ class PermissionFreshnessServiceTest {
 
   @Test
   void should_bumpOnlyTargetUser_when_invalidateUser() {
-    service.invalidateUser(TENANT, USER);
+    service.invalidateUser(TENANT, USER, "revoke");
 
     verify(port).bump(TENANT, List.of(USER));
   }
@@ -185,7 +209,30 @@ class PermissionFreshnessServiceTest {
   void should_notPropagate_when_bumpFails() {
     doThrow(new QueryTimeoutException("timeout")).when(port).bump(any(), anyCollection());
 
-    assertThatCode(() -> service.invalidateUser(TENANT, USER)).doesNotThrowAnyException();
+    assertThatCode(() -> service.invalidateUser(TENANT, USER, "revoke"))
+        .doesNotThrowAnyException();
+  }
+
+  @Test
+  void should_logBumpFailedWithOperation_when_bumpFailsWithNonDataAccessException() {
+    Logger logger = (Logger) LoggerFactory.getLogger(PermissionFreshnessService.class);
+    ListAppender<ILoggingEvent> appender = new ListAppender<>();
+    appender.start();
+    logger.addAppender(appender);
+    doThrow(new IllegalStateException("factory stopped")).when(port).bump(any(), anyCollection());
+    try {
+      assertThatCode(() -> service.invalidateUser(TENANT, USER, "detach"))
+          .doesNotThrowAnyException();
+    } finally {
+      logger.detachAppender(appender);
+    }
+
+    assertThat(appender.list).singleElement().satisfies(event -> {
+      assertThat(event.getLevel()).isEqualTo(Level.ERROR);
+      assertThat(event.getKeyValuePairs())
+          .anySatisfy(kv -> assertThat(kv.value).isEqualTo("RBAC_EPOCH_BUMP_FAILED"))
+          .anySatisfy(kv -> assertThat(kv.value).isEqualTo("detach"));
+    });
   }
 
   private double outcomeCount(String outcome) {

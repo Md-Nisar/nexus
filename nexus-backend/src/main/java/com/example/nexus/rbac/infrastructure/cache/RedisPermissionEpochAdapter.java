@@ -10,6 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
+import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Component;
 
@@ -19,7 +20,9 @@ import org.springframework.stereotype.Component;
  *
  * <p>Reads use the dedicated 50 ms template and fail open: a failed, slow or unparseable read
  * returns empty, which the caller counts. Bumps use the dedicated bump template and throw on
- * failure.
+ * failure. Until a template's connection has been opened off-thread at startup, the read returns
+ * empty and the bump throws immediately, without touching Redis: the first connection is never
+ * made on a request thread (design §9.5).
  *
  * <p>The bump is one Lua script per call: for each key, {@code new = max(old + 1, Redis TIME in
  * ms)}, then {@code SET key new EX ttl}. The Redis server's clock is the same for every instance,
@@ -58,6 +61,9 @@ public class RedisPermissionEpochAdapter implements PermissionEpochPort {
 
   @Override
   public OptionalLong current(UUID tenantId, UUID userId) {
+    if (!templates.readReady()) {
+      return OptionalLong.empty();
+    }
     try {
       String value = templates.read().opsForValue().get(key(tenantId, userId));
       return OptionalLong.of(value == null ? 0L : Long.parseLong(value));
@@ -71,6 +77,9 @@ public class RedisPermissionEpochAdapter implements PermissionEpochPort {
 
   @Override
   public void bump(UUID tenantId, Collection<UUID> userIds) {
+    if (!templates.bumpReady()) {
+      throw new RedisConnectionFailureException("permission epoch store is not connected yet");
+    }
     List<String> keys = userIds.stream().map(userId -> key(tenantId, userId)).toList();
     templates.bump().execute(BUMP_SCRIPT, keys, keyTtlSeconds);
   }
