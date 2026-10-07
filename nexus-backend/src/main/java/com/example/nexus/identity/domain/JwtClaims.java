@@ -1,6 +1,7 @@
 package com.example.nexus.identity.domain;
 
 import java.util.List;
+import java.util.Set;
 
 /**
  * Parsed, validated claims extracted from a verified RS256 JWT access token.
@@ -27,6 +28,14 @@ public record JwtClaims(
 
   /** Current frozen-contract schema version — bump whenever a claim is added or removed. */
   public static final int CURRENT_VERSION = 2;
+
+  /**
+   * Schema versions {@code verify()} accepts (US-018 Decision 18, ADR-0022 D7). Widened one
+   * release ahead of minting, then contracted, so a rolling deploy never 401s a token minted by
+   * the other version. M6 accepts {2, 3} and still mints {@link #CURRENT_VERSION}; v3 is frozen as
+   * v2 plus {@code perm_epoch}, and any other claim change is v4.
+   */
+  public static final Set<Integer> ACCEPTED_VERSIONS = Set.of(2, 3);
 
   /** Defensive copies prevent callers from mutating the roles/permissions lists after construction. */
   public JwtClaims {

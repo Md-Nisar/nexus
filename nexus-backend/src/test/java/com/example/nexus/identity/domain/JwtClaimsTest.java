@@ -67,4 +67,18 @@ class JwtClaimsTest {
     assertThat(claims.roles()).containsExactly("MEMBER");
     assertThat(claims.permissions()).containsExactly("user:read");
   }
+
+  /** Decision 18 / ADR-0022 D7: M6 accepts {2, 3} one release ahead of M7 minting v3. */
+  @Test
+  void should_containExactlyVersions2And3_when_acceptedVersionsRead() {
+    assertThat(JwtClaims.ACCEPTED_VERSIONS).containsExactlyInAnyOrder(2, 3);
+  }
+
+  /** M6 widens the accepted set only; it still mints v2 and must accept what it mints. */
+  @Test
+  void should_keepCurrentVersion2AndIncludeItInAcceptedVersions_when_m6Ships() {
+    assertThat(JwtClaims.ACCEPTED_VERSIONS)
+        .contains(JwtClaims.CURRENT_VERSION)
+        .satisfies(versions -> assertThat(JwtClaims.CURRENT_VERSION).isEqualTo(2));
+  }
 }

@@ -5,6 +5,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.example.nexus.common.domain.AuthenticationException;
 import com.example.nexus.identity.domain.AccessTokenResult;
 import com.example.nexus.identity.domain.JwtClaims;
@@ -13,20 +17,26 @@ import com.example.nexus.identity.domain.UserStatus;
 import com.example.nexus.rbac.application.RoleResolutionService;
 import com.example.nexus.rbac.domain.ResolvedPermissions;
 import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.security.SignatureAlgorithm;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.PrivateKey;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import javax.crypto.spec.SecretKeySpec;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.core.env.Environment;
 
 /**
@@ -43,6 +53,8 @@ class JwtRs256ServiceSecurityTest {
 
   private static RsaKeyConfig rsaKeyConfig;
 
+  private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+
   @BeforeAll
   static void setUpKeyConfig() throws Exception {
     Environment devEnv = mock(Environment.class);
@@ -56,7 +68,8 @@ class JwtRs256ServiceSecurityTest {
     when(roleResolutionService.resolve(
             org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
         .thenReturn(new ResolvedPermissions(List.of("USER"), List.of("read:only")));
-    return new JwtRs256Service(rsaKeyConfig, UUID::randomUUID, clock, 900L, roleResolutionService);
+    return new JwtRs256Service(
+        rsaKeyConfig, UUID::randomUUID, clock, 900L, roleResolutionService, meterRegistry);
   }
 
   private User activeUser() {
@@ -254,8 +267,138 @@ class JwtRs256ServiceSecurityTest {
   }
 
   // -----------------------------------------------------------------------
+  // US-018 T-005 / T-S10 (RC-40.1): sub must be a canonical UUID — 401, never a downstream 500
+  // -----------------------------------------------------------------------
+
+  @Test
+  void should_rejectWithSubReason_when_subIsNotAUuid() {
+    String token = signedToken("not-a-uuid-subject", rsaKeyConfig.getKeyPair().getPrivate(),
+        Jwts.SIG.RS256);
+
+    assertRejectedWithReason(token, "sub");
+  }
+
+  @Test
+  void should_rejectWithSubReason_when_subIsNonCanonicalUuid() {
+    // UUID.fromString("1-1-1-1-1") succeeds; a lenient check would let this alias a real user id.
+    String token = signedToken("1-1-1-1-1", rsaKeyConfig.getKeyPair().getPrivate(),
+        Jwts.SIG.RS256);
+
+    assertRejectedWithReason(token, "sub");
+  }
+
+  @Test
+  void should_rejectWithSubReason_when_subIsUppercaseUuid() {
+    // issue() only ever mints UUID.toString() (lowercase); any other spelling is not ours.
+    String token = signedToken(UUID.randomUUID().toString().toUpperCase(Locale.ROOT),
+        rsaKeyConfig.getKeyPair().getPrivate(), Jwts.SIG.RS256);
+
+    assertRejectedWithReason(token, "sub");
+  }
+
+  // -----------------------------------------------------------------------
+  // US-018 T-005: cryptographic rejections are tagged reason=signature
+  // -----------------------------------------------------------------------
+
+  @Test
+  void should_rejectWithSignatureReason_when_signedByForeignRsaKey() throws Exception {
+    KeyPairGenerator kpg = KeyPairGenerator.getInstance("RSA");
+    kpg.initialize(2048);
+    String token = signedToken(UUID.randomUUID().toString(),
+        kpg.generateKeyPair().getPrivate(), Jwts.SIG.RS256);
+
+    assertRejectedWithReason(token, "signature");
+  }
+
+  /**
+   * T-3.2 at unit level: RS384 under the app's own key passes JJWT's signature check, so only the
+   * explicit {@code alg} assertion rejects it — and that rejection must still be counted.
+   */
+  @Test
+  void should_rejectWithSignatureReason_when_algorithmIsRs384() {
+    String token = signedToken(UUID.randomUUID().toString(),
+        rsaKeyConfig.getKeyPair().getPrivate(), Jwts.SIG.RS384);
+
+    assertRejectedWithReason(token, "signature");
+  }
+
+  @Test
+  void should_rejectWithSignatureReason_when_algIsNone() {
+    Base64.Encoder enc = Base64.getUrlEncoder().withoutPadding();
+    String header = enc.encodeToString(
+        "{\"alg\":\"none\",\"typ\":\"JWT\"}".getBytes(StandardCharsets.UTF_8));
+    String payload = enc.encodeToString(
+        ("{\"sub\":\"" + UUID.randomUUID() + "\"}").getBytes(StandardCharsets.UTF_8));
+
+    assertRejectedWithReason(header + "." + payload + ".", "signature");
+  }
+
+  /** Rejections log at DEBUG only (M7 rollout log-flood risk) and never echo token material. */
+  @Test
+  void should_logRejectionAtDebugOnly_when_tokenRejected() {
+    String subject = "not-a-uuid-subject";
+    String token = signedToken(subject, rsaKeyConfig.getKeyPair().getPrivate(), Jwts.SIG.RS256);
+    Logger logger = (Logger) LoggerFactory.getLogger(JwtRs256Service.class);
+    Level originalLevel = logger.getLevel();
+    ListAppender<ILoggingEvent> appender = new ListAppender<>();
+    appender.start();
+    logger.addAppender(appender);
+    logger.setLevel(Level.TRACE);
+    try {
+      JwtRs256Service svc = service(Clock.systemUTC());
+      assertThatThrownBy(() -> svc.verify(token)).isInstanceOf(AuthenticationException.class);
+    } finally {
+      logger.detachAppender(appender);
+      logger.setLevel(originalLevel);
+      appender.stop();
+    }
+
+    assertThat(appender.list)
+        .isNotEmpty()
+        .allSatisfy(event -> {
+          assertThat(event.getLevel()).isEqualTo(Level.DEBUG);
+          assertThat(event.getFormattedMessage()).doesNotContain(token).doesNotContain(subject);
+          assertThat(String.valueOf(event.getKeyValuePairs()))
+              .doesNotContain(token)
+              .doesNotContain(subject);
+        });
+  }
+
+  // -----------------------------------------------------------------------
   // Helpers
   // -----------------------------------------------------------------------
+
+  /** A token carrying every valid v2 claim, with the given {@code sub}, key and algorithm. */
+  private static String signedToken(
+      String subject, PrivateKey signingKey, SignatureAlgorithm algorithm) {
+    Instant now = Instant.now();
+    return Jwts.builder()
+        .subject(subject)
+        .claim("tenant_id", UUID.randomUUID().toString())
+        .claim("email_verified", true)
+        .claim("roles", List.of("USER"))
+        .claim("permissions", List.of("read:only"))
+        .issuedAt(Date.from(now))
+        .expiration(Date.from(now.plusSeconds(900)))
+        .id(UUID.randomUUID().toString())
+        .claim("token_version", 0)
+        .claim("schema_version", JwtClaims.CURRENT_VERSION)
+        .signWith(signingKey, algorithm)
+        .compact();
+  }
+
+  /** The token is rejected with 401 AUTH_003, counted exactly once under {@code reason}. */
+  private void assertRejectedWithReason(String token, String reason) {
+    JwtRs256Service svc = service(Clock.systemUTC());
+
+    assertThatThrownBy(() -> svc.verify(token))
+        .isInstanceOf(AuthenticationException.class)
+        .satisfies(e -> assertThat(((AuthenticationException) e).code()).isEqualTo("AUTH_003"));
+    Counter counter =
+        meterRegistry.find("nexus.auth.token_rejected").tag("reason", reason).counter();
+    assertThat(counter).as("token_rejected{reason=%s}", reason).isNotNull();
+    assertThat(counter.count()).isEqualTo(1.0);
+  }
 
   /**
    * Replaces {@code oldFragment} with {@code newFragment} in the base64url-decoded payload

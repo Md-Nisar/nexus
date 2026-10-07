@@ -702,31 +702,34 @@ class RoleAssignmentSecurityIT {
   /**
    * A real JWT minted via {@link JwtPort#issue} always carries a valid UUID {@code sub} ({@code
    * user.getId().toString()}), so this scenario cannot be reached through the normal minting
-   * path. {@link com.example.nexus.identity.infrastructure.web.JwtAuthenticationFilter} performs
-   * no UUID validation on {@code sub} at all -- confirmed by reading it -- it simply forwards
-   * whatever string {@link com.example.nexus.identity.infrastructure.security.JwtRs256Service
-   * #verify} extracts as the JWT {@code sub} claim into {@code Authentication}'s principal. This
-   * test therefore builds a real, validly-signed RS256 JWT directly with the same {@link
-   * RsaKeyConfig} key pair the running application uses (autowired from the real Spring context),
-   * with every other required claim present and valid, but a non-UUID {@code sub}. Sent through
-   * the real filter chain, this reaches {@code UserRoleController#resolveActor}'s principal
-   * parsing with a malformed principal -- the fail-closed path this test exists to prove.
+   * path. This test therefore builds a real, validly-signed RS256 JWT directly with the same
+   * {@link RsaKeyConfig} key pair the running application uses (autowired from the real Spring
+   * context), with every other required claim present and valid, but a non-UUID {@code sub}.
+   *
+   * <p>US-018 T-005 (RC-40.1 / T-S10) moved the rejection to its source: {@link
+   * com.example.nexus.identity.infrastructure.security.JwtRs256Service#verify} now rejects a
+   * non-UUID {@code sub}, so through the real filter chain the request fails at authentication
+   * with 401 {@code AUTH_003} and never reaches {@code UserRoleController}. The controller's own
+   * fail-closed principal parsing (T-S4, 403 {@code MALFORMED_AUTHENTICATION}) stays as defence in
+   * depth and is covered by {@code RbacControllerSupportTest} and {@code UserRoleControllerTest}.
    */
   @Test
-  void should_return403WithMalformedAuthentication_notInternalServerError_when_principalIsNotAUuid() {
+  void should_return401Auth003_notInternalServerError_when_jwtSubIsNotAUuid() {
     UUID tenantG = uuidGenerator.newId();
     String malformedToken =
         forgeJwtWithSubject("not-a-uuid-subject", tenantG, List.of("user:read", "user:write"));
-    double before = permissionDeniedCount("user:read", "MALFORMED_AUTHENTICATION");
+    double before = tokenRejectedCount("sub");
 
     ResponseEntity<Map> resp = getRoles(malformedToken, uuidGenerator.newId());
 
     assertThat(resp.getStatusCode())
-        .as("an unparseable (non-UUID) principal must fail closed to 403, never surface as an"
-            + " unhandled 500 (T-S4)")
-        .isEqualTo(HttpStatus.FORBIDDEN);
-    assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
-    assertDenialReasonIncrementedByOne("user:read", "MALFORMED_AUTHENTICATION", before);
+        .as("a non-UUID sub must be rejected at authentication with 401, never surface as an"
+            + " unhandled 500 (T-S10)")
+        .isEqualTo(HttpStatus.UNAUTHORIZED);
+    assertThat(resp.getBody()).containsEntry("code", "AUTH_003");
+    assertThat(tokenRejectedCount("sub") - before)
+        .as("nexus.auth.token_rejected{reason=sub} must increment by exactly 1")
+        .isEqualTo(1.0);
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -890,7 +893,7 @@ class RoleAssignmentSecurityIT {
   /**
    * Builds a validly-signed RS256 JWT with an arbitrary (potentially non-UUID) {@code sub},
    * using the SAME key pair the running application's {@link RsaKeyConfig} bean holds -- see this
-   * class's Javadoc on {@link #should_return403WithMalformedAuthentication_notInternalServerError_when_principalIsNotAUuid()}.
+   * class's Javadoc on {@link #should_return401Auth003_notInternalServerError_when_jwtSubIsNotAUuid()}.
    */
   private String forgeJwtWithSubject(String subject, UUID tenantId, List<String> permissions) {
     Instant now = Instant.now();
@@ -998,6 +1001,16 @@ class RoleAssignmentSecurityIT {
             .tag("privileged", privileged)
             .tag("callerIsAdmin", callerIsAdmin)
             .counter();
+    return counter == null ? 0.0 : counter.count();
+  }
+
+  /**
+   * Reads the CURRENT value of {@code nexus.auth.token_rejected{reason}} (US-018 T-005); compared
+   * as a before/after delta for the same shared-registry reason as {@link #permissionDeniedCount}.
+   */
+  private double tokenRejectedCount(String reason) {
+    Counter counter =
+        meterRegistry.find("nexus.auth.token_rejected").tag("reason", reason).counter();
     return counter == null ? 0.0 : counter.count();
   }
 

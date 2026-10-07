@@ -14,11 +14,17 @@ import com.example.nexus.identity.domain.User;
 import com.example.nexus.rbac.application.RoleResolutionService;
 import com.example.nexus.rbac.domain.ResolvedPermissions;
 import io.jsonwebtoken.Jwts;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Collections;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -30,6 +36,8 @@ import org.springframework.core.env.Environment;
 class JwtRs256ServiceTest {
 
   private static RsaKeyConfig rsaKeyConfig;
+
+  private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
 
   @BeforeAll
   static void setUpKeyConfig() throws Exception {
@@ -52,12 +60,17 @@ class JwtRs256ServiceTest {
 
   private JwtRs256Service service(Clock clock, ResolvedPermissions resolved) {
     return new JwtRs256Service(
-        rsaKeyConfig, UUID::randomUUID, clock, 900L, roleResolutionServiceReturning(resolved));
+        rsaKeyConfig,
+        UUID::randomUUID,
+        clock,
+        900L,
+        roleResolutionServiceReturning(resolved),
+        meterRegistry);
   }
 
   private JwtRs256Service service(Clock clock, RoleResolutionService roleResolutionService) {
     return new JwtRs256Service(
-        rsaKeyConfig, UUID::randomUUID, clock, 900L, roleResolutionService);
+        rsaKeyConfig, UUID::randomUUID, clock, 900L, roleResolutionService, meterRegistry);
   }
 
   private User activeUser() {
@@ -280,5 +293,282 @@ class JwtRs256ServiceTest {
 
     assertThat(tenantIdCaptor.getValue()).isEqualTo(user.getTenantId());
     assertThat(claims.tenantId()).isEqualTo(tenantIdCaptor.getValue().toString());
+  }
+
+  // -----------------------------------------------------------------------
+  // US-018 T-005 (A11): schema_version must be in JwtClaims.ACCEPTED_VERSIONS (Decision 18)
+  // -----------------------------------------------------------------------
+
+  @Test
+  void should_rejectWithSchemaVersionReason_when_schemaVersionIs1() {
+    Map<String, Object> claims = validClaims(2);
+    claims.put("schema_version", 1);
+
+    assertRejectedWithReason(signedToken(claims), "schema_version");
+  }
+
+  @Test
+  void should_rejectWithSchemaVersionReason_when_schemaVersionIs4() {
+    Map<String, Object> claims = validClaims(3);
+    claims.put("schema_version", 4);
+
+    assertRejectedWithReason(signedToken(claims), "schema_version");
+  }
+
+  @Test
+  void should_rejectWithSchemaVersionReason_when_schemaVersionIsString() {
+    Map<String, Object> claims = validClaims(2);
+    claims.put("schema_version", "2");
+
+    assertRejectedWithReason(signedToken(claims), "schema_version");
+  }
+
+  @Test
+  void should_rejectWithSchemaVersionReason_when_schemaVersionAbsent() {
+    Map<String, Object> claims = validClaims(2);
+    claims.remove("schema_version");
+
+    assertRejectedWithReason(signedToken(claims), "schema_version");
+  }
+
+  @Test
+  void should_acceptToken_when_schemaVersionIs2() {
+    JwtClaims verified = service(Clock.systemUTC()).verify(signedToken(validClaims(2)));
+
+    assertThat(verified.schemaVersion()).isEqualTo(2);
+  }
+
+  @Test
+  void should_acceptToken_when_schemaVersionIs2WithoutPermEpoch() {
+    Map<String, Object> claims = validClaims(2);
+
+    assertThat(claims).doesNotContainKey("perm_epoch");
+    assertThat(service(Clock.systemUTC()).verify(signedToken(claims)).schemaVersion())
+        .isEqualTo(2);
+  }
+
+  @Test
+  void should_acceptToken_when_schemaVersionIs3WithValidPermEpoch() {
+    JwtClaims verified = service(Clock.systemUTC()).verify(signedToken(validClaims(3)));
+
+    assertThat(verified.schemaVersion()).isEqualTo(3);
+  }
+
+  @Test
+  void should_acceptToken_when_schemaVersionIs3WithPermEpochZero() {
+    Map<String, Object> claims = validClaims(3);
+    claims.put("perm_epoch", 0);
+
+    assertThat(service(Clock.systemUTC()).verify(signedToken(claims)).schemaVersion())
+        .isEqualTo(3);
+  }
+
+  @Test
+  void should_acceptToken_when_schemaVersionIs3WithMillisecondPermEpoch() {
+    // A Redis TIME millisecond value exceeds Integer.MAX_VALUE, so it deserializes as a Long.
+    Map<String, Object> claims = validClaims(3);
+    claims.put("perm_epoch", 1_759_000_000_000L);
+
+    assertThat(service(Clock.systemUTC()).verify(signedToken(claims)).schemaVersion())
+        .isEqualTo(3);
+  }
+
+  // -----------------------------------------------------------------------
+  // US-018 T-005 (RC-40.1): v3 requires perm_epoch present and a non-negative long
+  // -----------------------------------------------------------------------
+
+  @Test
+  void should_rejectWithPermEpochReason_when_schemaVersion3AndPermEpochMissing() {
+    Map<String, Object> claims = validClaims(3);
+    claims.remove("perm_epoch");
+
+    assertRejectedWithReason(signedToken(claims), "perm_epoch");
+  }
+
+  @Test
+  void should_rejectWithPermEpochReason_when_schemaVersion3AndPermEpochNegative() {
+    Map<String, Object> claims = validClaims(3);
+    claims.put("perm_epoch", -1);
+
+    assertRejectedWithReason(signedToken(claims), "perm_epoch");
+  }
+
+  @Test
+  void should_rejectWithPermEpochReason_when_schemaVersion3AndPermEpochIsString() {
+    Map<String, Object> claims = validClaims(3);
+    claims.put("perm_epoch", "5");
+
+    assertRejectedWithReason(signedToken(claims), "perm_epoch");
+  }
+
+  @Test
+  void should_rejectWithPermEpochReason_when_schemaVersion3AndPermEpochIsFractional() {
+    Map<String, Object> claims = validClaims(3);
+    claims.put("perm_epoch", 1.5);
+
+    assertRejectedWithReason(signedToken(claims), "perm_epoch");
+  }
+
+  // -----------------------------------------------------------------------
+  // US-018 T-005 (A11): tenant_id must be present and a canonical UUID string
+  // -----------------------------------------------------------------------
+
+  @Test
+  void should_rejectWithTenantIdReason_when_tenantIdAbsent() {
+    Map<String, Object> claims = validClaims(2);
+    claims.remove("tenant_id");
+
+    assertRejectedWithReason(signedToken(claims), "tenant_id");
+  }
+
+  @Test
+  void should_rejectWithTenantIdReason_when_tenantIdNotAUuid() {
+    Map<String, Object> claims = validClaims(2);
+    claims.put("tenant_id", "t-1");
+
+    assertRejectedWithReason(signedToken(claims), "tenant_id");
+  }
+
+  @Test
+  void should_rejectWithTenantIdReason_when_tenantIdNotCanonicalUuid() {
+    // UUID.fromString is lenient and parses this; the canonical round-trip check must not.
+    Map<String, Object> claims = validClaims(2);
+    claims.put("tenant_id", "1-1-1-1-1");
+
+    assertRejectedWithReason(signedToken(claims), "tenant_id");
+  }
+
+  @Test
+  void should_rejectWithTenantIdReason_when_tenantIdNotAString() {
+    Map<String, Object> claims = validClaims(2);
+    claims.put("tenant_id", 42);
+
+    assertRejectedWithReason(signedToken(claims), "tenant_id");
+  }
+
+  @Test
+  void should_rejectWithTenantIdReason_when_tenantIdIsUppercaseUuid() {
+    // issue() only ever mints UUID.toString() (lowercase); tenant_id must be canonical too.
+    Map<String, Object> claims = validClaims(2);
+    claims.put("tenant_id", UUID.randomUUID().toString().toUpperCase(Locale.ROOT));
+
+    assertRejectedWithReason(signedToken(claims), "tenant_id");
+  }
+
+  // -----------------------------------------------------------------------
+  // US-018 T-005: pre-existing rejection paths carry their reason tag
+  // -----------------------------------------------------------------------
+
+  @Test
+  void should_rejectWithExpiredReason_when_tokenExpired() {
+    Instant issueTime = Instant.now().minusSeconds(3600);
+    AccessTokenResult result =
+        service(Clock.fixed(issueTime, ZoneOffset.UTC)).issue(activeUser());
+
+    assertRejectedWithReason(result.token(), "expired");
+  }
+
+  @Test
+  void should_rejectWithClaimsMissingReason_when_rolesClaimAbsent() {
+    Map<String, Object> claims = validClaims(2);
+    claims.remove("roles");
+
+    assertRejectedWithReason(signedToken(claims), "claims_missing");
+  }
+
+  @Test
+  void should_rejectWithClaimsMissingReason_when_rolesContainsNullElement() {
+    Map<String, Object> claims = validClaims(2);
+    claims.put("roles", Collections.singletonList(null));
+
+    assertRejectedWithReason(signedToken(claims), "claims_missing");
+  }
+
+  @Test
+  void should_rejectWithClaimsMissingReason_when_permissionsContainsNonStringElement() {
+    Map<String, Object> claims = validClaims(2);
+    claims.put("permissions", List.of(1));
+
+    assertRejectedWithReason(signedToken(claims), "claims_missing");
+  }
+
+  @Test
+  void should_notIncrementTokenRejected_when_tokenValid() {
+    JwtRs256Service svc = service(Clock.systemUTC());
+
+    svc.verify(svc.issue(activeUser()).token());
+
+    assertThat(meterRegistry.find("nexus.auth.token_rejected").counters())
+        .allSatisfy(counter -> assertThat(counter.count()).isZero());
+  }
+
+  /** All seven reasons report from startup, so the M6 baseline shows zeros, not gaps. */
+  @Test
+  void should_registerEveryRejectionReasonAtZero_when_serviceConstructed() {
+    service(Clock.systemUTC());
+
+    assertThat(meterRegistry.find("nexus.auth.token_rejected").counters())
+        .extracting(counter -> counter.getId().getTag("reason"))
+        .containsExactlyInAnyOrder("signature", "expired", "claims_missing", "schema_version",
+            "tenant_id", "sub", "perm_epoch");
+  }
+
+  /**
+   * Distinct from the test above: that one proves all seven tags exist; this one proves each
+   * one's count is actually 0 right after construction, before any {@code verify()} call — the
+   * literal "report 0 from startup" claim, not just "the gauge is registered".
+   */
+  @Test
+  void should_reportZeroCount_when_serviceConstructedBeforeAnyVerifyCall() {
+    service(Clock.systemUTC());
+
+    assertThat(meterRegistry.find("nexus.auth.token_rejected").counters())
+        .hasSize(7)
+        .allSatisfy(counter -> assertThat(counter.count()).isZero());
+  }
+
+  // -----------------------------------------------------------------------
+  // Helpers
+  // -----------------------------------------------------------------------
+
+  /** Every claim a valid token of {@code schemaVersion} carries, except sub/iat/exp/jti. */
+  private static Map<String, Object> validClaims(int schemaVersion) {
+    Map<String, Object> claims = new HashMap<>();
+    claims.put("tenant_id", UUID.randomUUID().toString());
+    claims.put("email_verified", true);
+    claims.put("roles", List.of("MEMBER"));
+    claims.put("permissions", List.of("user:read"));
+    claims.put("token_version", 0);
+    claims.put("schema_version", schemaVersion);
+    if (schemaVersion == 3) {
+      claims.put("perm_epoch", 1_000L);
+    }
+    return claims;
+  }
+
+  /** Signs {@code claims} with the service's own RS256 key, with a valid sub, iat, exp and jti. */
+  private static String signedToken(Map<String, Object> claims) {
+    Instant now = Instant.now();
+    return Jwts.builder()
+        .subject(UUID.randomUUID().toString())
+        .claims(claims)
+        .issuedAt(Date.from(now))
+        .expiration(Date.from(now.plusSeconds(900)))
+        .id(UUID.randomUUID().toString())
+        .signWith(rsaKeyConfig.getKeyPair().getPrivate(), Jwts.SIG.RS256)
+        .compact();
+  }
+
+  /** The token is rejected with 401 AUTH_003, counted exactly once under {@code reason}. */
+  private void assertRejectedWithReason(String token, String reason) {
+    JwtRs256Service svc = service(Clock.systemUTC());
+
+    assertThatThrownBy(() -> svc.verify(token))
+        .isInstanceOf(AuthenticationException.class)
+        .satisfies(e -> assertThat(((AuthenticationException) e).code()).isEqualTo("AUTH_003"));
+    Counter counter =
+        meterRegistry.find("nexus.auth.token_rejected").tag("reason", reason).counter();
+    assertThat(counter).as("token_rejected{reason=%s}", reason).isNotNull();
+    assertThat(counter.count()).isEqualTo(1.0);
   }
 }
