@@ -1,6 +1,6 @@
 # US-018 — Progress and handoff
 
-**Updated:** 2026-10-06 · **Source of truth for scope:** `04-tasks.md` (Gate 3 approved). This file only tracks where we are.
+**Updated:** 2026-10-07 · **Source of truth for scope:** `04-tasks.md` (Gate 3 approved). This file only tracks where we are.
 
 **Decision 2026-10-05 — no staging, no deployment.** The app is not deployed and no environment exists; work starts without one. The same decision is recorded at the top of `04-tasks.md`. In short: M3's staging-soak gate is waived for starting M3 and its soak moves to the first staging deployment; rollout-order waits become "merged earlier"; environment-dependent checklist items are deferred to the first deployment and stay required before production (see "Deferred to the first deployment" below).
 
@@ -10,10 +10,12 @@
 |---|---|---|
 | **M2** A1–A4 grant-subset core | T-001..T-003 | **Merged to `main`** as PR #81 (squash, `9820d4e`, 2026-10-04). Its deploy-side items are deferred to the first deployment, see below. |
 | **M1** A8 deny-by-default | T-004 | **Merged to `main`** as PR #82 (squash, `0da1597`, 2026-10-06). Review, security review and test-validate done (below). |
-| M3 | T-016..T-019 | **Blocked on M4 (T-006) and M7 (T-009..T-014) merging.** The staging-soak gate is waived (no environment); M3 still needs its own threat-model re-pass before merge. |
-| M4, M5, M6, M7, M7b, M8, M9, M9-contract | see `04-tasks.md` | Not started. M6 (T-005) has no dependencies; M4 (T-006) is unblocked now that M2 is merged. M1 and M6 are the remaining M7 prerequisites. M5 needs M4; M7 needs M1 (done) and M6 *merged* (no longer "deployed"); M7b follows M7 with no wait; M9-contract follows M9 with no wait. |
+| **M6** A11 token claim validation | T-005 | **Merged to `main`** as PR #84 (`b11dbde`, 2026-10-07). Code review (APPROVE WITH NITS), security review (APPROVED, 2 Low) and test audit are in `06/07/08-*-M6.md`. The OWASP dependency-check could not run locally (NVD 403) and was left to CI. |
+| **M4** A6 atomic RBAC audit | T-006 | **Merged to `main`** as `25ceeed` (2026-10-06 commit; its title carries no PR number). No `*-M4.md` review, security or test-audit file exists in this folder, so whether those phases ran is not recorded here. |
+| M3 | T-016..T-019 | **Blocked on M7 (T-009..T-014) merging.** M4 is merged. The staging-soak gate is waived (no environment); M3 still needs its own threat-model re-pass before merge. |
+| M5, M7, M7b, M8, M9, M9-contract | see `04-tasks.md` | Not started. M5 (T-007, T-008) and M7 (T-009..T-014) are both unblocked: M5 needed M4, and M7 needed M1 and M6 *merged* (no longer "deployed"). M7b follows M7 with no wait; M9-contract follows M9 with no wait. |
 
-Next in delivery order now that M1 and M2 are merged: M6 (T-005) and M4 (T-006) — both unblocked, neither depends on the other.
+Next in delivery order now that M1, M2, M4 and M6 are merged: M5 (T-007, T-008) and M7 (T-009..T-014), neither depending on the other. M7 then unblocks M3 and M7b.
 
 ## M1 exit sequence
 
