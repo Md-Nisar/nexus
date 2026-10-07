@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -85,6 +86,7 @@ class RoleAssignmentServiceTest {
   @Mock private UserDirectoryPort userDirectoryPort;
   @Mock private RbacAuditPort rbacAuditPort;
   @Mock private PermissionCachePort permissionCachePort;
+  @Mock private PermissionFreshnessService permissionFreshness;
   @Mock private RoleChangeThrottlePort throttlePort;
 
   private SimpleMeterRegistry meterRegistry;
@@ -104,7 +106,7 @@ class RoleAssignmentServiceTest {
     service =
         new RoleAssignmentService(
             userRoleAssignmentPort, userDirectoryPort, rbacAuditPort, permissionCachePort,
-            meterRegistry, throttlePort, MAX_DENIALS, WINDOW_SECONDS);
+            permissionFreshness, meterRegistry, throttlePort, MAX_DENIALS, WINDOW_SECONDS);
 
     actorId = UUID.randomUUID();
     tenantId = UUID.randomUUID();
@@ -1176,6 +1178,103 @@ class RoleAssignmentServiceTest {
     // MC-4 (RC-40.5): within this one call, Group A fires and Group B never does.
     verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
     verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // US-018 T-009 MC-7b: revoke() bumps the target's permission epoch after commit only
+  // ---------------------------------------------------------------------------------------
+
+  @Test
+  void should_invalidateUserOnlyInsideAfterCommit_when_revokeInsideSynchronization() {
+    stubHappyPathRevoke();
+    boolean[] insideAfterCommit = {false};
+    doAnswer(invocation -> {
+      assertThat(insideAfterCommit[0])
+          .as("invalidateUser called with an active synchronization outside afterCommit (MC-7b)")
+          .isTrue();
+      return null;
+    }).when(permissionFreshness).invalidateUser(any(), any());
+
+    TransactionSynchronizationManager.initSynchronization();
+    try {
+      service.revoke(actor, targetUserId, roleId, ctx);
+
+      verifyNoInteractions(permissionFreshness);
+      insideAfterCommit[0] = true;
+      for (TransactionSynchronization synchronization :
+          TransactionSynchronizationManager.getSynchronizations()) {
+        synchronization.afterCommit();
+      }
+    } finally {
+      TransactionSynchronizationManager.clearSynchronization();
+    }
+
+    verify(permissionFreshness).invalidateUser(tenantId, targetUserId);
+  }
+
+  @Test
+  void should_neverInvalidate_when_transactionRollsBack() {
+    stubHappyPathRevoke();
+
+    TransactionSynchronizationManager.initSynchronization();
+    try {
+      service.revoke(actor, targetUserId, roleId, ctx);
+      for (TransactionSynchronization synchronization :
+          TransactionSynchronizationManager.getSynchronizations()) {
+        synchronization.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK);
+      }
+    } finally {
+      TransactionSynchronizationManager.clearSynchronization();
+    }
+
+    verifyNoInteractions(permissionFreshness);
+  }
+
+  @Test
+  void should_neverInvalidate_when_revokeDenied() {
+    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(otherTenantId));
+
+    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(RuntimeException.class);
+
+    verifyNoInteractions(permissionFreshness);
+  }
+
+  @Test
+  void should_invalidateTargetNotActor_when_revokeSucceeds() {
+    stubHappyPathRevoke();
+
+    service.revoke(actor, targetUserId, roleId, ctx);
+
+    verify(permissionFreshness).invalidateUser(tenantId, targetUserId);
+    verify(permissionFreshness, never()).invalidateUser(tenantId, actorId);
+  }
+
+  @Test
+  void should_neverInvalidate_when_assignSucceeds() {
+    Role role = memberRole();
+    ActiveRoleAssignment view =
+        new ActiveRoleAssignment(targetUserId, roleId, "MEMBER", Instant.now(), actorId);
+    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
+    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
+    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
+        .thenReturn(UUID.randomUUID());
+    when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
+        .thenReturn(Optional.of(view));
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    verifyNoInteractions(permissionFreshness);
+  }
+
+  private void stubHappyPathRevoke() {
+    UUID refId = UUID.randomUUID();
+    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
+    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(memberRole()));
+    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
+        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
+    when(userRoleAssignmentPort.revoke(eq(refId), any())).thenReturn(1);
   }
 
   // Load-bearing (US-014 Decision 2) -- see the comment on

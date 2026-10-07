@@ -9,15 +9,16 @@ Plain k6 JavaScript: no custom framework, no build step.
 performance-test/
 ├── tests/                  # Entry points: one file = one runnable test = scenario(s) + workload + thresholds
 │   ├── smoke/              #   platform-health.js, user-profile.js
-│   ├── load/               #   platform-health.js
+│   ├── load/               #   platform-health.js, rbac-read.js, epoch-check-latency.js
 │   ├── stress/             #   platform-health.js
 │   ├── spike/              #   platform-health.js
 │   └── soak/               #   platform-health.js
 ├── scenarios/              # WHAT a user/client does (application flows), knows nothing about traffic volume
 │   ├── platform-health.js  #   GET /actuator/health/readiness
-│   └── user-profile.js     #   GET /api/v1/users/me (authenticated)
+│   ├── user-profile.js     #   GET /api/v1/users/me (authenticated)
+│   └── rbac-read.js        #   rbacRead (roles, permissions, role permissions); listRoles (GET /api/v1/roles)
 ├── workloads/              # HOW MUCH traffic: k6 executor + stages, knows nothing about the application
-│   └── smoke.js · load.js · stress.js · spike.js · soak.js
+│   └── smoke.js · load.js · stress.js · spike.js · soak.js · constant-arrival-rate.js
 ├── thresholds/
 │   └── default-thresholds.js  # error-rate/checks gates + per-scenario p95/p99 builder
 ├── config/
@@ -72,6 +73,9 @@ Set them as OS variables or pass `-e NAME=value` to k6 (`npm run test:smoke -- -
 | `VUS`                                   | no           | Scales the workload: steady-state users (load, soak) or peak users (stress, spike).                                 |
 | `DURATION`                              | no           | Hold time of the workload's main phase, e.g. `30s`, `10m`, `2h`.                                                    |
 | `THRESHOLD_P95_MS`, `THRESHOLD_P99_MS`  | no           | Override the latency thresholds for this environment.                                                               |
+| `RATE`                                  | no           | Iterations per second for arrival-rate workloads (`constant-arrival-rate.js`).                                      |
+| `EPOCH_CHECK_MODE`                      | no (`gate`)  | `epoch-check-latency.js` only: `baseline` (build without the epoch check) or `gate`.                                |
+| `BASELINE_P95_MS`                       | gate mode    | `epoch-check-latency.js` only: the endpoint p95 of the baseline run, in ms.                                         |
 | `ACCESS_TOKEN`                          | auth tests   | A bearer token to use as-is.                                                                                        |
 | `PERF_USER_EMAIL`, `PERF_USER_PASSWORD` | auth tests   | Credentials to log in with once in `setup()` when `ACCESS_TOKEN` is unset.                                          |
 
@@ -104,6 +108,7 @@ BASE_URL=http://localhost:1000 npm run wait-for-ready        # optional arg: tim
 | smoke (RBAC read) | `... npm run test:smoke:rbac-read`                                                        | 1 VU, 30s                                        | 30s        |
 | load              | `BASE_URL=http://localhost:1000 npm run test:load`                                        | ramp 1m → 10 VUs for 5m → ramp down 30s          | 6.5m       |
 | load (RBAC read)  | `... npm run test:load:rbac-read`                                                         | same profile                                     | 6.5m       |
+| load (epoch check)| `... npm run test:load:epoch-check` (see below)                                           | 200 requests/s for 5m (`RATE`, `DURATION`)       | 5m         |
 | stress            | `BASE_URL=http://localhost:1000 npm run test:stress`                                      | steps ⅓ → ⅔ → peak 30 VUs, 2m at peak            | 10m        |
 | spike             | `BASE_URL=http://localhost:1000 npm run test:spike`                                       | baseline 5 → jump to 50 VUs for 1m → recover     | 4.5m       |
 | soak              | `BASE_URL=http://localhost:1000 npm run test:soak`                                        | 10 VUs for 1h                                    | 1h 4m      |
@@ -113,6 +118,23 @@ On Windows PowerShell set variables first (`$env:BASE_URL="http://localhost:1000
 (Git Bash/WSL).
 
 Without npm: `k6 run -e BASE_URL=http://localhost:1000 tests/smoke/platform-health.js`.
+
+### Epoch-check hot-path test (US-018 T-009)
+
+`tests/load/epoch-check-latency.js` drives a constant 200 requests/s at `GET /api/v1/roles`, one
+permission-epoch check per request, and is merge-blocking for US-018 M7. It runs twice against the
+same machine, Redis and JVM settings:
+
+1. **Baseline**, on the build without the epoch check: `EPOCH_CHECK_MODE=baseline`, then read the
+   `http_req_duration{scenario:epoch_check}` p95 from the summary.
+2. **Gate**, on the T-009 build: `BASELINE_P95_MS=<that p95>`. It fails unless the server-side
+   `nexus.rbac.epoch.check.latency` p95 (read from `/actuator/prometheus` in `teardown()`) is at
+   most 2 ms, no epoch read failed (`skipped_error` = 0), the endpoint p95 is under the baseline
+   plus 5 ms, and no arrival was dropped.
+
+The server computes the p95 over a sliding window of about 2 minutes, so keep `DURATION` at 3m or
+more. It logs in once, so keep the run under the 900 s token lifetime, and wait a minute between
+runs (login rate limit).
 
 ### Test categories: purpose and when to use them
 

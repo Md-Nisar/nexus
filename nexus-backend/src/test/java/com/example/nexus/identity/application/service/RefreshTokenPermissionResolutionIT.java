@@ -15,6 +15,7 @@ import com.example.nexus.identity.domain.LoginResult;
 import com.example.nexus.identity.domain.RefreshToken;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
+import com.example.nexus.rbac.application.PermissionFreshnessService;
 import com.example.nexus.rbac.domain.UserRole;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import java.time.Instant;
@@ -82,6 +83,7 @@ class RefreshTokenPermissionResolutionIT {
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private JpaUserRoleRepository userRoleRepository;
   @Autowired private JwtPort jwtPort;
+  @Autowired private PermissionFreshnessService permissionFreshness;
 
   @Test
   void should_reflectNewlyAssignedRole_when_tokenRefreshedAfterAssignment() {
@@ -102,6 +104,25 @@ class RefreshTokenPermissionResolutionIT {
 
     assertThat(claimsAfter.roles()).containsExactly("MEMBER");
     assertThat(claimsAfter.permissions()).containsExactly("user:read");
+  }
+
+  /**
+   * US-018 T-009: a refresh mints v3 carrying the user's current permission epoch, read before the
+   * permissions are resolved (MC-7a), from the same Redis the epoch check reads.
+   */
+  @Test
+  void should_mintV3WithCurrentPermEpoch_when_tokenRefreshedAfterEpochBump() {
+    User user = seedActiveUser("refresh-epoch");
+    String rawToken = seedRefreshToken(user);
+    permissionFreshness.invalidateUser(TENANT_ID, user.getId());
+    long current = permissionFreshness.epochForMint(TENANT_ID, user.getId());
+
+    LoginResult refreshed = refreshTokenUseCase.execute(rawToken, "127.0.0.1");
+    JwtClaims claims = jwtPort.verify(refreshed.accessToken());
+
+    assertThat(current).isPositive();
+    assertThat(claims.schemaVersion()).isEqualTo(3);
+    assertThat(claims.permEpoch()).isEqualTo(current);
   }
 
   private User seedActiveUser(String tag) {

@@ -15,6 +15,8 @@
 | M3 | T-016..T-019 | **Blocked on M7 (T-009..T-014) merging.** M4 is merged. The staging-soak gate is waived (no environment); M3 still needs its own threat-model re-pass before merge. |
 | M5, M7, M7b, M8, M9, M9-contract | see `04-tasks.md` | Not started. M5 (T-007, T-008) and M7 (T-009..T-014) are both unblocked: M5 needed M4, and M7 needed M1 and M6 *merged* (no longer "deployed"). M7b follows M7 with no wait; M9-contract follows M9 with no wait. |
 
+**M7 / T-009 (A9 core): implemented on `ccr-4e9e7cbe-4vl9v6`, not yet reviewed or merged.** Backend `verify` passes with and without ITs (1510 unit, 375 IT, 0 failures). Local-Docker k6 hot-path run (200 RPS, 5 min, one JVM at `-Xmx1g`, MySQL and Redis in Docker; **not the staging topology**): server-side `nexus.rbac.epoch.check.latency` p95 0.58 ms (≤ 2 ms), `GET /api/v1/roles` p95 4.99 ms against a 4.25 ms baseline on `25ceeed` (+0.74 ms, budget < 5 ms), 0 dropped iterations, 0 `skipped_error`. Local Redis round-trips are about 0.1 ms, so this is optimistic: the staging re-run stays under "Deferred to the first deployment". T-009 must not ship without T-011 (an outage fails open on every request until then). `/review`, `/security-review` and `/test-validate` for M7 have not run.
+
 Next in delivery order now that M1, M2, M4 and M6 are merged: M5 (T-007, T-008) and M7 (T-009..T-014), neither depending on the other. M7 then unblocks M3 and M7b.
 
 ## M1 exit sequence

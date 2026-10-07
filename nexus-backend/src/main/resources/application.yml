@@ -150,6 +150,16 @@ nexus:
       # Matches nexus.security.rate-limit.ip-window-seconds (line 191) so operators reason about
       # one window length platform-wide.
       window-seconds: ${NEXUS_RBAC_DENIAL_THROTTLE_WINDOW_SECONDS:60}
+    # Per-user permission epoch (US-018 A9, design §9.2, §9.5). Both timeouts apply to dedicated
+    # Redis connections built from spring.data.redis.*; the 2 s timeout above never applies here.
+    epoch:
+      # Bound on one epoch read: runs on every non-public authenticated request (p95 budget 2 ms).
+      command-timeout: ${NEXUS_RBAC_EPOCH_COMMAND_TIMEOUT:50ms}
+      # Bound on one bump script call, run after the revoking transaction commits.
+      bump-timeout: ${NEXUS_RBAC_EPOCH_BUMP_TIMEOUT:500ms}
+      # Must be at least max(nexus.jwt.access-token-ttl-seconds, permission-cache-ttl-seconds)
+      # + 60 s, or startup fails (RC-29, T-E37).
+      key-ttl-seconds: ${NEXUS_RBAC_EPOCH_KEY_TTL_SECONDS:960}
   identity:
     # --- Encryption ---
     encryption:

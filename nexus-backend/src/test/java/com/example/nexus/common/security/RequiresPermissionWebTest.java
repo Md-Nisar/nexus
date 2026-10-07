@@ -116,7 +116,8 @@ class RequiresPermissionWebTest {
         9_999_999_999L,
         UUID.randomUUID().toString(),
         0,
-        JwtClaims.CURRENT_VERSION);
+        JwtClaims.CURRENT_VERSION,
+        0L);
   }
 
   @Test

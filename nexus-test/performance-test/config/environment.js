@@ -29,6 +29,26 @@ function optionalPositiveInt(name) {
   return value;
 }
 
+function epochCheckMode() {
+  const raw = __ENV.EPOCH_CHECK_MODE || 'gate';
+  if (raw !== 'gate' && raw !== 'baseline') {
+    throw new Error(`EPOCH_CHECK_MODE must be "gate" or "baseline", got "${raw}"`);
+  }
+  return raw;
+}
+
+function optionalPositiveNumber(name) {
+  const raw = __ENV[name];
+  if (raw === undefined || raw === '') {
+    return undefined;
+  }
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${name} must be a positive number, got "${raw}"`);
+  }
+  return value;
+}
+
 export const config = Object.freeze({
   baseUrl: requireBaseUrl(),
 
@@ -40,12 +60,22 @@ export const config = Object.freeze({
   workload: Object.freeze({
     vus: optionalPositiveInt('VUS'),
     duration: __ENV.DURATION || undefined,
+    // Iterations per second for arrival-rate workloads (workloads/constant-arrival-rate.js).
+    rate: optionalPositiveInt('RATE'),
   }),
 
   // Environment-level latency overrides for thresholds/default-thresholds.js.
   thresholds: Object.freeze({
     p95Ms: optionalPositiveInt('THRESHOLD_P95_MS'),
     p99Ms: optionalPositiveInt('THRESHOLD_P99_MS'),
+  }),
+
+  // US-018 epoch-check hot-path test (tests/load/epoch-check-latency.js). "baseline" measures the
+  // endpoint on a build without the epoch check; "gate" (default) enforces the server-side epoch
+  // p95 and the regression against baselineP95Ms, which gate mode requires.
+  epochCheck: Object.freeze({
+    mode: epochCheckMode(),
+    baselineP95Ms: optionalPositiveNumber('BASELINE_P95_MS'),
   }),
 
   // Credentials are only ever read from the environment — never commit them.
