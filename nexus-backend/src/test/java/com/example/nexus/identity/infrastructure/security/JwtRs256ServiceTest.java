@@ -3,6 +3,7 @@ package com.example.nexus.identity.infrastructure.security;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -11,6 +12,7 @@ import com.example.nexus.identity.domain.AccessTokenResult;
 import com.example.nexus.identity.domain.JwtClaims;
 import com.example.nexus.identity.domain.UserStatus;
 import com.example.nexus.identity.domain.User;
+import com.example.nexus.rbac.application.PermissionFreshnessService;
 import com.example.nexus.rbac.application.RoleResolutionService;
 import com.example.nexus.rbac.domain.ResolvedPermissions;
 import io.jsonwebtoken.Jwts;
@@ -30,6 +32,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.springframework.core.env.Environment;
 
 @Tag("UnitTest")
@@ -38,6 +41,7 @@ class JwtRs256ServiceTest {
   private static RsaKeyConfig rsaKeyConfig;
 
   private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+  private final PermissionFreshnessService freshness = mock(PermissionFreshnessService.class);
 
   @BeforeAll
   static void setUpKeyConfig() throws Exception {
@@ -65,12 +69,14 @@ class JwtRs256ServiceTest {
         clock,
         900L,
         roleResolutionServiceReturning(resolved),
+        freshness,
         meterRegistry);
   }
 
   private JwtRs256Service service(Clock clock, RoleResolutionService roleResolutionService) {
     return new JwtRs256Service(
-        rsaKeyConfig, UUID::randomUUID, clock, 900L, roleResolutionService, meterRegistry);
+        rsaKeyConfig, UUID::randomUUID, clock, 900L, roleResolutionService, freshness,
+        meterRegistry);
   }
 
   private User activeUser() {
@@ -293,6 +299,68 @@ class JwtRs256ServiceTest {
 
     assertThat(tenantIdCaptor.getValue()).isEqualTo(user.getTenantId());
     assertThat(claims.tenantId()).isEqualTo(tenantIdCaptor.getValue().toString());
+  }
+
+  // -----------------------------------------------------------------------
+  // US-018 T-009 (A9): perm_epoch is read before permissions (MC-7a) and minted in v3
+  // -----------------------------------------------------------------------
+
+  @Test
+  void should_readEpochBeforeResolvingPermissions_when_issuing() {
+    RoleResolutionService roleResolutionService = roleResolutionServiceReturning(
+        new ResolvedPermissions(List.of("MEMBER"), List.of("user:read")));
+    User user = activeUser();
+
+    service(Clock.systemUTC(), roleResolutionService).issue(user);
+
+    InOrder order = inOrder(freshness, roleResolutionService);
+    order.verify(freshness).epochForMint(user.getTenantId(), user.getId());
+    order.verify(roleResolutionService).resolve(user.getId(), user.getTenantId());
+  }
+
+  @Test
+  void should_mintV3WithPermEpoch_when_epochReadSucceeds() {
+    User user = activeUser();
+    when(freshness.epochForMint(user.getTenantId(), user.getId())).thenReturn(1_796_000_000_000L);
+    JwtRs256Service svc = service(Clock.systemUTC());
+
+    JwtClaims claims = svc.verify(svc.issue(user).token());
+
+    assertThat(claims.schemaVersion()).isEqualTo(3);
+    assertThat(claims.permEpoch()).isEqualTo(1_796_000_000_000L);
+  }
+
+  @Test
+  void should_mintPermEpochZero_when_epochForMintReturnsZero() {
+    JwtRs256Service svc = service(Clock.systemUTC());
+
+    JwtClaims claims = svc.verify(svc.issue(activeUser()).token());
+
+    assertThat(claims.permEpoch()).isZero();
+  }
+
+  @Test
+  void should_verifyV2TokenAsEpochZero() {
+    JwtClaims verified = service(Clock.systemUTC()).verify(signedToken(validClaims(2)));
+
+    assertThat(verified.permEpoch()).isZero();
+  }
+
+  @Test
+  void should_returnPermEpoch_when_v3TokenVerified() {
+    Map<String, Object> claims = validClaims(3);
+    claims.put("perm_epoch", 1_759_000_000_000L);
+
+    assertThat(service(Clock.systemUTC()).verify(signedToken(claims)).permEpoch())
+        .isEqualTo(1_759_000_000_000L);
+  }
+
+  @Test
+  void should_returnPermEpoch_when_v3TokenEpochFitsInInteger() {
+    Map<String, Object> claims = validClaims(3);
+    claims.put("perm_epoch", 7);
+
+    assertThat(service(Clock.systemUTC()).verify(signedToken(claims)).permEpoch()).isEqualTo(7L);
   }
 
   // -----------------------------------------------------------------------

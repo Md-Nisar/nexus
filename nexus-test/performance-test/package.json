@@ -9,6 +9,7 @@
     "test:smoke:rbac-read": "k6 run --no-usage-report --summary-export=results/smoke-rbac-read.json tests/smoke/rbac-read.js",
     "test:load": "k6 run --no-usage-report --summary-export=results/load-platform-health.json tests/load/platform-health.js",
     "test:load:rbac-read": "k6 run --no-usage-report --summary-export=results/load-rbac-read.json tests/load/rbac-read.js",
+    "test:load:epoch-check": "k6 run --no-usage-report --summary-export=results/load-epoch-check.json tests/load/epoch-check-latency.js",
     "test:stress": "k6 run --no-usage-report --summary-export=results/stress-platform-health.json tests/stress/platform-health.js",
     "test:spike": "k6 run --no-usage-report --summary-export=results/spike-platform-health.json tests/spike/platform-health.js",
     "test:soak": "k6 run --no-usage-report --summary-export=results/soak-platform-health.json tests/soak/platform-health.js",

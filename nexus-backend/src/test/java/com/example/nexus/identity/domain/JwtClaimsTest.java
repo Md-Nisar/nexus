@@ -31,7 +31,8 @@ class JwtClaimsTest {
         1900L,
         "jti-uuid",
         0,
-        JwtClaims.CURRENT_VERSION);
+        JwtClaims.CURRENT_VERSION,
+        1_796_000_000_000L);
 
     assertThat(claims.sub()).isEqualTo("user-uuid");
     assertThat(claims.tenantId()).isEqualTo("tenant-uuid");
@@ -42,7 +43,8 @@ class JwtClaimsTest {
     assertThat(claims.exp()).isEqualTo(1900L);
     assertThat(claims.jti()).isEqualTo("jti-uuid");
     assertThat(claims.tokenVersion()).isZero();
-    assertThat(claims.schemaVersion()).isEqualTo(2);
+    assertThat(claims.schemaVersion()).isEqualTo(3);
+    assertThat(claims.permEpoch()).isEqualTo(1_796_000_000_000L);
   }
 
   @Test
@@ -60,7 +62,8 @@ class JwtClaimsTest {
         1900L,
         "jti-uuid",
         0,
-        JwtClaims.CURRENT_VERSION);
+        JwtClaims.CURRENT_VERSION,
+        0L);
     mutableRoles.add("INJECTED");
     mutablePermissions.add("INJECTED");
 
@@ -74,11 +77,13 @@ class JwtClaimsTest {
     assertThat(JwtClaims.ACCEPTED_VERSIONS).containsExactlyInAnyOrder(2, 3);
   }
 
-  /** M6 widens the accepted set only; it still mints v2 and must accept what it mints. */
+  /**
+   * US-018 M7 (design §9.6): M7 mints v3 (v2 plus {@code perm_epoch}) and still accepts v2, so a
+   * rolling deploy never 401s a token minted by an M6 instance.
+   */
   @Test
-  void should_keepCurrentVersion2AndIncludeItInAcceptedVersions_when_m6Ships() {
-    assertThat(JwtClaims.ACCEPTED_VERSIONS)
-        .contains(JwtClaims.CURRENT_VERSION)
-        .satisfies(versions -> assertThat(JwtClaims.CURRENT_VERSION).isEqualTo(2));
+  void should_mintVersion3AndAcceptVersions2And3_when_m7Ships() {
+    assertThat(JwtClaims.CURRENT_VERSION).isEqualTo(3);
+    assertThat(JwtClaims.ACCEPTED_VERSIONS).contains(JwtClaims.CURRENT_VERSION, 2);
   }
 }

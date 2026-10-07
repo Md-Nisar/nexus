@@ -14,6 +14,7 @@ import com.example.nexus.identity.domain.AccessTokenResult;
 import com.example.nexus.identity.domain.JwtClaims;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UserStatus;
+import com.example.nexus.rbac.application.PermissionFreshnessService;
 import com.example.nexus.rbac.application.RoleResolutionService;
 import com.example.nexus.rbac.domain.ResolvedPermissions;
 import io.jsonwebtoken.Jwts;
@@ -69,7 +70,8 @@ class JwtRs256ServiceSecurityTest {
             org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
         .thenReturn(new ResolvedPermissions(List.of("USER"), List.of("read:only")));
     return new JwtRs256Service(
-        rsaKeyConfig, UUID::randomUUID, clock, 900L, roleResolutionService, meterRegistry);
+        rsaKeyConfig, UUID::randomUUID, clock, 900L, roleResolutionService,
+        mock(PermissionFreshnessService.class), meterRegistry);
   }
 
   private User activeUser() {

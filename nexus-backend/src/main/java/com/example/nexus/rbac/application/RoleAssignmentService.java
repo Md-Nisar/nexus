@@ -136,6 +136,7 @@ public class RoleAssignmentService {
   private final UserDirectoryPort userDirectoryPort;
   private final RbacAuditPort rbacAuditPort;
   private final PermissionCachePort permissionCachePort;
+  private final PermissionFreshnessService permissionFreshnessService;
   private final MeterRegistry meterRegistry;
   private final RoleChangeThrottlePort throttlePort;
   private final int maxDenials;
@@ -146,6 +147,7 @@ public class RoleAssignmentService {
       UserDirectoryPort userDirectoryPort,
       RbacAuditPort rbacAuditPort,
       PermissionCachePort permissionCachePort,
+      PermissionFreshnessService permissionFreshnessService,
       MeterRegistry meterRegistry,
       RoleChangeThrottlePort throttlePort,
       @Value("${nexus.rbac.denial-throttle.max-denials}") int maxDenials,
@@ -154,6 +156,7 @@ public class RoleAssignmentService {
     this.userDirectoryPort = userDirectoryPort;
     this.rbacAuditPort = rbacAuditPort;
     this.permissionCachePort = permissionCachePort;
+    this.permissionFreshnessService = permissionFreshnessService;
     this.meterRegistry = meterRegistry;
     this.throttlePort = throttlePort;
     this.maxDenials = maxDenials;
@@ -624,6 +627,10 @@ public class RoleAssignmentService {
             // measure only up to the register call, missing the COMMIT round-trip itself --
             // exactly the interval this instrument exists to catch (RC-9.5).
             stopLockHoldTimer(lockHoldSample, OPERATION_REVOKE, OUTCOME_REVOKED);
+            // US-018 A9 (MC-7b): every token the target holds becomes stale. After commit only, so
+            // a mint in the gap cannot read the new epoch with pre-commit permissions; after the
+            // timer, so the bump's Redis latency does not inflate the lock-hold measurement.
+            permissionFreshnessService.invalidateUser(actor.tenantId(), targetUserId);
           });
     } catch (InsufficientPermissionException e) {
       stopLockHoldTimer(lockHoldSample, OPERATION_REVOKE, OUTCOME_DENIED);

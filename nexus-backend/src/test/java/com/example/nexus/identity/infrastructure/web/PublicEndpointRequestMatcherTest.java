@@ -8,6 +8,7 @@ import com.example.nexus.identity.interfaces.rest.JwksController;
 import com.example.nexus.identity.interfaces.rest.LoginController;
 import com.example.nexus.identity.interfaces.rest.UserProfileController;
 import com.example.nexus.identity.interfaces.rest.dto.LoginRequest;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.servlet.http.HttpServletRequest;
 import java.lang.reflect.Method;
 import org.junit.jupiter.api.BeforeEach;
@@ -46,6 +47,7 @@ class PublicEndpointRequestMatcherTest {
   private final LoginController loginController = mock(LoginController.class);
   private final UserProfileController profileController = mock(UserProfileController.class);
   private final JwksController jwksController = mock(JwksController.class);
+  private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
   private RequestMappingHandlerMapping handlerMapping;
 
   @BeforeEach
@@ -231,7 +233,37 @@ class PublicEndpointRequestMatcherTest {
   }
 
   private PublicEndpointRequestMatcher matcher() {
-    return new PublicEndpointRequestMatcher(handlerMapping);
+    return new PublicEndpointRequestMatcher(handlerMapping, meterRegistry);
+  }
+
+  @Test
+  void should_incrementFailedClosedCounter_when_matchingThrows() {
+    PublicEndpointRequestMatcher matcher = matcher();
+
+    matcher.matches(requestWhoseMethodThrows(LOGIN));
+
+    assertThat(failedClosedCount()).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_notIncrementCounter_when_requestSimplyNotPublic() {
+    PublicEndpointRequestMatcher matcher = matcher();
+
+    matcher.matches(request("GET", ME));
+    matcher.matches(request("GET", REFRESH));
+
+    assertThat(failedClosedCount()).isZero();
+  }
+
+  @Test
+  void should_registerFailedClosedCounterAtZero_when_constructed() {
+    matcher();
+
+    assertThat(failedClosedCount()).isZero();
+  }
+
+  private double failedClosedCount() {
+    return meterRegistry.get("nexus.security.public_match_failed_closed").counter().count();
   }
 
   private void registerPost(String path, Method method) {

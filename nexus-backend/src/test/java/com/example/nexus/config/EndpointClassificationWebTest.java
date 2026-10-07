@@ -125,12 +125,14 @@ import org.springframework.web.util.pattern.PathPatternParser;
  * the handler mappings themselves, so a handler that {@code requestMappingHandlerMapping} does not
  * serve (a functional endpoint, a bean-name handler) cannot escape the sweeps.
  *
- * <p>The {@code permitAll} sweep (security review F-5) sends every HTTP method to each path of
- * {@link #PERMIT_ALL_PATTERNS}, the test-side mirror of {@code SecurityConfig}'s list, because
- * {@code permitAll} matches on path only: a non-public pattern that also matches a permitted
- * literal would be reachable anonymously while the per-pattern sweeps stay green. A drift guard
- * keeps the mirror in step with the configured chain, and {@link PermitAllOverlapProbe} proves the
- * sweep fails for such a handler.
+ * <p>Since US-018 T-009, {@code SecurityConfig} grants anonymous access to {@code @PublicEndpoint}
+ * handlers through {@link PublicEndpointRequestMatcher} (HTTP method and pattern), plus a short
+ * literal list of non-MVC infrastructure paths that the matcher cannot see. The {@code permitAll}
+ * sweep (security review F-5) sends every HTTP method to each path of {@link
+ * #PERMIT_ALL_PATTERNS}, the test-side mirror of that literal list, because a literal matches on
+ * path only. A drift guard keeps the mirror and the matcher in step with the configured chain, and
+ * {@link PermitAllOverlapProbe} proves that a non-public pattern overlapping a public literal is no
+ * longer reachable anonymously.
  *
  * <p>Two sweeps cover a signed-in caller holding no permission: every {@code
  * @AuthenticatedEndpoint} handler passes the chain (neither 401 nor 403), and every {@code
@@ -139,9 +141,9 @@ import org.springframework.web.util.pattern.PathPatternParser;
  *
  * <p>The matcher sweep checks {@link PublicEndpointRequestMatcher} against every mapping. The
  * fixture {@link SamePathOtherMethodController} maps {@code GET} on the public refresh pattern;
- * it is kept out of the anonymous sweep because {@code permitAll} matches on path only, so it is
- * reachable anonymously today (it is allowlisted, and so accepted by the {@code permitAll}
- * sweep, for that reason). The fixture proves the matcher does not repeat it.
+ * it proves the matcher, and therefore {@code permitAll}, does not exempt it. Every {@code
+ * @PublicEndpoint} pattern must be a literal path, so a public exemption can never widen through
+ * a path variable or wildcard.
  */
 @SpringBootTest(
     webEnvironment = WebEnvironment.MOCK,
@@ -191,8 +193,9 @@ class EndpointClassificationWebTest {
   private static final String NO_PERMISSION_TENANT = "7c1e2d3f-4a5b-4c6d-9e8f-0a1b2c3d4e5f";
 
   /**
-   * Test-side mirror of the {@code permitAll} list in {@code SecurityConfig.apiSecurity} (security
-   * review F-5), in the same order. Spring Security exposes the configured matchers through no
+   * Test-side mirror of the literal {@code permitAll} list in {@code SecurityConfig.apiSecurity}
+   * (security review F-5), in the same order: the non-MVC infrastructure paths only, because the
+   * {@code @PublicEndpoint} handlers are granted through {@link PublicEndpointRequestMatcher}. Spring Security exposes the configured matchers through no
    * public API (they sit in private fields of {@code RequestMatcherDelegatingAuthorizationManager},
    * behind {@code ObservationAuthorizationManager}), so the list is copied rather than read by
    * reflection, and {@link #should_permit_anonymous_request_only_when_path_is_on_permit_all_list}
@@ -203,12 +206,7 @@ class EndpointClassificationWebTest {
   private static final List<String> PERMIT_ALL_PATTERNS =
       List.of(
           "/actuator/health/**", "/actuator/info",
-          "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html",
-          "/api/v1/auth/register", "/api/v1/auth/verify-email",
-          "/api/v1/auth/resend-verification",
-          "/api/v1/auth/login", "/api/v1/auth/refresh", "/api/v1/auth/logout",
-          "/api/v1/auth/password/forgot", "/api/v1/auth/password/reset",
-          "/.well-known/jwks.json");
+          "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html");
 
   /**
    * {@code HandlerMapping} bean types this context may hold (security review F-1), each with what
@@ -272,8 +270,8 @@ class EndpointClassificationWebTest {
           // Test sources: component-scanned into every @SpringBootTest context (security review
           // I-1), never packaged; its handlers prove @RequiresPermission enforcement.
           "com.example.nexus.support.web.GuardedTestController",
-          // This class's matcher fixture, imported only here. GET on the refresh path, so it is
-          // reachable anonymously while permitAll is path-only (see the class Javadoc).
+          // This class's matcher fixture, imported only here: GET on the public refresh path, which
+          // neither the matcher nor permitAll exempts (see the class Javadoc).
           SamePathOtherMethodController.class.getName());
 
   /**
@@ -517,12 +515,14 @@ class EndpointClassificationWebTest {
   }
 
   /**
-   * Drift guard for {@link #PERMIT_ALL_PATTERNS} (security review F-5). It asks the configured
-   * chain's own {@code AuthorizationManager}, the one {@code AuthorizationFilter} consults, about
-   * an anonymous caller: for every path of every handler mapping, each sample of the mirror, and
-   * the sibling and child of each entry, every HTTP method must be granted exactly when a mirror
-   * entry matches the path. A {@code permitAll} entry added, removed or widened in {@code
-   * SecurityConfig} without the mirror fails here.
+   * Drift guard for {@link #PERMIT_ALL_PATTERNS} and the matcher (security review F-5, US-018
+   * T-009). It asks the configured chain's own {@code AuthorizationManager}, the one {@code
+   * AuthorizationFilter} consults, about an anonymous caller: for every path of every handler
+   * mapping, each sample of the mirror, and the sibling and child of each entry, every HTTP method
+   * must be granted exactly when a mirror entry matches the path or {@link
+   * PublicEndpointRequestMatcher} matches the request. A {@code permitAll} entry added, removed or
+   * widened in {@code SecurityConfig} without the mirror, or a chain that stops consulting the
+   * matcher, fails here.
    */
   @TestFactory
   Stream<DynamicTest> should_permit_anonymous_request_only_when_path_is_on_permit_all_list() {
@@ -533,12 +533,14 @@ class EndpointClassificationWebTest {
               .anyMatch(pattern -> PathPatternParser.defaultInstance.parse(pattern)
                   .matches(PathContainer.parsePath(path)));
           List<String> mismatches = ALL_METHODS.stream()
-              .filter(method -> isGrantedAnonymously(authorization, method, path) != listed)
+              .filter(method -> isGrantedAnonymously(authorization, method, path)
+                  != (listed || matcher.matches(new MockHttpServletRequest(method.name(), path))))
               .map(method -> method + " " + path)
               .toList();
           assertThat(mismatches)
-              .as("anonymous access differs from PERMIT_ALL_PATTERNS (on the list: %s); change "
-                  + "the mirror together with SecurityConfig", listed)
+              .as("anonymous access differs from PERMIT_ALL_PATTERNS (on the list: %s) or the "
+                  + "public-endpoint matcher; change the mirror together with SecurityConfig",
+                  listed)
               .isEmpty();
         }));
   }
@@ -581,6 +583,36 @@ class EndpointClassificationWebTest {
             .isEqualTo(PUBLIC_REFRESH_PATH));
 
     assertThat(matcher.matches(new MockHttpServletRequest("GET", PUBLIC_REFRESH_PATH))).isFalse();
+  }
+
+  /**
+   * US-018 T-009: {@code permitAll} is the matcher's method-and-pattern decision, so the fixture's
+   * {@code GET} on the public refresh path is challenged like any non-public handler.
+   */
+  @Test
+  void should_return_entry_point_401_when_anonymous_uses_other_method_on_public_path()
+      throws Exception {
+    MockHttpServletResponse response =
+        mvc.perform(request(HttpMethod.GET, PUBLIC_REFRESH_PATH)).andReturn().getResponse();
+
+    assertThat(isEntryPointUnauthorized(response))
+        .as("anonymous GET %s; got %d %s",
+            PUBLIC_REFRESH_PATH, response.getStatus(), response.getContentAsString())
+        .isTrue();
+  }
+
+  /**
+   * US-018 T-009 (STATUS "For T-009"): every {@code @PublicEndpoint} pattern is a literal path. A
+   * path variable or wildcard would let the public exemption, which skips the permission-epoch
+   * check, cover paths no reviewer listed.
+   */
+  @TestFactory
+  Stream<DynamicTest> should_use_literal_pattern_when_handler_is_public_endpoint() {
+    return dynamicTests(
+        publicProductionEndpoints(),
+        endpoint -> assertThat(endpoint.pattern())
+            .as("@PublicEndpoint pattern of %s", endpoint)
+            .doesNotContain("{", "*", "?"));
   }
 
   // ── helpers ────────────────────────────────────────────────────────────────
@@ -940,14 +972,15 @@ class EndpointClassificationWebTest {
   // ── probe: a non-public pattern that matches permitAll literals (F-5) ──────
 
   /**
-   * Proves {@link #should_reach_only_public_handler_when_request_hits_permit_all_path} fails for
-   * the security review F-5 case. This dedicated context is the sweep context plus {@link
-   * AuthSegmentProbeController}, whose authenticated-only {@code GET /api/v1/auth/{action}} binds
-   * no identifier (so it passes the ArchUnit rules) and gets the entry-point 401 for the
-   * per-pattern sweep's {@code /api/v1/auth/<uuid>}, yet serves anonymous {@code GET
-   * /api/v1/auth/login}. The probe is imported only here, never into the sweep context: it is
-   * imported as a plain class because Spring Boot adds every static nested {@code
-   * @TestConfiguration} of a test class to that class's own context.
+   * The security review F-5 case, closed by US-018 T-009. This dedicated context is the sweep
+   * context plus {@link AuthSegmentProbeController}, whose authenticated-only {@code GET
+   * /api/v1/auth/{action}} binds no identifier (so it passes the ArchUnit rules) and also matches
+   * the public literal {@code /api/v1/auth/login}. While {@code permitAll} listed that literal by
+   * path, the probe served anonymous {@code GET /api/v1/auth/login}; now that {@code permitAll} is
+   * the matcher's method-and-pattern decision, the overlapping non-public mapping makes the request
+   * non-public. The probe is imported only here, never into the sweep context: it is imported as a
+   * plain class because Spring Boot adds every static nested {@code @TestConfiguration} of a test
+   * class to that class's own context.
    */
   @Nested
   @Import(AuthSegmentProbeController.class)
@@ -956,18 +989,18 @@ class EndpointClassificationWebTest {
     @Autowired private WebApplicationContext probeContext;
 
     @Test
-    void should_report_permit_all_violation_when_non_public_pattern_matches_public_literal()
-        throws Exception {
-      List<HandlerMapping> orderedMappings = orderedHandlerMappings(probeContext);
-      List<String> violations = new ArrayList<>();
-      for (String path : permitAllSamplePaths()) {
-        violations.addAll(permitAllDispatchViolations(orderedMappings, path));
-      }
-      String probe = " -> " + AuthSegmentProbeController.class.getSimpleName() + ".segment";
+    void should_deny_anonymous_access_when_non_public_pattern_matches_public_literal() {
+      AuthorizationManager<HttpServletRequest> authorization = authorizationManager(probeContext);
 
-      assertThat(violations)
-          .contains("GET /api/v1/auth/login" + probe, "HEAD /api/v1/auth/login" + probe)
-          .allMatch(violation -> violation.endsWith(probe));
+      assertThat(isGrantedAnonymously(authorization, RequestMethod.GET, "/api/v1/auth/login"))
+          .as("anonymous GET /api/v1/auth/login, served by the non-public probe")
+          .isFalse();
+      assertThat(isGrantedAnonymously(authorization, RequestMethod.HEAD, "/api/v1/auth/login"))
+          .as("anonymous HEAD /api/v1/auth/login, served by the non-public probe")
+          .isFalse();
+      assertThat(isGrantedAnonymously(authorization, RequestMethod.POST, "/api/v1/auth/login"))
+          .as("anonymous POST /api/v1/auth/login, the public login handler")
+          .isTrue();
     }
   }
 

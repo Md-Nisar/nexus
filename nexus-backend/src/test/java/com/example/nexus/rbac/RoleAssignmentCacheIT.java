@@ -13,6 +13,7 @@ import com.example.nexus.identity.domain.EmailCipher;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
+import com.example.nexus.rbac.application.PermissionFreshnessService;
 import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.application.port.out.PermissionCachePort;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
@@ -79,6 +80,7 @@ class RoleAssignmentCacheIT {
   @Autowired private UserDirectoryPort userDirectoryPort;
   @Autowired private RbacAuditPort rbacAuditPort;
   @Autowired private PermissionCachePort permissionCachePort;
+  @Autowired private PermissionFreshnessService permissionFreshness;
   @Autowired private RoleChangeThrottlePort throttlePort;
   @Autowired private JpaUserRepository userRepository;
   @Autowired private JpaRoleRepository roleRepository;
@@ -170,8 +172,8 @@ class RoleAssignmentCacheIT {
         new RedisPermissionCacheAdapter(brokenTemplate, keyPrefix, ttlSeconds);
     RoleAssignmentService service =
         new RoleAssignmentService(
-            userRoleAssignmentPort, userDirectoryPort, rbacAuditPort, brokenCache, meterRegistry,
-            throttlePort, maxDenials, windowSeconds);
+            userRoleAssignmentPort, userDirectoryPort, rbacAuditPort, brokenCache,
+            permissionFreshness, meterRegistry, throttlePort, maxDenials, windowSeconds);
     return new RoleAssignmentServiceWithBrokenCache(service, brokenFactory);
   }
 

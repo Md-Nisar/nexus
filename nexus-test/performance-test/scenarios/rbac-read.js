@@ -32,6 +32,17 @@ export function rbacRead(data) {
   sleep(1);
 }
 
+/**
+ * ListRoles: one guarded request, `GET /api/v1/roles` (role:read), and nothing else. No think
+ * time: it is meant for arrival-rate workloads, where the workload, not the VU, sets the pace.
+ * Used by the US-018 epoch-check hot-path test, so every iteration is exactly one permission-epoch
+ * check on the server.
+ */
+export function listRoles(data) {
+  const roles = get('/api/v1/roles', bearer(data.accessToken));
+  checkResponse(roles, 200, { 'roles is a list': (body) => Array.isArray(body.data) });
+}
+
 function parseFirstRoleId(res) {
   try {
     return res.json('data.0.id');
