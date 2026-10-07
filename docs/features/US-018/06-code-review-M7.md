@@ -2,6 +2,26 @@
 
 **Verdict: CHANGES REQUESTED.** Reviewed by the `code-reviewer` agent (fresh context). Scope: `git diff origin/main...HEAD`, commits `19bec79` (the change) and `6294e24` (docs only), 38 files, +2434/-160. Nothing was modified by the review.
 
+## Resolution (2026-10-07)
+
+All findings are fixed in the branch `ccr-4e9e7cbe-4vl9v6`. Gates after the fixes: `mvn verify -DskipITs` 1521 tests, 0 failures, 0 errors (1 skipped), 0 Checkstyle violations, 0 SpotBugs bugs; full `mvn verify` the same plus 376 ITs, 0 failures; k6 `npm run inspect` and `format:check` pass. Not re-run: the k6 hot-path load run itself (needs the full stack).
+
+| Finding | Fix |
+|---|---|
+| H-1 | `nexus-backend/src/main/java/com/example/nexus/rbac/infrastructure/cache/EpochRedisConfig.java:214,231` (`WarmedFactory` connects each factory on its own daemon thread, retry with 100 ms to 2 s backoff); `:197-202` `readReady()` / `bumpReady()`; `nexus-backend/src/main/java/com/example/nexus/rbac/infrastructure/cache/RedisPermissionEpochAdapter.java:64` (read returns empty at once) and `:80` (bump throws `RedisConnectionFailureException` at once). Tests: `nexus-backend/src/test/java/com/example/nexus/rbac/infrastructure/cache/RedisPermissionEpochAdapterIT.java:220` (paused Redis from startup, 50 concurrent `current()`, max latency under 2x the 50 ms bound, then unpause and recovery) and `RedisPermissionEpochAdapterNotReadyTest` (no Docker) |
+| M-1 | `EpochRedisConfig.java:114-146` now takes the auto-configured main `LettuceConnectionFactory` and copies its TLS flag, verify mode, STARTTLS, `SslOptions` (bundle managers, ciphers, protocols) and client name; Javadoc rewritten (`:25-45`); design §9.5 wording updated (`03-design.md:810`). Tests in `EpochRedisConfigTest`: `should_useSslWithBundleOptionsAndClientName_when_mainFactoryUsesSslBundle` (`:193`), `should_useSsl_when_mainFactoryAutoConfiguredFromRedissUrl` (`:226`, Boot's real auto-configuration) |
+| M-2 | Docs only: `04-tasks.md:532` (M7 merge checklist, first item) and `STATUS.md` (M7 paragraph and table row): M7 merges as one PR with T-009..T-014; T-009 must not merge or release alone |
+| L-1 | `nexus-backend/src/main/java/com/example/nexus/rbac/application/PermissionFreshnessService.java:120` catches `RuntimeException`, same `RBAC_EPOCH_BUMP_FAILED` ERROR log; comment on the 500 ms connection hold at `:116-117`. Test `PermissionFreshnessServiceTest.should_logBumpFailedWithOperation_when_bumpFailsWithNonDataAccessException` |
+| L-2 | `PermissionFreshnessService.java:69-77` `epochForMint` retries the read once before falling back to 0 (chosen over the 500 ms template so the port stays unchanged). Tests `should_returnCurrentEpoch_when_epochForMintReadFailsThenSucceeds`, `should_returnZero_when_epochForMintReadFailsTwice`, `should_readOnce_when_epochForMintFirstReadSucceeds` |
+| L-3 | `EpochRedisConfig.java:74-75` adds the clock skew. `rbac` may not import `identity` (ArchUnit `rbac_must_not_depend_on_identity`), so the constant now lives in `nexus-backend/src/main/java/com/example/nexus/common/security/TokenClockSkew.java` and `AuthConstants.AUTH_CLOCK_SKEW_SECONDS` (`identity/domain/AuthConstants.java:14`) is that value. Boundary tests `should_start_when_keyTtlEqualsTokenTtlPlusSkewPlusMargin`, `should_failStartup_when_keyTtlOneBelowTokenTtlPlusSkewPlusMargin`. The skew is 0 today, so these only distinguish the formula if the skew changes |
+| L-4 | `nexus-backend/src/test/java/com/example/nexus/rbac/infrastructure/cache/RedisPermissionEpochAdapterIT.java:152` `isGreaterThan(first)`; residual risk recorded in `docs/adr/0022-permission-token-freshness.md:128` (ADR-0022 is still Proposed) |
+| L-5 | `nexus-test/performance-test/tests/load/epoch-check-latency.js:62-85` reads `skipped_error` in `setup()` and gates on the difference in `teardown()`; `README.md` (epoch gate paragraph) updated |
+| L-6 | `03-design.md:291` (matcher row and the 405 to 401 change), `04-tasks.md` T-009 (e) (same note), `STATUS.md` table row and M7 paragraph |
+| N-1 | Not cached. A request-attribute cache would survive a forward or error dispatch to another path, and the matcher must fail closed. Comment justifying the second call at `nexus-backend/src/main/java/com/example/nexus/config/SecurityConfig.java:87-88` |
+| N-2 | `nexus-backend/src/main/java/com/example/nexus/identity/infrastructure/web/JwtAuthenticationFilter.java:99-108` catches `IllegalArgumentException` and calls `reject(...)`. Test `should_return401AndNeverThrow_when_verifiedClaimsHaveNonUuidSubject` |
+| N-3 | `PermissionFreshnessService.invalidateUser(tenantId, userId, operation)` (`:115`); `RoleAssignmentService.java:633` passes `OPERATION_REVOKE`; tests adjusted |
+| N-4 | Dated amendment note at the end of `docs/adr/0016-redis-infrastructure-dependency.md` (ADR-0016 is Accepted, so its decisions are not rewritten, ADR 0001): Redis 5 or later, 7.x tested |
+
 ## Summary
 
 | Severity | Count |
