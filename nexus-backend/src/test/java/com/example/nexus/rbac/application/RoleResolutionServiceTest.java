@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import com.example.nexus.rbac.application.port.out.PermissionCachePort;
@@ -19,6 +20,8 @@ import org.junit.jupiter.api.Test;
 
 @Tag("UnitTest")
 class RoleResolutionServiceTest {
+
+  private static final long EPOCH = 1_796_000_000_000L;
 
   private UserRoleQueryPort userRoleQueryPort;
   private PermissionCachePort permissionCachePort;
@@ -37,16 +40,16 @@ class RoleResolutionServiceTest {
     UUID tenantId = UUID.randomUUID();
     when(userRoleQueryPort.findActiveRoleNames(userId, tenantId))
         .thenReturn(List.of("TENANT_ADMIN"));
-    when(permissionCachePort.get(tenantId, userId)).thenReturn(Optional.empty());
+    when(permissionCachePort.get(tenantId, userId, EPOCH)).thenReturn(Optional.empty());
     when(userRoleQueryPort.findActivePermissionNames(userId, tenantId))
         .thenReturn(List.of("tenant:read", "tenant:write"));
 
-    ResolvedPermissions resolved = service.resolve(userId, tenantId);
+    ResolvedPermissions resolved = service.resolve(userId, tenantId, EPOCH);
 
     assertThat(resolved.roles()).containsExactly("TENANT_ADMIN");
     assertThat(resolved.permissions()).containsExactly("tenant:read", "tenant:write");
     verify(permissionCachePort)
-        .put(tenantId, userId, new ResolvedPermissions(List.of("TENANT_ADMIN"),
+        .put(tenantId, userId, EPOCH, new ResolvedPermissions(List.of("TENANT_ADMIN"),
             List.of("tenant:read", "tenant:write")));
   }
 
@@ -55,10 +58,10 @@ class RoleResolutionServiceTest {
     UUID userId = UUID.randomUUID();
     UUID tenantId = UUID.randomUUID();
     when(userRoleQueryPort.findActiveRoleNames(userId, tenantId)).thenReturn(List.of("MEMBER"));
-    when(permissionCachePort.get(tenantId, userId))
+    when(permissionCachePort.get(tenantId, userId, EPOCH))
         .thenReturn(Optional.of(new ResolvedPermissions(List.of("MEMBER"), List.of("user:read"))));
 
-    ResolvedPermissions resolved = service.resolve(userId, tenantId);
+    ResolvedPermissions resolved = service.resolve(userId, tenantId, EPOCH);
 
     assertThat(resolved.permissions()).containsExactly("user:read");
     verify(userRoleQueryPort, never()).findActivePermissionNames(userId, tenantId);
@@ -75,14 +78,14 @@ class RoleResolutionServiceTest {
     UUID userId = UUID.randomUUID();
     UUID tenantId = UUID.randomUUID();
     // Cached from an earlier resolution when the user had no roles yet.
-    when(permissionCachePort.get(tenantId, userId))
+    when(permissionCachePort.get(tenantId, userId, EPOCH))
         .thenReturn(Optional.of(ResolvedPermissions.empty()));
     // A role has since been assigned — the live role read must reflect it.
     when(userRoleQueryPort.findActiveRoleNames(userId, tenantId)).thenReturn(List.of("MEMBER"));
     when(userRoleQueryPort.findActivePermissionNames(userId, tenantId))
         .thenReturn(List.of("user:read"));
 
-    ResolvedPermissions resolved = service.resolve(userId, tenantId);
+    ResolvedPermissions resolved = service.resolve(userId, tenantId, EPOCH);
 
     assertThat(resolved.roles()).containsExactly("MEMBER");
     assertThat(resolved.permissions())
@@ -90,7 +93,7 @@ class RoleResolutionServiceTest {
         .containsExactly("user:read");
     verify(userRoleQueryPort).findActivePermissionNames(userId, tenantId);
     verify(permissionCachePort)
-        .put(tenantId, userId,
+        .put(tenantId, userId, EPOCH,
             new ResolvedPermissions(List.of("MEMBER"), List.of("user:read")));
   }
 
@@ -99,14 +102,14 @@ class RoleResolutionServiceTest {
     UUID userId = UUID.randomUUID();
     UUID tenantId = UUID.randomUUID();
     // Cached with TENANT_ADMIN still active.
-    when(permissionCachePort.get(tenantId, userId))
+    when(permissionCachePort.get(tenantId, userId, EPOCH))
         .thenReturn(Optional.of(new ResolvedPermissions(List.of("TENANT_ADMIN"),
             List.of("tenant:read", "tenant:write"))));
     // TENANT_ADMIN has since been revoked — live read now shows no roles.
     when(userRoleQueryPort.findActiveRoleNames(userId, tenantId)).thenReturn(List.of());
     when(userRoleQueryPort.findActivePermissionNames(userId, tenantId)).thenReturn(List.of());
 
-    ResolvedPermissions resolved = service.resolve(userId, tenantId);
+    ResolvedPermissions resolved = service.resolve(userId, tenantId, EPOCH);
 
     assertThat(resolved.roles()).isEmpty();
     assertThat(resolved.permissions()).isEmpty();
@@ -118,11 +121,11 @@ class RoleResolutionServiceTest {
     UUID tenantId = UUID.randomUUID();
     when(userRoleQueryPort.findActiveRoleNames(userId, tenantId))
         .thenReturn(List.of("MEMBER", "TENANT_ADMIN"));
-    when(permissionCachePort.get(tenantId, userId))
+    when(permissionCachePort.get(tenantId, userId, EPOCH))
         .thenReturn(Optional.of(new ResolvedPermissions(List.of("TENANT_ADMIN", "MEMBER"),
             List.of("user:read"))));
 
-    ResolvedPermissions resolved = service.resolve(userId, tenantId);
+    ResolvedPermissions resolved = service.resolve(userId, tenantId, EPOCH);
 
     assertThat(resolved.permissions()).containsExactly("user:read");
     verify(userRoleQueryPort, never()).findActivePermissionNames(userId, tenantId);
@@ -133,10 +136,10 @@ class RoleResolutionServiceTest {
     UUID userId = UUID.randomUUID();
     UUID tenantId = UUID.randomUUID();
     when(userRoleQueryPort.findActiveRoleNames(userId, tenantId)).thenReturn(List.of());
-    when(permissionCachePort.get(tenantId, userId)).thenReturn(Optional.empty());
+    when(permissionCachePort.get(tenantId, userId, EPOCH)).thenReturn(Optional.empty());
     when(userRoleQueryPort.findActivePermissionNames(userId, tenantId)).thenReturn(List.of());
 
-    ResolvedPermissions resolved = service.resolve(userId, tenantId);
+    ResolvedPermissions resolved = service.resolve(userId, tenantId, EPOCH);
 
     assertThat(resolved.roles()).isEmpty();
     assertThat(resolved.permissions()).isEmpty();
@@ -146,7 +149,7 @@ class RoleResolutionServiceTest {
   void should_throwNpe_when_tenantIdNull() {
     UUID userId = UUID.randomUUID();
 
-    assertThatThrownBy(() -> service.resolve(userId, null))
+    assertThatThrownBy(() -> service.resolve(userId, null, EPOCH))
         .isInstanceOf(NullPointerException.class);
   }
 
@@ -154,7 +157,70 @@ class RoleResolutionServiceTest {
   void should_throwNpe_when_userIdNull() {
     UUID tenantId = UUID.randomUUID();
 
-    assertThatThrownBy(() -> service.resolve(null, tenantId))
+    assertThatThrownBy(() -> service.resolve(null, tenantId, EPOCH))
         .isInstanceOf(NullPointerException.class);
+  }
+
+  // --- US-018 Decision 17: the cache entry is read and written under the mint's epoch ---
+
+  @Test
+  void should_readAndWriteCacheUnderGivenEpoch_when_resolving() {
+    UUID userId = UUID.randomUUID();
+    UUID tenantId = UUID.randomUUID();
+    when(userRoleQueryPort.findActiveRoleNames(userId, tenantId)).thenReturn(List.of("MEMBER"));
+    when(permissionCachePort.get(tenantId, userId, EPOCH)).thenReturn(Optional.empty());
+    when(userRoleQueryPort.findActivePermissionNames(userId, tenantId))
+        .thenReturn(List.of("user:read"));
+
+    service.resolve(userId, tenantId, EPOCH);
+
+    verify(permissionCachePort).get(tenantId, userId, EPOCH);
+    verify(permissionCachePort)
+        .put(tenantId, userId, EPOCH,
+            new ResolvedPermissions(List.of("MEMBER"), List.of("user:read")));
+    verifyNoMoreInteractions(permissionCachePort);
+  }
+
+  /**
+   * Design §9.4: a mint that raced a detach writes the stale set under the old epoch E. The next
+   * mint reads the bumped epoch R, so the stale entry is never consulted, even though the role
+   * fingerprint (unchanged by a detach) would accept it.
+   */
+  @Test
+  void should_missAndRecompute_when_entryCachedUnderOlderEpoch() {
+    UUID userId = UUID.randomUUID();
+    UUID tenantId = UUID.randomUUID();
+    long bumped = EPOCH + 1;
+    when(userRoleQueryPort.findActiveRoleNames(userId, tenantId)).thenReturn(List.of("READER"));
+    when(permissionCachePort.get(tenantId, userId, EPOCH)).thenReturn(Optional.of(
+        new ResolvedPermissions(List.of("READER"), List.of("role:read", "user:read"))));
+    when(permissionCachePort.get(tenantId, userId, bumped)).thenReturn(Optional.empty());
+    when(userRoleQueryPort.findActivePermissionNames(userId, tenantId))
+        .thenReturn(List.of("user:read"));
+
+    ResolvedPermissions resolved = service.resolve(userId, tenantId, bumped);
+
+    assertThat(resolved.permissions()).containsExactly("user:read");
+    verify(permissionCachePort)
+        .put(tenantId, userId, bumped,
+            new ResolvedPermissions(List.of("READER"), List.of("user:read")));
+  }
+
+  /** The role-name fingerprint is kept: it covers assign and revoke under an unchanged epoch. */
+  @Test
+  void should_stillRecompute_when_cachedRolesDifferFromLiveUnderSameEpoch() {
+    UUID userId = UUID.randomUUID();
+    UUID tenantId = UUID.randomUUID();
+    when(userRoleQueryPort.findActiveRoleNames(userId, tenantId))
+        .thenReturn(List.of("MEMBER", "READER"));
+    when(permissionCachePort.get(tenantId, userId, EPOCH))
+        .thenReturn(Optional.of(new ResolvedPermissions(List.of("MEMBER"), List.of("user:read"))));
+    when(userRoleQueryPort.findActivePermissionNames(userId, tenantId))
+        .thenReturn(List.of("role:read", "user:read"));
+
+    ResolvedPermissions resolved = service.resolve(userId, tenantId, EPOCH);
+
+    assertThat(resolved.permissions()).containsExactly("role:read", "user:read");
+    verify(userRoleQueryPort).findActivePermissionNames(userId, tenantId);
   }
 }

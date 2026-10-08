@@ -3,6 +3,7 @@ package com.example.nexus.identity.infrastructure.security;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
@@ -54,7 +55,9 @@ class JwtRs256ServiceTest {
 
   private RoleResolutionService roleResolutionServiceReturning(ResolvedPermissions resolved) {
     RoleResolutionService svc = mock(RoleResolutionService.class);
-    when(svc.resolve(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+    when(svc.resolve(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.anyLong()))
         .thenReturn(resolved);
     return svc;
   }
@@ -290,7 +293,7 @@ class JwtRs256ServiceTest {
   void should_sourcePermissionsResolutionAndTenantClaim_fromSameTenantId_when_tokenIssued() {
     RoleResolutionService roleResolutionService = mock(RoleResolutionService.class);
     ArgumentCaptor<UUID> tenantIdCaptor = ArgumentCaptor.forClass(UUID.class);
-    when(roleResolutionService.resolve(any(), tenantIdCaptor.capture()))
+    when(roleResolutionService.resolve(any(), tenantIdCaptor.capture(), anyLong()))
         .thenReturn(new ResolvedPermissions(List.of("MEMBER"), List.of("user:read")));
     JwtRs256Service svc = service(Clock.systemUTC(), roleResolutionService);
     User user = activeUser();
@@ -316,7 +319,28 @@ class JwtRs256ServiceTest {
 
     InOrder order = inOrder(freshness, roleResolutionService);
     order.verify(freshness).epochForMint(user.getTenantId(), user.getId());
-    order.verify(roleResolutionService).resolve(user.getId(), user.getTenantId());
+    order.verify(roleResolutionService).resolve(user.getId(), user.getTenantId(), 0L);
+  }
+
+  /**
+   * US-018 T-010 (Decision 17): the permission set is cached under the epoch the token carries,
+   * which is exactly the one {@code epochForMint} returned, read before the permissions.
+   */
+  @Test
+  void should_resolvePermissionsUnderEpochReadFirst_when_issuing() {
+    RoleResolutionService roleResolutionService = roleResolutionServiceReturning(
+        new ResolvedPermissions(List.of("MEMBER"), List.of("user:read")));
+    User user = activeUser();
+    long epoch = 1_796_000_000_123L;
+    when(freshness.epochForMint(user.getTenantId(), user.getId())).thenReturn(epoch);
+    JwtRs256Service svc = service(Clock.systemUTC(), roleResolutionService);
+
+    JwtClaims claims = svc.verify(svc.issue(user).token());
+
+    InOrder order = inOrder(freshness, roleResolutionService);
+    order.verify(freshness).epochForMint(user.getTenantId(), user.getId());
+    order.verify(roleResolutionService).resolve(user.getId(), user.getTenantId(), epoch);
+    assertThat(claims.permEpoch()).isEqualTo(epoch);
   }
 
   @Test

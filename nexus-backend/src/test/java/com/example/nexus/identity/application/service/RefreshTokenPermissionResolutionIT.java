@@ -24,8 +24,10 @@ import java.util.UUID;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
@@ -84,6 +86,10 @@ class RefreshTokenPermissionResolutionIT {
   @Autowired private JpaUserRoleRepository userRoleRepository;
   @Autowired private JwtPort jwtPort;
   @Autowired private PermissionFreshnessService permissionFreshness;
+  @Autowired private StringRedisTemplate redisTemplate;
+
+  @Value("${nexus.redis.key-prefix:nexus}")
+  private String keyPrefix;
 
   @Test
   void should_reflectNewlyAssignedRole_when_tokenRefreshedAfterAssignment() {
@@ -123,6 +129,26 @@ class RefreshTokenPermissionResolutionIT {
     assertThat(current).isPositive();
     assertThat(claims.schemaVersion()).isEqualTo(3);
     assertThat(claims.permEpoch()).isEqualTo(current);
+  }
+
+  /**
+   * US-018 T-010 (Decision 17): the refresh caches the resolved set under the epoch it minted, so
+   * the entry a later bump deletes, and a later mint under a newer epoch misses, is that one.
+   */
+  @Test
+  void should_cachePermissionsUnderMintedEpoch_when_tokenRefreshed() {
+    User user = seedActiveUser("refresh-epoch-key");
+    userRoleRepository.save(
+        new UserRole(uuidGenerator.newId(), user.getId(), MEMBER_ROLE_ID, TENANT_ID, user.getId()));
+    permissionFreshness.invalidateUser(TENANT_ID, user.getId(), "revoke");
+
+    LoginResult refreshed = refreshTokenUseCase.execute(seedRefreshToken(user), "127.0.0.1");
+    long minted = jwtPort.verify(refreshed.accessToken()).permEpoch();
+
+    String stem = keyPrefix + ":rbac:permset:" + TENANT_ID + ":" + user.getId() + ":";
+    assertThat(minted).isPositive();
+    assertThat(redisTemplate.opsForSet().members(stem + minted)).containsExactly("user:read");
+    assertThat(redisTemplate.hasKey(stem + "0")).isFalse();
   }
 
   private User seedActiveUser(String tag) {

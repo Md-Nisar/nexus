@@ -4,6 +4,7 @@ import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.common.security.DenialReason;
 import com.example.nexus.common.security.InsufficientPermissionException;
+import com.example.nexus.rbac.application.port.out.PermissionCachePort;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.RoleAuditEvent;
 import com.example.nexus.rbac.application.port.out.RoleManagementPort;
@@ -29,9 +30,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Creates and manages tenant-scoped custom roles and their attached permissions (03-design.md
@@ -55,6 +59,13 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  * #resolveRoleInTenant} produces the 404/403/{@link RoleView}, and {@link #requireMutableRole}
  * produces the 409. Both write endpoints call both — there is no path to a {@code
  * role_permissions} write that bypasses either.
+ *
+ * <p><b>US-018 A10 (T-010, design §9.3, §9.4).</b> After a detach commits, every active holder of
+ * the role is read and their permission epochs are bumped, which also deletes their cached
+ * permission sets ({@link PermissionFreshnessService#invalidateHolders}). After an attach commits,
+ * every holder's cached set is evicted but no epoch is bumped: an attach only adds permissions, so
+ * a token lacking the new one is fail-safe (Decision 15). Both read the holders in their own
+ * read-only transaction, so an assignment committed before that read is never missed.
  */
 @Service
 public class RoleManagementService {
@@ -72,9 +83,14 @@ public class RoleManagementService {
   private static final String LOG_KEY_PERMISSION_NAME = "permissionName";
   private static final String LOG_KEY_ACTOR_USER_ID = "actorUserId";
 
+  private static final String OPERATION_DETACH = "detach";
+
   private final RoleManagementPort roleManagementPort;
   private final UserRoleAssignmentPort userRoleAssignmentPort;
   private final RbacAuditPort rbacAuditPort;
+  private final PermissionFreshnessService permissionFreshnessService;
+  private final PermissionCachePort permissionCachePort;
+  private final TransactionTemplate holderReadTransaction;
   private final MeterRegistry meterRegistry;
   private final long maxRolesPerTenant;
 
@@ -82,11 +98,22 @@ public class RoleManagementService {
       RoleManagementPort roleManagementPort,
       UserRoleAssignmentPort userRoleAssignmentPort,
       RbacAuditPort rbacAuditPort,
+      PermissionFreshnessService permissionFreshnessService,
+      PermissionCachePort permissionCachePort,
+      PlatformTransactionManager transactionManager,
       MeterRegistry meterRegistry,
       @Value("${nexus.rbac.max-roles-per-tenant:500}") long maxRolesPerTenant) {
     this.roleManagementPort = roleManagementPort;
     this.userRoleAssignmentPort = userRoleAssignmentPort;
     this.rbacAuditPort = rbacAuditPort;
+    this.permissionFreshnessService = permissionFreshnessService;
+    this.permissionCachePort = permissionCachePort;
+    // afterCommit still has the committed transaction's resources bound; only a new transaction
+    // is guaranteed a fresh read of the committed rows (TransactionSynchronization#afterCommit).
+    this.holderReadTransaction = new TransactionTemplate(transactionManager);
+    this.holderReadTransaction.setPropagationBehavior(
+        TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    this.holderReadTransaction.setReadOnly(true);
     this.meterRegistry = meterRegistry;
     this.maxRolesPerTenant = maxRolesPerTenant;
   }
@@ -277,6 +304,9 @@ public class RoleManagementService {
                 .register(meterRegistry)
                 .increment();
           }
+          // US-018 Decision 15: evict every holder's cached set so their next mint carries the
+          // new permission; never bump, since a token lacking an added permission is fail-safe.
+          permissionCachePort.evict(actor.tenantId(), readActiveHoldersAfterCommit(role.id()));
         });
 
     return permission;
@@ -339,6 +369,12 @@ public class RoleManagementService {
               .addKeyValue(LOG_KEY_PERMISSION_NAME, permissionName)
               .addKeyValue("revokedBy", actor.userId())
               .log("Role permission revoked");
+          // US-018 A10 (MC-7b): after commit only, so a mint in the gap cannot read the new
+          // epoch with the pre-commit permission set. Holders are read after commit, so an
+          // assignment committed before this read is included; one committed after it mints
+          // fresh, because its role set changed.
+          permissionFreshnessService.invalidateHolders(
+              actor.tenantId(), readActiveHoldersAfterCommit(role.id()), OPERATION_DETACH);
         });
   }
 
@@ -493,6 +529,17 @@ public class RoleManagementService {
       return "2-10";
     }
     return ">10";
+  }
+
+  /**
+   * Reads the active holders of {@code roleId} from an afterCommit callback, in a new read-only
+   * transaction that ends before the caller touches Redis. While it runs the request briefly
+   * holds two pooled connections: the committed transaction's, still bound until afterCompletion,
+   * and this one's.
+   */
+  private List<UUID> readActiveHoldersAfterCommit(UUID roleId) {
+    return holderReadTransaction.execute(
+        status -> userRoleAssignmentPort.findActiveUserIdsForRole(roleId));
   }
 
   /**

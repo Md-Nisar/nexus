@@ -34,7 +34,9 @@ import org.testcontainers.utility.DockerImageName;
 /**
  * Integration tests for {@link RedisPermissionEpochAdapter} against a real Redis (US-018 T-009,
  * design §9.2, §9.5): the monotonic bump script, the key TTL, the key shape, and the 50 ms bound on
- * the read template against a paused server.
+ * the read template against a paused server. T-010 (design §9.4): the same script deletes each
+ * bumped user's permission-cache entry under the epoch it replaces ({@code 0} when there was none),
+ * and a full 500-user batch fits the bump timeout.
  */
 @Testcontainers
 @Tag("IT")
@@ -380,5 +382,81 @@ class RedisPermissionEpochAdapterIT {
         pausedTemplates.destroy();
       }
     }
+  }
+
+  // ── US-018 T-010: the bump deletes the cache entry under the replaced epoch ──
+
+  @Test
+  void should_deleteCacheEntryUnderOldEpoch_when_bumped() {
+    UUID tenantId = UUID.randomUUID();
+    UUID userId = UUID.randomUUID();
+    RedisPermissionEpochAdapter adapter = adapter(templates);
+    adapter.bump(tenantId, List.of(userId));
+    long old = adapter.current(tenantId, userId).orElseThrow();
+    writeCacheEntry(tenantId, userId, old);
+
+    adapter.bump(tenantId, List.of(userId));
+
+    assertThat(templates.read().hasKey(cacheKey("roleset", tenantId, userId, old))).isFalse();
+    assertThat(templates.read().hasKey(cacheKey("permset", tenantId, userId, old))).isFalse();
+    assertThat(adapter.current(tenantId, userId).orElseThrow()).isGreaterThan(old);
+  }
+
+  @Test
+  void should_deleteCacheEntryUnderEpochZero_when_firstBump() {
+    UUID tenantId = UUID.randomUUID();
+    UUID userId = UUID.randomUUID();
+    writeCacheEntry(tenantId, userId, 0L);
+
+    adapter(templates).bump(tenantId, List.of(userId));
+
+    assertThat(templates.read().hasKey(cacheKey("roleset", tenantId, userId, 0L))).isFalse();
+    assertThat(templates.read().hasKey(cacheKey("permset", tenantId, userId, 0L))).isFalse();
+  }
+
+  @Test
+  void should_leaveEntriesOfUnbumpedUsers_when_batchBumped() {
+    UUID tenantId = UUID.randomUUID();
+    List<UUID> bumped = List.of(UUID.randomUUID(), UUID.randomUUID());
+    UUID bystander = UUID.randomUUID();
+    bumped.forEach(userId -> writeCacheEntry(tenantId, userId, 0L));
+    writeCacheEntry(tenantId, bystander, 0L);
+
+    adapter(templates).bump(tenantId, bumped);
+
+    assertThat(bumped).allSatisfy(userId -> assertThat(
+        templates.read().hasKey(cacheKey("permset", tenantId, userId, 0L))).isFalse());
+    assertThat(templates.read().hasKey(cacheKey("roleset", tenantId, bystander, 0L))).isTrue();
+    assertThat(templates.read().hasKey(cacheKey("permset", tenantId, bystander, 0L))).isTrue();
+    assertThat(templates.read().hasKey(key(tenantId, bystander))).isFalse();
+  }
+
+  @Test
+  void should_bump500UsersWithinBumpTimeout_when_fullBatch() {
+    UUID tenantId = UUID.randomUUID();
+    List<UUID> users = new ArrayList<>();
+    for (int i = 0; i < 500; i++) {
+      UUID userId = UUID.randomUUID();
+      users.add(userId);
+      writeCacheEntry(tenantId, userId, 0L);
+    }
+    RedisPermissionEpochAdapter adapter = adapter(templates);
+
+    // The bump template's 500 ms command timeout would throw if one full batch exceeded it.
+    adapter.bump(tenantId, users);
+
+    assertThat(users).allSatisfy(userId -> {
+      assertThat(adapter.current(tenantId, userId).orElseThrow()).isPositive();
+      assertThat(templates.read().hasKey(cacheKey("permset", tenantId, userId, 0L))).isFalse();
+    });
+  }
+
+  private static void writeCacheEntry(UUID tenantId, UUID userId, long epoch) {
+    templates.bump().opsForSet().add(cacheKey("roleset", tenantId, userId, epoch), "MEMBER");
+    templates.bump().opsForSet().add(cacheKey("permset", tenantId, userId, epoch), "user:read");
+  }
+
+  private static String cacheKey(String set, UUID tenantId, UUID userId, long epoch) {
+    return KEY_PREFIX + ":rbac:" + set + ":" + tenantId + ":" + userId + ":" + epoch;
   }
 }

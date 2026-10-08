@@ -2,6 +2,7 @@ package com.example.nexus.rbac.infrastructure.cache;
 
 import com.example.nexus.rbac.application.port.out.PermissionEpochPort;
 import com.example.nexus.rbac.infrastructure.cache.EpochRedisConfig.EpochTemplates;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.OptionalLong;
@@ -25,29 +26,37 @@ import org.springframework.stereotype.Component;
  * made on a request thread (design §9.5).
  *
  * <p>The bump is one Lua script per call: for each key, {@code new = max(old + 1, Redis TIME in
- * ms)}, then {@code SET key new EX ttl}. The Redis server's clock is the same for every instance,
- * and the {@code max} keeps the value monotonic even after the key is lost. Multi-key scripts are
- * legal because ADR-0016 D1 allows only standalone or Sentinel.
+ * ms)}, then {@code SET key new EX ttl}, then {@code DEL} of the user's cached roleset and permset
+ * under {@code old} ({@code 0} when there was no key), the A10 holder eviction (design §9.2,
+ * §9.4). The Redis server's clock is the same for every instance, and the {@code max} keeps the
+ * value monotonic even after the key is lost. Multi-key scripts, and building the cache keys inside
+ * the script from the epoch it read, are legal only because Redis Cluster is rejected at startup
+ * (ADR-0016 D1, {@link EpochRedisConfig}); {@link RbacRedisKeys} owns every key shape.
  */
 @Component
 public class RedisPermissionEpochAdapter implements PermissionEpochPort {
 
   private static final Logger log = LoggerFactory.getLogger(RedisPermissionEpochAdapter.class);
 
+  // KEYS[i] = epoch key of user i; ARGV[1] = key TTL; ARGV[2i] / ARGV[2i+1] = that user's roleset
+  // / permset stem. The old epoch is formatted as Long.toString renders it, so the DEL hits the
+  // entry a mint cached under it.
   private static final RedisScript<Long> BUMP_SCRIPT = RedisScript.of("""
       local ttl = tonumber(ARGV[1])
       local time = redis.call('TIME')
       local nowMs = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
-      for _, key in ipairs(KEYS) do
+      for i, key in ipairs(KEYS) do
         local old = tonumber(redis.call('GET', key) or '0') or 0
         local new = math.max(old + 1, nowMs)
         redis.call('SET', key, string.format('%.0f', new), 'EX', ttl)
+        local oldEpoch = string.format('%.0f', old)
+        redis.call('DEL', ARGV[2 * i] .. oldEpoch, ARGV[2 * i + 1] .. oldEpoch)
       end
       return #KEYS
       """, Long.class);
 
   private final EpochTemplates templates;
-  private final String keyPrefix;
+  private final RbacRedisKeys keys;
   private final String keyTtlSeconds;
 
   public RedisPermissionEpochAdapter(
@@ -55,7 +64,7 @@ public class RedisPermissionEpochAdapter implements PermissionEpochPort {
       @Value("${nexus.redis.key-prefix:nexus}") String keyPrefix,
       @Value("${nexus.rbac.epoch.key-ttl-seconds}") long keyTtlSeconds) {
     this.templates = templates;
-    this.keyPrefix = keyPrefix;
+    this.keys = new RbacRedisKeys(keyPrefix);
     this.keyTtlSeconds = Long.toString(keyTtlSeconds);
   }
 
@@ -65,7 +74,7 @@ public class RedisPermissionEpochAdapter implements PermissionEpochPort {
       return OptionalLong.empty();
     }
     try {
-      String value = templates.read().opsForValue().get(key(tenantId, userId));
+      String value = templates.read().opsForValue().get(keys.epoch(tenantId, userId));
       return OptionalLong.of(value == null ? 0L : Long.parseLong(value));
     } catch (DataAccessException | NumberFormatException e) {
       // One line per failed request at DEBUG only; nexus.rbac.epoch.check{outcome=skipped_error}
@@ -80,11 +89,14 @@ public class RedisPermissionEpochAdapter implements PermissionEpochPort {
     if (!templates.bumpReady()) {
       throw new RedisConnectionFailureException("permission epoch store is not connected yet");
     }
-    List<String> keys = userIds.stream().map(userId -> key(tenantId, userId)).toList();
-    templates.bump().execute(BUMP_SCRIPT, keys, keyTtlSeconds);
-  }
-
-  private String key(UUID tenantId, UUID userId) {
-    return keyPrefix + ":rbac:epoch:" + tenantId + ":" + userId;
+    List<String> epochKeys = new ArrayList<>(userIds.size());
+    List<Object> args = new ArrayList<>(1 + userIds.size() * 2);
+    args.add(keyTtlSeconds);
+    for (UUID userId : userIds) {
+      epochKeys.add(keys.epoch(tenantId, userId));
+      args.add(keys.rolesetStem(tenantId, userId));
+      args.add(keys.permsetStem(tenantId, userId));
+    }
+    templates.bump().execute(BUMP_SCRIPT, epochKeys, args.toArray());
   }
 }

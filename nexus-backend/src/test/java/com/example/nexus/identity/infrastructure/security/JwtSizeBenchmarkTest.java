@@ -2,6 +2,7 @@ package com.example.nexus.identity.infrastructure.security;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -47,7 +48,7 @@ class JwtSizeBenchmarkTest {
         IntStream.rangeClosed(1, 20).mapToObj(i -> "resource" + i + ":action").toList();
 
     RoleResolutionService roleResolutionService = mock(RoleResolutionService.class);
-    when(roleResolutionService.resolve(any(), any()))
+    when(roleResolutionService.resolve(any(), any(), anyLong()))
         .thenReturn(new ResolvedPermissions(roles, permissions));
 
     // A realistic perm_epoch (Redis TIME in ms, 13 digits) so the size covers the v3 claim.

@@ -21,12 +21,17 @@ import org.springframework.transaction.annotation.Transactional;
  * from the cache. That live role read doubles as a freshness fingerprint for the cached
  * permission set (ADR 0016 D3/D4): a cache hit whose cached {@code roles} no longer match the
  * live-read role set is treated as stale and recomputed from the DB immediately, rather than
- * waiting out the 15-min TTL or US-012's future write-path eviction. This guarantees a role
- * assignment/revocation is reflected on the very next resolution — login or refresh — with zero
- * lag (US-010 AC6), while still caching the common case (role set unchanged between calls). A
- * role's own permission set changing without any role (re-)assignment (a future US-015 concern)
- * is not covered by this fingerprint and remains subject to the documented TTL lag, consistent
- * with ADR-0013 D4's already-accepted cache-lag rationale.
+ * waiting out the 15-min TTL. This guarantees a role assignment/revocation is reflected on the very
+ * next resolution — login or refresh — with zero lag (US-010 AC6), while still caching the common
+ * case (role set unchanged between calls).
+ *
+ * <p>A role's own permission set changing without any role (re-)assignment is not visible to that
+ * fingerprint. It is covered by the permission epoch instead (US-018 Decision 17, design §9.4):
+ * the cache entry is read and written under the epoch the minter read <i>before</i> calling this
+ * service, and a detach bumps every holder's epoch, so a stale set written back by a mint that
+ * raced the detach sits under the old epoch and is never read again. An attach evicts every
+ * holder's entry without a bump (Decision 15). Only an out-of-band change (SQL or a migration)
+ * still waits out the TTL.
  */
 @Service
 @Transactional(readOnly = true)
@@ -47,23 +52,25 @@ public class RoleResolutionService {
    * authenticated user's own {@code tenant_id} (never a default/bootstrap sentinel) — this
    * service performs no tenant resolution or fallback of its own (US-010 AC9).
    *
+   * @param epoch the permission epoch the caller read before this call (MC-7a); the cache entry is
+   *     read and written under it
    * @throws NullPointerException if either identifier is null — fails closed rather than
    *     resolving against an unscoped/default tenant
    */
-  public ResolvedPermissions resolve(UUID userId, UUID tenantId) {
+  public ResolvedPermissions resolve(UUID userId, UUID tenantId, long epoch) {
     Objects.requireNonNull(userId, "userId must not be null");
     Objects.requireNonNull(tenantId, "tenantId must not be null");
 
     List<String> liveRoles = userRoleQueryPort.findActiveRoleNames(userId, tenantId);
 
-    Optional<ResolvedPermissions> cached = permissionCachePort.get(tenantId, userId);
+    Optional<ResolvedPermissions> cached = permissionCachePort.get(tenantId, userId, epoch);
     if (cached.isPresent() && sameRoles(cached.get().roles(), liveRoles)) {
       return cached.get();
     }
 
     List<String> livePermissions = userRoleQueryPort.findActivePermissionNames(userId, tenantId);
     ResolvedPermissions resolved = new ResolvedPermissions(liveRoles, livePermissions);
-    permissionCachePort.put(tenantId, userId, resolved);
+    permissionCachePort.put(tenantId, userId, epoch, resolved);
     return resolved;
   }
 

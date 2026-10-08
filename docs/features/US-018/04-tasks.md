@@ -61,6 +61,7 @@
 | **A-14** | design §5.1 row 12, §11.1 | The role-subset denial WARN marker (detach, C1 PATCH/DELETE) is not named. | `RBAC_ROLE_SUBSET_DENIED {tenantId, actorUserId, roleId, operation}` with `operation ∈ {detach, update, delete}`; covered by the M3 RES-6 sign-off. Confirm at `/review` (O-5). |
 | **A-15** | design §5.1 row 13 | The page condition (permission is `user:role:assign` / `role:write`, or the attach makes the role admin-defining) cannot be expressed from the `{holders}` tag alone. | Add one bounded tag `page ∈ {true, false}` computed by the RC-23.2 rule (2× series, no tenant tag). Confirm at `/review` (O-5). T-017. |
 | **A-16** | impact §9 B3 vs M3 | Both `tenantId`-tagged meters (`RoleAssignmentService.java:354`, `RoleManagementService.java:254`) belong to signals M3 deletes or re-derives without tenant tags. | T-020 still lands MC-8 and removes any tag a repo-wide grep finds; B3 may then be a guard-only change. |
+| **A-17** | T-010 scope, design §9.3 triggers | Which permission-reducing paths must bump the epoch besides revoke and detach (role delete, user deactivation, out-of-band SQL)? | **T-010 covers detach only.** The only reachable permission-reducing paths in the code are revoke (T-009) and detach. No role-delete endpoint exists yet (T-025 adds it, and its "no active holders, checked under the lock" precondition means a delete never reduces anyone's permissions), and no user-deactivation path exists (`UserStatus` has `DISABLED`, but no code sets it, only reads it; `LOCKED` is the login lockout). User deactivation is open item O-6; out-of-band Flyway or SQL permission removal is a runbook step (`runbook.md` §8). Recorded at T-010 implementation (2026-10-08). |
 
 ---
 
@@ -1327,6 +1328,7 @@ US-018 (one story, 12 PRs)
 **Definition of Done:**
 - V9, grants (three artifacts), conditional insert, DELETE and indicator change in place; `./mvnw verify -DskipITs` green; ITs written.
 - **L-5 doc line:** in `03-design.md` §11.1 the "Option (b) … would add a residual (RES-45)" sentence drops the id, so RES-45 means only the three-way flip. No new flag. One commit.
+- **A-17:** if the "no active holders, checked under the lock" precondition is ever relaxed, role delete must call `PermissionFreshnessService.invalidateHolders` after commit (as detach does), with a unit test that it runs only inside `afterCommit` and an IT that a holder's next request gets 401 and the refreshed token lacks the role's permissions.
 
 ### T-026 — A soft-deleted role is invisible to every read, and an active holder of a deleted role pages (C1 soft-delete invariant)
 
@@ -1721,6 +1723,7 @@ Story test scenarios: TS-1 T-001 · TS-2 T-003 · TS-3/TS-4 T-002 · TS-5 T-006 
 | O-3 | Production revocation-latency p95/p99 target (requirements §13) is unset; only the IT's < 1 s exists (G-6). | PM + Platform Security Owner |
 | O-4 | ADR numbering collision with existing `0019-tenant-fairness-and-quotas.md` / `0020-tenant-data-lifecycle.md` (A-2). **Closed at Gate 3:** renumbered to 0021–0025. | Architect |
 | O-5 | Marker and tag names the design leaves unnamed and this breakdown chose (A-14, A-15); confirm at M3 `/review`. | Architect |
+| O-6 | **User deactivation is outside US-018** (A-17). No path deactivates a user today. When one is added it must, after commit, call `PermissionFreshnessService.invalidateUser` for the user and revoke every refresh-token family of the user, or the user keeps a working access token for up to its TTL and can refresh. | Architect + Platform Security Owner |
 
 
 ---

@@ -102,7 +102,8 @@ public class JwtRs256Service implements JwtPort {
    * <p><b>MC-7a:</b> the permission epoch is read <i>before</i> the permissions are resolved. A
    * revocation landing between the two reads then yields "old epoch, new permissions", which the
    * next request rejects once (safe); the reverse order would yield "new epoch, old permissions",
-   * which would be accepted (US-018 design §9.3).
+   * which would be accepted (US-018 design §9.3). The permissions are resolved, and cached, under
+   * that same epoch (Decision 17), so a set cached before a detach is never read after its bump.
    *
    * <p>{@code roles}/{@code permissions} are resolved via {@link RoleResolutionService} using
    * {@code user.getTenantId()} exclusively — never a default/bootstrap tenant (US-010 AC9).
@@ -117,7 +118,7 @@ public class JwtRs256Service implements JwtPort {
     String jti = uuidGenerator.newId().toString();
     long permEpoch = permissionFreshnessService.epochForMint(user.getTenantId(), user.getId());
     ResolvedPermissions resolved =
-        roleResolutionService.resolve(user.getId(), user.getTenantId());
+        roleResolutionService.resolve(user.getId(), user.getTenantId(), permEpoch);
 
     String jwt = Jwts.builder()
         .header()

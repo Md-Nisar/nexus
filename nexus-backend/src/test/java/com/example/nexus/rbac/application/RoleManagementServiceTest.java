@@ -3,7 +3,9 @@ package com.example.nexus.rbac.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -19,6 +21,7 @@ import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.common.security.DenialReason;
 import com.example.nexus.common.security.InsufficientPermissionException;
+import com.example.nexus.rbac.application.port.out.PermissionCachePort;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.RoleAuditEvent;
 import com.example.nexus.rbac.application.port.out.RoleManagementPort;
@@ -44,13 +47,20 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.slf4j.LoggerFactory;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
  * Unit tests for {@link RoleManagementService} (03-design.md §4.2, §8.6). Covers AC1-AC9/AC11 and
@@ -70,6 +80,9 @@ class RoleManagementServiceTest {
   @Mock private RoleManagementPort roleManagementPort;
   @Mock private UserRoleAssignmentPort userRoleAssignmentPort;
   @Mock private RbacAuditPort rbacAuditPort;
+  @Mock private PermissionFreshnessService permissionFreshness;
+  @Mock private PermissionCachePort permissionCachePort;
+  @Mock private PlatformTransactionManager transactionManager;
 
   private SimpleMeterRegistry meterRegistry;
   private RoleManagementService service;
@@ -90,6 +103,9 @@ class RoleManagementServiceTest {
             roleManagementPort,
             userRoleAssignmentPort,
             rbacAuditPort,
+            permissionFreshness,
+            permissionCachePort,
+            transactionManager,
             meterRegistry,
             MAX_ROLES_PER_TENANT);
 
@@ -303,11 +319,15 @@ class RoleManagementServiceTest {
     stubCallerHolds(permissionId);
     when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
 
-    PermissionView result = service.attachPermission(actor, roleId, permissionId, ctx);
+    // Inside a synchronization that never commits, so only the in-transaction calls are seen; the
+    // post-commit holder eviction (T-010) has its own tests below.
+    PermissionView result =
+        inUncommittedSynchronization(
+            () -> service.attachPermission(actor, roleId, permissionId, ctx));
 
     assertThat(result).isEqualTo(permission);
     verify(roleManagementPort).attachPermission(roleId, permissionId);
-    // A3's M13 read is the only collaborator call on the non-dangerous path.
+    // A3's M13 read is the only in-transaction collaborator call on the non-dangerous path.
     verify(userRoleAssignmentPort).findHeldRolePermissionIdsForAuthorization(actorId, tenantId);
     verifyNoMoreInteractions(userRoleAssignmentPort);
     verify(userRoleAssignmentPort, never()).findActiveUserIdsForRole(any());
@@ -454,10 +474,12 @@ class RoleManagementServiceTest {
     stubCallerHolds(permissionId);
     when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
 
-    service.attachPermission(actor, roleId, permissionId, ctx);
+    // Inside a synchronization that never commits: the post-commit holder eviction (T-010) is
+    // not part of the gate this test pins.
+    inUncommittedSynchronization(() -> service.attachPermission(actor, roleId, permissionId, ctx));
 
     verify(roleManagementPort, never()).findRoleIdByName(any(), any());
-    // A3's M13 read is the only collaborator call on the non-dangerous path.
+    // A3's M13 read is the only in-transaction collaborator call on the non-dangerous path.
     verify(userRoleAssignmentPort).findHeldRolePermissionIdsForAuthorization(actorId, tenantId);
     verifyNoMoreInteractions(userRoleAssignmentPort);
   }
@@ -1261,7 +1283,13 @@ class RoleManagementServiceTest {
     when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
     when(roleManagementPort.detachPermission(roleId, permissionId)).thenReturn(1);
 
-    service.detachPermission(actor, roleId, permissionId, ctx);
+    // Inside a synchronization that never commits: the post-commit holder read (T-010) is not
+    // part of the gate this test pins.
+    inUncommittedSynchronization(
+        () -> {
+          service.detachPermission(actor, roleId, permissionId, ctx);
+          return null;
+        });
 
     verify(roleManagementPort).detachPermission(roleId, permissionId);
     verify(roleManagementPort, never()).findRoleIdByName(any(), any());
@@ -1307,6 +1335,208 @@ class RoleManagementServiceTest {
   }
 
   // ---------------------------------------------------------------------------------------
+  // US-018 T-010: detach fans the epoch bump out to every holder after commit; attach evicts
+  // every holder's cache entry after commit and never bumps (Decisions 15, 17)
+  // ---------------------------------------------------------------------------------------
+
+  @Test
+  void should_readHoldersOnlyAfterCommit_when_detachInsideSynchronization() {
+    List<UUID> holders = stubHappyPathDetach();
+
+    TransactionSynchronizationManager.initSynchronization();
+    try {
+      service.detachPermission(actor, roleId, permissionId, ctx);
+
+      verify(userRoleAssignmentPort, never()).findActiveUserIdsForRole(any());
+      fireAfterCommit();
+    } finally {
+      TransactionSynchronizationManager.clearSynchronization();
+    }
+
+    verify(userRoleAssignmentPort).findActiveUserIdsForRole(roleId);
+    verify(permissionFreshness).invalidateHolders(tenantId, holders, "detach");
+  }
+
+  @Test
+  void should_invalidateHoldersOnlyInsideAfterCommit_when_detachInsideSynchronization() {
+    stubHappyPathDetach();
+    boolean[] insideAfterCommit = {false};
+    doAnswer(invocation -> {
+      assertThat(insideAfterCommit[0])
+          .as("invalidateHolders called with an active synchronization outside afterCommit (MC-7b)")
+          .isTrue();
+      return null;
+    }).when(permissionFreshness).invalidateHolders(any(), any(), any());
+
+    TransactionSynchronizationManager.initSynchronization();
+    try {
+      service.detachPermission(actor, roleId, permissionId, ctx);
+
+      verifyNoInteractions(permissionFreshness);
+      insideAfterCommit[0] = true;
+      fireAfterCommit();
+    } finally {
+      TransactionSynchronizationManager.clearSynchronization();
+    }
+
+    verify(permissionFreshness).invalidateHolders(any(), any(), any());
+  }
+
+  @Test
+  void should_invalidateEveryHolder_when_detachSucceeds() {
+    List<UUID> holders = stubHappyPathDetach();
+
+    service.detachPermission(actor, roleId, permissionId, ctx);
+
+    verify(permissionFreshness).invalidateHolders(tenantId, holders, "detach");
+    verifyNoMoreInteractions(permissionFreshness);
+  }
+
+  @Test
+  void should_neverInvalidate_when_detachReturns404() {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    when(roleManagementPort.detachPermission(roleId, permissionId)).thenReturn(0);
+
+    assertThatThrownBy(() -> service.detachPermission(actor, roleId, permissionId, ctx))
+        .isInstanceOf(ResourceNotFoundException.class);
+
+    verifyNoInteractions(permissionFreshness, permissionCachePort, transactionManager);
+    verify(userRoleAssignmentPort, never()).findActiveUserIdsForRole(any());
+  }
+
+  @Test
+  void should_neverInvalidate_when_detachDenied() {
+    UUID adminRoleId = UUID.randomUUID();
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    when(roleManagementPort.findPermission(permissionId))
+        .thenReturn(Optional.of(dangerousPermission()));
+    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
+        .thenReturn(Optional.of(adminRoleId));
+    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
+        .thenReturn(false);
+
+    assertThatThrownBy(() -> service.detachPermission(actor, roleId, permissionId, ctx))
+        .isInstanceOf(InsufficientPermissionException.class);
+
+    verifyNoInteractions(permissionFreshness, permissionCachePort, transactionManager);
+    verify(userRoleAssignmentPort, never()).findActiveUserIdsForRole(any());
+  }
+
+  @Test
+  void should_neverInvalidate_when_detachRoleIsSystemRole() {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(systemRole("MEMBER")));
+
+    assertThatThrownBy(() -> service.detachPermission(actor, roleId, permissionId, ctx))
+        .isInstanceOf(SystemRoleImmutableException.class);
+
+    verifyNoInteractions(permissionFreshness, permissionCachePort, transactionManager);
+  }
+
+  @Test
+  void should_neverInvalidate_when_transactionRollsBack() {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    when(roleManagementPort.findPermission(permissionId))
+        .thenReturn(Optional.of(benignPermission()));
+    when(roleManagementPort.detachPermission(roleId, permissionId)).thenReturn(1);
+
+    TransactionSynchronizationManager.initSynchronization();
+    try {
+      service.detachPermission(actor, roleId, permissionId, ctx);
+      for (TransactionSynchronization synchronization :
+          TransactionSynchronizationManager.getSynchronizations()) {
+        synchronization.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK);
+      }
+    } finally {
+      TransactionSynchronizationManager.clearSynchronization();
+    }
+
+    verifyNoInteractions(permissionFreshness, transactionManager);
+    verify(userRoleAssignmentPort, never()).findActiveUserIdsForRole(any());
+  }
+
+  /**
+   * The holder read runs in its own read-only transaction: in afterCommit the outer transaction's
+   * resources are still bound, and only REQUIRES_NEW guarantees a fresh read of committed rows.
+   * The Redis fan-out starts only after that transaction has ended.
+   */
+  @Test
+  void should_readHoldersInNewReadOnlyTransaction_when_detachCommits() {
+    List<UUID> holders = stubHappyPathDetach();
+    ArgumentCaptor<TransactionDefinition> definition =
+        ArgumentCaptor.forClass(TransactionDefinition.class);
+
+    service.detachPermission(actor, roleId, permissionId, ctx);
+
+    InOrder order = inOrder(transactionManager, userRoleAssignmentPort, permissionFreshness);
+    order.verify(transactionManager).getTransaction(definition.capture());
+    order.verify(userRoleAssignmentPort).findActiveUserIdsForRole(roleId);
+    order.verify(transactionManager).commit(any());
+    order.verify(permissionFreshness).invalidateHolders(tenantId, holders, "detach");
+    assertThat(definition.getValue().getPropagationBehavior())
+        .isEqualTo(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    assertThat(definition.getValue().isReadOnly()).isTrue();
+  }
+
+  @Test
+  void should_evictEveryHolderAfterCommit_when_attachSucceeds() {
+    List<UUID> holders = stubHappyPathBenignAttach();
+
+    TransactionSynchronizationManager.initSynchronization();
+    try {
+      service.attachPermission(actor, roleId, permissionId, ctx);
+
+      verifyNoInteractions(permissionCachePort);
+      verify(userRoleAssignmentPort, never()).findActiveUserIdsForRole(any());
+      fireAfterCommit();
+    } finally {
+      TransactionSynchronizationManager.clearSynchronization();
+    }
+
+    verify(permissionCachePort).evict(tenantId, holders);
+    verifyNoMoreInteractions(permissionCachePort);
+  }
+
+  @Test
+  void should_neverBump_when_attachSucceeds() {
+    stubHappyPathBenignAttach();
+
+    service.attachPermission(actor, roleId, permissionId, ctx);
+
+    verifyNoInteractions(permissionFreshness);
+  }
+
+  @Test
+  void should_readAttachHoldersInNewReadOnlyTransaction_when_attachCommits() {
+    List<UUID> holders = stubHappyPathBenignAttach();
+    ArgumentCaptor<TransactionDefinition> definition =
+        ArgumentCaptor.forClass(TransactionDefinition.class);
+
+    service.attachPermission(actor, roleId, permissionId, ctx);
+
+    InOrder order = inOrder(transactionManager, userRoleAssignmentPort, permissionCachePort);
+    order.verify(transactionManager).getTransaction(definition.capture());
+    order.verify(userRoleAssignmentPort).findActiveUserIdsForRole(roleId);
+    order.verify(transactionManager).commit(any());
+    order.verify(permissionCachePort).evict(tenantId, holders);
+    assertThat(definition.getValue().getPropagationBehavior())
+        .isEqualTo(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    assertThat(definition.getValue().isReadOnly()).isTrue();
+  }
+
+  @Test
+  void should_neverEvict_when_attachDenied() {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    when(roleManagementPort.findPermission(permissionId))
+        .thenReturn(Optional.of(benignPermission()));
+    stubCallerHolds();
+
+    assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
+        .isInstanceOf(InsufficientPermissionException.class);
+
+    verifyNoInteractions(permissionCachePort, permissionFreshness, transactionManager);
+  }
+
+  // ---------------------------------------------------------------------------------------
   // listAllPermissions() -- AC6
   // ---------------------------------------------------------------------------------------
 
@@ -1344,6 +1574,46 @@ class RoleManagementServiceTest {
     }
     when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
         .thenReturn(refs);
+  }
+
+  /** A successful ordinary detach whose role has three active holders after commit. */
+  private List<UUID> stubHappyPathDetach() {
+    List<UUID> holders = List.of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    when(roleManagementPort.findPermission(permissionId))
+        .thenReturn(Optional.of(benignPermission()));
+    when(roleManagementPort.detachPermission(roleId, permissionId)).thenReturn(1);
+    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId)).thenReturn(holders);
+    return holders;
+  }
+
+  /** A successful ordinary attach whose role has three active holders after commit. */
+  private List<UUID> stubHappyPathBenignAttach() {
+    List<UUID> holders = List.of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    when(roleManagementPort.findPermission(permissionId))
+        .thenReturn(Optional.of(benignPermission()));
+    stubCallerHolds(permissionId);
+    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
+    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId)).thenReturn(holders);
+    return holders;
+  }
+
+  private static void fireAfterCommit() {
+    for (TransactionSynchronization synchronization :
+        TransactionSynchronizationManager.getSynchronizations()) {
+      synchronization.afterCommit();
+    }
+  }
+
+  /** Runs {@code call} inside an active synchronization that never reaches afterCommit. */
+  private static <T> T inUncommittedSynchronization(Supplier<T> call) {
+    TransactionSynchronizationManager.initSynchronization();
+    try {
+      return call.get();
+    } finally {
+      TransactionSynchronizationManager.clearSynchronization();
+    }
   }
 
   private ListAppender<ILoggingEvent> startLogCapture() {
