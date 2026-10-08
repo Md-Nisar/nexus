@@ -107,3 +107,22 @@ Set `feature.nexus-us012-rbac-role-assignment.enabled=false` (assign, list, revo
 - [ ] Check that `nexus.rbac.redis.require-auth=true` is resolved in production (the `prod` profile is active and `application-prod.yml` sets it; e.g. `/actuator/env/nexus.rbac.redis.require-auth` where exposed, or the effective config of the deployment). With it false the startup check is inert.
 
 If startup fails with `nexus.rbac.redis.require-auth=true but the "<factory>" Redis connection has no password`, set `spring.data.redis.password`, or put the password in the `spring.data.redis.url` userinfo (with a URL set, Boot ignores the password property). A `Sentinel password` message means `spring.data.redis.sentinel.password` is missing.
+
+## 8. Permission removed outside the API (Flyway or SQL) (M7, T-010)
+
+Revoke and detach make holders' tokens stale and drop their cached permission sets automatically. A permission or role assignment removed by a migration or a direct SQL change does neither: holders keep the permission in their access token (up to 900 s) and in their cached set (up to `NEXUS_RBAC_PERMISSION_CACHE_TTL_SECONDS`, 900 s by default). After such a change, in this order:
+
+- [ ] **Bump the epoch of every affected holder.** List the user ids (for a permission removed from a role, the active holders of that role):
+   ```sql
+   SELECT HEX(ur.tenant_id) AS tenant_id, HEX(ur.user_id) AS user_id
+   FROM user_roles ur
+   WHERE ur.role_id = UNHEX(REPLACE(?, '-', '')) AND ur.revoked_at IS NULL;
+   ```
+   Then run the same monotonic bump the application runs, for up to 500 keys `{keyPrefix}:rbac:epoch:{tenantId}:{userId}` per call (UUIDs in their dashed lower-case form; the last argument is `nexus.rbac.epoch.key-ttl-seconds`, 960 by default):
+   ```
+   redis-cli EVAL "local t=redis.call('TIME') local now=tonumber(t[1])*1000+math.floor(tonumber(t[2])/1000) for _,k in ipairs(KEYS) do local o=tonumber(redis.call('GET',k) or '0') or 0 redis.call('SET',k,string.format('%.0f',math.max(o+1,now)),'EX',ARGV[1]) end return #KEYS" <numkeys> <epoch keys...> 960
+   ```
+   Each holder's next request then gets 401 `AUTH_003` and the client refreshes.
+- [ ] **Flush the permission cache:** `SCAN` with `MATCH {keyPrefix}:rbac:permset:*` and `MATCH {keyPrefix}:rbac:roleset:*`, and `UNLINK` the keys found. The cache is never authoritative; the only cost is one extra database read per next login or refresh.
+
+Not needed after the T-010 deploy itself: cache keys without an epoch suffix are no longer read and expire within the cache TTL.

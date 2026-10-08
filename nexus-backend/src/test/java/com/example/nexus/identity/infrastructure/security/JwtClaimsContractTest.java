@@ -56,7 +56,8 @@ class JwtClaimsContractTest {
             org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
         .thenReturn(PERM_EPOCH);
     when(roleResolutionService.resolve(
-            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.anyLong()))
         .thenReturn(new ResolvedPermissions(List.of("USER"), List.of()));
     service =
         new JwtRs256Service(

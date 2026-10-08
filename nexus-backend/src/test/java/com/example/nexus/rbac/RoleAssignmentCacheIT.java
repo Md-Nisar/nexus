@@ -50,12 +50,13 @@ import org.springframework.transaction.support.TransactionTemplate;
 /**
  * US-012 T-020 (03-design.md §6.5/R-7): proves {@link RoleAssignmentService#assign}/{@link
  * RoleAssignmentService#revoke} evict the two <b>real</b> Redis keys {@link
- * RedisPermissionCacheAdapter} maintains — confirmed by reading that class's {@code roleKey}/{@code
- * permKey} methods directly:
+ * RedisPermissionCacheAdapter} maintains — confirmed by reading {@code RbacRedisKeys} directly.
+ * Since US-018 T-010 the entry is keyed by the permission epoch it was computed under; these users
+ * have no epoch key, so their entry sits under epoch {@code 0}:
  *
  * <pre>{@code
- * {keyPrefix}:rbac:roleset:{tenantId}:{userId}
- * {keyPrefix}:rbac:permset:{tenantId}:{userId}
+ * {keyPrefix}:rbac:roleset:{tenantId}:{userId}:{epoch}
+ * {keyPrefix}:rbac:permset:{tenantId}:{userId}:{epoch}
  * }</pre>
  *
  * with {@code keyPrefix} sourced from {@code nexus.redis.key-prefix} (default {@code nexus}).
@@ -352,7 +353,8 @@ class RoleAssignmentCacheIT {
 
   private void seedCacheEntry(UUID tenantId, UUID userId) {
     permissionCachePort.put(
-        tenantId, userId, new ResolvedPermissions(List.of(SENTINEL_ROLE), List.of(SENTINEL_PERMISSION)));
+        tenantId, userId, 0L,
+        new ResolvedPermissions(List.of(SENTINEL_ROLE), List.of(SENTINEL_PERMISSION)));
   }
 
   private RequestContext requestContext() {
@@ -360,10 +362,10 @@ class RoleAssignmentCacheIT {
   }
 
   private String roleKey(UUID tenantId, UUID userId) {
-    return keyPrefix + ":rbac:roleset:" + tenantId + ":" + userId;
+    return keyPrefix + ":rbac:roleset:" + tenantId + ":" + userId + ":0";
   }
 
   private String permKey(UUID tenantId, UUID userId) {
-    return keyPrefix + ":rbac:permset:" + tenantId + ":" + userId;
+    return keyPrefix + ":rbac:permset:" + tenantId + ":" + userId + ":0";
   }
 }

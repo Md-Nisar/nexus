@@ -67,7 +67,8 @@ class JwtRs256ServiceSecurityTest {
   private JwtRs256Service service(Clock clock) {
     RoleResolutionService roleResolutionService = mock(RoleResolutionService.class);
     when(roleResolutionService.resolve(
-            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.anyLong()))
         .thenReturn(new ResolvedPermissions(List.of("USER"), List.of("read:only")));
     return new JwtRs256Service(
         rsaKeyConfig, UUID::randomUUID, clock, 900L, roleResolutionService,
