@@ -161,6 +161,14 @@ nexus:
       # Must be at least max(nexus.jwt.access-token-ttl-seconds, permission-cache-ttl-seconds)
       # + 60 s, or startup fails (RC-29, T-E37).
       key-ttl-seconds: ${NEXUS_RBAC_EPOCH_KEY_TTL_SECONDS:960}
+      # Outage policy per instance (design §9.5, T-011). 3 read or probe failures within
+      # entry-failure-window enter degraded-open and start the clock (t0); fail-open-window after
+      # t0 non-public authenticated requests get 503 AUTH_005. recovery-sustain of failure-free
+      # time in Recovering returns to healthy. Raise fail-open-window only via env var + restart.
+      fail-open-window: ${NEXUS_RBAC_EPOCH_FAIL_OPEN_WINDOW:PT15M}
+      entry-failure-threshold: ${NEXUS_RBAC_EPOCH_ENTRY_FAILURE_THRESHOLD:3}
+      entry-failure-window: ${NEXUS_RBAC_EPOCH_ENTRY_FAILURE_WINDOW:PT10S}
+      recovery-sustain: ${NEXUS_RBAC_EPOCH_RECOVERY_SUSTAIN:PT60S}
     redis:
       # When true, startup fails unless the main Redis factory and both dedicated epoch factories
       # authenticate (RC-34.1, RC-45.1, RC-45.2; US-018 T-014). application-prod.yml sets true.

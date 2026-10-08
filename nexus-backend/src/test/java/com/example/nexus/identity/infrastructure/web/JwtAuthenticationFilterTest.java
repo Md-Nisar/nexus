@@ -286,6 +286,82 @@ class JwtAuthenticationFilterTest {
   }
 
   // -----------------------------------------------------------------------
+  // US-018 T-011: degraded-closed answers 503 AUTH_005, never on a public request
+  // -----------------------------------------------------------------------
+
+  @Test
+  void should_return503Auth005WithRetryAfter30_when_unavailableOnNonPublicRequest()
+      throws Exception {
+    MockHttpServletRequest req = bearerRequest("valid.jwt");
+    req.setRequestURI("/api/v1/roles");
+    MockHttpServletResponse res = new MockHttpServletResponse();
+    FilterChain chain = mock(FilterChain.class);
+    when(jwtPort.verify("valid.jwt")).thenReturn(claims());
+    when(freshness.check(any(), any(), anyLong())).thenReturn(FreshnessVerdict.UNAVAILABLE);
+
+    filter.doFilterInternal(req, res, chain);
+
+    assertThat(res.getStatus()).isEqualTo(503);
+    assertThat(res.getHeader("Retry-After")).isEqualTo("30");
+    assertThat(res.getContentType()).startsWith("application/problem+json");
+    assertThat(res.getContentAsString())
+        .contains("\"type\":\"about:blank\"", "\"title\":\"Service Unavailable\"",
+            "\"status\":503", "\"code\":\"AUTH_005\"", "\"instance\":\"/api/v1/roles\"",
+            "\"traceId\":");
+    verify(chain, never()).doFilter(any(), any());
+    verify(entryPoint, never()).commence(any(), any(), any());
+    assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+  }
+
+  @Test
+  void should_escapeInstanceAndTraceId_when_503BodyBuilt() throws Exception {
+    MockHttpServletRequest req = bearerRequest("valid.jwt");
+    req.setRequestURI("/api/\"x\\y\n");
+    MockHttpServletResponse res = new MockHttpServletResponse();
+    when(jwtPort.verify("valid.jwt")).thenReturn(claims());
+    when(freshness.check(any(), any(), anyLong())).thenReturn(FreshnessVerdict.UNAVAILABLE);
+    org.slf4j.MDC.put("traceId", "trace\"1");
+    try {
+      filter.doFilterInternal(req, res, mock(FilterChain.class));
+    } finally {
+      org.slf4j.MDC.remove("traceId");
+    }
+
+    assertThat(res.getContentAsString())
+        .contains("\"instance\":\"/api/\\\"x\\\\y\\u000a\"", "\"traceId\":\"trace\\\"1\"");
+  }
+
+  @Test
+  void should_proceed_when_degradedOpenOnNonPublicRequest() throws Exception {
+    MockHttpServletRequest req = bearerRequest("valid.jwt");
+    MockHttpServletResponse res = new MockHttpServletResponse();
+    FilterChain chain = mock(FilterChain.class);
+    when(jwtPort.verify("valid.jwt")).thenReturn(claims());
+    when(freshness.check(any(), any(), anyLong())).thenReturn(FreshnessVerdict.SKIPPED_DEGRADED);
+
+    filter.doFilterInternal(req, res, chain);
+
+    verify(chain).doFilter(req, res);
+    assertThat(res.getStatus()).isEqualTo(200);
+  }
+
+  @Test
+  void should_pass_when_unavailableButRequestIsPublic() throws Exception {
+    MockHttpServletRequest req = bearerRequest("valid.jwt");
+    MockHttpServletResponse res = new MockHttpServletResponse();
+    FilterChain chain = mock(FilterChain.class);
+    when(publicEndpoints.matches(req)).thenReturn(true);
+    when(jwtPort.verify("valid.jwt")).thenReturn(claims());
+    when(freshness.check(any(), any(), anyLong())).thenReturn(FreshnessVerdict.UNAVAILABLE);
+
+    filter.doFilterInternal(req, res, chain);
+
+    verify(chain).doFilter(req, res);
+    assertThat(res.getStatus()).isEqualTo(200);
+    assertThat(res.getHeader("Retry-After")).isNull();
+  }
+
+  // -----------------------------------------------------------------------
   // US-018 T-009 (RC-24, RC-44.2): a public request is never rejected
   // -----------------------------------------------------------------------
 

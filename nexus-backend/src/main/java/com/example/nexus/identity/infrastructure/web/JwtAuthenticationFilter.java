@@ -2,6 +2,7 @@ package com.example.nexus.identity.infrastructure.web;
 
 import com.example.nexus.common.domain.AuthenticationException;
 import com.example.nexus.common.security.AuthenticationDetailKeys;
+import com.example.nexus.common.web.CorrelationIdFilter;
 import com.example.nexus.identity.application.port.out.JwtPort;
 import com.example.nexus.identity.domain.JwtClaims;
 import com.example.nexus.rbac.application.FreshnessVerdict;
@@ -15,6 +16,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.slf4j.MDC;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -31,7 +34,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * checked once. An invalid or stale token clears the security context and goes to the
  * {@link AuthenticationEntryPoint} (401 {@code AUTH_003}); the filter chain is NOT continued. A
  * check the epoch store could not answer lets this one request proceed (counted by the freshness
- * service).
+ * service), as does a degraded-open instance. A degraded-closed instance answers 503
+ * {@code AUTH_005} with {@code Retry-After: 30} (design §9.5).
  *
  * <p><b>Public requests</b> ({@link PublicEndpointRequestMatcher} matches; RC-24, RC-44.2) are
  * never rejected here: there is no epoch check, and a bearer that fails verification is ignored
@@ -49,6 +53,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
   private static final String AUTH_003 = "AUTH_003";
+  private static final String AUTH_005 = "AUTH_005";
+  private static final long UNAVAILABLE_RETRY_AFTER_SECONDS = 30;
 
   private final JwtPort jwtPort;
   private final AuthenticationEntryPoint authenticationEntryPoint;
@@ -108,13 +114,16 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
       return;
     }
     FreshnessVerdict verdict = permissionFreshness.check(tenantId, userId, claims.permEpoch());
-    boolean stale = switch (verdict) {
-      case STALE -> true;
-      case FRESH, SKIPPED_ERROR -> false;
-    };
-    if (stale) {
-      reject(req, res, new AuthenticationException(AUTH_003, "Token permissions are stale"));
-      return;
+    switch (verdict) {
+      case STALE -> {
+        reject(req, res, new AuthenticationException(AUTH_003, "Token permissions are stale"));
+        return;
+      }
+      case UNAVAILABLE -> {
+        writeUnavailable(req, res);
+        return;
+      }
+      case FRESH, SKIPPED_ERROR, SKIPPED_DEGRADED -> { }
     }
     List<SimpleGrantedAuthority> authorities = claims.roles().stream()
         .map(r -> new SimpleGrantedAuthority("ROLE_" + r))
@@ -161,6 +170,40 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
       MDC.remove(AuthenticationDetailKeys.MDC_USER_ID);
       MDC.remove(AuthenticationDetailKeys.MDC_TENANT_ID);
     }
+  }
+
+  /**
+   * The epoch store has been down longer than the fail-open window (design §9.5): 503, not 401, so
+   * clients keep their session instead of looping through refresh and being logged out. Written
+   * here because the filter runs before {@code GlobalExceptionHandler}; same RFC 9457 shape.
+   */
+  private void writeUnavailable(HttpServletRequest req, HttpServletResponse res)
+      throws IOException {
+    SecurityContextHolder.clearContext();
+    res.setStatus(HttpStatus.SERVICE_UNAVAILABLE.value());
+    res.setContentType("application/problem+json");
+    res.setHeader(HttpHeaders.RETRY_AFTER, String.valueOf(UNAVAILABLE_RETRY_AFTER_SECONDS));
+    String traceId = MDC.get(CorrelationIdFilter.MDC_KEY);
+    String json = "{\"type\":\"about:blank\",\"title\":\"Service Unavailable\",\"status\":503"
+        + ",\"detail\":\"Authorization cannot be verified right now. Retry shortly.\""
+        + ",\"instance\":\"" + jsonEscape(req.getRequestURI()) + "\""
+        + ",\"code\":\"" + AUTH_005 + "\""
+        + ",\"traceId\":\"" + (traceId != null ? jsonEscape(traceId) : "") + "\"}";
+    res.getWriter().write(json);
+  }
+
+  private static String jsonEscape(String value) {
+    StringBuilder out = new StringBuilder(value.length());
+    for (char c : value.toCharArray()) {
+      if (c == '"' || c == '\\') {
+        out.append('\\').append(c);
+      } else if (c < 0x20) {
+        out.append(String.format("\\u%04x", (int) c));
+      } else {
+        out.append(c);
+      }
+    }
+    return out.toString();
   }
 
   private void reject(HttpServletRequest req, HttpServletResponse res, AuthenticationException e)

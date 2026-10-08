@@ -12,6 +12,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.RedisConnectionFailureException;
+import org.springframework.data.redis.connection.RedisConnection;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Component;
 
@@ -81,6 +83,19 @@ public class RedisPermissionEpochAdapter implements PermissionEpochPort {
       // is the signal.
       log.debug("permission epoch read failed exception={}", e.getClass().getSimpleName());
       return OptionalLong.empty();
+    }
+  }
+
+  @Override
+  public boolean probe() {
+    if (!templates.readReady()) {
+      return false;
+    }
+    try {
+      return templates.read().execute((RedisCallback<String>) RedisConnection::ping) != null;
+    } catch (DataAccessException e) {
+      log.debug("permission epoch probe failed exception={}", e.getClass().getSimpleName());
+      return false;
     }
   }
 

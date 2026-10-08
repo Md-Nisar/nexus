@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.reset;
 
 import com.example.nexus.TestcontainersConfiguration;
 import com.example.nexus.common.domain.RequestContext;
@@ -16,9 +18,12 @@ import com.example.nexus.identity.domain.JwtClaims;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.identity.infrastructure.security.RsaKeyConfig;
+import com.example.nexus.rbac.application.DegradedState;
+import com.example.nexus.rbac.application.PermissionFreshnessService;
 import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.application.port.out.PermissionCachePort;
+import com.example.nexus.rbac.application.port.out.PermissionEpochPort;
 import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
@@ -34,12 +39,14 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
+import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -75,7 +82,9 @@ import org.springframework.web.client.RestTemplate;
  * <p>The permission cache is a Mockito spy that calls through, so a test can pause a mint between
  * its DB read and its cache write ({@link PermissionCachePort#put}) to reproduce the races.
  *
- * <p>The degraded-closed cases are T-011's.
+ * <p>The outage cases (T-011) stub the read side of {@link PermissionEpochPort} to fail and run
+ * with a 3 s fail-open window and a 2 s recovery sustain, so the state machine reaches
+ * degraded-closed in seconds; the real 1 s probe task restores Healthy afterwards.
  */
 @SpringBootTest(
     webEnvironment = WebEnvironment.RANDOM_PORT,
@@ -88,7 +97,9 @@ import org.springframework.web.client.RestTemplate;
         "nexus.security.rate-limit.ip-window-seconds=60",
         "nexus.security.rate-limit.user-max-attempts=10000",
         "nexus.security.rate-limit.user-window-seconds=900",
-        "nexus.security.rate-limit.refresh-max-attempts=10000"
+        "nexus.security.rate-limit.refresh-max-attempts=10000",
+        "nexus.rbac.epoch.fail-open-window=PT3S",
+        "nexus.rbac.epoch.recovery-sustain=PT2S"
     })
 @Import(TestcontainersConfiguration.class)
 @ActiveProfiles("test")
@@ -117,6 +128,8 @@ class TokenFreshnessIT {
   @Autowired private RoleAssignmentService roleAssignmentService;
   @Autowired private RoleManagementService roleManagementService;
   @MockitoSpyBean private PermissionCachePort permissionCache;
+  @MockitoSpyBean private PermissionEpochPort epochPort;
+  @Autowired private PermissionFreshnessService freshness;
   @Autowired private JwtPort jwtPort;
   @Autowired private RsaKeyConfig rsaKeyConfig;
   @Autowired private StringRedisTemplate redisTemplate;
@@ -132,6 +145,12 @@ class TokenFreshnessIT {
         return false;
       }
     });
+  }
+
+  @AfterEach
+  void restoreHealthyState() throws InterruptedException {
+    reset(epochPort);
+    awaitState(DegradedState.HEALTHY);
   }
 
   // ── TS-8 ──────────────────────────────────────────────────────────────────
@@ -259,6 +278,79 @@ class TokenFreshnessIT {
     assertThat(logout.getStatusCode().value()).isEqualTo(204);
     assertThat(refresh(null, first.refreshCookie()).getStatusCode().value()).isEqualTo(401);
     assertThat(refresh(null, second.refreshCookie()).getStatusCode().value()).isEqualTo(401);
+  }
+
+  // ── T-011: Redis outage policy (A9, design §9.5) ───────────────────────────
+
+  @Test
+  void should_return200_when_refreshCarriesBearerWhileDegradedClosed() throws Exception {
+    Holder holder = seedHolder("closed-refresh");
+    Session session = login(holder.email());
+    driveToDegradedClosed();
+
+    assertThat(refresh(session.accessToken(), session.refreshCookie()).getStatusCode().value())
+        .isEqualTo(200);
+  }
+
+  @Test
+  void should_return503Auth005_when_staleEpochBearerOnNonPublicHandlerWhileDegradedClosed()
+      throws Exception {
+    Holder holder = seedHolder("closed-guarded");
+    Session session = login(holder.email());
+    revoke(holder);
+    driveToDegradedClosed();
+
+    ResponseEntity<Map> response = get(GUARDED, session.accessToken());
+
+    assertThat(response.getStatusCode().value()).isEqualTo(503);
+    assertThat(response.getHeaders().getFirst("Retry-After")).isEqualTo("30");
+    assertThat(response.getBody())
+        .containsEntry("code", "AUTH_005")
+        .containsEntry("status", 503)
+        .containsEntry("title", "Service Unavailable")
+        .containsKeys("type", "detail", "instance", "traceId");
+  }
+
+  @Test
+  void should_notServeRevokedToken_when_readsFailAfterTheBumpWasSeen() throws Exception {
+    // Security review M-1: an induced read failure must not turn a known revocation into a pass.
+    Holder holder = seedHolder("outage-revoked");
+    Session session = login(holder.email());
+    Holder bystander = seedHolder("outage-bystander");
+    Session bystanderSession = login(bystander.email());
+    revoke(holder);
+    failReads();
+
+    ResponseEntity<Map> replay = get(GUARDED, session.accessToken());
+    assertThat(replay.getStatusCode().value()).isEqualTo(401);
+    assertThat(get(GUARDED, bystanderSession.accessToken()).getStatusCode().value())
+        .as("other users still fail open for the one request")
+        .isEqualTo(200);
+  }
+
+  /** Reads and probes fail until {@link #restoreHealthyState()} resets the spy. */
+  private void failReads() {
+    doReturn(OptionalLong.empty()).when(epochPort).current(any(), any());
+    doReturn(false).when(epochPort).probe();
+  }
+
+  private void driveToDegradedClosed() throws InterruptedException {
+    Holder bystander = seedHolder("outage-trip");
+    Session bystanderSession = login(bystander.email());
+    failReads();
+    for (int i = 0; i < 3; i++) {
+      get(GUARDED, bystanderSession.accessToken());
+    }
+    awaitState(DegradedState.DEGRADED_CLOSED);
+  }
+
+  private void awaitState(DegradedState expected) throws InterruptedException {
+    long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+    while (freshness.state() != expected) {
+      assertThat(System.nanoTime()).as("state " + expected + ", was " + freshness.state())
+          .isLessThan(deadline);
+      Thread.sleep(50);
+    }
   }
 
   // ── T-010: detach fans out to every holder (TS-9) ─────────────────────────
