@@ -160,6 +160,10 @@ nexus:
       # Must be at least max(nexus.jwt.access-token-ttl-seconds, permission-cache-ttl-seconds)
       # + 60 s, or startup fails (RC-29, T-E37).
       key-ttl-seconds: ${NEXUS_RBAC_EPOCH_KEY_TTL_SECONDS:960}
+    redis:
+      # When true, startup fails unless the main Redis factory and both dedicated epoch factories
+      # authenticate (RC-34.1, RC-45.1, RC-45.2; US-018 T-014). application-prod.yml sets true.
+      require-auth: false
   identity:
     # --- Encryption ---
     encryption:

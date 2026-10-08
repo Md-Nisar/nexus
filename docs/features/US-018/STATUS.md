@@ -18,6 +18,8 @@
 
 **M7 / T-009 (A9 core): implemented on `ccr-4e9e7cbe-4vl9v6`, code review findings fixed, not merged.** Backend `verify` passes with and without ITs after the review fixes (1521 unit, 376 IT, 0 failures; the k6 figures below are from before the fixes). Local-Docker k6 hot-path run (200 RPS, 5 min, one JVM at `-Xmx1g`, MySQL and Redis in Docker; **not the staging topology**): server-side `nexus.rbac.epoch.check.latency` p95 0.58 ms (≤ 2 ms), `GET /api/v1/roles` p95 4.99 ms against a 4.25 ms baseline on `25ceeed` (+0.74 ms, budget < 5 ms), 0 dropped iterations, 0 `skipped_error`. Local Redis round-trips are about 0.1 ms, so this is optimistic: the staging re-run stays under "Deferred to the first deployment". T-009 must not merge or ship without T-011: M7 merges as one PR containing T-009..T-014, because an outage fails open on every request until the T-011 state machine exists. `/review` ran (`06-code-review-M7.md`, all findings fixed, re-review pending); `/security-review` and `/test-validate` for M7 have not run.
 
+**M7 / T-014 (Redis auth at startup): implemented on `ccr-4e9e7cbe-4vl9v6`, not merged.** `nexus.rbac.redis.require-auth` (default `false`) fails startup when the main or either dedicated epoch factory has no effective password; the `prod` override line `nexus.rbac.redis.require-auth: true` in `application-prod.yml` must be added by hand (the hook blocks agent edits), and until then `RedisAuthStartupAssertionTest.should_resolveRequireAuthTrue_when_prodProfileActive` is red.
+
 Next in delivery order now that M1, M2, M4 and M6 are merged: M5 (T-007, T-008) and M7 (T-009..T-014), neither depending on the other. M7 then unblocks M3 and M7b.
 
 ## M1 exit sequence
