@@ -101,3 +101,9 @@ Zero-administrator tenants after a deploy: use the `rbacZeroActiveAdmins` health
 ## 6. Kill switch
 
 Set `feature.nexus-us012-rbac-role-assignment.enabled=false` (assign, list, revoke return 404) or `feature.nexus-us015-rbac-role-management.enabled=false` (role and attach endpoints), then restart. This is an availability lever, not a way back to the old rules; see [rollback.md](rollback.md).
+
+## 7. Redis authentication at startup (M7, T-014)
+
+- [ ] Check that `nexus.rbac.redis.require-auth=true` is resolved in production (the `prod` profile is active and `application-prod.yml` sets it; e.g. `/actuator/env/nexus.rbac.redis.require-auth` where exposed, or the effective config of the deployment). With it false the startup check is inert.
+
+If startup fails with `nexus.rbac.redis.require-auth=true but the "<factory>" Redis connection has no password`, set `spring.data.redis.password`, or put the password in the `spring.data.redis.url` userinfo (with a URL set, Boot ignores the password property). A `Sentinel password` message means `spring.data.redis.sentinel.password` is missing.

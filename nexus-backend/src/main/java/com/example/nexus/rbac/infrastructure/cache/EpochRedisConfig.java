@@ -91,6 +91,8 @@ public final class EpochRedisConfig {
    * @param clientResources the shared Lettuce client resources (event loops, timers)
    * @param commandTimeout bound on one epoch read
    * @param bumpTimeout bound on one bump script call
+   * @param requireAuth {@code nexus.rbac.redis.require-auth}; when true, startup fails unless all
+   *     three factories carry a password (T-014), checked before any connection is attempted
    * @return the templates, whose factories are destroyed with the context
    */
   @Bean
@@ -99,10 +101,14 @@ public final class EpochRedisConfig {
       LettuceConnectionFactory mainFactory,
       ClientResources clientResources,
       @Value("${nexus.rbac.epoch.command-timeout}") Duration commandTimeout,
-      @Value("${nexus.rbac.epoch.bump-timeout}") Duration bumpTimeout) {
-    return new EpochTemplates(
-        dedicatedFactory(connectionDetails, mainFactory, clientResources, commandTimeout),
-        dedicatedFactory(connectionDetails, mainFactory, clientResources, bumpTimeout));
+      @Value("${nexus.rbac.epoch.bump-timeout}") Duration bumpTimeout,
+      @Value("${nexus.rbac.redis.require-auth}") boolean requireAuth) {
+    LettuceConnectionFactory read =
+        dedicatedFactory(connectionDetails, mainFactory, clientResources, commandTimeout);
+    LettuceConnectionFactory bump =
+        dedicatedFactory(connectionDetails, mainFactory, clientResources, bumpTimeout);
+    RedisAuthStartupAssertion.verify(requireAuth, mainFactory, read, bump);
+    return new EpochTemplates(read, bump);
   }
 
   /**
