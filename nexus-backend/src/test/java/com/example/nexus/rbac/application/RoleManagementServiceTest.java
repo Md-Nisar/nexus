@@ -1383,6 +1383,20 @@ class RoleManagementServiceTest {
   }
 
   @Test
+  void should_notThrow_when_holderReadFailsAfterDetachCommit() {
+    stubHappyPathDetach();
+    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId))
+        .thenThrow(new org.springframework.dao.QueryTimeoutException("db down"));
+
+    // The detach already committed: the administrator must see success, not a 500.
+    org.assertj.core.api.Assertions.assertThatCode(
+            () -> service.detachPermission(actor, roleId, permissionId, ctx))
+        .doesNotThrowAnyException();
+
+    verify(permissionFreshness, never()).invalidateHolders(any(), any(), any());
+  }
+
+  @Test
   void should_invalidateEveryHolder_when_detachSucceeds() {
     List<UUID> holders = stubHappyPathDetach();
 
@@ -1494,6 +1508,19 @@ class RoleManagementServiceTest {
 
     verify(permissionCachePort).evict(tenantId, holders);
     verifyNoMoreInteractions(permissionCachePort);
+  }
+
+  @Test
+  void should_notThrow_when_holderReadFailsAfterAttachCommit() {
+    stubHappyPathBenignAttach();
+    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId))
+        .thenThrow(new org.springframework.dao.QueryTimeoutException("db down"));
+
+    org.assertj.core.api.Assertions.assertThatCode(
+            () -> service.attachPermission(actor, roleId, permissionId, ctx))
+        .doesNotThrowAnyException();
+
+    verifyNoInteractions(permissionCachePort);
   }
 
   @Test
