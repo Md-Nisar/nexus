@@ -16,10 +16,12 @@ import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BiFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -44,18 +46,29 @@ import org.springframework.stereotype.Service;
  * <p>Signals: {@code nexus.rbac.epoch.check{outcome}} and {@code nexus.rbac.epoch.check.latency}
  * (p50/p95/p99), the hot-path budget being p95 at most 2 ms (design §9.5); {@code
  * nexus.rbac.epoch.fanout{holders}} per holder fan-out, bucketed, with no tenant tag (§9.4). Bump
- * failures are logged only and never touch the check outcomes (RC-53).
+ * failures never touch the check outcomes (RC-53); see the replay queue below.
  *
  * <p><b>Outage state machine (T-011, design §9.5).</b> Per instance, driven by the injected
  * {@link Clock}: {@link DegradedState#HEALTHY} to {@link DegradedState#DEGRADED_OPEN} on 3 or more
  * epoch-read or probe failures within a 10 s sliding window ({@code t0} is the first of them); to
  * {@link DegradedState#DEGRADED_CLOSED} once {@code fail-open-window} has elapsed since {@code t0};
- * to {@link DegradedState#RECOVERING} on a probe success (with the replay queue drained, trivially
- * true until T-012); back to {@link DegradedState#HEALTHY}, clearing {@code t0}, after {@code
+ * to {@link DegradedState#RECOVERING} on a probe success with the replay queue drained; back to
+ * {@link DegradedState#HEALTHY}, clearing {@code t0}, after {@code
  * recovery-sustain} without a counted failure. A relapse in Recovering uses the same 3-in-10 s
- * rule and keeps {@code t0}. Only epoch-read and probe failures count (RC-53): bump failures never
- * do. A read that returns empty because the adapter is not ready yet is a read failure. All
- * transitions run under one lock, so request threads and the scheduler cannot lose a relapse.
+ * rule and keeps {@code t0}. Only epoch-read and probe failures count (RC-53): bump and drain
+ * failures never do, and a drain failure in Recovering does not restart the sustain (L-4). A read
+ * that returns empty because the adapter is not ready yet is a read failure. All transitions run
+ * under one lock, so request threads and the scheduler cannot lose a relapse.
+ *
+ * <p><b>Lost-bump replay (T-012, design §9.3).</b> A bump that Redis refuses is queued in a
+ * bounded, coalescing {@link EpochReplayQueue} ({@code replay-capacity-users}) and replayed by the
+ * scheduled task on every tick in every state: in {@link DegradedState#HEALTHY} straight away, in
+ * a degraded state only after that tick's probe succeeded. Replay runs in batches of {@value
+ * #FANOUT_BATCH_SIZE}; a failed batch goes back with its original {@code failedAt}; entries older
+ * than {@code key-ttl-seconds} are dropped. Signals: {@code nexus.rbac.epoch.bump_failed{operation,
+ * reason=redis|overflow}}, {@code nexus.rbac.epoch.bump_replayed} (users replayed) and the gauge
+ * {@code nexus.rbac.epoch.replay_queue_users}; ERROR {@code RBAC_EPOCH_BUMP_FAILED} and INFO
+ * {@code RBAC_EPOCH_BUMP_REPLAYED}, never with user ids.
  *
  * <p><b>Locally known bumps (security review M-1).</b> While reads fail, an attacker who drives
  * the instance into fail-open could replay a revoked token. The service therefore keeps a bounded
@@ -80,6 +93,13 @@ public final class PermissionFreshnessService {
   static final String METRIC_DEGRADED_ENTRIES = "nexus.rbac.epoch.degraded_entries";
   static final String METRIC_DEGRADED_FLAP = "nexus.rbac.epoch.degraded_flap";
   static final String METRIC_LAST_SEEN_DROPPED = "nexus.rbac.epoch.last_seen_dropped";
+  static final String METRIC_BUMP_FAILED = "nexus.rbac.epoch.bump_failed";
+  static final String METRIC_BUMP_REPLAYED = "nexus.rbac.epoch.bump_replayed";
+  static final String METRIC_REPLAY_QUEUE = "nexus.rbac.epoch.replay_queue_users";
+
+  private static final String REASON_REDIS = "redis";
+  private static final String REASON_OVERFLOW = "overflow";
+  private static final String OPERATION_REPLAY = "replay";
 
   /** Entries into a degraded state within {@link #FLAP_WINDOW} that raise the flap signal. */
   static final int FLAP_ENTRIES = 3;
@@ -103,8 +123,10 @@ public final class PermissionFreshnessService {
   private static final String LOG_KEY_INSTANCE = "instance";
   private static final String LOG_KEY_CAUSE = "cause";
   private static final String LOG_KEY_STATE = "state";
+  private static final String LOG_KEY_USER_COUNT = "userCount";
 
   private final PermissionEpochPort epochPort;
+  private final BiFunction<String, String, Counter> bumpFailedCounters;
   private final Clock clock;
   private final Duration failOpenWindow;
   private final int entryFailureThreshold;
@@ -117,6 +139,8 @@ public final class PermissionFreshnessService {
   private final Counter degradedEntries;
   private final Counter degradedFlaps;
   private final Counter lastSeenDropped;
+  private final Counter bumpReplayed;
+  private final EpochReplayQueue replayQueue;
   private final Map<UserKey, SeenEpoch> lastSeen = new ConcurrentHashMap<>();
 
   // State machine. Every field below is written only while holding `lock`; `state` is volatile so
@@ -142,7 +166,9 @@ public final class PermissionFreshnessService {
    * @param recoverySustain {@code nexus.rbac.epoch.recovery-sustain}: failure-free time in
    *     Recovering before Healthy
    * @param keyTtlSeconds {@code nexus.rbac.epoch.key-ttl-seconds}: lifetime of a locally-seen
-   *     epoch, equal to the store key's
+   *     epoch, equal to the store key's; also the age after which a queued bump is dropped
+   * @param replayCapacityUsers {@code nexus.rbac.epoch.replay-capacity-users}: the most distinct
+   *     users whose failed bump is queued for replay
    * @throws IllegalArgumentException if the threshold is below 1 or a duration is not positive
    */
   public PermissionFreshnessService(
@@ -153,15 +179,23 @@ public final class PermissionFreshnessService {
       @Value("${nexus.rbac.epoch.entry-failure-threshold}") int entryFailureThreshold,
       @Value("${nexus.rbac.epoch.entry-failure-window}") Duration entryFailureWindow,
       @Value("${nexus.rbac.epoch.recovery-sustain}") Duration recoverySustain,
-      @Value("${nexus.rbac.epoch.key-ttl-seconds}") long keyTtlSeconds) {
+      @Value("${nexus.rbac.epoch.key-ttl-seconds}") long keyTtlSeconds,
+      @Value("${nexus.rbac.epoch.replay-capacity-users}") int replayCapacityUsers) {
     if (entryFailureThreshold < 1
         || !failOpenWindow.isPositive()
         || !entryFailureWindow.isPositive()
         || !recoverySustain.isPositive()
-        || keyTtlSeconds < 1) {
+        || keyTtlSeconds < 1
+        || replayCapacityUsers < 1) {
       throw new IllegalArgumentException("permission epoch outage policy settings must be positive");
     }
     this.epochPort = epochPort;
+    // Operation is a caller-supplied label, so the counter is looked up per call (get or create).
+    this.bumpFailedCounters = (operation, reason) -> Counter.builder(METRIC_BUMP_FAILED)
+        .description("Failed permission-epoch bumps and replays; overflow counts dropped users")
+        .tag(LOG_KEY_OPERATION, operation)
+        .tag("reason", reason)
+        .register(meterRegistry);
     this.clock = clock;
     this.failOpenWindow = failOpenWindow;
     this.entryFailureThreshold = entryFailureThreshold;
@@ -202,6 +236,14 @@ public final class PermissionFreshnessService {
         .register(meterRegistry);
     this.lastSeenDropped = Counter.builder(METRIC_LAST_SEEN_DROPPED)
         .description("Locally-seen epochs not recorded because the bounded map was full")
+        .register(meterRegistry);
+    this.replayQueue = new EpochReplayQueue(replayCapacityUsers);
+    this.bumpReplayed = Counter.builder(METRIC_BUMP_REPLAYED)
+        .description("Users whose lost permission-epoch bump was replayed")
+        .register(meterRegistry);
+    Gauge.builder(METRIC_REPLAY_QUEUE, replayQueue::size)
+        .description("Users whose permission-epoch bump failed and awaits replay on this instance")
+        .strongReference(true)
         .register(meterRegistry);
   }
 
@@ -289,22 +331,26 @@ public final class PermissionFreshnessService {
   }
 
   /**
-   * One tick of the degraded-state probe, run once a second by the scheduler (design §9.5). Does
-   * nothing while Healthy. In a degraded state it probes the store: a failure counts like a failed
-   * read (RC-53), a success moves to Recovering, or from Recovering towards Healthy.
+   * One tick of the scheduler, once a second (design §9.3, §9.5). Replays queued bumps in every
+   * state. While Healthy that is all it does. In a degraded state it first probes the store: a
+   * failure counts like a failed read (RC-53) and ends the tick; a success is followed by the
+   * replay and then moves to Recovering (once the queue is empty), or from Recovering towards
+   * Healthy. A replay failure never counts and never restarts the sustain (RC-53, L-4).
    */
   @Scheduled(fixedDelay = 1, timeUnit = TimeUnit.SECONDS)
   public void probe() {
     if (refreshState(clock.instant()) == DegradedState.HEALTHY) {
+      drainReplayQueue();
       return;
     }
     boolean answered = epochPort.probe();
     Instant now = clock.instant();
-    if (answered) {
-      recordProbeSuccess(now);
-    } else {
+    if (!answered) {
       recordReadFailure(now);
+      return;
     }
+    drainReplayQueue();
+    recordProbeSuccess(now);
   }
 
   // --- state machine; every method below takes the lock (the fast paths read `state` first) ---
@@ -389,9 +435,9 @@ public final class PermissionFreshnessService {
     }
   }
 
-  /** The lost-bump replay queue is empty. Trivially true until T-012 wires the queue. */
+  /** The lost-bump replay queue is empty. */
   private boolean drainComplete() {
-    return true;
+    return replayQueue.isEmpty();
   }
 
   /** Must hold {@code lock}. */
@@ -493,9 +539,9 @@ public final class PermissionFreshnessService {
   /**
    * Makes every token of a user minted so far stale. Post-commit only (MC-7b).
    *
-   * <p>A store failure is logged as {@code RBAC_EPOCH_BUMP_FAILED} and not rethrown: the change
-   * has already committed, so an exception here would only turn the administrator's success into
-   * an error.
+   * <p>A store failure is logged as {@code RBAC_EPOCH_BUMP_FAILED}, queued for replay and not
+   * rethrown: the change has already committed, so an exception here would only turn the
+   * administrator's success into an error.
    *
    * @param tenantId the user's tenant
    * @param userId the user whose permissions were reduced
@@ -510,7 +556,7 @@ public final class PermissionFreshnessService {
     } catch (RuntimeException e) {
       // Not only DataAccessException: a stopped factory or a bad script result must not turn a
       // committed change into a 500 either.
-      logBumpFailed(tenantId, operation, 1, e);
+      bumpFailed(tenantId, operation, List.of(userId), e);
     }
   }
 
@@ -547,21 +593,79 @@ public final class PermissionFreshnessService {
         epochPort.bump(tenantId, batch);
         rememberBump(tenantId, batch);
       } catch (RuntimeException e) {
-        logBumpFailed(tenantId, operation, holders.size() - from, e);
+        // The failed batch and every batch not yet sent (design §9.3).
+        bumpFailed(tenantId, operation, holders.subList(from, holders.size()), e);
         return;
       }
     }
   }
 
-  private static void logBumpFailed(
-      UUID tenantId, String operation, int userCount, RuntimeException e) {
+  /** Counts and logs a failed bump, then queues the users for replay (design §9.3). */
+  private void bumpFailed(
+      UUID tenantId, String operation, List<UUID> userIds, RuntimeException e) {
+    bumpFailedCounter(operation, REASON_REDIS).increment();
     log.atError()
         .addKeyValue(LOG_KEY_EVENT, "RBAC_EPOCH_BUMP_FAILED")
         .addKeyValue(LOG_KEY_OPERATION, operation)
         .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
-        .addKeyValue("userCount", userCount)
+        .addKeyValue(LOG_KEY_USER_COUNT, userIds.size())
         .addKeyValue("exception", e.getClass().getSimpleName())
         .log("Permission epoch bump failed");
+    int dropped = replayQueue.offer(tenantId, userIds, clock.instant());
+    if (dropped > 0) {
+      bumpFailedCounter(operation, REASON_OVERFLOW).increment(dropped);
+      log.atError()
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_EPOCH_BUMP_FAILED")
+          .addKeyValue(LOG_KEY_OPERATION, operation)
+          .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
+          .addKeyValue(LOG_KEY_USER_COUNT, dropped)
+          .addKeyValue("reason", REASON_OVERFLOW)
+          .log("Permission epoch bump dropped, replay queue full");
+    }
+  }
+
+  private Counter bumpFailedCounter(String operation, String reason) {
+    return bumpFailedCounters.apply(operation, reason);
+  }
+
+  /**
+   * Replays queued bumps in batches of {@value #FANOUT_BATCH_SIZE} until the queue is empty or a
+   * batch fails. A failed batch goes back with its original {@code failedAt}; what was not yet
+   * polled stays queued. Called only from the scheduler.
+   */
+  private void drainReplayQueue() {
+    while (!replayQueue.isEmpty()) {
+      Instant now = clock.instant();
+      Optional<EpochReplayQueue.Batch> polled =
+          replayQueue.poll(FANOUT_BATCH_SIZE, now.minus(lastSeenTtl));
+      if (polled.isEmpty()) {
+        return;
+      }
+      EpochReplayQueue.Batch batch = polled.get();
+      List<UUID> userIds = batch.userIds();
+      try {
+        epochPort.bump(batch.tenantId(), userIds);
+      } catch (RuntimeException e) {
+        replayQueue.requeue(batch);
+        bumpFailedCounter(OPERATION_REPLAY, REASON_REDIS).increment();
+        log.atError()
+            .addKeyValue(LOG_KEY_EVENT, "RBAC_EPOCH_BUMP_FAILED")
+            .addKeyValue(LOG_KEY_OPERATION, OPERATION_REPLAY)
+            .addKeyValue(LOG_KEY_TENANT_ID, batch.tenantId())
+            .addKeyValue(LOG_KEY_USER_COUNT, userIds.size())
+            .addKeyValue("exception", e.getClass().getSimpleName())
+            .log("Permission epoch replay failed");
+        return;
+      }
+      rememberBump(batch.tenantId(), userIds);
+      bumpReplayed.increment(userIds.size());
+      log.atInfo()
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_EPOCH_BUMP_REPLAYED")
+          .addKeyValue(LOG_KEY_TENANT_ID, batch.tenantId())
+          .addKeyValue(LOG_KEY_USER_COUNT, userIds.size())
+          .addKeyValue("ageMs", Duration.between(batch.oldestFailedAt(), now).toMillis())
+          .log("Permission epoch bump replayed");
+    }
   }
 
   /** {@code 0 | 1-10 | 11-100 | 101-1000 | >1000} (design §9.4, US-016 D13 precedent). */

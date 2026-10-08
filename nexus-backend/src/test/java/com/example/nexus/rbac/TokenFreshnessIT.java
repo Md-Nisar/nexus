@@ -2,8 +2,10 @@ package com.example.nexus.rbac;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.reset;
 
@@ -51,10 +53,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
 import org.springframework.context.annotation.Import;
+import org.springframework.dao.QueryTimeoutException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -66,6 +70,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.web.client.DefaultResponseErrorHandler;
 import org.springframework.web.client.RestTemplate;
+import org.testcontainers.containers.GenericContainer;
 
 /**
  * End-to-end A9 token freshness against MySQL and Redis (US-018 T-009, TS-8, RC-24.3, RC-44.4) and
@@ -84,7 +89,9 @@ import org.springframework.web.client.RestTemplate;
  *
  * <p>The outage cases (T-011) stub the read side of {@link PermissionEpochPort} to fail and run
  * with a 3 s fail-open window and a 2 s recovery sustain, so the state machine reaches
- * degraded-closed in seconds; the real 1 s probe task restores Healthy afterwards.
+ * degraded-closed in seconds; the real 1 s probe task restores Healthy afterwards. The replay
+ * cases (T-012) pause the Redis container for real, or fail one bump on the spy, and expect the
+ * 1 s scheduled drain to apply the lost bump.
  */
 @SpringBootTest(
     webEnvironment = WebEnvironment.RANDOM_PORT,
@@ -133,6 +140,7 @@ class TokenFreshnessIT {
   @Autowired private JwtPort jwtPort;
   @Autowired private RsaKeyConfig rsaKeyConfig;
   @Autowired private StringRedisTemplate redisTemplate;
+  @Autowired @Qualifier("redisContainer") private GenericContainer<?> redisContainer;
 
   private RestTemplate http;
 
@@ -349,6 +357,58 @@ class TokenFreshnessIT {
     while (freshness.state() != expected) {
       assertThat(System.nanoTime()).as("state " + expected + ", was " + freshness.state())
           .isLessThan(deadline);
+      Thread.sleep(50);
+    }
+  }
+
+  // ── T-012: a bump lost to a Redis failure is replayed (RC-30, RC-42.4) ────
+
+  @Test
+  void should_replayLostBumpAndRejectOldToken_when_redisRecoversAfterBeingPaused()
+      throws Exception {
+    Holder holder = seedHolder("replay-paused");
+    Session session = login(holder.email());
+    assertThat(get(GUARDED, session.accessToken()).getStatusCode().value()).isEqualTo(200);
+    String containerId = redisContainer.getContainerId();
+    redisContainer.getDockerClient().pauseContainerCmd(containerId).exec();
+    try {
+      // The post-commit bump times out against the paused server and is queued, not lost.
+      revoke(holder);
+      assertThat(redisContainer.getDockerClient().inspectContainerCmd(containerId).exec()
+          .getState().getPaused()).isTrue();
+    } finally {
+      redisContainer.getDockerClient().unpauseContainerCmd(containerId).exec();
+    }
+
+    awaitEpochKey(holder.user().getId(), Duration.ofSeconds(30));
+
+    ResponseEntity<Map> stale = get(GUARDED, session.accessToken());
+    assertThat(stale.getStatusCode().value()).isEqualTo(401);
+    assertThat(stale.getBody()).containsEntry("code", "AUTH_003");
+  }
+
+  @Test
+  void should_replayWithinTwoSeconds_when_singleBumpFailsAndInstanceStaysHealthy()
+      throws Exception {
+    Holder holder = seedHolder("replay-single");
+    Session session = login(holder.email());
+    assertThat(get(GUARDED, session.accessToken()).getStatusCode().value()).isEqualTo(200);
+    doThrow(new QueryTimeoutException("bump timeout"))
+        .doCallRealMethod()
+        .when(epochPort).bump(any(), anyCollection());
+
+    revoke(holder);
+
+    assertThat(redisTemplate.hasKey(epochKey(holder.user().getId()))).isFalse();
+    awaitEpochKey(holder.user().getId(), Duration.ofSeconds(2));
+    assertThat(freshness.state()).isEqualTo(DegradedState.HEALTHY);
+    assertThat(get(GUARDED, session.accessToken()).getStatusCode().value()).isEqualTo(401);
+  }
+
+  private void awaitEpochKey(UUID userId, Duration within) throws InterruptedException {
+    long deadline = System.nanoTime() + within.toNanos();
+    while (!Boolean.TRUE.equals(redisTemplate.hasKey(epochKey(userId)))) {
+      assertThat(System.nanoTime()).as("epoch key of the replayed bump").isLessThan(deadline);
       Thread.sleep(50);
     }
   }

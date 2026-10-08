@@ -169,6 +169,9 @@ nexus:
       entry-failure-threshold: ${NEXUS_RBAC_EPOCH_ENTRY_FAILURE_THRESHOLD:3}
       entry-failure-window: ${NEXUS_RBAC_EPOCH_ENTRY_FAILURE_WINDOW:PT10S}
       recovery-sustain: ${NEXUS_RBAC_EPOCH_RECOVERY_SUSTAIN:PT60S}
+      # Lost-bump replay queue (design §9.3, T-012): the most distinct users whose failed bump is
+      # held per instance for replay. Overflow drops the newest and pages (bump_failed overflow).
+      replay-capacity-users: ${NEXUS_RBAC_EPOCH_REPLAY_CAPACITY_USERS:100000}
     redis:
       # When true, startup fails unless the main Redis factory and both dedicated epoch factories
       # authenticate (RC-34.1, RC-45.1, RC-45.2; US-018 T-014). application-prod.yml sets true.

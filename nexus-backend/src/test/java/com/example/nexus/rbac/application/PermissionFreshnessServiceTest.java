@@ -58,6 +58,7 @@ class PermissionFreshnessServiceTest {
   private static final Instant T = Instant.parse("2026-10-08T10:00:00Z");
   private static final Duration WINDOW = Duration.ofMinutes(15);
   private static final long KEY_TTL_SECONDS = 960;
+  private static final int REPLAY_CAPACITY = 100_000;
 
   private PermissionEpochPort port;
   private SimpleMeterRegistry registry;
@@ -73,9 +74,13 @@ class PermissionFreshnessServiceTest {
   }
 
   private PermissionFreshnessService newService(SimpleMeterRegistry meters) {
+    return newService(meters, REPLAY_CAPACITY);
+  }
+
+  private PermissionFreshnessService newService(SimpleMeterRegistry meters, int replayCapacity) {
     return new PermissionFreshnessService(
         port, meters, clock, WINDOW, 3, Duration.ofSeconds(10), Duration.ofSeconds(60),
-        KEY_TTL_SECONDS);
+        KEY_TTL_SECONDS, replayCapacity);
   }
 
   // --- check: verdicts ---
@@ -905,7 +910,13 @@ class PermissionFreshnessServiceTest {
   void should_rejectNonPositiveSettings_when_constructed() {
     org.assertj.core.api.Assertions.assertThatThrownBy(() -> new PermissionFreshnessService(
             port, registry, clock, WINDOW, 0, Duration.ofSeconds(10), Duration.ofSeconds(60),
-            KEY_TTL_SECONDS))
+            KEY_TTL_SECONDS, REPLAY_CAPACITY))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void should_rejectNonPositiveReplayCapacity_when_constructed() {
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> newService(registry, 0))
         .isInstanceOf(IllegalArgumentException.class);
   }
 
@@ -1058,6 +1069,366 @@ class PermissionFreshnessServiceTest {
     failRead();
 
     assertThat(service.check(TENANT, USER, 0L)).isEqualTo(FreshnessVerdict.STALE);
+  }
+
+  // --- lost-bump replay (T-012, design §9.3) ---
+
+  private void failBumps() {
+    doThrow(new QueryTimeoutException("bump timeout")).when(port).bump(any(), anyCollection());
+  }
+
+  private void bumpsSucceed() {
+    doNothing().when(port).bump(any(), anyCollection());
+  }
+
+  private double replayQueueUsers() {
+    return registry.get("nexus.rbac.epoch.replay_queue_users").gauge().value();
+  }
+
+  private double bumpFailed(String operation, String reason) {
+    return registry.get("nexus.rbac.epoch.bump_failed")
+        .tags("operation", operation, "reason", reason).counter().count();
+  }
+
+  private double bumpReplayed() {
+    return registry.get("nexus.rbac.epoch.bump_replayed").counter().count();
+  }
+
+  @Test
+  void should_replayOnNextTick_when_healthyAndBumpFailedOnce() {
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    bumpsSucceed();
+    org.mockito.Mockito.clearInvocations(port);
+    clock.set(T.plusSeconds(1));
+
+    service.probe();
+
+    verify(port).bump(TENANT, List.of(USER));
+    verify(port, never()).probe();
+    assertThat(replayQueueUsers()).isZero();
+    assertThat(bumpReplayed()).isEqualTo(1.0);
+    assertThat(service.state()).isEqualTo(DegradedState.HEALTHY);
+  }
+
+  @Test
+  void should_notTouchStore_when_healthyAndQueueEmpty() {
+    service.probe();
+
+    verifyNoInteractions(port);
+  }
+
+  @Test
+  void should_reportQueuedUsers_when_bumpFails() {
+    failBumps();
+
+    service.invalidateUser(TENANT, USER, "revoke");
+
+    assertThat(replayQueueUsers()).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_enqueueFailedBatchAndEveryUnsentBatch_when_fanoutBatchFails() {
+    List<UUID> holders = users(1001);
+    doNothing()
+        .doThrow(new QueryTimeoutException("timeout"))
+        .when(port).bump(any(), anyCollection());
+
+    service.invalidateHolders(TENANT, holders, "detach");
+
+    assertThat(replayQueueUsers()).isEqualTo(501.0);
+    bumpsSucceed();
+    org.mockito.Mockito.clearInvocations(port);
+    service.probe();
+    verify(port).bump(TENANT, holders.subList(500, 1000));
+    verify(port).bump(TENANT, holders.subList(1000, 1001));
+    verify(port, times(2)).bump(any(), anyCollection());
+  }
+
+  @Test
+  void should_replayInBatchesOf500_when_queueLarge() {
+    List<UUID> holders = users(1200);
+    failBumps();
+    service.invalidateHolders(TENANT, holders, "detach");
+    bumpsSucceed();
+    org.mockito.Mockito.clearInvocations(port);
+
+    service.probe();
+
+    InOrder order = inOrder(port);
+    order.verify(port).bump(TENANT, holders.subList(0, 500));
+    order.verify(port).bump(TENANT, holders.subList(500, 1000));
+    order.verify(port).bump(TENANT, holders.subList(1000, 1200));
+    assertThat(replayQueueUsers()).isZero();
+    assertThat(bumpReplayed()).isEqualTo(1200.0);
+  }
+
+  @Test
+  void should_requeueRemainderWithOriginalFailedAt_when_drainFailsPartway() {
+    List<UUID> holders = users(1001);
+    failBumps();
+    service.invalidateHolders(TENANT, holders, "detach");
+    clock.set(T.plusSeconds(5));
+    doNothing()
+        .doThrow(new QueryTimeoutException("timeout"))
+        .when(port).bump(any(), anyCollection());
+
+    service.probe();
+
+    assertThat(replayQueueUsers()).isEqualTo(501.0);
+    bumpsSucceed();
+    clock.set(T.plusSeconds(8));
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      service.probe();
+    } finally {
+      stopLogCapture(appender);
+    }
+    assertThat(replayQueueUsers()).isZero();
+    assertThat(appender.list).filteredOn(event -> event.getLevel() == Level.INFO)
+        .allSatisfy(event -> assertThat(keyValues(event)).containsEntry("ageMs", 8000L));
+  }
+
+  @Test
+  void should_notLoseEntries_when_drainBatchFails() {
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    clock.set(T.plusSeconds(1));
+
+    service.probe();
+    service.probe();
+
+    assertThat(replayQueueUsers()).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_dropEntriesOlderThanKeyTtl_when_draining() {
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    bumpsSucceed();
+    org.mockito.Mockito.clearInvocations(port);
+    clock.set(T.plusSeconds(KEY_TTL_SECONDS));
+
+    service.probe();
+
+    verify(port, never()).bump(any(), anyCollection());
+    assertThat(replayQueueUsers()).isZero();
+  }
+
+  @Test
+  void should_replayEntryJustInsideKeyTtl() {
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    bumpsSucceed();
+    clock.set(T.plusSeconds(KEY_TTL_SECONDS - 1));
+
+    service.probe();
+
+    verify(port, times(2)).bump(any(), anyCollection());
+  }
+
+  @Test
+  void should_dropNewestAndCountPerDroppedId_when_replayQueueFull() {
+    registry = new SimpleMeterRegistry();
+    service = newService(registry, 2);
+    failBumps();
+
+    service.invalidateHolders(TENANT, users(5), "detach");
+
+    assertThat(replayQueueUsers()).isEqualTo(2.0);
+    assertThat(bumpFailed("detach", "overflow")).isEqualTo(3.0);
+    assertThat(bumpFailed("detach", "redis")).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_coalesceRepeatedFailuresOfOneUser() {
+    failBumps();
+
+    service.invalidateUser(TENANT, USER, "revoke");
+    service.invalidateUser(TENANT, USER, "revoke");
+
+    assertThat(replayQueueUsers()).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_countRedisFailure_when_bumpFails() {
+    failBumps();
+
+    service.invalidateUser(TENANT, USER, "revoke");
+
+    assertThat(bumpFailed("revoke", "redis")).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_logBumpFailedWithoutUserIds_when_drainFails() {
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      service.probe();
+    } finally {
+      stopLogCapture(appender);
+    }
+
+    assertThat(appender.list).singleElement().satisfies(event -> {
+      assertThat(event.getLevel()).isEqualTo(Level.ERROR);
+      assertThat(keyValues(event))
+          .containsEntry("event", "RBAC_EPOCH_BUMP_FAILED")
+          .containsEntry("operation", "replay")
+          .containsEntry("tenantId", TENANT)
+          .containsEntry("userCount", 1);
+      assertThat(event.getFormattedMessage() + keyValues(event)).doesNotContain(USER.toString());
+    });
+    assertThat(bumpFailed("replay", "redis")).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_logReplayedWithTenantCountAndAge_when_drainSucceeds() {
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    bumpsSucceed();
+    clock.set(T.plusMillis(1500));
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      service.probe();
+    } finally {
+      stopLogCapture(appender);
+    }
+
+    assertThat(appender.list).singleElement().satisfies(event -> {
+      assertThat(event.getLevel()).isEqualTo(Level.INFO);
+      assertThat(keyValues(event))
+          .containsEntry("event", "RBAC_EPOCH_BUMP_REPLAYED")
+          .containsEntry("tenantId", TENANT)
+          .containsEntry("userCount", 1)
+          .containsEntry("ageMs", 1500L);
+      assertThat(event.getFormattedMessage() + keyValues(event)).doesNotContain(USER.toString());
+    });
+  }
+
+  @Test
+  void should_recordLocalBump_when_replaySucceeds() {
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    bumpsSucceed();
+    service.probe();
+    failRead();
+
+    assertThat(service.check(TENANT, USER, 0L)).isEqualTo(FreshnessVerdict.STALE);
+  }
+
+  @Test
+  void should_notProbeOrDrain_when_degradedAndProbeFails() {
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    tripAtT();
+    when(port.probe()).thenReturn(false);
+    org.mockito.Mockito.clearInvocations(port);
+    bumpsSucceed();
+
+    service.probe();
+
+    verify(port, never()).bump(any(), anyCollection());
+    assertThat(replayQueueUsers()).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_stayDegradedUntilDrainSucceeds_when_probeSucceeds() {
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    tripAtT();
+    clock.set(T.plusSeconds(10));
+    recoverNow();
+
+    assertThat(service.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+
+    bumpsSucceed();
+    clock.set(T.plusSeconds(11));
+    service.probe();
+
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+    assertThat(replayQueueUsers()).isZero();
+  }
+
+  @Test
+  void should_drainThenRecoverInSameTick_when_degradedAndProbeSucceeds() {
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    tripAtT();
+    bumpsSucceed();
+    clock.set(T.plusSeconds(10));
+
+    recoverNow();
+
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+  }
+
+  /** RC-53: a write-only Redis failure never turns off checks that reads still enforce. */
+  @Test
+  void should_stayHealthyAndEnforce_when_drainsKeepFailingButReadsSucceed() {
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+
+    for (int second = 1; second <= 60; second++) {
+      clock.set(T.plusSeconds(second));
+      service.probe();
+      assertThat(service.check(TENANT, USER, EPOCH - 1)).isEqualTo(FreshnessVerdict.STALE);
+    }
+
+    assertThat(service.state()).isEqualTo(DegradedState.HEALTHY);
+    assertThat(bumpFailed("replay", "redis")).isEqualTo(60.0);
+    assertThat(replayQueueUsers()).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_neverTripOrRelapse_when_onlyBumpsAndDrainsFail() {
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    tripAtT();
+    clock.set(T.plusSeconds(100));
+    bumpsSucceed();
+    recoverNow();
+    failBumps();
+
+    for (int second = 101; second <= 130; second++) {
+      clock.set(T.plusSeconds(second));
+      service.invalidateUser(TENANT, UUID.randomUUID(), "revoke");
+      service.probe();
+    }
+
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+  }
+
+  /** L-4: a drain failure while Recovering does not reset the 60 s sustain. */
+  @Test
+  void should_reachHealthy60sAfterProbeSuccess_when_drainFailsWhileRecovering() {
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    tripAtT();
+    bumpsSucceed();
+    clock.set(T.plusSeconds(100));
+    recoverNow();
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+    failBumps();
+    clock.set(T.plusSeconds(110));
+    service.invalidateUser(TENANT, USER, "revoke");
+    clock.set(T.plusSeconds(120));
+    service.probe();
+    clock.set(T.plusSeconds(159));
+    service.probe();
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+
+    clock.set(T.plusSeconds(160));
+    service.probe();
+
+    assertThat(service.state()).isEqualTo(DegradedState.HEALTHY);
+  }
+
+  @Test
+  void should_registerReplayCountersAtZero_when_constructed() {
+    assertThat(replayQueueUsers()).isZero();
+    assertThat(bumpReplayed()).isZero();
   }
 
   private double stateGauge(String state) {
