@@ -21,11 +21,20 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.example.nexus.rbac.application.port.out.PermissionEpochPort;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -46,15 +55,27 @@ class PermissionFreshnessServiceTest {
   private static final UUID USER = UUID.fromString("00000000-0000-7000-8000-0000000000bb");
   private static final long EPOCH = 1_796_000_000_000L;
 
+  private static final Instant T = Instant.parse("2026-10-08T10:00:00Z");
+  private static final Duration WINDOW = Duration.ofMinutes(15);
+  private static final long KEY_TTL_SECONDS = 960;
+
   private PermissionEpochPort port;
   private SimpleMeterRegistry registry;
+  private MutableClock clock;
   private PermissionFreshnessService service;
 
   @BeforeEach
   void setUp() {
     port = mock(PermissionEpochPort.class);
     registry = new SimpleMeterRegistry();
-    service = new PermissionFreshnessService(port, registry);
+    clock = new MutableClock(T);
+    service = newService(registry);
+  }
+
+  private PermissionFreshnessService newService(SimpleMeterRegistry meters) {
+    return new PermissionFreshnessService(
+        port, meters, clock, WINDOW, 3, Duration.ofSeconds(10), Duration.ofSeconds(60),
+        KEY_TTL_SECONDS);
   }
 
   // --- check: verdicts ---
@@ -428,5 +449,646 @@ class PermissionFreshnessServiceTest {
 
   private double outcomeCount(String outcome) {
     return registry.get("nexus.rbac.epoch.check").tag("outcome", outcome).counter().count();
+  }
+
+  // --- outage state machine (T-011, design §9.5) ---
+
+  private void failRead() {
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.empty());
+  }
+
+  private FreshnessVerdict failedCheckAt(long secondsAfterT) {
+    clock.set(T.plusSeconds(secondsAfterT));
+    return service.check(TENANT, USER, EPOCH);
+  }
+
+  private void tripAtT() {
+    failRead();
+    failedCheckAt(0);
+    failedCheckAt(1);
+    failedCheckAt(2);
+  }
+
+  /** Moves from DegradedOpen to Recovering with a successful probe at the current time. */
+  private void recoverNow() {
+    when(port.probe()).thenReturn(true);
+    service.probe();
+  }
+
+  @Test
+  void should_stayHealthy_when_oneOrTwoReadsFail() {
+    failRead();
+
+    assertThat(failedCheckAt(0)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
+    assertThat(failedCheckAt(1)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
+
+    assertThat(service.state()).isEqualTo(DegradedState.HEALTHY);
+  }
+
+  @Test
+  void should_enterDegradedOpen_when_thirdReadFailsWithinWindow() {
+    failRead();
+    failedCheckAt(0);
+    failedCheckAt(4);
+
+    assertThat(failedCheckAt(9)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
+
+    assertThat(service.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+    assertThat(failedCheckAt(9)).isEqualTo(FreshnessVerdict.SKIPPED_DEGRADED);
+  }
+
+  @Test
+  void should_notEnter_when_threeFailuresSpreadOverMoreThanWindow() {
+    failRead();
+    failedCheckAt(0);
+    failedCheckAt(6);
+    failedCheckAt(12);
+
+    assertThat(service.state()).isEqualTo(DegradedState.HEALTHY);
+  }
+
+  @Test
+  void should_notEnter_when_firstFailureIsExactlyOneWindowOld() {
+    failRead();
+    failedCheckAt(0);
+    failedCheckAt(5);
+    failedCheckAt(10);
+
+    assertThat(service.state()).isEqualTo(DegradedState.HEALTHY);
+  }
+
+  @Test
+  void should_enter_when_firstFailureIsJustInsideWindow() {
+    failRead();
+    failedCheckAt(0);
+    failedCheckAt(5);
+    clock.set(T.plusMillis(9_999));
+    service.check(TENANT, USER, EPOCH);
+
+    assertThat(service.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+  }
+
+  @Test
+  void should_setT0AtFirstFailureOfTrippingWindow() {
+    failRead();
+    failedCheckAt(0);
+    failedCheckAt(4);
+    failedCheckAt(8);
+
+    clock.set(T.plus(WINDOW).minusMillis(1));
+    assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.SKIPPED_DEGRADED);
+    clock.set(T.plus(WINDOW));
+    assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.UNAVAILABLE);
+    assertThat(service.state()).isEqualTo(DegradedState.DEGRADED_CLOSED);
+  }
+
+  @Test
+  void should_enterThenClose_when_failSuccessPatternSustainsPastWindow() {
+    // F F S F F S ...: a consecutive-failure counter never trips on this (T-E43, RC-41.3).
+    for (int cycle = 0; cycle < 3; cycle++) {
+      long base = cycle * 3L;
+      failRead();
+      failedCheckAt(base);
+      failedCheckAt(base + 1);
+      when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(0L));
+      clock.set(T.plusSeconds(base + 2));
+      service.check(TENANT, USER, EPOCH);
+    }
+    assertThat(service.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+
+    clock.set(T.plus(WINDOW));
+    service.check(TENANT, USER, EPOCH);
+
+    assertThat(service.state()).isEqualTo(DegradedState.DEGRADED_CLOSED);
+  }
+
+  @Test
+  void should_returnSkippedDegradedWithoutReading_when_open() {
+    tripAtT();
+    org.mockito.Mockito.clearInvocations(port);
+
+    assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.SKIPPED_DEGRADED);
+
+    verify(port, never()).current(any(), any());
+  }
+
+  @Test
+  void should_returnUnavailableWithoutReading_when_closed() {
+    tripAtT();
+    clock.set(T.plus(WINDOW));
+    org.mockito.Mockito.clearInvocations(port);
+
+    assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.UNAVAILABLE);
+
+    verify(port, never()).current(any(), any());
+  }
+
+  @Test
+  void should_moveToRecoveringAndResumeChecks_when_probeSucceedsInOpen() {
+    tripAtT();
+    when(port.probe()).thenReturn(true);
+
+    service.probe();
+
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+    assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.FRESH);
+  }
+
+  @Test
+  void should_moveToRecovering_when_probeSucceedsInClosed() {
+    tripAtT();
+    clock.set(T.plus(WINDOW));
+    service.check(TENANT, USER, EPOCH);
+    when(port.probe()).thenReturn(true);
+
+    service.probe();
+
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+  }
+
+  @Test
+  void should_stayDegraded_when_probeFails() {
+    tripAtT();
+    when(port.probe()).thenReturn(false);
+
+    service.probe();
+
+    assertThat(service.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+  }
+
+  @Test
+  void should_notProbe_when_healthy() {
+    service.probe();
+
+    verify(port, never()).probe();
+  }
+
+  @Test
+  void should_returnHealthyAndClearT0_when_sixtySecondsOfSuccessesInRecovering() {
+    tripAtT();
+    clock.set(T.plusSeconds(100));
+    recoverNow();
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+
+    clock.set(T.plusSeconds(100).plusMillis(59_999));
+    service.check(TENANT, USER, EPOCH);
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+    clock.set(T.plusSeconds(160));
+    service.check(TENANT, USER, EPOCH);
+
+    assertThat(service.state()).isEqualTo(DegradedState.HEALTHY);
+    // t0 is cleared: a new episode starts a new time box instead of inheriting the old one.
+    failRead();
+    failedCheckAt(500);
+    failedCheckAt(501);
+    failedCheckAt(502);
+    clock.set(T.plusSeconds(500).plus(WINDOW).minusMillis(1));
+    assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.SKIPPED_DEGRADED);
+  }
+
+  @Test
+  void should_returnHealthy_when_probeSuccessesSpanSustainInRecovering() {
+    tripAtT();
+    clock.set(T.plusSeconds(100));
+    recoverNow();
+
+    clock.set(T.plusSeconds(160));
+    service.probe();
+
+    assertThat(service.state()).isEqualTo(DegradedState.HEALTHY);
+  }
+
+  @Test
+  void should_restartSustain_when_singleFailureInRecovering() {
+    tripAtT();
+    clock.set(T.plusSeconds(100));
+    recoverNow();
+    failRead();
+    clock.set(T.plusSeconds(130));
+    service.check(TENANT, USER, EPOCH);
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+
+    clock.set(T.plusSeconds(160));
+    service.check(TENANT, USER, EPOCH);
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+    clock.set(T.plusSeconds(190));
+    service.check(TENANT, USER, EPOCH);
+
+    assertThat(service.state()).isEqualTo(DegradedState.HEALTHY);
+  }
+
+  @Test
+  void should_relapseToOpenKeepingT0_when_threeFailuresInRecoveringBeforeWindow() {
+    tripAtT();
+    clock.set(T.plusSeconds(100));
+    recoverNow();
+    failRead();
+    failedCheckAt(110);
+    failedCheckAt(111);
+    failedCheckAt(112);
+
+    assertThat(service.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+    clock.set(T.plus(WINDOW));
+    service.check(TENANT, USER, EPOCH);
+    assertThat(service.state()).isEqualTo(DegradedState.DEGRADED_CLOSED);
+  }
+
+  @Test
+  void should_relapseStraightToClosed_when_threeFailuresInRecoveringAfterWindow() {
+    tripAtT();
+    clock.set(T.plus(WINDOW).plusSeconds(10));
+    service.check(TENANT, USER, EPOCH);
+    recoverNow();
+    failRead();
+    long afterWindow = WINDOW.toSeconds() + 20;
+    failedCheckAt(afterWindow);
+    failedCheckAt(afterWindow + 1);
+    failedCheckAt(afterWindow + 2);
+
+    assertThat(service.state()).isEqualTo(DegradedState.DEGRADED_CLOSED);
+  }
+
+  @Test
+  void should_relapse_when_threeProbeFailuresInRecovering() {
+    tripAtT();
+    clock.set(T.plusSeconds(100));
+    recoverNow();
+    when(port.probe()).thenReturn(false);
+
+    for (int i = 0; i < 3; i++) {
+      clock.set(T.plusSeconds(110 + i));
+      service.probe();
+    }
+
+    assertThat(service.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+  }
+
+  @Test
+  void should_countProbeFailuresTowardsEntryWindow_when_alreadyRecoveringMixedWithReads() {
+    tripAtT();
+    clock.set(T.plusSeconds(100));
+    recoverNow();
+    failRead();
+    when(port.probe()).thenReturn(false);
+    failedCheckAt(110);
+    clock.set(T.plusSeconds(111));
+    service.probe();
+    failedCheckAt(112);
+
+    assertThat(service.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+  }
+
+  @Test
+  void should_neverCountBumpFailures_when_healthy() {
+    doThrow(new QueryTimeoutException("bump timeout")).when(port).bump(any(), anyCollection());
+
+    for (int i = 0; i < 10; i++) {
+      service.invalidateUser(TENANT, USER, "revoke");
+      service.invalidateHolders(TENANT, List.of(USER), "detach");
+    }
+
+    assertThat(service.state()).isEqualTo(DegradedState.HEALTHY);
+  }
+
+  @Test
+  void should_notRestartSustain_when_bumpFailsInRecovering() {
+    tripAtT();
+    clock.set(T.plusSeconds(100));
+    recoverNow();
+    doThrow(new QueryTimeoutException("bump timeout")).when(port).bump(any(), anyCollection());
+    clock.set(T.plusSeconds(150));
+    service.invalidateUser(TENANT, USER, "revoke");
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+
+    clock.set(T.plusSeconds(160));
+    service.check(TENANT, USER, EPOCH);
+
+    assertThat(service.state()).isEqualTo(DegradedState.HEALTHY);
+  }
+
+  @Test
+  void should_incrementEntriesAndNotFlap_when_twoEntriesWithinFifteenMinutes() {
+    enterAndRecoverFully(0);
+    enterAndRecoverFully(300);
+
+    assertThat(registry.get("nexus.rbac.epoch.degraded_entries").counter().count()).isEqualTo(2.0);
+    assertThat(registry.get("nexus.rbac.epoch.degraded_flap").counter().count()).isZero();
+  }
+
+  @Test
+  void should_raiseFlapSignal_when_threeEntriesWithinFifteenMinutes() {
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      enterAndRecoverFully(0);
+      enterAndRecoverFully(200);
+      enterAndRecoverFully(400);
+
+      assertThat(registry.get("nexus.rbac.epoch.degraded_flap").counter().count()).isEqualTo(1.0);
+      assertThat(appender.list)
+          .filteredOn(e -> "RBAC_EPOCH_DEGRADED_FLAP".equals(keyValues(e).get("event")))
+          .singleElement()
+          .satisfies(e -> assertThat(e.getLevel()).isEqualTo(Level.WARN));
+    } finally {
+      stopLogCapture(appender);
+    }
+  }
+
+  @Test
+  void should_notFlap_when_threeEntriesSpreadOverMoreThanFifteenMinutes() {
+    enterAndRecoverFully(0);
+    enterAndRecoverFully(600);
+    enterAndRecoverFully(1_200);
+
+    assertThat(registry.get("nexus.rbac.epoch.degraded_flap").counter().count()).isZero();
+  }
+
+  /** Trips at {@code start}, recovers and returns to Healthy; takes 2 + 70 s of test time. */
+  private void enterAndRecoverFully(long start) {
+    failRead();
+    failedCheckAt(start);
+    failedCheckAt(start + 1);
+    failedCheckAt(start + 2);
+    when(port.probe()).thenReturn(true);
+    clock.set(T.plusSeconds(start + 3));
+    service.probe();
+    clock.set(T.plusSeconds(start + 70));
+    service.probe();
+    assertThat(service.state()).isEqualTo(DegradedState.HEALTHY);
+  }
+
+  @Test
+  void should_logEnterWarnAndExitInfo_withInstanceAndCause_noUserIdentifiers() {
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      tripAtT();
+      clock.set(T.plusSeconds(10));
+      recoverNow();
+      clock.set(T.plusSeconds(70));
+      service.probe();
+
+      assertThat(appender.list)
+          .filteredOn(e -> "RBAC_EPOCH_DEGRADED_ENTER".equals(keyValues(e).get("event")))
+          .singleElement()
+          .satisfies(e -> {
+            assertThat(e.getLevel()).isEqualTo(Level.WARN);
+            assertThat(keyValues(e)).containsKeys("instance", "cause")
+                .containsEntry("state", "open");
+          });
+      assertThat(appender.list)
+          .filteredOn(e -> "RBAC_EPOCH_DEGRADED_EXIT".equals(keyValues(e).get("event")))
+          .singleElement()
+          .satisfies(e -> {
+            assertThat(e.getLevel()).isEqualTo(Level.INFO);
+            assertThat(keyValues(e)).containsKeys("instance", "cause");
+          });
+      assertThat(appender.list)
+          .noneMatch(e -> e.getFormattedMessage().contains(USER.toString())
+              || keyValues(e).values().stream().anyMatch(v -> USER.toString().equals(v.toString())));
+    } finally {
+      stopLogCapture(appender);
+    }
+  }
+
+  @Test
+  void should_publishStateGaugeAndEntryCounter_withoutUserTags() {
+    assertThat(stateGauge("open")).isZero();
+    tripAtT();
+    assertThat(stateGauge("open")).isEqualTo(1.0);
+    clock.set(T.plus(WINDOW));
+    service.check(TENANT, USER, EPOCH);
+    assertThat(stateGauge("open")).isZero();
+    assertThat(stateGauge("closed")).isEqualTo(1.0);
+    recoverNow();
+    assertThat(stateGauge("recovering")).isEqualTo(1.0);
+    assertThat(registry.get("nexus.rbac.epoch.degraded_entries").counter().count()).isEqualTo(1.0);
+    assertThat(registry.getMeters())
+        .allSatisfy(m -> m.getId().getTags().forEach(
+            tag -> assertThat(tag.getValue()).doesNotContain(USER.toString())));
+  }
+
+  @Test
+  void should_countCheckOutcomes_forDegradedVerdicts() {
+    tripAtT();
+    service.check(TENANT, USER, EPOCH);
+    clock.set(T.plus(WINDOW));
+    service.check(TENANT, USER, EPOCH);
+
+    assertThat(outcomeCount("skipped_degraded")).isEqualTo(1.0);
+    assertThat(outcomeCount("unavailable")).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_enterExactlyOnce_when_requestThreadsFailConcurrently() throws Exception {
+    failRead();
+    int threads = 32;
+    ExecutorService pool = Executors.newFixedThreadPool(threads);
+    CountDownLatch start = new CountDownLatch(1);
+    try {
+      for (int i = 0; i < threads; i++) {
+        pool.submit(() -> {
+          start.await();
+          return service.check(TENANT, USER, EPOCH);
+        });
+      }
+      start.countDown();
+    } finally {
+      pool.shutdown();
+      assertThat(pool.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+    }
+
+    assertThat(service.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+    assertThat(registry.get("nexus.rbac.epoch.degraded_entries").counter().count()).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_rejectNonPositiveSettings_when_constructed() {
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> new PermissionFreshnessService(
+            port, registry, clock, WINDOW, 0, Duration.ofSeconds(10), Duration.ofSeconds(60),
+            KEY_TTL_SECONDS))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  // --- locally-known bumps (security review M-1) ---
+
+  @Test
+  void should_returnStale_when_readFailsButInstanceSawHigherEpoch() {
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+    service.check(TENANT, USER, EPOCH);
+    failRead();
+
+    assertThat(service.check(TENANT, USER, EPOCH - 1)).isEqualTo(FreshnessVerdict.STALE);
+    assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
+  }
+
+  @Test
+  void should_returnStale_when_degradedOpenAndInstanceSawHigherEpoch() {
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+    service.check(TENANT, USER, EPOCH);
+    tripAtT();
+
+    assertThat(service.check(TENANT, USER, EPOCH - 1)).isEqualTo(FreshnessVerdict.STALE);
+    assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.SKIPPED_DEGRADED);
+  }
+
+  @Test
+  void should_returnStale_when_localBumpSucceededAndThenReadsFail() {
+    service.invalidateUser(TENANT, USER, "revoke");
+    failRead();
+
+    assertThat(service.check(TENANT, USER, T.toEpochMilli() - 1))
+        .isEqualTo(FreshnessVerdict.STALE);
+  }
+
+  @Test
+  void should_recordLocalBumpForEveryHolder_when_fanOutSucceeds() {
+    UUID other = UUID.fromString("00000000-0000-7000-8000-0000000000cc");
+    service.invalidateHolders(TENANT, List.of(USER, other), "detach");
+    when(port.current(any(), any())).thenReturn(OptionalLong.empty());
+
+    assertThat(service.check(TENANT, other, 0L)).isEqualTo(FreshnessVerdict.STALE);
+  }
+
+  @Test
+  void should_notRecordLocalBump_when_bumpFails() {
+    doThrow(new QueryTimeoutException("bump timeout")).when(port).bump(any(), anyCollection());
+    service.invalidateUser(TENANT, USER, "revoke");
+    failRead();
+
+    assertThat(service.check(TENANT, USER, 0L)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
+  }
+
+  @Test
+  void should_forgetSeenEpoch_when_keyTtlElapsed() {
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+    service.check(TENANT, USER, EPOCH);
+    failRead();
+
+    clock.set(T.plusSeconds(KEY_TTL_SECONDS));
+
+    assertThat(service.check(TENANT, USER, 0L)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
+  }
+
+  @Test
+  void should_notStoreEpochZero_when_keyAbsent() {
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(0L));
+    service.check(TENANT, USER, 0L);
+    failRead();
+
+    assertThat(service.check(TENANT, USER, 0L)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
+  }
+
+  @Test
+  void should_keepHighestEpoch_when_olderReadArrivesLater() {
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+    service.check(TENANT, USER, EPOCH);
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH - 5));
+    service.check(TENANT, USER, EPOCH);
+    failRead();
+
+    assertThat(service.check(TENANT, USER, EPOCH - 1)).isEqualTo(FreshnessVerdict.STALE);
+  }
+
+  @Test
+  void should_mintWithSeenEpoch_when_readFailsAfterEarlierSuccess() {
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+    service.epochForMint(TENANT, USER);
+    failRead();
+
+    assertThat(service.epochForMint(TENANT, USER)).isEqualTo(EPOCH);
+  }
+
+  @Test
+  void should_mintWithSeenEpochWithoutReading_when_degraded() {
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+    service.check(TENANT, USER, EPOCH);
+    tripAtT();
+    org.mockito.Mockito.clearInvocations(port);
+
+    assertThat(service.epochForMint(TENANT, USER)).isEqualTo(EPOCH);
+    clock.set(T.plus(WINDOW));
+    assertThat(service.epochForMint(TENANT, USER)).isEqualTo(EPOCH);
+
+    verify(port, never()).current(any(), any());
+  }
+
+  @Test
+  void should_mintZeroWithoutReading_when_degradedAndNothingSeen() {
+    tripAtT();
+    org.mockito.Mockito.clearInvocations(port);
+
+    assertThat(service.epochForMint(TENANT, UUID.randomUUID())).isZero();
+
+    verify(port, never()).current(any(), any());
+  }
+
+  @Test
+  void should_notCountMintReadFailures_towardsEntryWindow() {
+    failRead();
+
+    for (int i = 0; i < 10; i++) {
+      service.epochForMint(TENANT, USER);
+    }
+
+    assertThat(service.state()).isEqualTo(DegradedState.HEALTHY);
+  }
+
+  @Test
+  void should_dropNewUsersAndCount_when_seenMapFull() {
+    when(port.current(any(), any())).thenReturn(OptionalLong.of(EPOCH));
+    for (int i = 0; i < PermissionFreshnessService.LAST_SEEN_CAPACITY; i++) {
+      service.check(TENANT, new UUID(0, i), EPOCH);
+    }
+    service.check(TENANT, USER, EPOCH);
+    failRead();
+
+    assertThat(service.check(TENANT, USER, 0L)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
+    assertThat(registry.get("nexus.rbac.epoch.last_seen_dropped").counter().count())
+        .isEqualTo(1.0);
+  }
+
+  @Test
+  void should_reclaimExpiredSlots_when_seenMapFullOfExpiredEntries() {
+    when(port.current(any(), any())).thenReturn(OptionalLong.of(EPOCH));
+    for (int i = 0; i < PermissionFreshnessService.LAST_SEEN_CAPACITY; i++) {
+      service.check(TENANT, new UUID(0, i), EPOCH);
+    }
+    clock.set(T.plusSeconds(KEY_TTL_SECONDS));
+    service.check(TENANT, USER, EPOCH);
+    failRead();
+
+    assertThat(service.check(TENANT, USER, 0L)).isEqualTo(FreshnessVerdict.STALE);
+  }
+
+  private double stateGauge(String state) {
+    return registry.get("nexus.rbac.epoch.degraded").tag("state", state).gauge().value();
+  }
+
+  /** A clock the test moves by hand. */
+  private static final class MutableClock extends Clock {
+    private volatile Instant now;
+
+    MutableClock(Instant now) {
+      this.now = now;
+    }
+
+    void set(Instant instant) {
+      this.now = instant;
+    }
+
+    @Override
+    public ZoneId getZone() {
+      return ZoneOffset.UTC;
+    }
+
+    @Override
+    public Clock withZone(ZoneId zone) {
+      return this;
+    }
+
+    @Override
+    public Instant instant() {
+      return now;
+    }
   }
 }

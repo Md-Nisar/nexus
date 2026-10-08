@@ -10,7 +10,11 @@ public enum FreshnessVerdict {
   /** The token epoch is lower than the stored epoch: the token predates a revocation. */
   STALE("stale"),
   /** The store did not answer in time; this one request proceeds unchecked and is counted. */
-  SKIPPED_ERROR("skipped_error");
+  SKIPPED_ERROR("skipped_error"),
+  /** The instance is degraded-open: the check was not attempted and the request proceeds. */
+  SKIPPED_DEGRADED("skipped_degraded"),
+  /** The instance is degraded-closed: the request is refused with 503 {@code AUTH_005}. */
+  UNAVAILABLE("unavailable");
 
   private final String tag;
 

@@ -68,6 +68,15 @@ class RedisPermissionEpochAdapterNotReadyTest {
   }
 
   @Test
+  void should_probeFalseImmediately_when_readConnectionNotReady() {
+    long start = System.nanoTime();
+
+    assertThat(adapter.probe()).isFalse();
+
+    assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofMillis(20));
+  }
+
+  @Test
   void should_throwImmediately_when_bumpConnectionNotReady() {
     long start = System.nanoTime();
 

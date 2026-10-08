@@ -33,4 +33,13 @@ public interface PermissionEpochPort {
    * @throws org.springframework.dao.DataAccessException if the store fails or times out
    */
   void bump(UUID tenantId, Collection<UUID> userIds);
+
+  /**
+   * Checks that the store answers reads, without touching any user's data. Called once a second
+   * by an instance in a degraded state (design §9.5).
+   *
+   * @return {@code true} if the store answered in time; {@code false} on any failure, including a
+   *     connection that has not been opened yet
+   */
+  boolean probe();
 }

@@ -110,6 +110,11 @@ class RedisPermissionEpochAdapterIT {
   }
 
   @Test
+  void should_probeTrue_when_redisAnswers() {
+    assertThat(adapter(templates).probe()).isTrue();
+  }
+
+  @Test
   void should_returnZero_when_keyAbsent() {
     OptionalLong current = adapter(templates).current(UUID.randomUUID(), UUID.randomUUID());
 
