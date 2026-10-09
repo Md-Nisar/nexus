@@ -27,3 +27,10 @@ management:
   endpoint:
     health:
       show-details: never
+
+# RBAC permission-epoch hardening (US-018 A9): refuse to start against an unauthenticated Redis,
+# so a misconfigured prod cannot silently fail open. (require-shared-store is added with M8.)
+nexus:
+  rbac:
+    redis:
+      require-auth: true

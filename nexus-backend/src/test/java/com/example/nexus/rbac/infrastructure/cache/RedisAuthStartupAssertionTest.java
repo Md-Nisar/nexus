@@ -7,7 +7,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import io.lettuce.core.resource.ClientResources;
 import java.time.Duration;
 import java.util.UUID;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.SpringApplication;
@@ -251,9 +250,6 @@ class RedisAuthStartupAssertionTest {
 
   // --- profile resolution (RC-45.1) ---
 
-  @Disabled(
-      "Re-enable once application-prod.yml has nexus.rbac.redis.require-auth: true "
-          + "(the repo hook blocks agent edits to that file; the user adds it by hand)")
   @Test
   void should_resolveRequireAuthTrue_when_prodProfileActive() {
     assertThat(resolveRequireAuth("prod")).isTrue();
