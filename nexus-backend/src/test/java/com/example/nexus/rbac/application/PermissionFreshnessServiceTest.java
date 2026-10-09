@@ -33,11 +33,15 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -2542,6 +2546,292 @@ class PermissionFreshnessServiceTest {
     tripAtT();
 
     assertThat(service.mintEpoch(TENANT, USER).verified()).isFalse();
+  }
+
+  // --- M7 part 2 test audit (US-018 T-010 to T-013): tenants, TTL edge, drain vs offer ---
+
+  /** Tenant isolation: the locally-seen epoch is keyed by (tenant, user), never by user alone. */
+  @Test
+  void should_notReturnStale_when_sameUserIdWasBumpedInAnotherTenant() {
+    UUID otherTenant = UUID.fromString("00000000-0000-7000-8000-0000000000ae");
+    storeWrites(EPOCH);
+    service.invalidateUser(otherTenant, USER, "revoke");
+    failRead();
+
+    assertThat(service.check(TENANT, USER, 0L)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
+  }
+
+  @Test
+  void should_notReturnStale_when_sameUserIdWasBumpedInAnotherTenantAndInstanceIsDegradedOpen() {
+    UUID otherTenant = UUID.fromString("00000000-0000-7000-8000-0000000000ae");
+    storeWrites(EPOCH);
+    service.invalidateUser(otherTenant, USER, "revoke");
+    tripAtT();
+
+    assertThat(service.check(TENANT, USER, 0L)).isEqualTo(FreshnessVerdict.SKIPPED_DEGRADED);
+  }
+
+  @Test
+  void should_mintZero_when_sameUserIdWasBumpedInAnotherTenantAndStoreIsDown() {
+    UUID otherTenant = UUID.fromString("00000000-0000-7000-8000-0000000000ae");
+    storeWrites(EPOCH);
+    service.invalidateUser(otherTenant, USER, "revoke");
+    failRead();
+
+    assertThat(service.mintEpoch(TENANT, USER))
+        .isEqualTo(new PermissionFreshnessService.MintEpoch(0L, false));
+  }
+
+  /** The replay queue never mixes tenants: one script call per tenant, with that tenant's id. */
+  @Test
+  void should_replayEachTenantSeparately_when_sameUserIdQueuedForTwoTenants() {
+    UUID otherTenant = UUID.fromString("00000000-0000-7000-8000-0000000000ae");
+    doThrow(new QueryTimeoutException("down")).when(port).bump(any(), anyCollection());
+    service.invalidateUser(TENANT, USER, "revoke");
+    service.invalidateUser(otherTenant, USER, "revoke");
+    org.mockito.Mockito.reset(port);
+    storeWrites(EPOCH);
+
+    service.probe();
+
+    verify(port).bump(TENANT, List.of(USER));
+    verify(port).bump(otherTenant, List.of(USER));
+    verifyNoMoreInteractions(port);
+  }
+
+  @Test
+  void should_stillReturnStale_when_oneMillisecondBeforeKeyTtl() {
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+    service.check(TENANT, USER, EPOCH);
+    failRead();
+
+    clock.set(T.plusSeconds(KEY_TTL_SECONDS).minusMillis(1));
+
+    assertThat(service.check(TENANT, USER, EPOCH - 1)).isEqualTo(FreshnessVerdict.STALE);
+  }
+
+  /** The retry read inside a mint can hit the corrupt key too: still an unverified zero. */
+  @Test
+  void should_mintUnverifiedZero_when_firstReadEmptyAndRetryUnparseable() {
+    when(port.current(TENANT, USER))
+        .thenReturn(OptionalLong.empty())
+        .thenThrow(new EpochUnparseableException());
+
+    assertThat(service.mintEpoch(TENANT, USER))
+        .isEqualTo(new PermissionFreshnessService.MintEpoch(0L, false));
+  }
+
+  /**
+   * Drain vs offer: request threads queue failing bumps while the tick drains and requeues.
+   * Whatever the interleaving, once the store answers, the next tick leaves no user unbumped and the queue
+   * empty (no lost update in poll/requeue/offer). The final assertion does not depend on timing.
+   */
+  @Test
+  void should_loseNoBump_when_requestThreadsFailWhileTickDrainsAndRequeues() throws Exception {
+    int workers = 4;
+    int usersPerWorker = 250;
+    AtomicInteger calls = new AtomicInteger();
+    AtomicBoolean storeUp = new AtomicBoolean();
+    Set<UUID> bumped = ConcurrentHashMap.newKeySet();
+    doAnswer(invocation -> {
+      if (!storeUp.get() && calls.incrementAndGet() % 4 != 0) {
+        throw new QueryTimeoutException("down");
+      }
+      Map<UUID, Long> written = new HashMap<>();
+      for (Object userId : (java.util.Collection<?>) invocation.getArgument(1)) {
+        bumped.add((UUID) userId);
+        written.put((UUID) userId, EPOCH);
+      }
+      return written;
+    }).when(port).bump(any(), anyCollection());
+    List<UUID> everyone = users(workers * usersPerWorker);
+    ExecutorService pool = Executors.newFixedThreadPool(workers + 1);
+    CountDownLatch go = new CountDownLatch(1);
+    List<java.util.concurrent.Future<?>> work = new java.util.ArrayList<>();
+    for (int worker = 0; worker < workers; worker++) {
+      List<UUID> mine = everyone.subList(worker * usersPerWorker, (worker + 1) * usersPerWorker);
+      work.add(pool.submit(() -> {
+        go.await();
+        for (UUID user : mine) {
+          service.invalidateUser(TENANT, user, "revoke");
+        }
+        return null;
+      }));
+    }
+    work.add(pool.submit(() -> {
+      go.await();
+      for (int i = 0; i < 300; i++) {
+        service.probe();
+      }
+      return null;
+    }));
+    go.countDown();
+    for (java.util.concurrent.Future<?> f : work) {
+      f.get(60, TimeUnit.SECONDS);
+    }
+    pool.shutdownNow();
+    storeUp.set(true);
+
+    service.probe();
+
+    assertThat(bumped).containsAll(everyone);
+    assertThat(replayQueueUsers()).isZero();
+  }
+
+  /** The all-tenants fail-closed marker is time-boxed too: one key TTL after it was set. */
+  @Test
+  void should_stopFailingClosedForEveryTenant_when_lostAllMarkerOlderThanKeyTtl() {
+    fillGlobalBumpPool();
+    for (int i = 0; i <= PermissionFreshnessService.LOST_TENANTS_MAX; i++) {
+      service.invalidateHolders(new UUID(6, i), List.of(USER), "detach");
+    }
+    when(port.current(any(), any())).thenReturn(OptionalLong.empty());
+    clock.set(T.plusSeconds(KEY_TTL_SECONDS - 1));
+    assertThat(service.check(new UUID(7, 1), UUID.randomUUID(), EPOCH))
+        .isEqualTo(FreshnessVerdict.STALE);
+
+    clock.set(T.plusSeconds(KEY_TTL_SECONDS));
+
+    assertThat(service.check(new UUID(7, 1), UUID.randomUUID(), EPOCH))
+        .isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
+  }
+
+  /** The tick purges expired lost-tenant markers, so a full set does not outlive its markers. */
+  @Test
+  void should_markOnlyTheLosingTenant_when_expiredLostTenantMarkersWerePurged() {
+    fillGlobalBumpPool();
+    for (int i = 0; i < PermissionFreshnessService.LOST_TENANTS_MAX; i++) {
+      service.invalidateHolders(new UUID(6, i), List.of(USER), "detach");
+    }
+    clock.set(T.plusSeconds(KEY_TTL_SECONDS));
+    service.probe();
+    UUID victim = new UUID(8, 1);
+    storeWrites(EPOCH + 5);
+    service.invalidateHolders(victim, users(BUMP_CEILING + 1), "detach");
+    when(port.current(any(), any())).thenReturn(OptionalLong.empty());
+
+    assertThat(service.check(victim, UUID.randomUUID(), EPOCH)).isEqualTo(FreshnessVerdict.STALE);
+    assertThat(service.check(new UUID(8, 2), UUID.randomUUID(), EPOCH))
+        .isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
+  }
+
+  // --- role replay read: failure modes of the bounded read thread ---
+
+  /** The replay thread is stopped: the tick counts a failed read and keeps the role queued. */
+  @Test
+  void should_keepRoleQueuedAndCountFailure_when_replayThreadWasStopped() {
+    service.shutdown();
+    service.holderReadFailed(TENANT, ROLE, "detach");
+
+    service.probe();
+
+    assertThat(roleQueueSize()).isEqualTo(1.0);
+    assertThat(bumpFailed("role_replay", "holder_read")).isEqualTo(1.0);
+    verifyNoInteractions(userRoles);
+  }
+
+  /** An interrupted tick thread stops waiting, keeps the role queued and its interrupt flag. */
+  @Test
+  void should_keepRoleQueuedAndRestoreInterruptFlag_when_tickInterruptedDuringHolderRead()
+      throws Exception {
+    CountDownLatch reading = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    when(userRoles.findActiveUserIdsForRole(ROLE)).thenAnswer(invocation -> {
+      reading.countDown();
+      long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+      while (release.getCount() > 0 && System.nanoTime() < deadline) {
+        try {
+          release.await(100, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ignored) {
+          // like a JDBC read stuck in a socket: keep waiting
+        }
+      }
+      return List.of(USER);
+    });
+    service.holderReadFailed(TENANT, ROLE, "detach");
+    ExecutorService tick = Executors.newSingleThreadExecutor();
+    try {
+      java.util.concurrent.Future<Boolean> interruptedAfterTick = tick.submit(() -> {
+        service.probe();
+        return Thread.currentThread().isInterrupted();
+      });
+      assertThat(reading.await(10, TimeUnit.SECONDS)).isTrue();
+
+      tick.shutdownNow();
+
+      assertThat(interruptedAfterTick.get(10, TimeUnit.SECONDS)).isTrue();
+      assertThat(roleQueueSize()).isEqualTo(1.0);
+      assertThat(bumpFailed("role_replay", "holder_read")).isEqualTo(1.0);
+    } finally {
+      release.countDown();
+      tick.shutdownNow();
+    }
+    awaitRoleReadIdle();
+  }
+
+  // --- operator log signals that had no assertion (event, level, no user ids) ---
+
+  @Test
+  void should_logBumpDroppedOncePerMarkingWithTenantOnly_when_ownBumpsRefused() {
+    UUID victim = UUID.fromString("00000000-0000-7000-8000-0000000000ad");
+    storeWrites(EPOCH + 5);
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      service.invalidateHolders(victim, users(BUMP_CEILING + 3), "detach");
+
+      assertThat(appender.list)
+          .filteredOn(e -> "RBAC_LAST_SEEN_BUMP_DROPPED".equals(keyValues(e).get("event")))
+          .singleElement()
+          .satisfies(e -> {
+            assertThat(e.getLevel()).isEqualTo(Level.ERROR);
+            assertThat(keyValues(e)).containsOnlyKeys("event", "tenantId", "instance")
+                .containsEntry("tenantId", victim);
+          });
+    } finally {
+      stopLogCapture(appender);
+    }
+  }
+
+  @Test
+  void should_logRoleReplayDroppedWithIdsOfRoleOnly_when_roleQueueFull() {
+    PermissionFreshnessService small =
+        newService(new SimpleMeterRegistry(), REPLAY_CAPACITY, 1, TENANT_PERCENT);
+    small.holderReadFailed(TENANT, ROLE, "detach");
+    UUID refused = UUID.fromString("00000000-0000-7000-8000-0000000000c9");
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      small.holderReadFailed(TENANT, refused, "detach");
+
+      assertThat(appender.list)
+          .filteredOn(e -> "RBAC_HOLDER_READ_REPLAY_DROPPED".equals(keyValues(e).get("event")))
+          .singleElement()
+          .satisfies(e -> {
+            assertThat(e.getLevel()).isEqualTo(Level.ERROR);
+            assertThat(keyValues(e)).containsEntry("tenantId", TENANT)
+                .containsEntry("roleId", refused).containsEntry("operation", "detach");
+          });
+    } finally {
+      stopLogCapture(appender);
+    }
+  }
+
+  @Test
+  void should_logRecoveringInfoWithInstanceAndCause_when_probeSucceedsInDegradedOpen() {
+    tripAtT();
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      recoverNow();
+
+      assertThat(appender.list)
+          .filteredOn(e -> "RBAC_EPOCH_DEGRADED_RECOVERING".equals(keyValues(e).get("event")))
+          .singleElement()
+          .satisfies(e -> {
+            assertThat(e.getLevel()).isEqualTo(Level.INFO);
+            assertThat(keyValues(e)).containsKeys("instance", "cause");
+          });
+    } finally {
+      stopLogCapture(appender);
+    }
   }
 
   private double stateGauge(String state) {
