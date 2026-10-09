@@ -52,7 +52,8 @@ import org.springframework.transaction.annotation.Transactional;
  *       least one unrevoked token. A replay that revoked nothing is an ordinary failure. The
  *       revoked count is used only for that decision and is never logged, returned or stored.
  *   <li>Two buckets live here because only here are the token's family and the outcome known
- *       (US-018 T-013): {@code REFRESH_FAMILY:{sha256(familyId)}} bounds each session, and
+ *       (US-018 T-013): {@code REFRESH_FAMILY:{sha256(familyId)}} bounds each session (a rejection is counted as {@code nexus.auth.refresh_family_throttled}
+ *       and logged as at most one WARN per window, without the family id or IP), and
  *       {@code REFRESH_IP_FAIL:{ip}} bounds failure outcomes per source and is consumed before
  *       the {@code TOKEN_REFRESH_FAILURE} write, so unauthenticated audit volume stays bounded.
  *       The failure bucket never blocks a valid token. The SHA-256 only keeps the (non-secret)
@@ -75,6 +76,9 @@ public class RefreshTokenUseCase {
   private static final String FAMILY_KEY_PREFIX = "REFRESH_FAMILY:";
   private static final String FAIL_KEY_PREFIX = "REFRESH_IP_FAIL:";
   private static final String COUNTER_FAILURE_THROTTLED = "nexus.auth.refresh_failure_throttled";
+  private static final String COUNTER_FAMILY_THROTTLED = "nexus.auth.refresh_family_throttled";
+  private static final String EVENT_FAILURE_THROTTLED = "AUTH_REFRESH_FAILURE_THROTTLED";
+  private static final String EVENT_FAMILY_THROTTLED = "AUTH_REFRESH_FAMILY_THROTTLED";
 
   private final RefreshTokenPort refreshTokenPort;
   private final UserRegistrationPort userRegistrationPort;
@@ -86,14 +90,14 @@ public class RefreshTokenUseCase {
   private final Clock clock;
   private final RateLimitStore rateLimitStore;
   private final Counter failureThrottled;
+  private final Counter familyThrottled;
   private final int familyMaxAttempts;
   private final int failureMaxAttempts;
   private final int windowSeconds;
 
-  // WARN-once-per-window state for throttled failures; guarded by warnLock.
-  private final Object warnLock = new Object();
-  private Instant lastWarnAt;
-  private long suppressedSinceLastWarn;
+  // One WARN per window and bucket, so a flood of rejections cannot flood the log.
+  private final WarnWindow failureWarnWindow = new WarnWindow();
+  private final WarnWindow familyWarnWindow = new WarnWindow();
 
   /** Constructs the use-case with its required collaborators. */
   public RefreshTokenUseCase(
@@ -120,6 +124,7 @@ public class RefreshTokenUseCase {
     this.clock = clock;
     this.rateLimitStore = rateLimitStore;
     this.failureThrottled = Counter.builder(COUNTER_FAILURE_THROTTLED).register(meterRegistry);
+    this.familyThrottled = Counter.builder(COUNTER_FAMILY_THROTTLED).register(meterRegistry);
     this.familyMaxAttempts = familyMaxAttempts;
     this.failureMaxAttempts = failureMaxAttempts;
     this.windowSeconds = windowSeconds;
@@ -238,7 +243,7 @@ public class RefreshTokenUseCase {
     RateLimitResult result =
         rateLimitStore.tryConsume(FAIL_KEY_PREFIX + clientIp, windowSeconds, failureMaxAttempts);
     if (!result.allowed()) {
-      recordThrottledFailure();
+      recordThrottled(failureThrottled, failureWarnWindow, EVENT_FAILURE_THROTTLED);
       throw new RefreshThrottledException(result.retryAfterSeconds());
     }
     secureEventService.recordEvent(event.get());
@@ -249,28 +254,41 @@ public class RefreshTokenUseCase {
     RateLimitResult result = rateLimitStore.tryConsume(
         FAMILY_KEY_PREFIX + sha256Hex(familyId.toString()), windowSeconds, familyMaxAttempts);
     if (!result.allowed()) {
+      // Abuse of one session must leave a signal: a counter and one WARN per window, with neither
+      // the family id nor the source IP.
+      recordThrottled(familyThrottled, familyWarnWindow, EVENT_FAMILY_THROTTLED);
       throw new RefreshThrottledException(result.retryAfterSeconds());
     }
   }
 
   /**
-   * Counts a throttled failure and emits at most one WARN per window. The WARN carries the number
-   * of rejections since the previous WARN and never the source IP.
+   * Counts a rejection and emits at most one WARN per window. The WARN carries the number of
+   * rejections since the previous WARN, this one included, and never the source IP or family id.
    */
-  private void recordThrottledFailure() {
-    failureThrottled.increment();
-    Instant now = clock.instant();
-    long suppressed;
-    synchronized (warnLock) {
-      suppressedSinceLastWarn++;
+  private void recordThrottled(Counter counter, WarnWindow window, String event) {
+    counter.increment();
+    long rejected = window.rejectionsToReport(clock.instant(), windowSeconds);
+    if (rejected > 0) {
+      log.warn("{} rejectedCount={}", event, rejected);
+    }
+  }
+
+  /** Rate-limits a WARN to one per window and counts the rejections it stands for. */
+  private static final class WarnWindow {
+    private Instant lastWarnAt;
+    private long rejectedSinceLastWarn;
+
+    /** Returns the rejections to report now, or 0 when the window's WARN was already spent. */
+    synchronized long rejectionsToReport(Instant now, int windowSeconds) {
+      rejectedSinceLastWarn++;
       if (lastWarnAt != null && now.isBefore(lastWarnAt.plusSeconds(windowSeconds))) {
-        return;
+        return 0;
       }
       lastWarnAt = now;
-      suppressed = suppressedSinceLastWarn;
-      suppressedSinceLastWarn = 0;
+      long rejected = rejectedSinceLastWarn;
+      rejectedSinceLastWarn = 0;
+      return rejected;
     }
-    log.warn("AUTH_REFRESH_FAILURE_THROTTLED suppressedCount={}", suppressed);
   }
 
   private static String sha256Hex(String value) {

@@ -87,6 +87,7 @@ class RefreshTokenUseCaseTest {
   private static final int FAIL_MAX = 30;
   private static final String FAIL_KEY = "REFRESH_IP_FAIL:" + CLIENT_IP;
   private static final String COUNTER = "nexus.auth.refresh_failure_throttled";
+  private static final String FAMILY_COUNTER = "nexus.auth.refresh_family_throttled";
 
   @BeforeEach
   void setUp() {
@@ -396,6 +397,66 @@ class RefreshTokenUseCaseTest {
   }
 
   @Test
+  void should_countFamilyThrottle_when_familyBucketRejects() {
+    UUID familyId = UUID.randomUUID();
+    when(refreshTokenPort.findByTokenHash(STORED_HASH))
+        .thenReturn(Optional.of(validToken(UUID.randomUUID(), familyId)));
+    when(rateLimitStore.tryConsume(familyKey(familyId), WINDOW_SECONDS, FAMILY_MAX))
+        .thenReturn(RateLimitResult.reject(17));
+
+    assertThatThrownBy(() -> useCase.execute(COOKIE_VALUE, CLIENT_IP))
+        .isInstanceOf(RateLimitException.class);
+
+    assertThat(meterRegistry.counter(FAMILY_COUNTER).count()).isEqualTo(1.0);
+    assertThat(meterRegistry.counter(COUNTER).count()).isZero();
+  }
+
+  @Test
+  void should_emitOneFamilyWarnPerWindowWithoutFamilyIdOrIp_when_familyBucketKeepsRejecting() {
+    UUID familyId = UUID.randomUUID();
+    when(refreshTokenPort.findByTokenHash(STORED_HASH))
+        .thenReturn(Optional.of(validToken(UUID.randomUUID(), familyId)));
+    when(rateLimitStore.tryConsume(familyKey(familyId), WINDOW_SECONDS, FAMILY_MAX))
+        .thenReturn(RateLimitResult.reject(17));
+
+    for (int i = 0; i < 4; i++) {
+      assertThatThrownBy(() -> useCase.execute(COOKIE_VALUE, CLIENT_IP))
+          .isInstanceOf(RateLimitException.class);
+    }
+
+    assertThat(warnMessages()).singleElement().satisfies(message -> assertThat(message)
+        .contains("AUTH_REFRESH_FAMILY_THROTTLED").contains("rejectedCount=1")
+        .doesNotContain(CLIENT_IP).doesNotContain(familyId.toString())
+        .doesNotContain(familyKey(familyId).substring("REFRESH_FAMILY:".length())));
+
+    clock.advance(Duration.ofSeconds(WINDOW_SECONDS));
+    assertThatThrownBy(() -> useCase.execute(COOKIE_VALUE, CLIENT_IP))
+        .isInstanceOf(RateLimitException.class);
+
+    assertThat(warnMessages()).hasSize(2);
+    assertThat(warnMessages().get(1)).contains("rejectedCount=4");
+    assertThat(meterRegistry.counter(FAMILY_COUNTER).count()).isEqualTo(5.0);
+  }
+
+  @Test
+  void should_keepFailureAndFamilyWarnWindowsIndependent() {
+    UUID familyId = UUID.randomUUID();
+    when(rateLimitStore.tryConsume(familyKey(familyId), WINDOW_SECONDS, FAMILY_MAX))
+        .thenReturn(RateLimitResult.reject(17));
+    when(rateLimitStore.tryConsume(FAIL_KEY, WINDOW_SECONDS, FAIL_MAX))
+        .thenReturn(RateLimitResult.reject(30));
+    when(refreshTokenPort.findByTokenHash(STORED_HASH))
+        .thenReturn(Optional.of(validToken(UUID.randomUUID(), familyId)));
+    assertThatThrownBy(() -> useCase.execute(COOKIE_VALUE, CLIENT_IP))
+        .isInstanceOf(RateLimitException.class);
+    when(refreshTokenPort.findByTokenHash(STORED_HASH)).thenReturn(Optional.empty());
+    assertThatThrownBy(() -> useCase.execute(COOKIE_VALUE, CLIENT_IP))
+        .isInstanceOf(RateLimitException.class);
+
+    assertThat(warnMessages()).hasSize(2);
+  }
+
+  @Test
   void should_notConsumeFailureBucket_when_refreshSucceeds() {
     UUID userId = UUID.randomUUID();
     User user = activeUser(userId);
@@ -506,7 +567,7 @@ class RefreshTokenUseCaseTest {
   }
 
   @Test
-  void should_emitOneWarnPerWindowWithSuppressedCountAndNoIp_when_failureBucketKeepsRejecting() {
+  void should_emitOneWarnPerWindowWithRejectedCountAndNoIp_when_failureBucketKeepsRejecting() {
     when(refreshTokenPort.findByTokenHash(STORED_HASH)).thenReturn(Optional.empty());
     when(rateLimitStore.tryConsume(FAIL_KEY, WINDOW_SECONDS, FAIL_MAX))
         .thenReturn(RateLimitResult.reject(30));
@@ -517,7 +578,7 @@ class RefreshTokenUseCaseTest {
     }
     assertThat(warnMessages()).hasSize(1);
     assertThat(warnMessages().get(0))
-        .contains("AUTH_REFRESH_FAILURE_THROTTLED").contains("suppressedCount=1")
+        .contains("AUTH_REFRESH_FAILURE_THROTTLED").contains("rejectedCount=1")
         .doesNotContain(CLIENT_IP);
 
     clock.advance(Duration.ofSeconds(WINDOW_SECONDS));
@@ -525,7 +586,7 @@ class RefreshTokenUseCaseTest {
         .isInstanceOf(RateLimitException.class);
 
     assertThat(warnMessages()).hasSize(2);
-    assertThat(warnMessages().get(1)).contains("suppressedCount=5");
+    assertThat(warnMessages().get(1)).contains("rejectedCount=5");
     assertThat(meterRegistry.counter(COUNTER).count()).isEqualTo(6.0);
   }
 
