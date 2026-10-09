@@ -33,8 +33,11 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *       {@code ip-window-seconds}; user bucket: {@code user-max-attempts} per
  *       {@code user-window-seconds} keyed by email HMAC. Body is read, parsed for email,
  *       then replayed to the downstream handler.
- *   <li>{@code POST /api/v1/auth/refresh} — {@code refresh-max-attempts} per
- *       {@code ip-window-seconds} per IP only (no body).
+ *   <li>{@code POST /api/v1/auth/refresh} — {@code refresh-ip-max-attempts} (300) per
+ *       {@code ip-window-seconds} per IP, a total over valid and invalid requests alike (no
+ *       body). The filter consults no failure bucket: the per-family and per-IP failure buckets
+ *       are enforced in {@code RefreshTokenUseCase}, where the outcome is known, so failing
+ *       refreshes can never block a valid one behind a shared IP (US-018 RC-43).
  * </ul>
  *
  * <p>On a rate-limit breach, writes a 429 RFC 7807 problem document directly to the response
@@ -69,7 +72,7 @@ public class LoginRateLimitFilter extends OncePerRequestFilter {
   private final int ipWindowSeconds;
   private final int userMaxAttempts;
   private final int userWindowSeconds;
-  private final int refreshMaxAttempts;
+  private final int refreshIpMaxAttempts;
   private final int forgotIpMaxAttempts;
   private final int resetIpMaxAttempts;
 
@@ -80,7 +83,7 @@ public class LoginRateLimitFilter extends OncePerRequestFilter {
       @Value("${nexus.security.rate-limit.ip-window-seconds}") int ipWindowSeconds,
       @Value("${nexus.security.rate-limit.user-max-attempts}") int userMaxAttempts,
       @Value("${nexus.security.rate-limit.user-window-seconds}") int userWindowSeconds,
-      @Value("${nexus.security.rate-limit.refresh-max-attempts}") int refreshMaxAttempts,
+      @Value("${nexus.security.rate-limit.refresh-ip-max-attempts}") int refreshIpMaxAttempts,
       @Value("${nexus.security.rate-limit.forgot-ip-max-attempts}") int forgotIpMaxAttempts,
       @Value("${nexus.security.rate-limit.reset-ip-max-attempts}") int resetIpMaxAttempts) {
     this.rateLimitStore = rateLimitStore;
@@ -89,7 +92,7 @@ public class LoginRateLimitFilter extends OncePerRequestFilter {
     this.ipWindowSeconds = ipWindowSeconds;
     this.userMaxAttempts = userMaxAttempts;
     this.userWindowSeconds = userWindowSeconds;
-    this.refreshMaxAttempts = refreshMaxAttempts;
+    this.refreshIpMaxAttempts = refreshIpMaxAttempts;
     this.forgotIpMaxAttempts = forgotIpMaxAttempts;
     this.resetIpMaxAttempts = resetIpMaxAttempts;
   }
@@ -201,7 +204,7 @@ public class LoginRateLimitFilter extends OncePerRequestFilter {
       HttpServletRequest request, HttpServletResponse response, FilterChain chain, String clientIp)
       throws ServletException, IOException {
     RateLimitResult ipResult = rateLimitStore.tryConsume(
-        "REFRESH_IP:" + clientIp, ipWindowSeconds, refreshMaxAttempts);
+        "REFRESH_IP:" + clientIp, ipWindowSeconds, refreshIpMaxAttempts);
     if (!ipResult.allowed()) {
       writeTooManyRequests(response, ipResult.retryAfterSeconds());
       return;

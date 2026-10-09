@@ -255,6 +255,36 @@ class SecureEventServiceTest {
   }
 
   // ---------------------------------------------------------------------------
+  // revokeFamily (US-018 T-013, L-3): the count of unrevoked rows crosses the service unchanged
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void should_returnPortCount_when_revokeFamilyCalled() {
+    UUID familyId = UUID.randomUUID();
+    when(refreshTokenPort.revokeFamily(familyId, NOW)).thenReturn(3);
+
+    assertThat(service.revokeFamily(familyId, NOW)).isEqualTo(3);
+  }
+
+  @Test
+  void should_returnZero_when_revokeFamilyFindsNothingUnrevoked() {
+    UUID familyId = UUID.randomUUID();
+    when(refreshTokenPort.revokeFamily(familyId, NOW)).thenReturn(0);
+
+    assertThat(service.revokeFamily(familyId, NOW)).isZero();
+  }
+
+  @Test
+  void should_beAnnotatedRequiresNew_when_revokeFamilyDeclared() throws NoSuchMethodException {
+    Method method = SecureEventService.class.getMethod("revokeFamily", UUID.class, Instant.class);
+
+    Transactional annotation = method.getAnnotation(Transactional.class);
+
+    assertThat(annotation).isNotNull();
+    assertThat(annotation.propagation()).isEqualTo(Propagation.REQUIRES_NEW);
+  }
+
+  // ---------------------------------------------------------------------------
   // revokeAllUserSessions
   // ---------------------------------------------------------------------------
 

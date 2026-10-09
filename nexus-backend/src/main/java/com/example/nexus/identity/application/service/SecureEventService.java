@@ -71,9 +71,14 @@ public class SecureEventService {
     authEventPort.recordOrThrow(event);
   }
 
+  /**
+   * Revokes every unrevoked token in the family in an independent transaction and returns how many
+   * rows it revoked. The count is read from the committed update (US-018 L-3), so the caller acts
+   * on what this transaction actually changed, not on what it read earlier.
+   */
   @Transactional(propagation = Propagation.REQUIRES_NEW)
-  public void revokeFamily(UUID familyId, Instant revokedAt) {
-    refreshTokenPort.revokeFamily(familyId, revokedAt);
+  public int revokeFamily(UUID familyId, Instant revokedAt) {
+    return refreshTokenPort.revokeFamily(familyId, revokedAt);
   }
 
   /**
