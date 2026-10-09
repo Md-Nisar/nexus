@@ -175,7 +175,8 @@ nexus:
     redis:
       # When true, startup fails unless the main Redis factory and both dedicated epoch factories
       # authenticate (RC-34.1, RC-45.1, RC-45.2; US-018 T-014). application-prod.yml sets true.
-      require-auth: false
+      # Env override: NEXUS_RBAC_REDIS_REQUIRE_AUTH.
+      require-auth: ${NEXUS_RBAC_REDIS_REQUIRE_AUTH:false}
   identity:
     # --- Encryption ---
     encryption:
