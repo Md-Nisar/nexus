@@ -184,8 +184,10 @@ nexus:
       replay-capacity-roles: ${NEXUS_RBAC_EPOCH_REPLAY_CAPACITY_ROLES:1000}
       # Share of the 100,000-entry last-seen map one tenant may fill (security review M7 part 2,
       # L-3), so one tenant's large detach cannot switch off the defence for the others. 1 to 100.
-      # The same share bounds one tenant's users in the replay queue and its roles in the role
-      # queue (pre-PR review L-2): a tenant over its share overflows itself, and pages.
+      # The same share applies to one tenant's users in the replay queue and its roles in the role
+      # queue (pre-PR review L-2). A tenant may borrow beyond it only while the queue is under half
+      # full, so the other half stays for tenants under their share; what fits neither overflows
+      # and pages.
       last-seen-tenant-percent: ${NEXUS_RBAC_EPOCH_LAST_SEEN_TENANT_PERCENT:10}
     redis:
       # When true, startup fails unless the main Redis factory and both dedicated epoch factories

@@ -108,7 +108,7 @@ See [rollback.md](rollback.md).
 | `key-ttl-seconds` | `960` | Must be at least the larger of the token TTL and the permission-cache TTL plus 60 s, or startup fails |
 | `fail-open-window` | `PT15M` | Degraded-open until this, then 503 `AUTH_005`; raise only by env var and restart |
 | `entry-failure-threshold` / `entry-failure-window` / `recovery-sustain` | `3` / `PT10S` / `PT60S` | State machine |
-| `replay-capacity-users` / `replay-capacity-roles` | `100000` / `1000` | Per instance; one tenant may use `last-seen-tenant-percent` of each |
+| `replay-capacity-users` / `replay-capacity-roles` | `100000` / `1000` | Per instance; a tenant holds `last-seen-tenant-percent` of each and may borrow up to half the queue |
 | `last-seen-tenant-percent` | `10` | Share of the last-seen map and of both replay queues per tenant |
 
 **Rolling deploy.** M6 already accepts schema versions 2 and 3, so M6 and M7 instances can share a load balancer: the M7 instance mints v3, and an M6 instance accepts it. Watch `token_rejected{reason=schema_version}` (expected 0) and `epoch.check{outcome=stale}` for an hour. M7b later contracts the accepted set to {3}.
