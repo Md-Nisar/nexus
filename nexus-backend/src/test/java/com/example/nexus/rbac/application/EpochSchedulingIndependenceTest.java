@@ -8,6 +8,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
 import java.util.Collection;
+import java.util.Map;
 import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -113,11 +114,12 @@ class EpochSchedulingIndependenceTest {
     }
 
     @Override
-    public void bump(UUID tenantId, Collection<UUID> userIds) {
+    public Map<UUID, Long> bump(UUID tenantId, Collection<UUID> userIds) {
       if (failNextBumps.getAndUpdate(n -> Math.max(0, n - 1)) > 0) {
         throw new QueryTimeoutException("bump timeout");
       }
       successfulBumps.incrementAndGet();
+      return Map.of();
     }
 
     @Override

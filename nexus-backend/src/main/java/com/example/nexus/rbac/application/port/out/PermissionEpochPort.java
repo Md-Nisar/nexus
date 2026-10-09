@@ -1,6 +1,7 @@
 package com.example.nexus.rbac.application.port.out;
 
 import java.util.Collection;
+import java.util.Map;
 import java.util.OptionalLong;
 import java.util.UUID;
 
@@ -21,6 +22,7 @@ public interface PermissionEpochPort {
    * @param userId the user
    * @return the stored epoch, {@code 0} when no epoch is stored (no recent revocation), or empty
    *     when the store could not answer in time
+   * @throws EpochUnparseableException if the store answered with a value that is not an epoch
    */
   OptionalLong current(UUID tenantId, UUID userId);
 
@@ -30,9 +32,11 @@ public interface PermissionEpochPort {
    *
    * @param tenantId the users' tenant
    * @param userIds the users whose tokens become stale
+   * @return the epoch the store wrote for each user, exactly as it will answer {@link #current}
+   *     (H-2: no caller derives it from its own clock)
    * @throws org.springframework.dao.DataAccessException if the store fails or times out
    */
-  void bump(UUID tenantId, Collection<UUID> userIds);
+  Map<UUID, Long> bump(UUID tenantId, Collection<UUID> userIds);
 
   /**
    * Checks that the store answers reads, without touching any user's data. Called once a second

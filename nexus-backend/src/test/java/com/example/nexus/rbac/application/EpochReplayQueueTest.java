@@ -35,7 +35,73 @@ class EpochReplayQueueTest {
     Batch batch = queue.poll(500, NEVER_EXPIRED).orElseThrow();
 
     assertThat(batch.entries()).singleElement()
-        .satisfies(entry -> assertThat(entry.failedAt()).isEqualTo(T));
+        .satisfies(entry -> assertThat(entry.oldestFailedAt()).isEqualTo(T));
+  }
+
+  @Test
+  void should_keepNewestFailedAt_when_sameUserEnqueuedAgain() {
+    EpochReplayQueue queue = new EpochReplayQueue(10);
+    queue.offer(TENANT, List.of(USER), T);
+    queue.offer(TENANT, List.of(USER), T.plusSeconds(900));
+
+    Batch batch = queue.poll(500, NEVER_EXPIRED).orElseThrow();
+
+    assertThat(batch.entries()).singleElement()
+        .satisfies(entry -> assertThat(entry.newestFailedAt()).isEqualTo(T.plusSeconds(900)));
+  }
+
+  @Test
+  void should_replayCoalescedUser_when_newestLostBumpIsStillInsideTtl() {
+    EpochReplayQueue queue = new EpochReplayQueue(10);
+    queue.offer(TENANT, List.of(USER), T);
+    queue.offer(TENANT, List.of(USER), T.plusSeconds(900));
+
+    // Polled at T+960 with a 960 s TTL the cutoff is T: the oldest bump is expired, the newest
+    // (T+900, a token minted then lives to T+1800) is not.
+    Batch batch = queue.poll(500, T).orElseThrow();
+
+    assertThat(batch.userIds()).containsExactly(USER);
+  }
+
+  @Test
+  void should_dropCoalescedUser_when_newestLostBumpIsAlsoExpired() {
+    EpochReplayQueue queue = new EpochReplayQueue(10);
+    queue.offer(TENANT, List.of(USER), T);
+    queue.offer(TENANT, List.of(USER), T.plusSeconds(5));
+
+    assertThat(queue.poll(500, T.plusSeconds(5))).isEmpty();
+  }
+
+  @Test
+  void should_keepBothTimestamps_when_batchRequeued() {
+    EpochReplayQueue queue = new EpochReplayQueue(10);
+    queue.offer(TENANT, List.of(USER), T);
+    queue.offer(TENANT, List.of(USER), T.plusSeconds(7));
+    Batch batch = queue.poll(500, NEVER_EXPIRED).orElseThrow();
+
+    queue.requeue(batch);
+
+    assertThat(queue.poll(500, NEVER_EXPIRED).orElseThrow().entries()).singleElement()
+        .satisfies(entry -> {
+          assertThat(entry.oldestFailedAt()).isEqualTo(T);
+          assertThat(entry.newestFailedAt()).isEqualTo(T.plusSeconds(7));
+        });
+  }
+
+  @Test
+  void should_mergeTimestamps_when_batchRequeuedOverNewerOffer() {
+    EpochReplayQueue queue = new EpochReplayQueue(10);
+    queue.offer(TENANT, List.of(USER), T);
+    Batch batch = queue.poll(500, NEVER_EXPIRED).orElseThrow();
+    queue.offer(TENANT, List.of(USER), T.plusSeconds(9));
+
+    queue.requeue(batch);
+
+    assertThat(queue.poll(500, NEVER_EXPIRED).orElseThrow().entries()).singleElement()
+        .satisfies(entry -> {
+          assertThat(entry.oldestFailedAt()).isEqualTo(T);
+          assertThat(entry.newestFailedAt()).isEqualTo(T.plusSeconds(9));
+        });
   }
 
   @Test
@@ -209,7 +275,7 @@ class EpochReplayQueueTest {
     queue.poll(500, NEVER_EXPIRED).ifPresent(batches::add);
     assertThat(batches).singleElement().satisfies(batch -> {
       assertThat(batch.entries()).hasSize(100);
-      assertThat(batch.entries()).allSatisfy(entry -> assertThat(entry.failedAt()).isEqualTo(T));
+      assertThat(batch.entries()).allSatisfy(entry -> assertThat(entry.oldestFailedAt()).isEqualTo(T));
     });
   }
 

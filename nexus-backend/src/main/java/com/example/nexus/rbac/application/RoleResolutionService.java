@@ -74,6 +74,21 @@ public class RoleResolutionService {
     return resolved;
   }
 
+  /**
+   * Resolves like {@link #resolve} but reads the database only: nothing is read from or written to
+   * the permission cache. For a mint whose epoch the store did not confirm (L-3): the cache key
+   * under such an epoch is one no bump deletes, so a set cached there could outlive a detach.
+   *
+   * @throws NullPointerException if either identifier is null
+   */
+  public ResolvedPermissions resolveUncached(UUID userId, UUID tenantId) {
+    Objects.requireNonNull(userId, "userId must not be null");
+    Objects.requireNonNull(tenantId, "tenantId must not be null");
+    return new ResolvedPermissions(
+        userRoleQueryPort.findActiveRoleNames(userId, tenantId),
+        userRoleQueryPort.findActivePermissionNames(userId, tenantId));
+  }
+
   /** Order-independent comparison — both inputs are deduplicated by {@link ResolvedPermissions}. */
   private boolean sameRoles(List<String> cachedRoles, List<String> liveRoles) {
     Set<String> cachedSet = new HashSet<>(cachedRoles);

@@ -4,7 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
-import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
@@ -19,6 +20,7 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import com.example.nexus.rbac.application.port.out.EpochUnparseableException;
 import com.example.nexus.rbac.application.port.out.PermissionEpochPort;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
@@ -385,7 +387,7 @@ class PermissionFreshnessServiceTest {
   @Test
   void should_stopAtFailedBatchAndLogRemainder_when_secondBatchFails() {
     List<UUID> holders = users(1001);
-    doNothing()
+    doReturn(Map.of())
         .doThrow(new QueryTimeoutException("timeout"))
         .when(port).bump(any(), anyCollection());
     ListAppender<ILoggingEvent> appender = startLogCapture();
@@ -944,29 +946,94 @@ class PermissionFreshnessServiceTest {
 
   @Test
   void should_returnStale_when_localBumpSucceededAndThenReadsFail() {
+    storeWrites(EPOCH);
     service.invalidateUser(TENANT, USER, "revoke");
     failRead();
 
-    assertThat(service.check(TENANT, USER, T.toEpochMilli() - 1))
-        .isEqualTo(FreshnessVerdict.STALE);
+    assertThat(service.check(TENANT, USER, EPOCH - 1)).isEqualTo(FreshnessVerdict.STALE);
+  }
+
+  /** H-2: a token minted with the store's value is not refused when the instance then falls back. */
+  @Test
+  void should_notReturnStale_when_tokenCarriesTheEpochTheStoreWrote() {
+    storeWrites(EPOCH);
+    service.invalidateUser(TENANT, USER, "revoke");
+    failRead();
+
+    assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
+  }
+
+  /** H-2: the instance clock is far ahead of the store; the recorded epoch is still the store's. */
+  @Test
+  void should_mintStoreEpoch_when_instanceClockAheadOfStore() {
+    long storeEpoch = T.toEpochMilli() - 60_000;
+    storeWrites(storeEpoch);
+    service.invalidateUser(TENANT, USER, "revoke");
+    failRead();
+
+    assertThat(service.epochForMint(TENANT, USER)).isEqualTo(storeEpoch);
+    assertThat(service.check(TENANT, USER, storeEpoch)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
+  }
+
+  @Test
+  void should_recordWhatTheStoreWrote_when_clockBehindStore() {
+    long storeEpoch = T.toEpochMilli() + 60_000;
+    storeWrites(storeEpoch);
+    service.invalidateUser(TENANT, USER, "revoke");
+    failRead();
+
+    assertThat(service.check(TENANT, USER, storeEpoch - 1)).isEqualTo(FreshnessVerdict.STALE);
   }
 
   @Test
   void should_recordLocalBumpForEveryHolder_when_fanOutSucceeds() {
     UUID other = UUID.fromString("00000000-0000-7000-8000-0000000000cc");
+    storeWrites(EPOCH);
     service.invalidateHolders(TENANT, List.of(USER, other), "detach");
     when(port.current(any(), any())).thenReturn(OptionalLong.empty());
 
-    assertThat(service.check(TENANT, other, 0L)).isEqualTo(FreshnessVerdict.STALE);
+    assertThat(service.check(TENANT, other, EPOCH - 1)).isEqualTo(FreshnessVerdict.STALE);
   }
 
+  /** L-5: a failed bump still leaves the lower bound {@code seen + 1}. */
   @Test
-  void should_notRecordLocalBump_when_bumpFails() {
-    doThrow(new QueryTimeoutException("bump timeout")).when(port).bump(any(), anyCollection());
+  void should_recordLowerBound_when_bumpFailsForUnseenUser() {
+    failBumps();
     service.invalidateUser(TENANT, USER, "revoke");
     failRead();
 
-    assertThat(service.check(TENANT, USER, 0L)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
+    assertThat(service.check(TENANT, USER, 0L)).isEqualTo(FreshnessVerdict.STALE);
+  }
+
+  @Test
+  void should_recordSeenPlusOne_when_bumpFailsForSeenUser() {
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+    service.check(TENANT, USER, EPOCH);
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    failRead();
+
+    assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.STALE);
+    assertThat(service.check(TENANT, USER, EPOCH + 1)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
+  }
+
+  @Test
+  void should_neverRecordMoreThanSeenPlusOne_when_bumpFails() {
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    failRead();
+
+    assertThat(service.check(TENANT, USER, 1L)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
+  }
+
+  @Test
+  void should_recordLowerBoundForEveryUserNotSent_when_fanoutBatchFails() {
+    List<UUID> holders = users(1001);
+    failBumps();
+    service.invalidateHolders(TENANT, holders, "detach");
+    when(port.current(any(), any())).thenReturn(OptionalLong.empty());
+
+    assertThat(service.check(TENANT, holders.get(1000), 0L)).isEqualTo(FreshnessVerdict.STALE);
   }
 
   @Test
@@ -1065,10 +1132,55 @@ class PermissionFreshnessServiceTest {
       service.check(TENANT, new UUID(0, i), EPOCH);
     }
     clock.set(T.plusSeconds(KEY_TTL_SECONDS));
+    service.probe();
     service.check(TENANT, USER, EPOCH);
     failRead();
 
     assertThat(service.check(TENANT, USER, 0L)).isEqualTo(FreshnessVerdict.STALE);
+  }
+
+  /** H-1: a full map is never scanned on a request thread; only the tick frees expired slots. */
+  @Test
+  void should_notScanOnRequestPath_when_seenMapFullOfExpiredEntries() {
+    when(port.current(any(), any())).thenReturn(OptionalLong.of(EPOCH));
+    for (int i = 0; i < PermissionFreshnessService.LAST_SEEN_CAPACITY; i++) {
+      service.check(TENANT, new UUID(0, i), EPOCH);
+    }
+    clock.set(T.plusSeconds(KEY_TTL_SECONDS));
+
+    service.check(TENANT, USER, EPOCH);
+    failRead();
+
+    assertThat(service.check(TENANT, USER, 0L)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
+    assertThat(registry.get("nexus.rbac.epoch.last_seen_dropped").counter().count())
+        .isEqualTo(1.0);
+  }
+
+  @Test
+  void should_notScanOnRequestPath_when_localBumpRecordedIntoFullMap() {
+    when(port.current(any(), any())).thenReturn(OptionalLong.of(EPOCH));
+    for (int i = 0; i < PermissionFreshnessService.LAST_SEEN_CAPACITY; i++) {
+      service.check(TENANT, new UUID(0, i), EPOCH);
+    }
+    clock.set(T.plusSeconds(KEY_TTL_SECONDS));
+    storeWrites(EPOCH + 5);
+
+    service.invalidateHolders(TENANT, List.of(USER), "detach");
+
+    assertThat(registry.get("nexus.rbac.epoch.last_seen_dropped").counter().count())
+        .isEqualTo(1.0);
+  }
+
+  @Test
+  void should_keepLiveEntries_when_tickPurgesExpired() {
+    when(port.current(any(), any())).thenReturn(OptionalLong.of(EPOCH));
+    service.check(TENANT, USER, EPOCH);
+    clock.set(T.plusSeconds(KEY_TTL_SECONDS - 1));
+
+    service.probe();
+    failRead();
+
+    assertThat(service.check(TENANT, USER, EPOCH - 1)).isEqualTo(FreshnessVerdict.STALE);
   }
 
   // --- lost-bump replay (T-012, design §9.3) ---
@@ -1078,7 +1190,18 @@ class PermissionFreshnessServiceTest {
   }
 
   private void bumpsSucceed() {
-    doNothing().when(port).bump(any(), anyCollection());
+    doReturn(Map.of()).when(port).bump(any(), anyCollection());
+  }
+
+  /** The store writes {@code epoch} for every bumped user and reports it (H-2). */
+  private void storeWrites(long epoch) {
+    doAnswer(invocation -> {
+      Map<UUID, Long> written = new HashMap<>();
+      for (Object userId : (java.util.Collection<?>) invocation.getArgument(1)) {
+        written.put((UUID) userId, epoch);
+      }
+      return written;
+    }).when(port).bump(any(), anyCollection());
   }
 
   private double replayQueueUsers() {
@@ -1130,7 +1253,7 @@ class PermissionFreshnessServiceTest {
   @Test
   void should_enqueueFailedBatchAndEveryUnsentBatch_when_fanoutBatchFails() {
     List<UUID> holders = users(1001);
-    doNothing()
+    doReturn(Map.of())
         .doThrow(new QueryTimeoutException("timeout"))
         .when(port).bump(any(), anyCollection());
 
@@ -1169,7 +1292,7 @@ class PermissionFreshnessServiceTest {
     failBumps();
     service.invalidateHolders(TENANT, holders, "detach");
     clock.set(T.plusSeconds(5));
-    doNothing()
+    doReturn(Map.of())
         .doThrow(new QueryTimeoutException("timeout"))
         .when(port).bump(any(), anyCollection());
 
@@ -1307,14 +1430,15 @@ class PermissionFreshnessServiceTest {
   }
 
   @Test
-  void should_recordLocalBump_when_replaySucceeds() {
+  void should_recordWhatTheStoreWrote_when_replaySucceeds() {
     failBumps();
     service.invalidateUser(TENANT, USER, "revoke");
-    bumpsSucceed();
+    storeWrites(EPOCH);
     service.probe();
     failRead();
 
-    assertThat(service.check(TENANT, USER, 0L)).isEqualTo(FreshnessVerdict.STALE);
+    assertThat(service.check(TENANT, USER, EPOCH - 1)).isEqualTo(FreshnessVerdict.STALE);
+    assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
   }
 
   @Test
@@ -1429,6 +1553,161 @@ class PermissionFreshnessServiceTest {
   void should_registerReplayCountersAtZero_when_constructed() {
     assertThat(replayQueueUsers()).isZero();
     assertThat(bumpReplayed()).isZero();
+  }
+
+  // --- review fixes: M-1, M-2, L-1, L-2, L-3 ---
+
+  /** M-1: a coalesced user is replayed while their newest lost bump is inside the key TTL. */
+  @Test
+  void should_replayCoalescedUser_when_newestLostBumpInsideTtlButOldestExpired() {
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    clock.set(T.plusSeconds(900));
+    service.invalidateUser(TENANT, USER, "revoke");
+    bumpsSucceed();
+    org.mockito.Mockito.clearInvocations(port);
+    clock.set(T.plusSeconds(KEY_TTL_SECONDS));
+
+    service.probe();
+
+    verify(port).bump(TENANT, List.of(USER));
+    assertThat(bumpReplayed()).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_dropCoalescedUser_when_newestLostBumpAlsoOlderThanTtl() {
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    clock.set(T.plusSeconds(10));
+    service.invalidateUser(TENANT, USER, "revoke");
+    bumpsSucceed();
+    org.mockito.Mockito.clearInvocations(port);
+    clock.set(T.plusSeconds(10 + KEY_TTL_SECONDS));
+
+    service.probe();
+
+    verify(port, never()).bump(any(), anyCollection());
+    assertThat(replayQueueUsers()).isZero();
+  }
+
+  /** M-2: the paging counter for a detach whose holders could not be read. */
+  @Test
+  void should_countHolderReadFailureAsPagingSignal() {
+    service.holderReadFailed("detach");
+
+    assertThat(bumpFailed("detach", "holder_read")).isEqualTo(1.0);
+  }
+
+  /** L-1: a corrupt key makes that user's tokens stale and never counts as a store failure. */
+  @Test
+  void should_returnStaleWithoutCounting_when_storedEpochUnparseable() {
+    when(port.current(TENANT, USER)).thenThrow(new EpochUnparseableException());
+
+    for (int i = 0; i < 10; i++) {
+      assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.STALE);
+    }
+
+    assertThat(service.state()).isEqualTo(DegradedState.HEALTHY);
+    assertThat(outcomeCount("skipped_error")).isZero();
+    assertThat(outcomeCount("stale")).isEqualTo(10.0);
+  }
+
+  @Test
+  void should_notCountUnparseableTowardsRelapse_when_recovering() {
+    tripAtT();
+    recoverNow();
+    when(port.current(TENANT, USER)).thenThrow(new EpochUnparseableException());
+
+    for (int i = 0; i < 10; i++) {
+      service.check(TENANT, USER, EPOCH);
+    }
+
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+  }
+
+  @Test
+  void should_warnWithTenantOnly_when_storedEpochUnparseable() {
+    when(port.current(TENANT, USER)).thenThrow(new EpochUnparseableException());
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      service.check(TENANT, USER, EPOCH);
+    } finally {
+      stopLogCapture(appender);
+    }
+
+    assertThat(appender.list).singleElement().satisfies(event -> {
+      assertThat(event.getLevel()).isEqualTo(Level.WARN);
+      assertThat(keyValues(event))
+          .containsEntry("event", "RBAC_EPOCH_UNPARSEABLE")
+          .containsEntry("tenantId", TENANT)
+          .doesNotContainKey("userId");
+      assertThat(event.getFormattedMessage() + keyValues(event)).doesNotContain(USER.toString());
+    });
+  }
+
+  @Test
+  void should_mintUnverifiedZero_when_storedEpochUnparseable() {
+    when(port.current(TENANT, USER)).thenThrow(new EpochUnparseableException());
+
+    assertThat(service.mintEpoch(TENANT, USER))
+        .isEqualTo(new PermissionFreshnessService.MintEpoch(0L, false));
+  }
+
+  /** L-2: the 60 s sustain starts when the drain is done, not when the probe answered. */
+  @Test
+  void should_measureSustainFromDrainEnd_when_drainTakesLong() {
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    tripAtT();
+    when(port.probe()).thenReturn(true);
+    doAnswer(invocation -> {
+      clock.set(clock.instant().plusSeconds(60));
+      return Map.of();
+    }).when(port).bump(any(), anyCollection());
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+
+    service.probe();
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+    service.check(TENANT, USER, EPOCH);
+
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+    clock.set(clock.instant().plusSeconds(60));
+    service.check(TENANT, USER, EPOCH);
+    assertThat(service.state()).isEqualTo(DegradedState.HEALTHY);
+  }
+
+  // --- L-3: verified / unverified mint epoch ---
+
+  @Test
+  void should_reportVerified_when_storeAnsweredTheMintRead() {
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+
+    assertThat(service.mintEpoch(TENANT, USER))
+        .isEqualTo(new PermissionFreshnessService.MintEpoch(EPOCH, true));
+  }
+
+  @Test
+  void should_reportVerifiedZero_when_keyAbsent() {
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(0L));
+
+    assertThat(service.mintEpoch(TENANT, USER).verified()).isTrue();
+  }
+
+  @Test
+  void should_reportUnverified_when_mintReadFailsTwiceAndSeenEpochUsed() {
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+    service.mintEpoch(TENANT, USER);
+    failRead();
+
+    assertThat(service.mintEpoch(TENANT, USER))
+        .isEqualTo(new PermissionFreshnessService.MintEpoch(EPOCH, false));
+  }
+
+  @Test
+  void should_reportUnverified_when_degraded() {
+    tripAtT();
+
+    assertThat(service.mintEpoch(TENANT, USER).verified()).isFalse();
   }
 
   private double stateGauge(String state) {

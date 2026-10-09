@@ -1,5 +1,6 @@
 package com.example.nexus.rbac.application;
 
+import com.example.nexus.rbac.application.port.out.EpochUnparseableException;
 import com.example.nexus.rbac.application.port.out.PermissionEpochPort;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
@@ -64,22 +65,32 @@ import org.springframework.stereotype.Service;
  * bounded, coalescing {@link EpochReplayQueue} ({@code replay-capacity-users}) and replayed by the
  * scheduled task on every tick in every state: in {@link DegradedState#HEALTHY} straight away, in
  * a degraded state only after that tick's probe succeeded. Replay runs in batches of {@value
- * #FANOUT_BATCH_SIZE}; a failed batch goes back with its original {@code failedAt}; entries older
- * than {@code key-ttl-seconds} are dropped. Signals: {@code nexus.rbac.epoch.bump_failed{operation,
- * reason=redis|overflow}}, {@code nexus.rbac.epoch.bump_replayed} (users replayed) and the gauge
- * {@code nexus.rbac.epoch.replay_queue_users}; ERROR {@code RBAC_EPOCH_BUMP_FAILED} and INFO
- * {@code RBAC_EPOCH_BUMP_REPLAYED}, never with user ids.
+ * #FANOUT_BATCH_SIZE}; a failed batch goes back with its original failure times; a user is dropped
+ * only once their <b>newest</b> lost bump is older than {@code key-ttl-seconds} (M-1). Signals:
+ * {@code nexus.rbac.epoch.bump_failed{operation, reason=redis|overflow|holder_read}}, {@code
+ * nexus.rbac.epoch.bump_replayed} (users replayed) and the gauge {@code
+ * nexus.rbac.epoch.replay_queue_users}; ERROR {@code RBAC_EPOCH_BUMP_FAILED} and INFO {@code
+ * RBAC_EPOCH_BUMP_REPLAYED}, never with user ids.
  *
  * <p><b>Locally known bumps (security review M-1).</b> While reads fail, an attacker who drives
  * the instance into fail-open could replay a revoked token. The service therefore keeps a bounded
  * per-instance map of the highest epoch it has seen per user (from successful reads and from its
- * own successful bumps), expiring at {@code key-ttl-seconds}. When the store cannot answer, or the
+ * own bumps), expiring at {@code key-ttl-seconds}. When the store cannot answer, or the
  * instance is degraded-open, a token below that epoch is {@link FreshnessVerdict#STALE}. The map
  * holds only users with an epoch above 0, that is, users bumped within the key TTL. It holds at
  * most {@value #LAST_SEEN_CAPACITY} entries; a new user beyond that is not recorded and counted in
- * {@code nexus.rbac.epoch.last_seen_dropped}. A local bump records {@code max(seen + 1, local ms)}:
- * with a local clock ahead of the store, a fresh token can be refused once; the refresh then mints
- * with the recorded value and is accepted.
+ * {@code nexus.rbac.epoch.last_seen_dropped}. Expired entries are purged by the scheduled tick,
+ * never on a request thread (H-1).
+ *
+ * <p>A successful bump records exactly the epoch the store wrote and returned (H-2); no instance
+ * clock enters the value. A failed bump records the lower bound {@code seen + 1} (L-5): it cannot
+ * make a token that the store would accept look stale, and it makes every token the instance has
+ * already seen stale during a full outage. A replayed bump records the value the replay wrote.
+ *
+ * <p>An epoch that the store could not confirm (the read failed or the instance is degraded) is
+ * reported by {@link #mintEpoch} as unverified, so the minter does not cache the permission set
+ * under it (L-3). A stored value that is not an epoch makes that user's tokens stale and is not
+ * counted as a store failure (L-1).
  */
 @Service
 public final class PermissionFreshnessService {
@@ -99,6 +110,7 @@ public final class PermissionFreshnessService {
 
   private static final String REASON_REDIS = "redis";
   private static final String REASON_OVERFLOW = "overflow";
+  private static final String REASON_HOLDER_READ = "holder_read";
   private static final String OPERATION_REPLAY = "replay";
 
   /** Entries into a degraded state within {@link #FLAP_WINDOW} that raise the flap signal. */
@@ -253,15 +265,27 @@ public final class PermissionFreshnessService {
   }
 
   /**
-   * Returns the epoch to embed in a token about to be minted.
+   * Returns the epoch to embed in a token about to be minted. See {@link #mintEpoch}.
    *
    * @param tenantId the user's tenant
    * @param userId the user
-   * @return the current epoch; when the store cannot answer (after one retry, or at once while
-   *     degraded) the epoch this instance last saw for the user, else {@code 0} (a token minted
-   *     with a lower epoch than a later-recovered one is rejected once, which is safe)
+   * @return the epoch of {@link #mintEpoch}
    */
   public long epochForMint(UUID tenantId, UUID userId) {
+    return mintEpoch(tenantId, userId).epoch();
+  }
+
+  /**
+   * Returns the epoch to embed in a token about to be minted, and whether the store confirmed it.
+   *
+   * @param tenantId the user's tenant
+   * @param userId the user
+   * @return the current epoch, verified; when the store cannot answer (after one retry, or at once
+   *     while degraded) the epoch this instance last saw for the user, else {@code 0}, unverified
+   *     (a token minted with a lower epoch than a later-recovered one is rejected once, which is
+   *     safe). A stored value that is not an epoch yields {@code 0}, unverified
+   */
+  public MintEpoch mintEpoch(UUID tenantId, UUID userId) {
     UserKey key = new UserKey(tenantId, userId);
     Instant now = clock.instant();
     // A degraded instance does not spend 50 ms per read on a store it knows is down; the probe
@@ -269,20 +293,38 @@ public final class PermissionFreshnessService {
     // token stale once. Mint reads never count towards the state machine (design §9.5).
     DegradedState current = refreshState(now);
     if (current == DegradedState.DEGRADED_OPEN || current == DegradedState.DEGRADED_CLOSED) {
-      return lastSeenEpoch(key, now).orElse(0L);
+      return unverifiedMint(key, now);
     }
-    // One retry: a single 50 ms read failure would otherwise mint perm_epoch=0 for a recently
-    // revoked user, who is then rejected, refreshes and is rejected again.
-    OptionalLong read = epochPort.current(tenantId, userId);
-    if (read.isEmpty()) {
-      read = epochPort.current(tenantId, userId);
+    try {
+      // One retry: a single 50 ms read failure would otherwise mint perm_epoch=0 for a recently
+      // revoked user, who is then rejected, refreshes and is rejected again.
+      OptionalLong read = epochPort.current(tenantId, userId);
+      if (read.isEmpty()) {
+        read = epochPort.current(tenantId, userId);
+      }
+      if (read.isPresent()) {
+        remember(key, read.getAsLong(), now);
+        return new MintEpoch(read.getAsLong(), true);
+      }
+    } catch (EpochUnparseableException e) {
+      logUnparseable(tenantId);
+      return new MintEpoch(0L, false);
     }
-    if (read.isPresent()) {
-      remember(key, read.getAsLong(), now);
-      return read.getAsLong();
-    }
-    return lastSeenEpoch(key, now).orElse(0L);
+    return unverifiedMint(key, now);
   }
+
+  private MintEpoch unverifiedMint(UserKey key, Instant now) {
+    return new MintEpoch(lastSeenEpoch(key, now).orElse(0L), false);
+  }
+
+  /**
+   * The epoch for a token about to be minted.
+   *
+   * @param epoch the epoch to embed
+   * @param verified whether the store confirmed it; when not, the minter must not cache the
+   *     permission set under it, because no bump deletes that key (L-3)
+   */
+  public record MintEpoch(long epoch, boolean verified) {}
 
   /**
    * Checks whether a token epoch is still current.
@@ -310,7 +352,15 @@ public final class PermissionFreshnessService {
       case DEGRADED_CLOSED -> FreshnessVerdict.UNAVAILABLE;
       case DEGRADED_OPEN -> unverified(key, tokenEpoch, FreshnessVerdict.SKIPPED_DEGRADED, now);
       case HEALTHY, RECOVERING -> {
-        OptionalLong current = epochPort.current(key.tenantId(), key.userId());
+        OptionalLong current;
+        try {
+          current = epochPort.current(key.tenantId(), key.userId());
+        } catch (EpochUnparseableException e) {
+          // The store answered; this user's key is corrupt. Not a read failure (L-1), so it never
+          // moves the state machine, and the user's tokens cannot be vouched for.
+          logUnparseable(key.tenantId());
+          yield FreshnessVerdict.STALE;
+        }
         if (current.isEmpty()) {
           // Also an adapter that is not connected yet: it answers empty at once (design §9.5).
           recordReadFailure(now);
@@ -321,6 +371,13 @@ public final class PermissionFreshnessService {
         yield tokenEpoch < current.getAsLong() ? FreshnessVerdict.STALE : FreshnessVerdict.FRESH;
       }
     };
+  }
+
+  private void logUnparseable(UUID tenantId) {
+    log.atWarn()
+        .addKeyValue(LOG_KEY_EVENT, "RBAC_EPOCH_UNPARSEABLE")
+        .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
+        .log("Stored permission epoch is not a number; treating the user's tokens as stale");
   }
 
   /** The verdict when the store was not consulted: stale if this instance already saw a bump. */
@@ -339,18 +396,20 @@ public final class PermissionFreshnessService {
    */
   @Scheduled(fixedDelay = 1, timeUnit = TimeUnit.SECONDS)
   public void probe() {
+    purgeExpiredSeen(clock.instant());
     if (refreshState(clock.instant()) == DegradedState.HEALTHY) {
       drainReplayQueue();
       return;
     }
     boolean answered = epochPort.probe();
-    Instant now = clock.instant();
     if (!answered) {
-      recordReadFailure(now);
+      recordReadFailure(clock.instant());
       return;
     }
     drainReplayQueue();
-    recordProbeSuccess(now);
+    // The sustain starts when the drain is done, not when the probe answered (L-2, RC-31.2): a
+    // long drain must not let the next read count as sixty seconds of health.
+    recordProbeSuccess(clock.instant());
   }
 
   // --- state machine; every method below takes the lock (the fast paths read `state` first) ---
@@ -504,17 +563,18 @@ public final class PermissionFreshnessService {
     return OptionalLong.of(seen.epoch());
   }
 
-  /** Keeps the highest epoch seen; epoch 0 (no bump within the key TTL) is not worth a slot. */
+  /**
+   * Keeps the highest epoch seen; epoch 0 (no bump within the key TTL) is not worth a slot. Never
+   * scans the map (H-1): when it is full a new user is only counted as dropped, and the scheduled
+   * tick frees expired slots.
+   */
   private void remember(UserKey key, long epoch, Instant now) {
     if (epoch <= 0) {
       return;
     }
     if (lastSeen.size() >= LAST_SEEN_CAPACITY && !lastSeen.containsKey(key)) {
-      lastSeen.entrySet().removeIf(e -> !now.isBefore(e.getValue().expiresAt()));
-      if (lastSeen.size() >= LAST_SEEN_CAPACITY) {
-        lastSeenDropped.increment();
-        return;
-      }
+      lastSeenDropped.increment();
+      return;
     }
     lastSeen.merge(
         key,
@@ -522,14 +582,47 @@ public final class PermissionFreshnessService {
         (old, fresh) -> fresh.epoch() > old.epoch() ? fresh : old);
   }
 
-  /** After this instance's own successful bump: the same formula the store uses, local time. */
-  private void rememberBump(UUID tenantId, Collection<UUID> userIds) {
+  /** Frees the slots of expired entries, once a second from the scheduler thread (H-1). */
+  private void purgeExpiredSeen(Instant now) {
+    lastSeen.values().removeIf(seen -> !now.isBefore(seen.expiresAt()));
+  }
+
+  /**
+   * After a successful bump: exactly what the store wrote (H-2). A user the store did not report,
+   * which a conforming store never does, gets the lower bound instead.
+   */
+  private void rememberBump(UUID tenantId, Collection<UUID> userIds, Written written) {
     Instant now = clock.instant();
     for (UUID userId : userIds) {
       UserKey key = new UserKey(tenantId, userId);
-      long seen = lastSeenEpoch(key, now).orElse(0L);
-      remember(key, Math.max(seen + 1, now.toEpochMilli()), now);
+      Long epoch = written.epochs().get(userId);
+      remember(key, epoch != null ? epoch : lowerBound(key, now), now);
     }
+  }
+
+  /**
+   * After a failed bump (L-5): {@code seen + 1}. It can never exceed what the store holds or will
+   * hold, so it cannot make a token the store would accept look stale; it does make stale every
+   * token minted below what this instance has seen, and, for a user it has not seen, a token with
+   * epoch 0.
+   */
+  private void rememberFailedBump(UUID tenantId, Collection<UUID> userIds) {
+    Instant now = clock.instant();
+    for (UUID userId : userIds) {
+      UserKey key = new UserKey(tenantId, userId);
+      remember(key, lowerBound(key, now), now);
+    }
+  }
+
+  private long lowerBound(UserKey key, Instant now) {
+    return lastSeenEpoch(key, now).orElse(0L) + 1;
+  }
+
+  /** The epochs the store wrote for one bump; a record because application methods take no Map. */
+  private record Written(Map<UUID, Long> epochs) {}
+
+  private Written bump(UUID tenantId, Collection<UUID> userIds) {
+    return new Written(epochPort.bump(tenantId, userIds));
   }
 
   private record UserKey(UUID tenantId, UUID userId) {}
@@ -551,8 +644,7 @@ public final class PermissionFreshnessService {
     // Runs in afterCommit, so the JDBC connection is still held for up to the bump timeout
     // (500 ms) while Redis is slow.
     try {
-      epochPort.bump(tenantId, List.of(userId));
-      rememberBump(tenantId, List.of(userId));
+      rememberBump(tenantId, List.of(userId), bump(tenantId, List.of(userId)));
     } catch (RuntimeException e) {
       // Not only DataAccessException: a stopped factory or a bad script result must not turn a
       // committed change into a 500 either.
@@ -590,8 +682,7 @@ public final class PermissionFreshnessService {
     for (int from = 0; from < holders.size(); from += FANOUT_BATCH_SIZE) {
       List<UUID> batch = holders.subList(from, Math.min(from + FANOUT_BATCH_SIZE, holders.size()));
       try {
-        epochPort.bump(tenantId, batch);
-        rememberBump(tenantId, batch);
+        rememberBump(tenantId, batch, bump(tenantId, batch));
       } catch (RuntimeException e) {
         // The failed batch and every batch not yet sent (design §9.3).
         bumpFailed(tenantId, operation, holders.subList(from, holders.size()), e);
@@ -611,6 +702,7 @@ public final class PermissionFreshnessService {
         .addKeyValue(LOG_KEY_USER_COUNT, userIds.size())
         .addKeyValue("exception", e.getClass().getSimpleName())
         .log("Permission epoch bump failed");
+    rememberFailedBump(tenantId, userIds);
     int dropped = replayQueue.offer(tenantId, userIds, clock.instant());
     if (dropped > 0) {
       bumpFailedCounter(operation, REASON_OVERFLOW).increment(dropped);
@@ -624,13 +716,23 @@ public final class PermissionFreshnessService {
     }
   }
 
+  /**
+   * Counts a post-commit holder read that failed after its retry, so a detach whose revocation
+   * could not be applied pages an operator (M-2): {@code bump_failed{reason=holder_read}}.
+   *
+   * @param operation what shrank the permission set (for example {@code detach})
+   */
+  public void holderReadFailed(String operation) {
+    bumpFailedCounter(operation, REASON_HOLDER_READ).increment();
+  }
+
   private Counter bumpFailedCounter(String operation, String reason) {
     return bumpFailedCounters.apply(operation, reason);
   }
 
   /**
    * Replays queued bumps in batches of {@value #FANOUT_BATCH_SIZE} until the queue is empty or a
-   * batch fails. A failed batch goes back with its original {@code failedAt}; what was not yet
+   * batch fails. A failed batch goes back with its original failure times; what was not yet
    * polled stays queued. Called only from the scheduler.
    */
   private void drainReplayQueue() {
@@ -643,8 +745,9 @@ public final class PermissionFreshnessService {
       }
       EpochReplayQueue.Batch batch = polled.get();
       List<UUID> userIds = batch.userIds();
+      Written written;
       try {
-        epochPort.bump(batch.tenantId(), userIds);
+        written = bump(batch.tenantId(), userIds);
       } catch (RuntimeException e) {
         replayQueue.requeue(batch);
         bumpFailedCounter(OPERATION_REPLAY, REASON_REDIS).increment();
@@ -657,7 +760,7 @@ public final class PermissionFreshnessService {
             .log("Permission epoch replay failed");
         return;
       }
-      rememberBump(batch.tenantId(), userIds);
+      rememberBump(batch.tenantId(), userIds, written);
       bumpReplayed.increment(userIds.size());
       log.atInfo()
           .addKeyValue(LOG_KEY_EVENT, "RBAC_EPOCH_BUMP_REPLAYED")

@@ -15,9 +15,11 @@ import java.util.UUID;
  * §9.3). Package-private collaborator of {@link PermissionFreshnessService}.
  *
  * <ul>
- *   <li>Keyed by {@code (tenantId, userId)}: a user queued repeatedly takes one slot and keeps the
- *       <b>oldest</b> {@code failedAt}, so capacity counts distinct users and drop-by-age never
- *       discards an entry whose earliest lost bump may still matter.
+ *   <li>Keyed by {@code (tenantId, userId)}: a user queued repeatedly takes one slot, so capacity
+ *       counts distinct users. The slot keeps the <b>oldest</b> failure time (the replay's {@code
+ *       ageMs}) and the <b>newest</b> one. Expiry compares the newest: a token minted just before
+ *       the last lost bump is still valid for a full key TTL, so a coalesced user is dropped only
+ *       once every one of their lost bumps is older than that.
  *   <li>Bounded by {@code capacity} distinct users. {@link #offer} drops the <b>newest</b> arrivals
  *       beyond it and reports how many.
  *   <li>Thread-safe: request threads {@link #offer}, the scheduler {@link #poll}s. A polled batch
@@ -31,8 +33,8 @@ import java.util.UUID;
 final class EpochReplayQueue {
 
   private final int capacity;
-  // Guarded by `this`. Outer key: tenant; inner key: user -> oldest failedAt.
-  private final Map<UUID, Map<UUID, Instant>> byTenant = new LinkedHashMap<>();
+  // Guarded by `this`. Outer key: tenant; inner key: user -> oldest and newest failedAt.
+  private final Map<UUID, Map<UUID, Times>> byTenant = new LinkedHashMap<>();
   private int size;
 
   /**
@@ -57,16 +59,14 @@ final class EpochReplayQueue {
    * @return the number of users dropped because the queue was full (the newest arrivals)
    */
   synchronized int offer(UUID tenantId, Collection<UUID> userIds, Instant failedAt) {
-    Map<UUID, Instant> users = byTenant.computeIfAbsent(tenantId, id -> new LinkedHashMap<>());
+    Map<UUID, Times> users = byTenant.computeIfAbsent(tenantId, id -> new LinkedHashMap<>());
     int dropped = 0;
     for (UUID userId : userIds) {
-      Instant queued = users.get(userId);
+      Times queued = users.get(userId);
       if (queued != null) {
-        if (failedAt.isBefore(queued)) {
-          users.put(userId, failedAt);
-        }
+        users.put(userId, queued.merge(failedAt, failedAt));
       } else if (size < capacity) {
-        users.put(userId, failedAt);
+        users.put(userId, new Times(failedAt, failedAt));
         size++;
       } else {
         dropped++;
@@ -79,25 +79,26 @@ final class EpochReplayQueue {
   }
 
   /**
-   * Removes up to {@code max} users of one tenant. Entries that failed at or before
-   * {@code expiredAtOrBefore} are removed and discarded on the way: their tokens and cache entries
-   * have expired.
+   * Removes up to {@code max} users of one tenant. Entries whose <b>newest</b> failure is at or
+   * before {@code expiredAtOrBefore} are removed and discarded on the way: every token and cache
+   * entry that a lost bump could have outdated has expired.
    *
    * @param max the most users in the batch
-   * @param expiredAtOrBefore entries with {@code failedAt} not after this are discarded
+   * @param expiredAtOrBefore entries with {@code newestFailedAt} not after this are discarded
    * @return the batch, or empty when nothing live is queued
    */
   synchronized Optional<Batch> poll(int max, Instant expiredAtOrBefore) {
     while (!byTenant.isEmpty()) {
-      Map.Entry<UUID, Map<UUID, Instant>> first = byTenant.entrySet().iterator().next();
+      Map.Entry<UUID, Map<UUID, Times>> first = byTenant.entrySet().iterator().next();
       List<Entry> taken = new ArrayList<>();
-      Iterator<Map.Entry<UUID, Instant>> it = first.getValue().entrySet().iterator();
+      Iterator<Map.Entry<UUID, Times>> it = first.getValue().entrySet().iterator();
       while (it.hasNext() && taken.size() < max) {
-        Map.Entry<UUID, Instant> user = it.next();
+        Map.Entry<UUID, Times> user = it.next();
         it.remove();
         size--;
-        if (user.getValue().isAfter(expiredAtOrBefore)) {
-          taken.add(new Entry(first.getKey(), user.getKey(), user.getValue()));
+        if (user.getValue().newest().isAfter(expiredAtOrBefore)) {
+          taken.add(new Entry(
+              first.getKey(), user.getKey(), user.getValue().oldest(), user.getValue().newest()));
         }
       }
       if (first.getValue().isEmpty()) {
@@ -111,7 +112,7 @@ final class EpochReplayQueue {
   }
 
   /**
-   * Puts a polled batch back after its replay failed, keeping each original {@code failedAt}. It
+   * Puts a polled batch back after its replay failed, keeping each entry's original failure times. It
    * ignores the capacity: these users held slots until a moment ago, and losing one here would
    * lose a bump for good. The queue can therefore exceed its capacity by one batch until the next
    * drain; {@link #offer} refuses new users meanwhile.
@@ -119,15 +120,15 @@ final class EpochReplayQueue {
    * @param batch the batch returned by {@link #poll}
    */
   synchronized void requeue(Batch batch) {
-    Map<UUID, Instant> users =
+    Map<UUID, Times> users =
         byTenant.computeIfAbsent(batch.tenantId(), id -> new LinkedHashMap<>());
     for (Entry entry : batch.entries()) {
-      Instant queued = users.get(entry.userId());
+      Times queued = users.get(entry.userId());
       if (queued == null) {
-        users.put(entry.userId(), entry.failedAt());
+        users.put(entry.userId(), new Times(entry.oldestFailedAt(), entry.newestFailedAt()));
         size++;
-      } else if (entry.failedAt().isBefore(queued)) {
-        users.put(entry.userId(), entry.failedAt());
+      } else {
+        users.put(entry.userId(), queued.merge(entry.oldestFailedAt(), entry.newestFailedAt()));
       }
     }
   }
@@ -142,14 +143,24 @@ final class EpochReplayQueue {
     return size == 0;
   }
 
-  /** One queued user. */
-  record Entry(UUID tenantId, UUID userId, Instant failedAt) {}
+  /** The oldest and newest failure time of one queued user. */
+  private record Times(Instant oldest, Instant newest) {
+
+    Times merge(Instant otherOldest, Instant otherNewest) {
+      return new Times(
+          otherOldest.isBefore(oldest) ? otherOldest : oldest,
+          otherNewest.isAfter(newest) ? otherNewest : newest);
+    }
+  }
+
+  /** One queued user: when their first and their latest lost bump failed. */
+  record Entry(UUID tenantId, UUID userId, Instant oldestFailedAt, Instant newestFailedAt) {}
 
   /**
    * Users of a single tenant, taken from the queue for one replay.
    *
    * @param tenantId the tenant
-   * @param entries the users with their original {@code failedAt}; never empty
+   * @param entries the users with their original failure times; never empty
    */
   record Batch(UUID tenantId, List<Entry> entries) {
 
@@ -158,9 +169,9 @@ final class EpochReplayQueue {
       return entries.stream().map(Entry::userId).toList();
     }
 
-    /** Returns the earliest {@code failedAt} in the batch. */
+    /** Returns the earliest first-failure time in the batch. */
     Instant oldestFailedAt() {
-      return entries.stream().map(Entry::failedAt).min(Instant::compareTo).orElseThrow();
+      return entries.stream().map(Entry::oldestFailedAt).min(Instant::compareTo).orElseThrow();
     }
   }
 }
