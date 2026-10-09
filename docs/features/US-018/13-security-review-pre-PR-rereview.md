@@ -351,3 +351,22 @@ Correct against spoofing, and no code reads `X-Forwarded-*`. It is the wrong tra
 - Any Redis-backed integration test, including OOM, `READONLY` and timeout behaviour (no Docker).
 - Backend CVEs (dependency-check not run).
 - The production ingress and Kubernetes manifests: none are in the repository, so the real proxy chain, any `SERVER_FORWARD_HEADERS_STRATEGY` override and the scrape path are unknown.
+
+---
+
+## Resolution of RR-M1 and RR-M2 (after this review, 2026-10-09)
+
+Not re-reviewed; run `/security-review` again before relying on this.
+
+**RR-M1: partly closed; the rest is recorded as RES-46 and needs a named owner.**
+- **Closed:** a failed bump now evicts the affected users' cached permission sets (`PermissionFreshnessService.evictCachedSets`, a plain `DEL` under the user's current epoch, which `noeviction` does not refuse). So another instance can no longer re-mint a detached permission from the cache while the epoch is unchanged. `FailedBumpCacheEvictionTest` runs two instances over one shared fake store and cache: with the eviction, instance B resolves from the database; without it (control test), B re-mints the detached permission.
+- **Not closed:** a token already issued stays valid on the other instances for at most the access-token TTL (900 s) while Redis refuses writes, and every instance reports Healthy. The reviewer's option (a), a per-instance write canary that puts write refusal under the fail-open window, was **not built**: it would turn a Redis out-of-memory condition into a platform-wide 503 after 15 minutes, which is an availability decision for SRE and PM. `bump_failed{reason=redis}` pages immediately.
+- A narrow race remains: a mint that resolved from the database before the detach committed could put its stale set after the eviction. It lasts at most the cache TTL.
+- Docs: ADR-0022 Revision 4 (D1 clarified, no longer claims the case is closed), RES-46 in the threat model, the runbook.
+
+**RR-M2: closed.** `ScrapeTokenFilter` (new) accepts only the operator's `nexus.management.scrape-token` as a bearer token on the Prometheus and metrics endpoints; a tenant administrator's JWT is a 401, the endpoints are closed when the token is unset, and a token shorter than 32 characters fails startup. `JwtAuthenticationFilter` skips a request the scrape filter handled. k6 scrapes use `SCRAPE_TOKEN`. Runbook section 10 and `deployment.md` no longer say to scrape with a tenant credential. **Not done:** dropping the two `tenantId` metric tags. Only operators can read the metrics now, and `RoleAssignmentEscalationIT` scopes its counters by that tag.
+
+**RR-M3 (existed before this branch): not changed.** It needs the DF-1 owner to decide between `none` (platform-wide per-IP limits behind nginx) and `native` with pinned `internal-proxies`.
+
+**RR-L1 to RR-L3: not changed.**
+

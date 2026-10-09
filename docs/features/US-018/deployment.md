@@ -95,7 +95,7 @@ See [rollback.md](rollback.md).
 - [ ] The `prod` profile is active (A-3). `application-prod.yml` sets `nexus.rbac.redis.require-auth: true`, and without `prod` the property defaults to `false` (`NEXUS_RBAC_REDIS_REQUIRE_AUTH` overrides it).
 - [ ] Redis authenticates (`spring.data.redis.password`, or credentials in the URL), is configured with `maxmemory-policy noeviction` (ADR-0016) and, where used, TLS.
 - [ ] SRE and PM have accepted the availability consequence of RES-30.
-- [ ] `/actuator/prometheus` scrapes use a token holding `TENANT_ADMIN`, or are moved to a scrape network (they were open to every authenticated user before).
+- [ ] `NEXUS_MANAGEMENT_SCRAPE_TOKEN` is set from a secret (at least 32 random characters) on every instance, and the metrics scraper sends it as `Authorization: Bearer ...`. Unset, `/actuator/prometheus` and `/actuator/metrics` are closed for everyone. They were open to every authenticated user before, and no tenant credential, not even `TENANT_ADMIN`, can read them now (RR-M2).
 - [ ] If the deployment relies on per-client IP limits behind a proxy: the default is `server.forward-headers-strategy: none`, so limits are platform-wide (DF-1). Changing it needs `native` and a pinned `server.tomcat.remoteip.internal-proxies`.
 - [ ] The k6 gates were run once for the deployment shape: `epoch-check-latency.js` (baseline, then gate), `detach-refresh-storm.js`, `refresh-junk-flood.js`. They write accounts that cannot be deleted: run them against a disposable stack (they refuse non-local targets unless `ALLOW_WRITE_SCENARIO=true`).
 
