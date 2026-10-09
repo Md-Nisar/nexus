@@ -9,6 +9,7 @@ import com.example.nexus.identity.domain.JwtClaims;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UserStatus;
 import com.example.nexus.rbac.application.PermissionFreshnessService;
+import com.example.nexus.rbac.application.PermissionFreshnessService.MintEpoch;
 import com.example.nexus.rbac.application.RoleResolutionService;
 import com.example.nexus.rbac.domain.ResolvedPermissions;
 import io.jsonwebtoken.Claims;
@@ -52,9 +53,9 @@ class JwtClaimsContractTest {
 
     RoleResolutionService roleResolutionService = mock(RoleResolutionService.class);
     PermissionFreshnessService freshness = mock(PermissionFreshnessService.class);
-    when(freshness.epochForMint(
+    when(freshness.mintEpoch(
             org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
-        .thenReturn(PERM_EPOCH);
+        .thenReturn(new MintEpoch(PERM_EPOCH, true));
     when(roleResolutionService.resolve(
             org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
             org.mockito.ArgumentMatchers.anyLong()))

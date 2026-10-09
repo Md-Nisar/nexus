@@ -14,6 +14,7 @@ import com.example.nexus.identity.domain.JwtClaims;
 import com.example.nexus.identity.domain.UserStatus;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.rbac.application.PermissionFreshnessService;
+import com.example.nexus.rbac.application.PermissionFreshnessService.MintEpoch;
 import com.example.nexus.rbac.application.RoleResolutionService;
 import com.example.nexus.rbac.domain.ResolvedPermissions;
 import io.jsonwebtoken.Jwts;
@@ -31,6 +32,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -44,6 +46,13 @@ class JwtRs256ServiceTest {
 
   private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
   private final PermissionFreshnessService freshness = mock(PermissionFreshnessService.class);
+
+  @BeforeEach
+  void stubVerifiedEpochZero() {
+    when(freshness.mintEpoch(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+        .thenReturn(new MintEpoch(0L, true));
+  }
 
   @BeforeAll
   static void setUpKeyConfig() throws Exception {
@@ -318,13 +327,13 @@ class JwtRs256ServiceTest {
     service(Clock.systemUTC(), roleResolutionService).issue(user);
 
     InOrder order = inOrder(freshness, roleResolutionService);
-    order.verify(freshness).epochForMint(user.getTenantId(), user.getId());
+    order.verify(freshness).mintEpoch(user.getTenantId(), user.getId());
     order.verify(roleResolutionService).resolve(user.getId(), user.getTenantId(), 0L);
   }
 
   /**
    * US-018 T-010 (Decision 17): the permission set is cached under the epoch the token carries,
-   * which is exactly the one {@code epochForMint} returned, read before the permissions.
+   * which is exactly the one {@code mintEpoch} returned, read before the permissions.
    */
   @Test
   void should_resolvePermissionsUnderEpochReadFirst_when_issuing() {
@@ -332,21 +341,63 @@ class JwtRs256ServiceTest {
         new ResolvedPermissions(List.of("MEMBER"), List.of("user:read")));
     User user = activeUser();
     long epoch = 1_796_000_000_123L;
-    when(freshness.epochForMint(user.getTenantId(), user.getId())).thenReturn(epoch);
+    when(freshness.mintEpoch(user.getTenantId(), user.getId()))
+        .thenReturn(new MintEpoch(epoch, true));
     JwtRs256Service svc = service(Clock.systemUTC(), roleResolutionService);
 
     JwtClaims claims = svc.verify(svc.issue(user).token());
 
     InOrder order = inOrder(freshness, roleResolutionService);
-    order.verify(freshness).epochForMint(user.getTenantId(), user.getId());
+    order.verify(freshness).mintEpoch(user.getTenantId(), user.getId());
     order.verify(roleResolutionService).resolve(user.getId(), user.getTenantId(), epoch);
     assertThat(claims.permEpoch()).isEqualTo(epoch);
+  }
+
+  /** L-3: an epoch the store did not confirm names a cache key no bump deletes. */
+  @Test
+  void should_resolveWithoutCache_when_epochUnverified() {
+    RoleResolutionService roleResolutionService = mock(RoleResolutionService.class);
+    when(roleResolutionService.resolveUncached(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+        .thenReturn(new ResolvedPermissions(List.of("MEMBER"), List.of("user:read")));
+    User user = activeUser();
+    when(freshness.mintEpoch(user.getTenantId(), user.getId()))
+        .thenReturn(new MintEpoch(1_796_000_000_000L, false));
+
+    JwtRs256Service svc = service(Clock.systemUTC(), roleResolutionService);
+    JwtClaims claims = svc.verify(svc.issue(user).token());
+
+    org.mockito.Mockito.verify(roleResolutionService)
+        .resolveUncached(user.getId(), user.getTenantId());
+    org.mockito.Mockito.verify(roleResolutionService, org.mockito.Mockito.never())
+        .resolve(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.anyLong());
+    assertThat(claims.permEpoch()).isEqualTo(1_796_000_000_000L);
+  }
+
+  @Test
+  void should_resolveWithCacheUnderEpoch_when_epochVerified() {
+    RoleResolutionService roleResolutionService = roleResolutionServiceReturning(
+        new ResolvedPermissions(List.of("MEMBER"), List.of("user:read")));
+    User user = activeUser();
+    when(freshness.mintEpoch(user.getTenantId(), user.getId()))
+        .thenReturn(new MintEpoch(1_796_000_000_000L, true));
+
+    service(Clock.systemUTC(), roleResolutionService).issue(user);
+
+    org.mockito.Mockito.verify(roleResolutionService)
+        .resolve(user.getId(), user.getTenantId(), 1_796_000_000_000L);
+    org.mockito.Mockito.verify(roleResolutionService, org.mockito.Mockito.never())
+        .resolveUncached(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
   }
 
   @Test
   void should_mintV3WithPermEpoch_when_epochReadSucceeds() {
     User user = activeUser();
-    when(freshness.epochForMint(user.getTenantId(), user.getId())).thenReturn(1_796_000_000_000L);
+    when(freshness.mintEpoch(user.getTenantId(), user.getId()))
+        .thenReturn(new MintEpoch(1_796_000_000_000L, true));
     JwtRs256Service svc = service(Clock.systemUTC());
 
     JwtClaims claims = svc.verify(svc.issue(user).token());
@@ -356,7 +407,7 @@ class JwtRs256ServiceTest {
   }
 
   @Test
-  void should_mintPermEpochZero_when_epochForMintReturnsZero() {
+  void should_mintPermEpochZero_when_mintEpochReturnsZero() {
     JwtRs256Service svc = service(Clock.systemUTC());
 
     JwtClaims claims = svc.verify(svc.issue(activeUser()).token());

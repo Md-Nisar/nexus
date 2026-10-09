@@ -4,12 +4,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
+import com.example.nexus.rbac.application.port.out.EpochUnparseableException;
 import com.example.nexus.rbac.infrastructure.cache.EpochRedisConfig.EpochTemplates;
 import io.lettuce.core.resource.ClientResources;
 import io.lettuce.core.resource.DefaultClientResources;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
@@ -21,6 +23,8 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.data.redis.autoconfigure.DataRedisConnectionDetails;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
@@ -196,15 +200,61 @@ class RedisPermissionEpochAdapterIT {
     }
   }
 
-  @Test
-  void should_returnEmpty_when_storedValueUnparseable() {
+  @ParameterizedTest
+  @ValueSource(strings = {"not-a-number", "abc", "9223372036854775808", "-1", ""})
+  void should_throwUnparseable_when_storedValueIsNotAnEpoch(String stored) {
     UUID tenantId = UUID.randomUUID();
     UUID userId = UUID.randomUUID();
-    templates.read().opsForValue().set(key(tenantId, userId), "not-a-number");
+    templates.read().opsForValue().set(key(tenantId, userId), stored);
 
-    OptionalLong current = adapter(templates).current(tenantId, userId);
+    assertThatThrownBy(() -> adapter(templates).current(tenantId, userId))
+        .isInstanceOf(EpochUnparseableException.class);
+  }
 
-    assertThat(current).isEmpty();
+  @Test
+  void should_returnWrittenEpochOfEveryUser_when_bumped() {
+    UUID tenantId = UUID.randomUUID();
+    List<UUID> users = List.of(UUID.randomUUID(), UUID.randomUUID());
+    long before = redisTimeMillis();
+
+    Map<UUID, Long> written = adapter(templates).bump(tenantId, users);
+
+    assertThat(written).containsOnlyKeys(users);
+    for (UUID userId : users) {
+      assertThat(written.get(userId))
+          .isBetween(before, redisTimeMillis())
+          .isEqualTo(adapter(templates).current(tenantId, userId).orElseThrow());
+    }
+  }
+
+  @Test
+  void should_returnOldPlusOne_when_storedEpochAheadOfRedisTime() {
+    UUID tenantId = UUID.randomUUID();
+    UUID userId = UUID.randomUUID();
+    long farFuture = redisTimeMillis() + 3_600_000L;
+    templates.read().opsForValue().set(key(tenantId, userId), Long.toString(farFuture));
+
+    Map<UUID, Long> written = adapter(templates).bump(tenantId, List.of(userId));
+
+    assertThat(written).containsEntry(userId, farFuture + 1);
+  }
+
+  @Test
+  void should_returnEmptyMap_when_bumpGivenNoUsers() {
+    assertThat(adapter(templates).bump(UUID.randomUUID(), List.of())).isEmpty();
+  }
+
+  @Test
+  void should_recoverToRedisTime_when_storedValueAboveLongRange() {
+    UUID tenantId = UUID.randomUUID();
+    UUID userId = UUID.randomUUID();
+    templates.read().opsForValue().set(key(tenantId, userId), "9223372036854775808");
+    long before = redisTimeMillis();
+
+    adapter(templates).bump(tenantId, List.of(userId));
+
+    assertThat(adapter(templates).current(tenantId, userId).orElseThrow())
+        .isBetween(before, redisTimeMillis());
   }
 
   @Test

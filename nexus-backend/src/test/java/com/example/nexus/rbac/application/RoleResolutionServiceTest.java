@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
@@ -32,6 +33,28 @@ class RoleResolutionServiceTest {
     userRoleQueryPort = mock(UserRoleQueryPort.class);
     permissionCachePort = mock(PermissionCachePort.class);
     service = new RoleResolutionService(userRoleQueryPort, permissionCachePort);
+  }
+
+  @Test
+  void should_readDbAndTouchNoCache_when_resolvedUncached() {
+    UUID userId = UUID.randomUUID();
+    UUID tenantId = UUID.randomUUID();
+    when(userRoleQueryPort.findActiveRoleNames(userId, tenantId)).thenReturn(List.of("MEMBER"));
+    when(userRoleQueryPort.findActivePermissionNames(userId, tenantId))
+        .thenReturn(List.of("user:read"));
+
+    ResolvedPermissions resolved = service.resolveUncached(userId, tenantId);
+
+    assertThat(resolved.permissions()).containsExactly("user:read");
+    verifyNoInteractions(permissionCachePort);
+  }
+
+  @Test
+  void should_rejectNullIdentifiers_when_resolvedUncached() {
+    assertThatThrownBy(() -> service.resolveUncached(null, UUID.randomUUID()))
+        .isInstanceOf(NullPointerException.class);
+    assertThatThrownBy(() -> service.resolveUncached(UUID.randomUUID(), null))
+        .isInstanceOf(NullPointerException.class);
   }
 
   @Test

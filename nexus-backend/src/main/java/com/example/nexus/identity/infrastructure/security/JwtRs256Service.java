@@ -9,6 +9,7 @@ import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UserStatus;
 import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.rbac.application.PermissionFreshnessService;
+import com.example.nexus.rbac.application.PermissionFreshnessService.MintEpoch;
 import com.example.nexus.rbac.application.RoleResolutionService;
 import com.example.nexus.rbac.domain.ResolvedPermissions;
 import io.jsonwebtoken.Claims;
@@ -116,9 +117,12 @@ public class JwtRs256Service implements JwtPort {
   public AccessTokenResult issue(User user) {
     Instant now = clock.instant();
     String jti = uuidGenerator.newId().toString();
-    long permEpoch = permissionFreshnessService.epochForMint(user.getTenantId(), user.getId());
-    ResolvedPermissions resolved =
-        roleResolutionService.resolve(user.getId(), user.getTenantId(), permEpoch);
+    MintEpoch mintEpoch = permissionFreshnessService.mintEpoch(user.getTenantId(), user.getId());
+    long permEpoch = mintEpoch.epoch();
+    // An epoch the store did not confirm names a cache key no bump deletes (L-3): skip the cache.
+    ResolvedPermissions resolved = mintEpoch.verified()
+        ? roleResolutionService.resolve(user.getId(), user.getTenantId(), permEpoch)
+        : roleResolutionService.resolveUncached(user.getId(), user.getTenantId());
 
     String jwt = Jwts.builder()
         .header()

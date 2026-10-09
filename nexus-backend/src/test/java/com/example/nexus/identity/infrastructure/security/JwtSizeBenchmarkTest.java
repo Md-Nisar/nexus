@@ -10,6 +10,7 @@ import com.example.nexus.identity.domain.AccessTokenResult;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UserStatus;
 import com.example.nexus.rbac.application.PermissionFreshnessService;
+import com.example.nexus.rbac.application.PermissionFreshnessService.MintEpoch;
 import com.example.nexus.rbac.application.RoleResolutionService;
 import com.example.nexus.rbac.domain.ResolvedPermissions;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -53,7 +54,8 @@ class JwtSizeBenchmarkTest {
 
     // A realistic perm_epoch (Redis TIME in ms, 13 digits) so the size covers the v3 claim.
     PermissionFreshnessService freshness = mock(PermissionFreshnessService.class);
-    when(freshness.epochForMint(any(), any())).thenReturn(1_796_000_000_000L);
+    when(freshness.mintEpoch(any(), any()))
+        .thenReturn(new MintEpoch(1_796_000_000_000L, true));
 
     JwtRs256Service svc =
         new JwtRs256Service(rsaKeyConfig, UUID::randomUUID, Clock.systemUTC(), 900L,
