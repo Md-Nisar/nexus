@@ -306,6 +306,8 @@ public class RoleManagementService {
           }
           // US-018 Decision 15: evict every holder's cached set so their next mint carries the
           // new permission; never bump, since a token lacking an added permission is fail-safe.
+          // A mint that read the pre-attach set may still put it back after this eviction, so
+          // that holder lacks the permission until the entry expires (L-4, accepted: Decision 15).
           readActiveHoldersAfterCommit(actor.tenantId(), role.id(), "attach")
               .ifPresent(holders -> permissionCachePort.evict(actor.tenantId(), holders));
         });
@@ -540,25 +542,38 @@ public class RoleManagementService {
    * transaction that ends before the caller touches Redis. While it runs the request briefly
    * holds two pooled connections: the committed transaction's, still bound until afterCompletion,
    * and this one's.
+   *
+   * <p>A detach read is retried once, because a failure there loses a revocation (M-2): the
+   * likeliest cause is a pool timeout that has cleared a moment later. If the retry fails too, the
+   * paging counter {@code nexus.rbac.epoch.bump_failed{operation=detach, reason=holder_read}} is
+   * incremented. An attach read is not retried: a missed eviction is fail-safe.
    */
   private Optional<List<UUID>> readActiveHoldersAfterCommit(
       UUID tenantId, UUID roleId, String operation) {
-    try {
-      return Optional.ofNullable(
-          holderReadTransaction.execute(
-              status -> userRoleAssignmentPort.findActiveUserIdsForRole(roleId)));
-    } catch (RuntimeException e) {
-      // The change has committed: rethrowing from afterCommit would turn the administrator's
-      // success into a 500 and still leave every holder's token and cache entry in place.
-      log.atError()
-          .addKeyValue(LOG_KEY_EVENT, "RBAC_HOLDER_READ_FAILED")
-          .addKeyValue("operation", operation)
-          .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
-          .addKeyValue(LOG_KEY_ROLE_ID, roleId)
-          .addKeyValue("exception", e.getClass().getSimpleName())
-          .log("Reading role holders after commit failed; permission freshness not applied");
-      return Optional.empty();
+    boolean detach = OPERATION_DETACH.equals(operation);
+    RuntimeException failure = null;
+    for (int attempt = 0; attempt < (detach ? 2 : 1); attempt++) {
+      try {
+        return Optional.ofNullable(
+            holderReadTransaction.execute(
+                status -> userRoleAssignmentPort.findActiveUserIdsForRole(roleId)));
+      } catch (RuntimeException e) {
+        failure = e;
+      }
     }
+    // The change has committed: rethrowing from afterCommit would turn the administrator's
+    // success into a 500 and still leave every holder's token and cache entry in place.
+    log.atError()
+        .addKeyValue(LOG_KEY_EVENT, "RBAC_HOLDER_READ_FAILED")
+        .addKeyValue("operation", operation)
+        .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
+        .addKeyValue(LOG_KEY_ROLE_ID, roleId)
+        .addKeyValue("exception", failure.getClass().getSimpleName())
+        .log("Reading role holders after commit failed; permission freshness not applied");
+    if (detach) {
+      permissionFreshnessService.holderReadFailed(operation);
+    }
+    return Optional.empty();
   }
 
   /**
