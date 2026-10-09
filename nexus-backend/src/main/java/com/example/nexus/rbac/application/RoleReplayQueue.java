@@ -25,6 +25,7 @@ import java.util.UUID;
 final class RoleReplayQueue {
 
   private final int capacity;
+  private final int tenantCapacity;
   // Guarded by `this`; insertion-ordered, so the oldest role is polled first.
   private final Map<RoleKey, Times> roles = new LinkedHashMap<>();
 
@@ -35,10 +36,23 @@ final class RoleReplayQueue {
    * @throws IllegalArgumentException if {@code capacity} is below 1
    */
   RoleReplayQueue(int capacity) {
-    if (capacity < 1) {
+    this(capacity, capacity);
+  }
+
+  /**
+   * Creates the queue with a share per tenant, so that one tenant's failed holder reads overflow
+   * itself and not the others (pre-PR security review L-2).
+   *
+   * @param capacity the most distinct roles held at once
+   * @param tenantCapacity the most distinct roles of one tenant held at once
+   * @throws IllegalArgumentException if either is below 1
+   */
+  RoleReplayQueue(int capacity, int tenantCapacity) {
+    if (capacity < 1 || tenantCapacity < 1) {
       throw new IllegalArgumentException("role replay capacity must be positive");
     }
     this.capacity = capacity;
+    this.tenantCapacity = tenantCapacity;
   }
 
   /**
@@ -56,7 +70,7 @@ final class RoleReplayQueue {
       roles.put(key, queued.merge(failedAt, failedAt));
       return true;
     }
-    if (roles.size() >= capacity) {
+    if (roles.size() >= capacity || queuedFor(tenantId) >= tenantCapacity) {
       return false;
     }
     roles.put(key, new Times(failedAt, failedAt));
@@ -100,6 +114,17 @@ final class RoleReplayQueue {
         queued == null
             ? new Times(entry.oldestFailedAt(), entry.newestFailedAt())
             : queued.merge(entry.oldestFailedAt(), entry.newestFailedAt()));
+  }
+
+  /** Bounded by the capacity, at most 1,000 in practice, and only reached for a new role. */
+  private int queuedFor(UUID tenantId) {
+    int count = 0;
+    for (RoleKey key : roles.keySet()) {
+      if (key.tenantId().equals(tenantId)) {
+        count++;
+      }
+    }
+    return count;
   }
 
   /** Returns the number of distinct roles queued. */

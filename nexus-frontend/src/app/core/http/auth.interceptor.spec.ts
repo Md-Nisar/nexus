@@ -504,6 +504,29 @@ describe('authInterceptor', () => {
     req.flush('');
   });
 
+  it.each(['/apiary/x', '/api-docs', '/api.v2/users'])(
+    'never attaches the bearer token to the same-origin sibling path %s',
+    (path) => {
+      mockAuthStore.accessToken.mockReturnValue('secret-token');
+
+      http.get(path).subscribe();
+
+      const req = controller.expectOne(path);
+      expect(req.request.headers.has('Authorization')).toBe(false);
+      req.flush('');
+    },
+  );
+
+  it('attaches the bearer token to the API base path itself', () => {
+    mockAuthStore.accessToken.mockReturnValue('secret-token');
+
+    http.get('/api').subscribe();
+
+    const req = controller.expectOne('/api');
+    expect(req.request.headers.get('Authorization')).toBe('Bearer secret-token');
+    req.flush('');
+  });
+
   it('does not refresh or end the session when a third-party origin answers 401', () => {
     mockAuthStore.accessToken.mockReturnValue('secret-token');
     let error: unknown;

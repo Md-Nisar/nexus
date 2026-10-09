@@ -88,7 +88,12 @@ function sharedRefresh(authService: AuthService): Observable<AuthSession> {
 function isApiRequest(url: string, apiBaseUrl: string): boolean {
   const target = new URL(url, window.location.origin);
   const base = new URL(apiBaseUrl, window.location.origin);
-  return target.origin === base.origin && target.pathname.startsWith(base.pathname);
+  // Whole path segments only: a bare prefix match would also send the bearer to `/apiary`.
+  const basePrefix = base.pathname.endsWith('/') ? base.pathname : `${base.pathname}/`;
+  return (
+    target.origin === base.origin &&
+    (target.pathname === base.pathname || target.pathname.startsWith(basePrefix))
+  );
 }
 
 /**

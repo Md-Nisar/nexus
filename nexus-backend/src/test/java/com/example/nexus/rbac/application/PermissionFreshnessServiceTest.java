@@ -1933,7 +1933,7 @@ class PermissionFreshnessServiceTest {
   @Test
   void should_dropNewestAndCountPerDroppedId_when_replayQueueFull() {
     registry = new SimpleMeterRegistry();
-    service = newService(registry, 2);
+    service = newService(registry, 2, ROLE_REPLAY_CAPACITY, 100);
     failBumps();
 
     service.invalidateHolders(TENANT, users(5), "detach");
@@ -1941,6 +1941,20 @@ class PermissionFreshnessServiceTest {
     assertThat(replayQueueUsers()).isEqualTo(2.0);
     assertThat(bumpFailed("detach", "overflow")).isEqualTo(3.0);
     assertThat(bumpFailed("detach", "redis")).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_overflowOnlyTheBusyTenant_when_itsFanoutExceedsItsReplayShare() {
+    UUID otherTenant = UUID.fromString("00000000-0000-7000-8000-0000000000ac");
+    registry = new SimpleMeterRegistry();
+    service = newService(registry, 100, ROLE_REPLAY_CAPACITY, 10);
+    failBumps();
+
+    service.invalidateHolders(TENANT, users(15), "detach");
+    service.invalidateHolders(otherTenant, users(3), "detach");
+
+    assertThat(replayQueueUsers()).isEqualTo(13.0);
+    assertThat(bumpFailed("detach", "overflow")).isEqualTo(5.0);
   }
 
   @Test

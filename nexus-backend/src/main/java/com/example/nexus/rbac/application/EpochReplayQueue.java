@@ -20,8 +20,8 @@ import java.util.UUID;
  *       ageMs}) and the <b>newest</b> one. Expiry compares the newest: a token minted just before
  *       the last lost bump is still valid for a full key TTL, so a coalesced user is dropped only
  *       once every one of their lost bumps is older than that.
- *   <li>Bounded by {@code capacity} distinct users. {@link #offer} drops the <b>newest</b> arrivals
- *       beyond it and reports how many.
+ *   <li>Bounded by {@code capacity} distinct users, and by {@code tenantCapacity} per tenant.
+ *       {@link #offer} drops the <b>newest</b> arrivals beyond either and reports how many.
  *   <li>Thread-safe: request threads {@link #offer}, the scheduler {@link #poll}s. A polled batch
  *       is out of the queue, so it is {@link #requeue}d if its replay fails; an entry enqueued for
  *       the same user meanwhile coalesces with it.
@@ -33,6 +33,7 @@ import java.util.UUID;
 final class EpochReplayQueue {
 
   private final int capacity;
+  private final int tenantCapacity;
   // Guarded by `this`. Outer key: tenant; inner key: user -> oldest and newest failedAt.
   private final Map<UUID, Map<UUID, Times>> byTenant = new LinkedHashMap<>();
   private int size;
@@ -44,10 +45,23 @@ final class EpochReplayQueue {
    * @throws IllegalArgumentException if {@code capacity} is below 1
    */
   EpochReplayQueue(int capacity) {
-    if (capacity < 1) {
+    this(capacity, capacity);
+  }
+
+  /**
+   * Creates the queue with a share per tenant, so that one tenant's failed fan-out overflows
+   * itself and not the others (pre-PR security review L-2).
+   *
+   * @param capacity the most distinct users held at once
+   * @param tenantCapacity the most distinct users of one tenant held at once
+   * @throws IllegalArgumentException if either is below 1
+   */
+  EpochReplayQueue(int capacity, int tenantCapacity) {
+    if (capacity < 1 || tenantCapacity < 1) {
       throw new IllegalArgumentException("replay capacity must be positive");
     }
     this.capacity = capacity;
+    this.tenantCapacity = tenantCapacity;
   }
 
   /**
@@ -65,7 +79,7 @@ final class EpochReplayQueue {
       Times queued = users.get(userId);
       if (queued != null) {
         users.put(userId, queued.merge(failedAt, failedAt));
-      } else if (size < capacity) {
+      } else if (size < capacity && users.size() < tenantCapacity) {
         users.put(userId, new Times(failedAt, failedAt));
         size++;
       } else {

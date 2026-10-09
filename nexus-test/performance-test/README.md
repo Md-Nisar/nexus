@@ -204,7 +204,11 @@ SELECT COUNT(*) FROM auth_events WHERE event_type = 'TOKEN_REFRESH_REUSE' AND cr
 **Cleanup.** The API has no user or role delete. Teardown revokes every seeded role assignment (so
 no leftover account holds anything); the accounts, the role and their audit rows remain, and
 refresh tokens expire after 14 days. Run it against a disposable database (`docker compose down -v`
-resets the local one). Do not point it at a shared or production-like environment.
+resets the local one). Do not point it at a shared or production-like environment. The write-path
+scenarios enforce this: they refuse to start unless `BASE_URL` is `localhost`, a loopback address or
+a compose host name (no dot), unless `ALLOW_WRITE_SCENARIO=true` is set. The seeded accounts get a
+random password per run, so none is committed or reusable; if `setup()` fails after assigning the
+role, the scenario revokes the assignments it made.
 
 ### Test categories: purpose and when to use them
 

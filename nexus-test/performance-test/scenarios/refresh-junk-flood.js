@@ -4,6 +4,7 @@ import { check, fail, sleep } from 'k6';
 import { Counter } from 'k6/metrics';
 import { config } from '../config/environment.js';
 import { postJson } from '../utils/http.js';
+import { requireWritableTarget, runPassword } from '../utils/write-scenario.js';
 import { awaitVerificationTokens, noJar, refresh, refreshCookie } from './detach-refresh-storm.js';
 
 /**
@@ -23,7 +24,6 @@ import { awaitVerificationTokens, noJar, refresh, refreshCookie } from './detach
  *   after the flood plus one window.
  */
 
-const PASSWORD = 'Pr3f-Junk-Pass-99!';
 const WINDOW_SECONDS = 60;
 const SPA_ATTEMPTS = 3;
 
@@ -35,6 +35,8 @@ export const validRefreshed = new Counter('junk_valid_refresh_ok');
 
 /** Registers, verifies and signs in the valid users. Call from setup(). */
 export function seedJunkFlood() {
+  requireWritableTarget('refresh-junk-flood');
+  const PASSWORD = runPassword();
   const { validUsers, mailhogUrl } = config.refreshJunkFlood;
   if (!mailhogUrl) {
     fail('Set MAILHOG_URL (e.g. http://localhost:8025) so seeded accounts can be verified');

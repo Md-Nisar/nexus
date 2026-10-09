@@ -258,6 +258,38 @@ class SecurityConfigWebTest {
         .andExpect(jsonPath("$.code").value("AUTH_003"));
   }
 
+  // ── Pre-PR security review L-3: metrics are for admins, not every authenticated user ──
+
+  @Test
+  void should_return403_when_nonAdminReadsPrometheus() throws Exception {
+    when(jwtPort.verify(any())).thenReturn(validClaims());
+    when(permissionFreshness.check(any(), any(), anyLong(), anyLong()))
+        .thenReturn(FreshnessVerdict.FRESH);
+
+    mvc.perform(get("/actuator/prometheus")
+            .header(HttpHeaders.AUTHORIZATION, "Bearer member.token"))
+        .andExpect(status().isForbidden());
+    mvc.perform(get("/actuator/metrics/nexus.rbac.epoch.degraded")
+            .header(HttpHeaders.AUTHORIZATION, "Bearer member.token"))
+        .andExpect(status().isForbidden());
+  }
+
+  @Test
+  void should_passAuthorization_when_tenantAdminReadsPrometheus() throws Exception {
+    JwtClaims member = validClaims();
+    when(jwtPort.verify(any())).thenReturn(new JwtClaims(
+        member.sub(), member.tenantId(), true, List.of("TENANT_ADMIN"), List.of(), member.iat(),
+        member.exp(), member.jti(), 0, JwtClaims.CURRENT_VERSION, 0L));
+    when(permissionFreshness.check(any(), any(), anyLong(), anyLong()))
+        .thenReturn(FreshnessVerdict.FRESH);
+
+    // Whatever the slice then answers, it is neither the entry point's 401 nor the 403.
+    int status = mvc.perform(get("/actuator/prometheus")
+            .header(HttpHeaders.AUTHORIZATION, "Bearer admin.token"))
+        .andReturn().getResponse().getStatus();
+    assertThat(status).isNotIn(401, 403);
+  }
+
   private static JwtClaims validClaims() {
     return new JwtClaims(
         UUID.randomUUID().toString(),
