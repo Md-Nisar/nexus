@@ -7,8 +7,8 @@
 **Status after the fixes (2026-10-09): both blockers are addressed, and the verdict has not been re-issued.**
 - `require-auth: true` is in `application-prod.yml` and the test is enabled and passing (`0ec0ec1`).
 - M-1 is fixed (`07b7626`) and L-1 to L-6 are resolved or recorded (`a14d789`); see the two Resolution sections below.
-- **Not re-reviewed.** The reviewer has not re-checked any of this, and the ITs, e2e and k6 gates have not been run since (no Docker). Re-run `/security-review` and update this line to APPROVED only on that result.
-- Two automated commit reviews raised MEDIUM points on the Low fixes: the strict per-tenant replay share (L-2, **resolved**: borrowing up to half the queue), and the actuator matcher (L-3, **resolved**: endpoint-aware matcher plus a trailing-slash test).
+- **Re-reviewed on 2026-10-09 in `13-security-review-pre-PR-rereview.md`: verdict BLOCKED** (no Blocker or High; two Mediums). **RR-M1:** the M-1 fix holds only on the instance whose bump failed; other instances still accept the revoked token, and a detach can be re-minted from the epoch-keyed cache. **RR-M2:** the L-3 gate uses `TENANT_ADMIN`, a per-tenant role, and two counters carry a `tenantId` tag. Neither is fixed or accepted yet. The ITs, e2e and k6 gates have not been run (no Docker).
+- Two automated commit reviews raised MEDIUM points on the Low fixes; both were acted on (L-2: borrowing up to half the queue; L-3: endpoint-aware matcher plus a trailing-slash test).
 
 **Scope:** `git diff origin/main...HEAD` on `ccr-4e9e7cbe-4vl9v6` at HEAD `bdea089` (102 files, +14415/-404).
 - **Priority:** the commits made after `10-security-review-M7-part2.md`: `19f85a3`, `340c406`, `e443a44`, `e4dd1a2`, `ecfb9b2`, `9ccc890`, `f5dc670`, and the test-audit commits `46a55e0` to `4dd7060`.
