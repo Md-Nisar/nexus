@@ -97,6 +97,16 @@
         <Bug pattern="EI_EXPOSE_REP2" />
     </Match>
     <!--
+      US-018 RR-M1: PermissionFreshnessService constructor-injects the Spring-managed singleton
+      PermissionCachePort bean and stores it directly, to evict cached permission sets after a
+      failed bump. Same rationale as RoleResolutionService above: a port reference is behavior,
+      not a value object, and has no sensible defensive copy. Scoped to this one class.
+    -->
+    <Match>
+        <Class name="com.example.nexus.rbac.application.PermissionFreshnessService" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
+    <!--
       US-011 T-005: GlobalExceptionHandler constructor-injects the Spring-managed singleton
       MeterRegistry bean (to record the nexus.rbac.permission_denied counter) and stores it
       directly. Same rationale as ExecutionObserver above: MeterRegistry is a metrics registry/
