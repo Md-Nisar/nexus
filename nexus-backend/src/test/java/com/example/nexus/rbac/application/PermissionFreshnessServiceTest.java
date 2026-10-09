@@ -1367,6 +1367,128 @@ class PermissionFreshnessServiceTest {
     assertThat(seenCountersMatchMap()).isTrue();
   }
 
+  // --- global bound on the own-bump pool, and fail closed for a tenant that lost a bump ---
+
+  private static final int BUMP_CEILING =
+      TENANT_CAP * PermissionFreshnessService.LAST_SEEN_BUMP_CEILING_FACTOR;
+
+  /** Fills the global own-bump bound with whole-ceiling tenants; returns how many were used. */
+  private int fillGlobalBumpPool() {
+    storeWrites(EPOCH + 5);
+    int tenants = PermissionFreshnessService.LAST_SEEN_BUMP_GLOBAL_LIMIT / BUMP_CEILING;
+    for (int i = 0; i < tenants; i++) {
+      service.invalidateHolders(new UUID(5, i), users(BUMP_CEILING), "detach");
+    }
+    return tenants;
+  }
+
+  @Test
+  void should_dropAndCount_when_manyTenantsFillTheGlobalBumpBound() {
+    int tenants = fillGlobalBumpPool();
+    assertThat(lastSeenDropped("bump_dropped")).isZero();
+
+    service.invalidateHolders(new UUID(5, tenants), List.of(USER), "detach");
+
+    assertThat(lastSeenDropped("bump_dropped")).isEqualTo(1.0);
+    assertThat(seenCountersMatchMap()).isTrue();
+    assertThat(service.lastSeenCountsFromCounters().bumpTotal())
+        .isEqualTo(PermissionFreshnessService.LAST_SEEN_BUMP_GLOBAL_LIMIT);
+  }
+
+  @Test
+  void should_releaseGlobalBumpSlots_when_entriesExpire() {
+    int tenants = fillGlobalBumpPool();
+    clock.set(T.plusSeconds(KEY_TTL_SECONDS));
+    service.probe();
+
+    service.invalidateHolders(new UUID(5, tenants), List.of(USER), "detach");
+
+    assertThat(lastSeenDropped("bump_dropped")).isZero();
+    assertThat(service.lastSeenCountsFromCounters().bumpTotal()).isEqualTo(1);
+    assertThat(seenCountersMatchMap()).isTrue();
+  }
+
+  @Test
+  void should_failClosedForTenant_when_ownBumpRefusedAndStoreDown() {
+    UUID victim = UUID.fromString("00000000-0000-7000-8000-0000000000ad");
+    storeWrites(EPOCH + 5);
+    service.invalidateHolders(victim, users(BUMP_CEILING), "detach");
+    service.invalidateHolders(victim, List.of(USER), "detach");
+    when(port.current(any(), any())).thenReturn(OptionalLong.empty());
+
+    assertThat(service.check(victim, UUID.randomUUID(), EPOCH))
+        .isEqualTo(FreshnessVerdict.STALE);
+    assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
+  }
+
+  @Test
+  void should_failClosedForTenant_when_ownBumpRefusedAndInstanceDegradedOpen() {
+    UUID victim = UUID.fromString("00000000-0000-7000-8000-0000000000ad");
+    storeWrites(EPOCH + 5);
+    service.invalidateHolders(victim, users(BUMP_CEILING + 1), "detach");
+    tripAtT();
+
+    assertThat(service.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+    assertThat(service.check(victim, UUID.randomUUID(), EPOCH))
+        .isEqualTo(FreshnessVerdict.STALE);
+    assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.SKIPPED_DEGRADED);
+  }
+
+  @Test
+  void should_notFailClosed_when_storeAnswersFresh() {
+    UUID victim = UUID.fromString("00000000-0000-7000-8000-0000000000ad");
+    storeWrites(EPOCH + 5);
+    service.invalidateHolders(victim, users(BUMP_CEILING + 1), "detach");
+    UUID reader = UUID.randomUUID();
+    when(port.current(victim, reader)).thenReturn(OptionalLong.of(EPOCH));
+
+    assertThat(service.check(victim, reader, EPOCH)).isEqualTo(FreshnessVerdict.FRESH);
+  }
+
+  @Test
+  void should_stopFailingClosed_when_markerOlderThanKeyTtl() {
+    UUID victim = UUID.fromString("00000000-0000-7000-8000-0000000000ad");
+    storeWrites(EPOCH + 5);
+    service.invalidateHolders(victim, users(BUMP_CEILING + 1), "detach");
+    when(port.current(any(), any())).thenReturn(OptionalLong.empty());
+    clock.set(T.plusSeconds(KEY_TTL_SECONDS - 1));
+    assertThat(service.check(victim, UUID.randomUUID(), EPOCH)).isEqualTo(FreshnessVerdict.STALE);
+
+    clock.set(T.plusSeconds(KEY_TTL_SECONDS));
+    service.probe();
+
+    assertThat(service.check(victim, UUID.randomUUID(), EPOCH))
+        .isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
+  }
+
+  @Test
+  void should_failClosedForEveryTenant_when_lostTenantSetIsFull() {
+    int tenants = fillGlobalBumpPool();
+    for (int i = 0; i <= PermissionFreshnessService.LOST_TENANTS_MAX; i++) {
+      service.invalidateHolders(new UUID(6, i), List.of(USER), "detach");
+    }
+    when(port.current(any(), any())).thenReturn(OptionalLong.empty());
+
+    assertThat(service.check(new UUID(7, 1), UUID.randomUUID(), EPOCH))
+        .isEqualTo(FreshnessVerdict.STALE);
+    assertThat(tenants).isPositive();
+  }
+
+  @Test
+  void should_countDroppedAndKeepEpoch_when_readToBumpMoveRefused() {
+    storeWrites(EPOCH + 5);
+    service.invalidateHolders(TENANT, users(BUMP_CEILING), "detach");
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+    service.check(TENANT, USER, EPOCH);
+
+    service.invalidateHolders(TENANT, List.of(USER), "detach");
+    failRead();
+
+    assertThat(lastSeenDropped("bump_dropped")).isEqualTo(1.0);
+    assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.STALE);
+    assertThat(seenCountersMatchMap()).isTrue();
+  }
+
   // --- role replay: the in-flight slot follows the thread, not the future ---
 
   @Test

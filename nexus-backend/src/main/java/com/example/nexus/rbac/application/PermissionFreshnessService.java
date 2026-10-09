@@ -105,10 +105,11 @@ import org.springframework.stereotype.Service;
  * last-seen-tenant-percent} of that (M7 part 2 review L-3), so one tenant's large detach cannot
  * crowd the others out. The bounds apply to entries derived from reads: a new such user beyond
  * either is not recorded and counted in {@code nexus.rbac.epoch.last_seen_dropped{reason=
- * tenant_cap|capacity}}. An entry from this instance's own bump lives in a separate pool that is
- * bounded per tenant only ({@value #LAST_SEEN_BUMP_CEILING_FACTOR} times the tenant's read share),
- * so it is never refused for a read bound, and no tenant's bumps cost another tenant a slot; beyond
- * its tenant's ceiling it is dropped ({@code bump_dropped}, paged). Expired entries are purged by
+ * tenant_cap|capacity}}. An entry from this instance's own bump lives in a separate pool, bounded
+ * per tenant ({@value #LAST_SEEN_BUMP_CEILING_FACTOR} times the tenant's read share) and globally
+ * ({@value #LAST_SEEN_BUMP_GLOBAL_LIMIT}), so it is never refused for a read bound; beyond a bound
+ * it is dropped ({@code bump_dropped}, paged) and its tenant fails closed (stale while the store
+ * cannot answer or the instance is degraded-open) for one key TTL. Expired entries are purged by
  * the scheduled tick, never on a request thread (H-1).
  *
  * <p>A successful bump records exactly the epoch the store wrote and returned (H-2); no instance
@@ -164,7 +165,13 @@ public final class PermissionFreshnessService {
    * Own-bump entries have their own pool, per tenant: at most this multiple of the tenant's
    * read-derived share. No tenant's bumps count against another's, or against the read capacity.
    */
-  static final int LAST_SEEN_BUMP_CEILING_FACTOR = 10;
+  static final int LAST_SEEN_BUMP_CEILING_FACTOR = 4;
+
+  /** The own-bump pool of all tenants together: memory stays bounded however many tenants bump. */
+  static final int LAST_SEEN_BUMP_GLOBAL_LIMIT = 2 * LAST_SEEN_CAPACITY;
+
+  /** Most tenants remembered as having lost an own bump; beyond it every tenant fails closed. */
+  static final int LOST_TENANTS_MAX = 1000;
 
   /** The role replay's holder read must answer within this, or the tick moves on. */
   static final Duration ROLE_READ_TIMEOUT = Duration.ofSeconds(1);
@@ -218,6 +225,11 @@ public final class PermissionFreshnessService {
   private final Map<UUID, Integer> readsPerTenant = new ConcurrentHashMap<>();
   private final Map<UUID, Integer> bumpsPerTenant = new ConcurrentHashMap<>();
   private final AtomicInteger readTotal = new AtomicInteger();
+  private final AtomicInteger bumpTotal = new AtomicInteger();
+  // Tenants whose own bump could not be recorded (ceiling or global bound), until when. Bounded by
+  // LOST_TENANTS_MAX; past it `lostAllUntil` makes every tenant fail closed instead.
+  private final Map<UUID, Instant> lostRevocations = new ConcurrentHashMap<>();
+  private volatile Instant lostAllUntil = Instant.MIN;
   private final int lastSeenBumpCeiling;
   private final ExecutorService roleReadExecutor;
   private volatile RoleRead currentRoleRead;
@@ -534,7 +546,10 @@ public final class PermissionFreshnessService {
   private FreshnessVerdict unverified(
       UserKey key, long tokenEpoch, FreshnessVerdict fallback, Instant now) {
     OptionalLong seen = lastSeenEpoch(key, now);
-    return seen.isPresent() && tokenEpoch < seen.getAsLong() ? FreshnessVerdict.STALE : fallback;
+    if (seen.isPresent() && tokenEpoch < seen.getAsLong()) {
+      return FreshnessVerdict.STALE;
+    }
+    return revocationLost(key.tenantId(), now) ? FreshnessVerdict.STALE : fallback;
   }
 
   /**
@@ -728,10 +743,11 @@ public final class PermissionFreshnessService {
    *       slots.
    *   <li><b>Own-bump</b> entries (this instance's bumps, failed bumps and replays): never subject
    *       to those bounds, because dropping one would let a revoked token through while the store
-   *       is down. They are bounded per tenant only, at {@value #LAST_SEEN_BUMP_CEILING_FACTOR}
-   *       times the tenant's read share; beyond that the entry is dropped and counted ({@code
-   *       reason=bump_dropped}, paged). Total memory is bounded by active tenants times that
-   *       ceiling, each entry living one key TTL.
+   *       is down. They are bounded per tenant, at {@value #LAST_SEEN_BUMP_CEILING_FACTOR} times
+   *       the tenant's read share, and for all tenants together at {@value
+   *       #LAST_SEEN_BUMP_GLOBAL_LIMIT}; beyond either the entry is dropped, counted ({@code
+   *       reason=bump_dropped}, paged), and the tenant fails closed for one key TTL (see {@link
+   *       #markRevocationLost}), so a lost revocation is never silently accepted.
    * </ul>
    *
    * An entry first derived from a read and then bumped moves to the bump pool.
@@ -742,6 +758,7 @@ public final class PermissionFreshnessService {
     }
     SeenEpoch fresh = new SeenEpoch(epoch, now.plus(lastSeenTtl), ownBump);
     Counter[] dropped = {null};
+    boolean[] moveRefused = {false};
     lastSeen.compute(key, (k, old) -> {
       if (old == null) {
         dropped[0] = claim(k.tenantId(), ownBump);
@@ -749,9 +766,14 @@ public final class PermissionFreshnessService {
       }
       SeenEpoch winner = fresh.epoch() > old.epoch() ? fresh : old;
       boolean bump = old.ownBump();
-      if (ownBump && !old.ownBump() && claim(k.tenantId(), true) == null) {
-        release(k.tenantId(), false);
-        bump = true;
+      if (ownBump && !old.ownBump()) {
+        if (claim(k.tenantId(), true) == null) {
+          release(k.tenantId(), false);
+          bump = true;
+        } else {
+          // The epoch is still recorded, as a read-derived entry; only the pool move failed.
+          moveRefused[0] = true;
+        }
       }
       return winner.ownBump() == bump
           ? winner
@@ -759,7 +781,39 @@ public final class PermissionFreshnessService {
     });
     if (dropped[0] != null) {
       dropped[0].increment();
+      if (ownBump && dropped[0] == lastSeenDroppedBump) {
+        markRevocationLost(key.tenantId(), now);
+      }
     }
+    if (moveRefused[0]) {
+      lastSeenDroppedBump.increment();
+    }
+  }
+
+  /**
+   * An own bump could not be recorded, so this instance may not know a revocation of the tenant.
+   * Fail closed for that tenant for one key TTL: while the store cannot answer, or the instance is
+   * degraded-open, its tokens are stale ({@link #unverified}). Logged once per marking.
+   */
+  private void markRevocationLost(UUID tenantId, Instant now) {
+    Instant until = now.plus(lastSeenTtl);
+    if (lostRevocations.size() >= LOST_TENANTS_MAX && !lostRevocations.containsKey(tenantId)) {
+      lostAllUntil = until;
+      return;
+    }
+    if (lostRevocations.put(tenantId, until) == null) {
+      log.atError()
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_LAST_SEEN_BUMP_DROPPED")
+          .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
+          .addKeyValue(LOG_KEY_INSTANCE, INSTANCE)
+          .log("Own permission epoch bump not recorded locally; tenant fails closed while the "
+              + "store is unavailable");
+    }
+  }
+
+  private boolean revocationLost(UUID tenantId, Instant now) {
+    Instant until = lostRevocations.get(tenantId);
+    return now.isBefore(lostAllUntil) || (until != null && now.isBefore(until));
   }
 
   /** Takes a slot of the pool; returns the counter of the reason when it is refused. */
@@ -767,6 +821,10 @@ public final class PermissionFreshnessService {
     if (!bump && readTotal.incrementAndGet() > LAST_SEEN_CAPACITY) {
       readTotal.decrementAndGet();
       return lastSeenDroppedCapacity;
+    }
+    if (bump && bumpTotal.incrementAndGet() > LAST_SEEN_BUMP_GLOBAL_LIMIT) {
+      bumpTotal.decrementAndGet();
+      return lastSeenDroppedBump;
     }
     int limit = bump ? lastSeenBumpCeiling : lastSeenTenantCap;
     boolean[] claimed = {false};
@@ -781,16 +839,12 @@ public final class PermissionFreshnessService {
     if (claimed[0]) {
       return null;
     }
-    if (!bump) {
-      readTotal.decrementAndGet();
-    }
+    (bump ? bumpTotal : readTotal).decrementAndGet();
     return bump ? lastSeenDroppedBump : lastSeenDroppedTenantCap;
   }
 
   private void release(UUID tenantId, boolean bump) {
-    if (!bump) {
-      readTotal.decrementAndGet();
-    }
+    (bump ? bumpTotal : readTotal).decrementAndGet();
     (bump ? bumpsPerTenant : readsPerTenant)
         .computeIfPresent(tenantId, (id, count) -> count <= 1 ? null : count - 1);
   }
@@ -807,31 +861,36 @@ public final class PermissionFreshnessService {
         release(entry.getKey().tenantId(), seen.ownBump());
       }
     }
+    lostRevocations.values().removeIf(until -> !now.isBefore(until));
     // A window that ended a full window ago has nothing left to report (L-2).
     unparseableWindows.values().removeIf(
         window -> !now.isBefore(window.endsAt().plus(UNPARSEABLE_WARN_WINDOW)));
   }
 
   /** Slot counts per pool; the test hooks compare what the map holds with what the counters say. */
-  record SeenCounts(Map<UUID, Integer> reads, Map<UUID, Integer> bumps, int readTotal) {}
+  record SeenCounts(
+      Map<UUID, Integer> reads, Map<UUID, Integer> bumps, int readTotal, int bumpTotal) {}
 
   /** Test hook: how many entries the map really holds. */
   SeenCounts lastSeenCountsFromMap() {
     Map<UUID, Integer> reads = new HashMap<>();
     Map<UUID, Integer> bumps = new HashMap<>();
-    int total = 0;
+    int readSum = 0;
+    int bumpSum = 0;
     for (Map.Entry<UserKey, SeenEpoch> entry : lastSeen.entrySet()) {
       boolean bump = entry.getValue().ownBump();
       (bump ? bumps : reads).merge(entry.getKey().tenantId(), 1, Integer::sum);
-      total += bump ? 0 : 1;
+      readSum += bump ? 0 : 1;
+      bumpSum += bump ? 1 : 0;
     }
-    return new SeenCounts(reads, bumps, total);
+    return new SeenCounts(reads, bumps, readSum, bumpSum);
   }
 
   /** Test hook: what the slot counters say. */
   SeenCounts lastSeenCountsFromCounters() {
     return new SeenCounts(
-        new HashMap<>(readsPerTenant), new HashMap<>(bumpsPerTenant), readTotal.get());
+        new HashMap<>(readsPerTenant), new HashMap<>(bumpsPerTenant), readTotal.get(),
+        bumpTotal.get());
   }
 
   /**
