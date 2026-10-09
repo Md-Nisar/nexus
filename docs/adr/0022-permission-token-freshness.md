@@ -1,6 +1,6 @@
 # ADR 0022 — Permission Token Freshness: Per-User Epoch, Epoch-Keyed Permission Cache, and Token Version Policy
 
-**Status:** Proposed (Revision 1: threat-model RC-24, RC-29 to RC-32, RC-34 and RC-40.1/.6 folded in, 2026-09-26; Revision 2: delta review RC-41 to RC-45 folded in, 2026-09-30; Revision 3: spot-check RC-51 to RC-53 folded in, 2026-10-01)
+**Status:** Proposed (Revision 1: threat-model RC-24, RC-29 to RC-32, RC-34 and RC-40.1/.6 folded in, 2026-09-26; Revision 2: delta review RC-41 to RC-45 folded in, 2026-09-30; Revision 3: spot-check RC-51 to RC-53 folded in, 2026-10-01; Revision 4: pre-PR review M-1 and L-1 to L-3, 2026-10-09)
 **Date:** 2026-09-26
 **Feature:** EPIC-002 (RBAC Foundation), US-018 milestones M6 (A11) and M7 (A9, A10); B6's decision rule
 **Supersedes in part:** ADR-0013 D1 (no per-request RBAC state) and D4 (accept cache lag); ADR-0016 D3 (the permission-cache key row), D4 (the RBAC-cache row, plus a new capability row), D5 (the "no bulk invalidation" non-goal)
@@ -151,3 +151,13 @@ The matching amendment note on ADR-0016 D2 is added under US-018 D2, as a dated 
 - Any new per-request Redis read uses the dedicated short-timeout factory and states its outage policy (ADR-0016 follow-on rule).
 - Any new per-request rejection in the bearer filter states how it treats `@PublicEndpoint` requests; the default is that they are never rejected (D5).
 - Any change to the access-token TTL or the permission-cache TTL re-checks the epoch key TTL (D1); the startup assertion enforces it.
+
+---
+
+## Revision 4 (pre-PR security review, 2026-10-09)
+
+- **D1 amended (M-1).** "Rejected iff `perm_epoch < current`" holds for the value the store reports. The instance also keeps the highest epoch it has seen or tried to write, and in every state the check rejects a token below that value, whatever the store now says. A bump this instance could not write also records its instant, and a token issued at or before that second is rejected until a later epoch is recorded (for a user the instance had not seen, `seen + 1` is no bound). A mint that finds the store below the local bound uses the local bound and is unverified, so the permission set is resolved uncached. Signal: `nexus.rbac.epoch.store_regressed`. This closes the case where Redis refuses writes under `noeviction` while reads still answer.
+- **Replay queues (L-2).** Both queues give each tenant a share (`last-seen-tenant-percent`); a tenant over its share overflows itself.
+- **Last-seen capacity (L-1).** A refused read-derived entry pages (`reason=capacity`) and does not fail the tenant closed; the arithmetic is in RES-31.
+- **Metrics access (L-3).** The Prometheus and metrics endpoints require `TENANT_ADMIN`.
+

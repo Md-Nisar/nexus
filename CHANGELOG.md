@@ -7,6 +7,25 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ## [Unreleased]
 
+### Added — US-018 Milestone 7 (permission token freshness: A9, A10; T-009 to T-014)
+
+**Backend**
+- A revoked or detached user's access token now gets 401 `AUTH_003` on its next request. Tokens carry `perm_epoch` (schema version 3); a per-user Redis epoch is bumped after the revoking transaction commits, and a detach bumps every active holder of the role. The permission cache is keyed by epoch.
+- Outage policy per instance: degraded-open after 3 failed reads in 10 s, then 503 `AUTH_005` (`Retry-After: 30`) after 15 minutes, recovering after 60 s. While degraded-open, an epoch the instance already saw still makes a token stale. Failed bumps and failed holder reads are replayed each second from bounded queues, with a per-tenant share.
+- A bump Redis refused or lost no longer leaves the old token valid while reads still answer: the check and the mint use the locally known epoch (and an issue-time marker for users the instance never saw). New metric `nexus.rbac.epoch.store_regressed`.
+- `POST /api/v1/auth/refresh` is limited per token family (30 per 60 s) and per IP (300 per 60 s, plus 30 per 60 s of failures) and answers 429 `RATE_001` with `Retry-After`. Documented in OpenAPI.
+- Startup fails unless the main and both dedicated epoch Redis connections authenticate; `application-prod.yml` sets `nexus.rbac.redis.require-auth: true`.
+- `server.forward-headers-strategy: none` is now explicit (the per-IP keys stay `getRemoteAddr()`). **Behaviour change:** `/actuator/metrics/**` and `/actuator/prometheus` now require `ROLE_TENANT_ADMIN` (any authenticated user could read them before).
+- New configuration under `nexus.rbac.epoch.*` (see `docs/features/US-018/deployment.md` section 10). No migration.
+
+**Frontend**
+- The access token is attached only to the API base path or its sub-paths; `/apiary` and similar siblings no longer receive it.
+
+**Tests and docs**
+- k6 scenarios `epoch-check-latency`, `detach-refresh-storm` and `refresh-junk-flood`. The two write scenarios refuse non-local targets unless `ALLOW_WRITE_SCENARIO=true`, and use a per-run password.
+- Docs: `docs/features/US-018/09-technical.md` (section 12), `deployment.md` (10), `rollback.md` (7), `monitoring.md`, `runbook.md` (7 to 10); ADR-0022 (Revision 4, still Proposed).
+- Known gaps: the live `api-spec.json` was not regenerated (no Docker in the authoring environment); the k6 merge gates have not been run; `npm audit` reports Angular 22.0.x advisories that predate this change.
+
 ### Added — US-018 Milestone 2 (RBAC grant-subset core: A1 to A4)
 
 **Backend**
