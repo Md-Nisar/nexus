@@ -14,6 +14,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.example.nexus.common.domain.AuthenticationException;
+import com.example.nexus.common.domain.RefreshThrottledException;
 import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.web.GlobalExceptionHandler;
 import com.example.nexus.identity.application.service.LoginUseCase;
@@ -131,6 +132,34 @@ class LoginControllerTest {
         .andExpect(jsonPath("$.accessToken").value("new.access.jwt"))
         .andExpect(header().string(HttpHeaders.SET_COOKIE, containsString("refresh_token=")))
         .andExpect(header().string(HttpHeaders.SET_COOKIE, containsString("HttpOnly")));
+  }
+
+  /** T-013 (RC-32, RC-43): the throttle is a 429 RATE_001 with Retry-After and keeps the cookie. */
+  @Test
+  void should_return429Rate001WithRetryAfterAndNoSetCookie_when_refreshThrottled()
+      throws Exception {
+    when(refreshTokenUseCase.execute(eq(RAW_REFRESH), any()))
+        .thenThrow(new RefreshThrottledException(17));
+
+    mockMvc.perform(post("/api/v1/auth/refresh")
+            .cookie(new jakarta.servlet.http.Cookie("refresh_token", RAW_REFRESH)))
+        .andExpect(status().isTooManyRequests())
+        .andExpect(jsonPath("$.code").value("RATE_001"))
+        .andExpect(header().string(HttpHeaders.RETRY_AFTER, "17"))
+        .andExpect(header().doesNotExist(HttpHeaders.SET_COOKIE));
+  }
+
+  /** RC-51: the reuse response is the uniform 401 AUTH_004, with no cookie issued or cleared. */
+  @Test
+  void should_return401Auth004WithNoSetCookie_when_refreshTokenReused() throws Exception {
+    when(refreshTokenUseCase.execute(eq(RAW_REFRESH), any()))
+        .thenThrow(new AuthenticationException("AUTH_004", "Refresh token invalid"));
+
+    mockMvc.perform(post("/api/v1/auth/refresh")
+            .cookie(new jakarta.servlet.http.Cookie("refresh_token", RAW_REFRESH)))
+        .andExpect(status().isUnauthorized())
+        .andExpect(jsonPath("$.code").value("AUTH_004"))
+        .andExpect(header().doesNotExist(HttpHeaders.SET_COOKIE));
   }
 
   @Test

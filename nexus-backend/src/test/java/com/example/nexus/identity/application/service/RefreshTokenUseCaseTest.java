@@ -668,6 +668,40 @@ class RefreshTokenUseCaseTest {
         argThat(e -> "TOKEN_REFRESH_REUSE".equals(e.getEventType())));
   }
 
+  /** A-20 (1): a replay that revoked nothing spends the failure bucket only, never the family's. */
+  @Test
+  void should_consumeOnlyFailureBucket_when_replayRevokesNothing() {
+    UUID familyId = UUID.randomUUID();
+    RefreshToken revoked = validToken(UUID.randomUUID(), familyId);
+    revoked.revoke(NOW.minusSeconds(60));
+    when(refreshTokenPort.findByTokenHash(STORED_HASH)).thenReturn(Optional.of(revoked));
+    when(secureEventService.revokeFamily(familyId, NOW)).thenReturn(0);
+
+    assertThatThrownBy(() -> useCase.execute(COOKIE_VALUE, CLIENT_IP))
+        .isInstanceOf(AuthenticationException.class);
+
+    verify(rateLimitStore, times(1)).tryConsume(FAIL_KEY, WINDOW_SECONDS, FAIL_MAX);
+    verify(rateLimitStore, never()).tryConsume(
+        argThat(k -> k.startsWith("REFRESH_FAMILY:")), any(Integer.class), any(Integer.class));
+  }
+
+  /** A-20 (2): a user that vanished after a valid token is no failure outcome: no bucket, no row. */
+  @Test
+  void should_consumeNoFailureBucketAndWriteNoRow_when_userVanishedAfterValidToken() {
+    UUID userId = UUID.randomUUID();
+    when(refreshTokenPort.findByTokenHash(STORED_HASH))
+        .thenReturn(Optional.of(validToken(userId, UUID.randomUUID())));
+    when(userRegistrationPort.findById(userId)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> useCase.execute(COOKIE_VALUE, CLIENT_IP))
+        .isInstanceOf(AuthenticationException.class)
+        .hasFieldOrPropertyWithValue("code", "AUTH_004");
+
+    verify(rateLimitStore, never())
+        .tryConsume(eq(FAIL_KEY), any(Integer.class), any(Integer.class));
+    verify(secureEventService, never()).recordEvent(any());
+  }
+
   @Test
   void should_return401Auth004AndNeverRotate_when_successorOfRevokedFamilyPresented() {
     // After the replay revoked the family, the attacker's successor is itself a revoked token:
@@ -702,6 +736,53 @@ class RefreshTokenUseCaseTest {
   }
 
   // --- helpers ---
+
+  /** Boundary: the window's WARN is spent until the whole window has passed (one second short). */
+  @Test
+  void should_stillSuppressWarn_when_oneSecondBeforeWindowEnds() {
+    when(refreshTokenPort.findByTokenHash(STORED_HASH)).thenReturn(Optional.empty());
+    when(rateLimitStore.tryConsume(FAIL_KEY, WINDOW_SECONDS, FAIL_MAX))
+        .thenReturn(RateLimitResult.reject(30));
+    assertThatThrownBy(() -> useCase.execute(COOKIE_VALUE, CLIENT_IP))
+        .isInstanceOf(RateLimitException.class);
+
+    clock.advance(Duration.ofSeconds(WINDOW_SECONDS - 1));
+    assertThatThrownBy(() -> useCase.execute(COOKIE_VALUE, CLIENT_IP))
+        .isInstanceOf(RateLimitException.class);
+
+    assertThat(warnMessages()).hasSize(1);
+    assertThat(meterRegistry.counter(COUNTER).count()).isEqualTo(2.0);
+  }
+
+  /** Boundary: a token that expires exactly now is still valid (strict isBefore). */
+  @Test
+  void should_rotate_when_tokenExpiresExactlyNow() {
+    UUID userId = UUID.randomUUID();
+    RefreshToken token = new RefreshToken(
+        UUID.randomUUID(), userId, STORED_HASH, UUID.randomUUID(), NOW);
+    User user = activeUser(userId);
+    when(refreshTokenPort.findByTokenHash(STORED_HASH)).thenReturn(Optional.of(token));
+    when(userRegistrationPort.findById(userId)).thenReturn(Optional.of(user));
+    when(jwtPort.issue(user)).thenReturn(new AccessTokenResult("new.jwt.token", 900L, "jti-1"));
+
+    LoginResult result = useCase.execute(COOKIE_VALUE, CLIENT_IP);
+
+    assertThat(result.rawRefreshToken()).isEqualTo(NEW_RAW);
+  }
+
+  /** Boundary: one nanosecond past expiry is rejected as a failure, never rotated. */
+  @Test
+  void should_rejectWithoutRotating_when_tokenExpiredOneNanoAgo() {
+    RefreshToken token = new RefreshToken(
+        UUID.randomUUID(), UUID.randomUUID(), STORED_HASH, UUID.randomUUID(),
+        NOW.minusNanos(1));
+    when(refreshTokenPort.findByTokenHash(STORED_HASH)).thenReturn(Optional.of(token));
+
+    assertThatThrownBy(() -> useCase.execute(COOKIE_VALUE, CLIENT_IP))
+        .isInstanceOf(AuthenticationException.class);
+
+    verify(refreshTokenPort, never()).save(any());
+  }
 
   private java.util.List<String> warnMessages() {
     return logAppender.list.stream()
