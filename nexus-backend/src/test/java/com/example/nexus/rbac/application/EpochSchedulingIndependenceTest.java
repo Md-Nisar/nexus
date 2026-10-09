@@ -1,13 +1,17 @@
 package com.example.nexus.rbac.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import com.example.nexus.rbac.application.port.out.PermissionEpochPort;
+import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.infrastructure.cache.EpochSchedulingConfig;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.OptionalLong;
 import java.util.UUID;
@@ -40,6 +44,7 @@ class EpochSchedulingIndependenceTest {
             .setConversionService(ApplicationConversionService.getSharedInstance()))
         .withUserConfiguration(EpochSchedulingConfig.class)
         .withBean(PermissionEpochPort.class, () -> port)
+        .withBean(UserRoleAssignmentPort.class, () -> mock(UserRoleAssignmentPort.class))
         .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
         .withBean(Clock.class, Clock::systemUTC)
         .withBean(PermissionFreshnessService.class)
@@ -77,6 +82,7 @@ class EpochSchedulingIndependenceTest {
             .setConversionService(ApplicationConversionService.getSharedInstance()))
         .withUserConfiguration(EpochSchedulingConfig.class)
         .withBean(PermissionEpochPort.class, () -> port)
+        .withBean(UserRoleAssignmentPort.class, () -> mock(UserRoleAssignmentPort.class))
         .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
         .withBean(Clock.class, Clock::systemUTC)
         .withBean(PermissionFreshnessService.class)
@@ -99,6 +105,42 @@ class EpochSchedulingIndependenceTest {
           }
 
           assertThat(port.successfulBumps.get()).as("replayed bumps").isEqualTo(1);
+        });
+  }
+
+  @Test
+  void should_resolveRoleQueue_when_retryBufferDisabled() {
+    CountingPort port = new CountingPort();
+    UserRoleAssignmentPort userRoles = mock(UserRoleAssignmentPort.class);
+    UUID role = UUID.fromString("00000000-0000-7000-8000-0000000000c1");
+    when(userRoles.findActiveUserIdsForRole(role)).thenReturn(List.of(USER));
+    new ApplicationContextRunner()
+        .withInitializer(ctx -> ctx.getBeanFactory()
+            .setConversionService(ApplicationConversionService.getSharedInstance()))
+        .withUserConfiguration(EpochSchedulingConfig.class)
+        .withBean(PermissionEpochPort.class, () -> port)
+        .withBean(UserRoleAssignmentPort.class, () -> userRoles)
+        .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+        .withBean(Clock.class, Clock::systemUTC)
+        .withBean(PermissionFreshnessService.class)
+        .withPropertyValues(
+            "nexus.identity.audit.retry-buffer.enabled=false",
+            "nexus.rbac.epoch.fail-open-window=PT15M",
+            "nexus.rbac.epoch.entry-failure-threshold=3",
+            "nexus.rbac.epoch.entry-failure-window=PT10S",
+            "nexus.rbac.epoch.recovery-sustain=PT60S",
+            "nexus.rbac.epoch.key-ttl-seconds=960",
+            "nexus.rbac.epoch.replay-capacity-users=1000")
+        .run(context -> {
+          PermissionFreshnessService service = context.getBean(PermissionFreshnessService.class);
+          service.holderReadFailed(TENANT, role, "detach");
+
+          long deadline = System.currentTimeMillis() + AWAIT_MILLIS;
+          while (port.successfulBumps.get() == 0 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(50);
+          }
+
+          assertThat(port.successfulBumps.get()).as("role-resolved bumps").isEqualTo(1);
         });
   }
 

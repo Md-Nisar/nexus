@@ -544,9 +544,11 @@ public class RoleManagementService {
    * and this one's.
    *
    * <p>A detach read is retried once, because a failure there loses a revocation (M-2): the
-   * likeliest cause is a pool timeout that has cleared a moment later. If the retry fails too, the
-   * paging counter {@code nexus.rbac.epoch.bump_failed{operation=detach, reason=holder_read}} is
-   * incremented. An attach read is not retried: a missed eviction is fail-safe.
+   * likeliest cause is a pool timeout that has cleared a moment later. If the retry fails too,
+   * {@link PermissionFreshnessService#holderReadFailed} pages ({@code
+   * nexus.rbac.epoch.bump_failed{operation=detach, reason=holder_read}}) and queues the role: the
+   * scheduler tick reads the holders again and bumps them (M7 part 2 review M-2). An attach read
+   * is not retried and not queued: a missed eviction is fail-safe.
    */
   private Optional<List<UUID>> readActiveHoldersAfterCommit(
       UUID tenantId, UUID roleId, String operation) {
@@ -571,7 +573,7 @@ public class RoleManagementService {
         .addKeyValue("exception", failure.getClass().getSimpleName())
         .log("Reading role holders after commit failed; permission freshness not applied");
     if (detach) {
-      permissionFreshnessService.holderReadFailed(operation);
+      permissionFreshnessService.holderReadFailed(tenantId, roleId, operation);
     }
     return Optional.empty();
   }

@@ -172,6 +172,13 @@ nexus:
       # Lost-bump replay queue (design §9.3, T-012): the most distinct users whose failed bump is
       # held per instance for replay. Overflow drops the newest and pages (bump_failed overflow).
       replay-capacity-users: ${NEXUS_RBAC_EPOCH_REPLAY_CAPACITY_USERS:100000}
+      # Roles whose post-commit holder read failed twice, held per instance until the 1 s tick
+      # reads their holders and bumps them (security review M7 part 2, M-2). Overflow pages
+      # (bump_failed reason=role_overflow).
+      replay-capacity-roles: ${NEXUS_RBAC_EPOCH_REPLAY_CAPACITY_ROLES:1000}
+      # Share of the 100,000-entry last-seen map one tenant may fill (security review M7 part 2,
+      # L-3), so one tenant's large detach cannot switch off the defence for the others. 1 to 100.
+      last-seen-tenant-percent: ${NEXUS_RBAC_EPOCH_LAST_SEEN_TENANT_PERCENT:10}
     redis:
       # When true, startup fails unless the main Redis factory and both dedicated epoch factories
       # authenticate (RC-34.1, RC-45.1, RC-45.2; US-018 T-014). application-prod.yml sets true.
