@@ -46,28 +46,50 @@ public class RedisPermissionEpochAdapter implements PermissionEpochPort {
 
   private static final Logger log = LoggerFactory.getLogger(RedisPermissionEpochAdapter.class);
 
+  /**
+   * The largest valid epoch, {@code 2^53 - 2}. The bump script computes in Lua doubles, which hold
+   * integers exactly only up to {@code 2^53}; the largest value it can write is {@code MAX_EPOCH}
+   * itself, so every value the script writes is a value {@link #parse} accepts, and no valid value
+   * is lowered by a bump. The millisecond clock reaches it in about 285,000 years.
+   */
+  static final long MAX_EPOCH = (1L << 53) - 2;
+
+  /** The longest valid stored value: the digits of {@link #MAX_EPOCH}. */
+  private static final int MAX_EPOCH_DIGITS = Long.toString(MAX_EPOCH).length();
+
   // KEYS[i] = epoch key of user i; ARGV[1] = key TTL; ARGV[2i] / ARGV[2i+1] = that user's roleset
   // / permset stem. The old epoch is formatted as Long.toString renders it, so the DEL hits the
   // entry a mint cached under it. Returns the new epoch of each user, in KEYS order, as strings.
+  //
+  // A stored value is valid only if it is 1 to 16 plain digits and at most MAX_EPOCH, the same
+  // rule as parse() (L-1). tonumber() alone would also accept "nan", "inf", "0x10" and "1e3", and
+  // Lua doubles lose integers above 2^53. Anything else counts as 0, so the bump writes Redis TIME.
+  // The "v ~= v" test is a second guard against NaN. The new value is capped at MAX_EPOCH, so the
+  // script never writes a value parse() rejects.
   @SuppressWarnings("rawtypes")
   private static final RedisScript<List> BUMP_SCRIPT = RedisScript.of("""
       local ttl = tonumber(ARGV[1])
+      local maxEpoch = %d
       local time = redis.call('TIME')
       local nowMs = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
       local result = {}
       for i, key in ipairs(KEYS) do
-        local old = tonumber(redis.call('GET', key) or '0') or 0
-        if old < 0 or old > 9007199254740992 then
-          old = 0
+        local old = 0
+        local raw = redis.call('GET', key)
+        if raw and string.len(raw) <= %d and string.find(raw, '^%%d+$') then
+          local v = tonumber(raw)
+          if v == v and v >= 0 and v <= maxEpoch then
+            old = v
+          end
         end
-        local new = math.max(old + 1, nowMs)
-        redis.call('SET', key, string.format('%.0f', new), 'EX', ttl)
-        local oldEpoch = string.format('%.0f', old)
+        local new = math.min(math.max(old + 1, nowMs), maxEpoch)
+        redis.call('SET', key, string.format('%%.0f', new), 'EX', ttl)
+        local oldEpoch = string.format('%%.0f', old)
         redis.call('DEL', ARGV[2 * i] .. oldEpoch, ARGV[2 * i + 1] .. oldEpoch)
-        result[i] = string.format('%.0f', new)
+        result[i] = string.format('%%.0f', new)
       end
       return result
-      """, List.class);
+      """.formatted(MAX_EPOCH, MAX_EPOCH_DIGITS), List.class);
 
   private final EpochTemplates templates;
   private final RbacRedisKeys keys;
@@ -99,17 +121,32 @@ public class RedisPermissionEpochAdapter implements PermissionEpochPort {
     return OptionalLong.of(value == null ? 0L : parse(value));
   }
 
-  /** A value that is not a non-negative long is the key's problem, not the store's (L-1). */
+  /**
+   * A value that is not 1 to 16 plain digits within {@link
+   * #MAX_EPOCH} is the key's problem, not the store's (L-1); the bump script applies the same rule.
+   */
   private static long parse(String value) {
-    try {
-      long epoch = Long.parseLong(value);
-      if (epoch < 0) {
-        throw new EpochUnparseableException();
-      }
-      return epoch;
-    } catch (NumberFormatException e) {
+    if (!isValidEpoch(value)) {
       throw new EpochUnparseableException();
     }
+    long epoch = Long.parseLong(value);
+    if (epoch > MAX_EPOCH) {
+      throw new EpochUnparseableException();
+    }
+    return epoch;
+  }
+
+  private static boolean isValidEpoch(String value) {
+    if (value.isEmpty() || value.length() > MAX_EPOCH_DIGITS) {
+      return false;
+    }
+    for (int i = 0; i < value.length(); i++) {
+      char c = value.charAt(i);
+      if (c < '0' || c > '9') {
+        return false;
+      }
+    }
+    return true;
   }
 
   @Override
@@ -146,9 +183,18 @@ public class RedisPermissionEpochAdapter implements PermissionEpochPort {
       throw new InvalidDataAccessResourceUsageException(
           "permission epoch bump script returned an unexpected result");
     }
+    // The script has applied the whole batch by now, so a value that does not parse must not fail
+    // it: the caller would replay the batch and bump every user again. The user is left out of the
+    // map instead, which the caller records as a lower bound (L-1).
     Map<UUID, Long> epochs = HashMap.newHashMap(users.size());
     for (int i = 0; i < users.size(); i++) {
-      epochs.put(users.get(i), Long.parseLong(String.valueOf(written.get(i))));
+      String value = String.valueOf(written.get(i));
+      if (isValidEpoch(value)) {
+        long epoch = Long.parseLong(value);
+        if (epoch <= MAX_EPOCH) {
+          epochs.put(users.get(i), epoch);
+        }
+      }
     }
     return epochs;
   }
