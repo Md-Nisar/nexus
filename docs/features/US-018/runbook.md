@@ -114,11 +114,11 @@ Revoke and detach make holders' tokens stale and drop their cached permission se
 
 - [ ] **Bump the epoch of every affected holder.** List the user ids (for a permission removed from a role, the active holders of that role):
    ```sql
-   SELECT HEX(ur.tenant_id) AS tenant_id, HEX(ur.user_id) AS user_id
+   SELECT BIN_TO_UUID(ur.tenant_id) AS tenant_id, BIN_TO_UUID(ur.user_id) AS user_id
    FROM user_roles ur
-   WHERE ur.role_id = UNHEX(REPLACE(?, '-', '')) AND ur.revoked_at IS NULL;
+   WHERE ur.role_id = UUID_TO_BIN(?) AND ur.revoked_at IS NULL;
    ```
-   Then run the same monotonic bump the application runs, for up to 500 keys `{keyPrefix}:rbac:epoch:{tenantId}:{userId}` per call (UUIDs in their dashed lower-case form; the last argument is `nexus.rbac.epoch.key-ttl-seconds`, 960 by default):
+   `BIN_TO_UUID` prints the dashed lower-case form that the Redis keys use; `HEX` would print upper-case ids without dashes, and the script below would then bump keys that nothing reads. Run the same monotonic bump the application runs, for up to 500 keys `{keyPrefix}:rbac:epoch:{tenantId}:{userId}` per call (the last argument is `nexus.rbac.epoch.key-ttl-seconds`, 960 by default):
    ```
    redis-cli EVAL "local t=redis.call('TIME') local now=tonumber(t[1])*1000+math.floor(tonumber(t[2])/1000) for _,k in ipairs(KEYS) do local o=tonumber(redis.call('GET',k) or '0') or 0 redis.call('SET',k,string.format('%.0f',math.max(o+1,now)),'EX',ARGV[1]) end return #KEYS" <numkeys> <epoch keys...> 960
    ```
@@ -126,3 +126,5 @@ Revoke and detach make holders' tokens stale and drop their cached permission se
 - [ ] **Flush the permission cache:** `SCAN` with `MATCH {keyPrefix}:rbac:permset:*` and `MATCH {keyPrefix}:rbac:roleset:*`, and `UNLINK` the keys found. The cache is never authoritative; the only cost is one extra database read per next login or refresh.
 
 Not needed after the T-010 deploy itself: cache keys without an epoch suffix are no longer read and expire within the cache TTL.
+
+**Page `nexus.rbac.epoch.bump_failed{operation="detach", reason="holder_read"}`.** A detach committed, but the instance could not read the role's holders after commit, even on a retry (usually pool pressure or a database timeout), so no holder's epoch was bumped and nothing was queued for replay. The ERROR `RBAC_HOLDER_READ_FAILED` names the tenant and role. Apply the two checklist items above for that role's active holders, within the token TTL (900 s).

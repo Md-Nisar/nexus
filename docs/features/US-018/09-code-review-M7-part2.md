@@ -81,3 +81,26 @@ Record the deviation or pipeline; consider extracting `OutageStateMachine` and `
 | Nit | 4 |
 
 Verdict: **CHANGES REQUESTED.** ITs and the k6 storm gate were not run by the reviewer and must be re-run after the fixes.
+
+## Resolution (2026-10-09)
+
+Fixed on `ccr-4e9e7cbe-4vl9v6` with tests. Gate: `./mvnw verify` with Docker up, 1737 unit tests (0 failures, 2 skipped, one of them the `@Disabled` prod-profile test) and 426 ITs (0 failures), Checkstyle 0 violations, SpotBugs and JaCoCo checks green. The k6 storm gate and the NAT refresh gate were not re-run (no dev stack here) and stay open merge-checklist items.
+
+| Finding | State | Where |
+|---|---|---|
+| H-1 | Fixed | `remember` never scans; the 1 s tick purges expired entries (`purgeExpiredSeen`); a full map only counts `last_seen_dropped`. A-18, A-21. |
+| H-2 | Fixed | Bump script returns the new values, `PermissionEpochPort.bump` returns `Map<UUID, Long>`, `rememberBump` and the replay record exactly those; no local-clock term. Design §9.2, ADR-0022 D1, A-18. |
+| H-3 | Partly: needs a human | `application-prod.yml` and `@Disabled` deliberately untouched. Explicit merge-checklist item added in `04-tasks.md` next to "Ops confirms the prod profile is active"; the inaccurate STATUS.md line corrected (`@Disabled`, not red). |
+| M-1 | Fixed | `EpochReplayQueue` keeps `oldestFailedAt` and `newestFailedAt`; expiry compares the newest; both kept on `requeue`. Design §9.3, ADR-0022 D3, A-21. |
+| M-2 | Fixed | A detach holder read is retried once; the second failure increments `bump_failed{operation=detach, reason=holder_read}`. No role-level replay (holders unknown). Runbook §8 has the page response. |
+| L-1 | Fixed | `EpochUnparseableException` from the adapter; `STALE` for that user, WARN `RBAC_EPOCH_UNPARSEABLE` (tenantId only), not counted in the window. The bump script treats a non-numeric or above-2^53 value as 0. |
+| L-2 | Fixed | The recovery sustain starts from a clock read after the drain. |
+| L-3 | Fixed | `mintEpoch` returns `(epoch, verified)`; unverified mints use `RoleResolutionService.resolveUncached`. |
+| L-4 | Accepted | Recorded next to Decision 15 (design §9.3, ADR-0022 D3); no trivial conditional fix. |
+| L-5 | Fixed | A failed bump records the lower bound `seen + 1`; A-18 amended; `should_notRecordLocalBump_when_bumpFails` inverted. |
+| L-6 | Fixed | Runbook §8 uses `BIN_TO_UUID` and `UUID_TO_BIN(?)`. |
+| N-1 | Fixed | `${NEXUS_RBAC_REDIS_REQUIRE_AUTH:false}`. |
+| N-2 | Fixed | WARN field renamed to `rejectedCount`; A-20 and design §9.7 updated. |
+| N-3 | Fixed | `probe()` catches `RuntimeException` and returns false. |
+| N-4 | Deviation recorded, extraction not done | Sequential batches recorded in design §9.4, T-010 and ADR D4. `OutageStateMachine` and `LastSeenEpochs` extraction left as an open refactor (A-21). |
+| Extra (family throttle) | Fixed | `nexus.auth.refresh_family_throttled` counter and a rate-limited WARN `AUTH_REFRESH_FAMILY_THROTTLED rejectedCount` (no family id, no IP), its own window. |
