@@ -201,7 +201,11 @@ class RedisPermissionEpochAdapterIT {
   }
 
   @ParameterizedTest
-  @ValueSource(strings = {"not-a-number", "abc", "9223372036854775808", "-1", ""})
+  @ValueSource(strings = {
+    "not-a-number", "abc", "9223372036854775808", "-1", "", "nan", "-nan", "inf", "-inf", "0x10",
+    "+5", "1e3", " 7", "9007199254740991", "9007199254740992", "9223372036854775807",
+    "00000000000000001"
+  })
   void should_throwUnparseable_when_storedValueIsNotAnEpoch(String stored) {
     UUID tenantId = UUID.randomUUID();
     UUID userId = UUID.randomUUID();
@@ -258,14 +262,91 @@ class RedisPermissionEpochAdapterIT {
   }
 
   @Test
-  void should_returnStoredValue_when_epochIsLongMaxValue() {
+  void should_returnStoredValue_when_epochIsCeiling() {
     UUID tenantId = UUID.randomUUID();
     UUID userId = UUID.randomUUID();
-    templates.read().opsForValue().set(key(tenantId, userId), Long.toString(Long.MAX_VALUE));
+    templates.read().opsForValue().set(
+        key(tenantId, userId), Long.toString(RedisPermissionEpochAdapter.MAX_EPOCH));
 
     OptionalLong current = adapter(templates).current(tenantId, userId);
 
-    assertThat(current).hasValue(Long.MAX_VALUE);
+    assertThat(current).hasValue(RedisPermissionEpochAdapter.MAX_EPOCH);
+  }
+
+  /** L-1: a valid epoch is only ever raised, never lowered, and a corrupt one never survives. */
+  @ParameterizedTest
+  @ValueSource(strings = {
+    "nan", "-nan", "inf", "-inf", "-1", "abc", "0x10", "1e3", "+5", "9007199254740991",
+    "9007199254740992", "9007199254740993", "9223372036854775807", "9223372036854775808"
+  })
+  void should_replaceWithRedisTime_when_storedValueOutsideValidRange(String stored) {
+    UUID tenantId = UUID.randomUUID();
+    UUID userId = UUID.randomUUID();
+    templates.read().opsForValue().set(key(tenantId, userId), stored);
+    long before = redisTimeMillis();
+
+    Map<UUID, Long> written = adapter(templates).bump(tenantId, List.of(userId));
+
+    assertThat(written.get(userId)).isBetween(before, redisTimeMillis());
+    assertThat(adapter(templates).current(tenantId, userId))
+        .hasValue(written.get(userId));
+  }
+
+  @Test
+  void should_neverWriteNan_when_anyCorruptValueBumpedInOneBatch() {
+    UUID tenantId = UUID.randomUUID();
+    List<UUID> users = List.of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
+    templates.read().opsForValue().set(key(tenantId, users.get(0)), "nan");
+    templates.read().opsForValue().set(key(tenantId, users.get(1)), "inf");
+
+    Map<UUID, Long> written = adapter(templates).bump(tenantId, users);
+
+    assertThat(written).containsOnlyKeys(users);
+    for (UUID userId : users) {
+      assertThat(templates.read().opsForValue().get(key(tenantId, userId)))
+          .matches("[0-9]{1,16}");
+    }
+  }
+
+  @Test
+  void should_incrementByOne_when_storedValueIsLargestValidBelowCeiling() {
+    UUID tenantId = UUID.randomUUID();
+    UUID userId = UUID.randomUUID();
+    long stored = RedisPermissionEpochAdapter.MAX_EPOCH - 1;
+    templates.read().opsForValue().set(key(tenantId, userId), Long.toString(stored));
+
+    Map<UUID, Long> written = adapter(templates).bump(tenantId, List.of(userId));
+
+    assertThat(written).containsEntry(userId, stored + 1);
+  }
+
+  @Test
+  void should_neverLowerOrExceedCeiling_when_storedValueIsCeiling() {
+    UUID tenantId = UUID.randomUUID();
+    UUID userId = UUID.randomUUID();
+    templates.read().opsForValue().set(
+        key(tenantId, userId), Long.toString(RedisPermissionEpochAdapter.MAX_EPOCH));
+
+    Map<UUID, Long> written = adapter(templates).bump(tenantId, List.of(userId));
+
+    assertThat(written).containsEntry(userId, RedisPermissionEpochAdapter.MAX_EPOCH);
+    assertThat(adapter(templates).current(tenantId, userId))
+        .hasValue(RedisPermissionEpochAdapter.MAX_EPOCH);
+  }
+
+  @Test
+  void should_acceptMixedValidAndCorruptUsers_when_resultParsedPerUser() {
+    UUID tenantId = UUID.randomUUID();
+    UUID valid = UUID.randomUUID();
+    UUID corrupt = UUID.randomUUID();
+    long stored = redisTimeMillis() + 3_600_000L;
+    templates.read().opsForValue().set(key(tenantId, valid), Long.toString(stored));
+    templates.read().opsForValue().set(key(tenantId, corrupt), "nan");
+
+    Map<UUID, Long> written = adapter(templates).bump(tenantId, List.of(corrupt, valid));
+
+    assertThat(written).containsEntry(valid, stored + 1);
+    assertThat(written.get(corrupt)).isPositive();
   }
 
   @Test
