@@ -275,6 +275,19 @@ class SecurityConfigWebTest {
   }
 
   @Test
+  void should_return403_when_nonAdminReadsPrometheusWithTrailingSlashOrSubPath() throws Exception {
+    when(jwtPort.verify(any())).thenReturn(validClaims());
+    when(permissionFreshness.check(any(), any(), anyLong(), anyLong()))
+        .thenReturn(FreshnessVerdict.FRESH);
+
+    for (String path : new String[] {"/actuator/prometheus/", "/actuator/prometheus/x",
+        "/actuator/metrics/"}) {
+      mvc.perform(get(path).header(HttpHeaders.AUTHORIZATION, "Bearer member.token"))
+          .andExpect(status().isForbidden());
+    }
+  }
+
+  @Test
   void should_passAuthorization_when_tenantAdminReadsPrometheus() throws Exception {
     JwtClaims member = validClaims();
     when(jwtPort.verify(any())).thenReturn(new JwtClaims(

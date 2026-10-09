@@ -10,6 +10,7 @@ import com.example.nexus.rbac.domain.RbacRoleNames;
 import java.util.List;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.security.autoconfigure.actuate.web.servlet.EndpointRequest;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -93,7 +94,9 @@ public class SecurityConfig {
                 "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
             // Pre-PR security review L-3: the metrics publish the instance's degraded state and
             // drop counters, which time the fail-open window for anyone who can read them.
-            .requestMatchers("/actuator/metrics/**", "/actuator/prometheus")
+            // The endpoint-aware matcher follows the actuator's own path mapping, so a trailing
+            // slash or a changed base path cannot slip past a hand-written pattern.
+            .requestMatchers(EndpointRequest.to("prometheus", "metrics"))
                 .hasRole(RbacRoleNames.TENANT_ADMIN)
             .anyRequest().authenticated())
         .exceptionHandling(e -> e
