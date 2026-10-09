@@ -5,7 +5,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.nexus.rbac.application.RoleReplayQueue.Entry;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -148,5 +154,49 @@ class RoleReplayQueueTest {
     assertThat(queue.size()).isZero();
     assertThat(entry.oldestFailedAt()).isEqualTo(T);
     assertThat(entry.newestFailedAt()).isEqualTo(T.plusSeconds(30));
+  }
+
+  /** Request threads offering the same capacity-bound set concurrently never overshoot it. */
+  @Test
+  void should_neverExceedCapacityAndKeepOldest_when_offeredConcurrently() throws Exception {
+    RoleReplayQueue queue = new RoleReplayQueue(50);
+    List<UUID> roles = IntStream.range(0, 200).mapToObj(i -> UUID.randomUUID()).toList();
+    int threads = 8;
+    ExecutorService pool = Executors.newFixedThreadPool(threads);
+    CountDownLatch start = new CountDownLatch(1);
+    try {
+      for (int t = 0; t < threads; t++) {
+        Instant failedAt = T.plusSeconds(t);
+        pool.submit(() -> {
+          start.await();
+          for (UUID role : roles) {
+            queue.offer(TENANT, role, failedAt);
+          }
+          return null;
+        });
+      }
+      start.countDown();
+    } finally {
+      pool.shutdown();
+      assertThat(pool.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+    }
+
+    assertThat(queue.size()).isEqualTo(50);
+    for (int i = 0; i < 50; i++) {
+      Entry entry = queue.poll(NEVER_EXPIRED).orElseThrow();
+      assertThat(entry.oldestFailedAt()).isEqualTo(T);
+      assertThat(entry.newestFailedAt()).isEqualTo(T.plusSeconds(threads - 1));
+    }
+    assertThat(queue.isEmpty()).isTrue();
+  }
+
+  @Test
+  void should_returnEmptyAndEmptyTheQueue_when_everyRoleExpired() {
+    RoleReplayQueue queue = new RoleReplayQueue(3);
+    queue.offer(TENANT, ROLE, T);
+    queue.offer(OTHER_TENANT, OTHER_ROLE, T.plusSeconds(1));
+
+    assertThat(queue.poll(T.plusSeconds(1))).isEmpty();
+    assertThat(queue.isEmpty()).isTrue();
   }
 }

@@ -279,6 +279,72 @@ class EpochReplayQueueTest {
     });
   }
 
+  /** Offering nobody for a new tenant must not leave a phantom tenant for poll to trip on. */
+  @Test
+  void should_stayEmpty_when_offeredNoUsersForNewTenant() {
+    EpochReplayQueue queue = new EpochReplayQueue(10);
+
+    int dropped = queue.offer(TENANT, List.of(), T);
+
+    assertThat(dropped).isZero();
+    assertThat(queue.isEmpty()).isTrue();
+    assertThat(queue.poll(500, NEVER_EXPIRED)).isEmpty();
+  }
+
+  /**
+   * Drain vs offer: request threads offer while the scheduler polls and requeues some batches (a
+   * failed replay) and keeps others (a replayed one). Nothing is lost or duplicated whatever the
+   * interleaving: replayed users plus what is still queued are exactly the users offered.
+   */
+  @Test
+  void should_loseNoUser_when_offeredWhileDrainerPollsAndRequeues() throws Exception {
+    EpochReplayQueue queue = new EpochReplayQueue(100_000);
+    int producers = 4;
+    List<UUID> all = users(producers * 500);
+    java.util.Set<UUID> replayed = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    java.util.concurrent.atomic.AtomicBoolean producing =
+        new java.util.concurrent.atomic.AtomicBoolean(true);
+    ExecutorService pool = Executors.newFixedThreadPool(producers + 1);
+    CountDownLatch start = new CountDownLatch(1);
+    List<java.util.concurrent.Future<?>> work = new ArrayList<>();
+    for (int p = 0; p < producers; p++) {
+      List<UUID> mine = all.subList(p * 500, (p + 1) * 500);
+      work.add(pool.submit(() -> {
+        start.await();
+        for (UUID user : mine) {
+          queue.offer(TENANT, List.of(user), T);
+        }
+        return null;
+      }));
+    }
+    java.util.concurrent.Future<?> drainer = pool.submit(() -> {
+      start.await();
+      int polls = 0;
+      while (producing.get() || !queue.isEmpty()) {
+        Batch batch = queue.poll(7, NEVER_EXPIRED).orElse(null);
+        if (batch == null) {
+          continue;
+        }
+        if (polls++ % 2 == 0) {
+          queue.requeue(batch);
+        } else {
+          replayed.addAll(batch.userIds());
+        }
+      }
+      return null;
+    });
+    start.countDown();
+    for (java.util.concurrent.Future<?> f : work) {
+      f.get(60, TimeUnit.SECONDS);
+    }
+    producing.set(false);
+    drainer.get(60, TimeUnit.SECONDS);
+    pool.shutdownNow();
+
+    assertThat(replayed).containsExactlyInAnyOrderElementsOf(all);
+    assertThat(queue.size()).isZero();
+  }
+
   private static List<UUID> users(int count) {
     return IntStream.range(0, count).mapToObj(i -> UUID.randomUUID()).toList();
   }
