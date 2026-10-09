@@ -1,7 +1,7 @@
 package com.example.nexus.rbac.infrastructure.cache;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 import com.example.nexus.rbac.infrastructure.cache.EpochRedisConfig.EpochTemplates;
 import io.lettuce.core.resource.ClientResources;
@@ -49,6 +49,20 @@ class RedisPermissionEpochAdapterNotReadyTest {
         EpochRedisConfig.dedicatedFactory(details, main, clientResources, Duration.ofMillis(50)),
         EpochRedisConfig.dedicatedFactory(details, main, clientResources, Duration.ofMillis(500)));
     adapter = new RedisPermissionEpochAdapter(templates, "nexus-test", 960L);
+    warmUpCallPaths();
+  }
+
+  /**
+   * Runs each not-ready path once before the timed assertions. First in a cold JVM (a single class
+   * from the IDE or {@code -Dtest}), the first call paid class loading and JIT while the warm-up
+   * threads competed for the class-loading locks, and measured 22 to 56 ms against the 20 ms bound
+   * in 1 run of about 20. That says nothing about connecting on the caller thread, which {@link
+   * RedisPermissionEpochAdapterNeverConnectsTest} pins without a clock.
+   */
+  private void warmUpCallPaths() {
+    adapter.current(UUID.randomUUID(), UUID.randomUUID());
+    adapter.probe();
+    catchThrowable(() -> adapter.bump(UUID.randomUUID(), List.of(UUID.randomUUID())));
   }
 
   @AfterEach
@@ -62,28 +76,33 @@ class RedisPermissionEpochAdapterNotReadyTest {
     long start = System.nanoTime();
 
     var current = adapter.current(UUID.randomUUID(), UUID.randomUUID());
+    Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
 
     assertThat(current).isEmpty();
-    assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofMillis(20));
+    assertThat(elapsed).isLessThan(Duration.ofMillis(20));
   }
 
   @Test
   void should_probeFalseImmediately_when_readConnectionNotReady() {
     long start = System.nanoTime();
 
-    assertThat(adapter.probe()).isFalse();
+    boolean answered = adapter.probe();
+    Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
 
-    assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofMillis(20));
+    assertThat(answered).isFalse();
+    assertThat(elapsed).isLessThan(Duration.ofMillis(20));
   }
 
   @Test
   void should_throwImmediately_when_bumpConnectionNotReady() {
     long start = System.nanoTime();
 
-    assertThatThrownBy(() -> adapter.bump(UUID.randomUUID(), List.of(UUID.randomUUID())))
-        .isInstanceOf(DataAccessException.class);
+    Throwable thrown = catchThrowable(
+        () -> adapter.bump(UUID.randomUUID(), List.of(UUID.randomUUID())));
+    Duration elapsed = Duration.ofNanos(System.nanoTime() - start);
 
-    assertThat(Duration.ofNanos(System.nanoTime() - start)).isLessThan(Duration.ofMillis(20));
+    assertThat(thrown).isInstanceOf(DataAccessException.class);
+    assertThat(elapsed).isLessThan(Duration.ofMillis(20));
   }
 
   @Test
