@@ -7,6 +7,7 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import jakarta.annotation.PreDestroy;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -19,9 +20,16 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Queue;
 import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiFunction;
@@ -80,7 +88,9 @@ import org.springframework.stereotype.Service;
  * scheduler tick, before it drains users, re-reads the role's holders and passes them to {@link
  * #invalidateHolders}, so a failed bump falls into the user queue above. A role whose read keeps
  * failing stays queued until its newest failure is older than {@code key-ttl-seconds}; the first
- * failed read ends that tick's role replay. Signals: the paging counter {@code bump_failed{reason=
+ * failed read ends that tick's role replay. The read runs on its own thread and is abandoned after
+ * one second (the entry is requeued with its original failure time), so a hung
+ * database cannot stall the tick's purge, probe and user replay. Signals: the paging counter {@code bump_failed{reason=
  * holder_read}} (kept), {@code bump_failed{operation=role_replay, reason=holder_read}} for a failed
  * tick read, {@code bump_failed{reason=role_overflow}} for a role refused by a full queue, {@code
  * nexus.rbac.epoch.role_replayed} and the gauge {@code nexus.rbac.epoch.role_replay_queue_roles}.
@@ -94,8 +104,11 @@ import org.springframework.stereotype.Service;
  * holds only users with an epoch above 0, that is, users bumped within the key TTL. It holds at
  * most {@value #LAST_SEEN_CAPACITY} entries, and one tenant at most {@code
  * last-seen-tenant-percent} of that (M7 part 2 review L-3), so one tenant's large detach cannot
- * crowd the others out. A new user beyond either bound is not recorded and counted in {@code
- * nexus.rbac.epoch.last_seen_dropped{reason=tenant_cap|capacity}}. Expired entries are purged by
+ * crowd the others out. The bounds apply to entries derived from reads: a new such user beyond
+ * either is not recorded and counted in {@code nexus.rbac.epoch.last_seen_dropped{reason=
+ * tenant_cap|capacity}}. An entry from this instance's own bump is never refused: it evicts an
+ * older read-derived entry of its tenant ({@code bump_evicted}) or, with none to evict, exceeds the
+ * bound ({@code bump_over_cap}); only at twice the capacity is it dropped ({@code bump_dropped}). Expired entries are purged by
  * the scheduled tick, never on a request thread (H-1).
  *
  * <p>A successful bump records exactly the epoch the store wrote and returned (H-2); no instance
@@ -147,6 +160,12 @@ public final class PermissionFreshnessService {
   /** Upper bound of the locally-seen epoch map (security review M-1). */
   static final int LAST_SEEN_CAPACITY = 100_000;
 
+  /** Own-bump entries may exceed the capacity, but never this multiple of it. */
+  static final int LAST_SEEN_HARD_LIMIT_FACTOR = 2;
+
+  /** The role replay's holder read must answer within this, or the tick moves on. */
+  static final Duration ROLE_READ_TIMEOUT = Duration.ofSeconds(1);
+
   /** One {@code RBAC_EPOCH_UNPARSEABLE} WARN per tenant per this window (L-2). */
   static final Duration UNPARSEABLE_WARN_WINDOW = Duration.ofMinutes(1);
 
@@ -182,6 +201,9 @@ public final class PermissionFreshnessService {
   private final Counter degradedFlaps;
   private final Counter lastSeenDroppedTenantCap;
   private final Counter lastSeenDroppedCapacity;
+  private final Counter lastSeenBumpEvicted;
+  private final Counter lastSeenBumpOverCap;
+  private final Counter lastSeenDroppedBump;
   private final Counter bumpReplayed;
   private final Counter rolesReplayed;
   private final Counter unparseableCounter;
@@ -191,6 +213,11 @@ public final class PermissionFreshnessService {
   private final int lastSeenTenantCap;
   private final Map<UserKey, SeenEpoch> lastSeen = new ConcurrentHashMap<>();
   private final Map<UUID, Integer> lastSeenPerTenant = new ConcurrentHashMap<>();
+  // Per tenant, the users whose entry was derived from a read, oldest first: the eviction
+  // candidates for an own-bump entry. May hold stale keys; every use re-checks the map.
+  private final Map<UUID, Queue<UserKey>> readEntries = new ConcurrentHashMap<>();
+  private final ExecutorService roleReadExecutor;
+  private final AtomicBoolean roleReadInFlight = new AtomicBoolean();
   private final Map<UUID, UnparseableWindow> unparseableWindows = new ConcurrentHashMap<>();
 
   // State machine. Every field below is written only while holding `lock`; `state` is volatile so
@@ -310,6 +337,14 @@ public final class PermissionFreshnessService {
         .description("Locally-seen epochs not recorded because a bound of the map was reached")
         .tag(TAG_REASON, REASON_CAPACITY)
         .register(meterRegistry);
+    this.lastSeenBumpEvicted = lastSeenCounter(meterRegistry, "bump_evicted");
+    this.lastSeenBumpOverCap = lastSeenCounter(meterRegistry, "bump_over_cap");
+    this.lastSeenDroppedBump = lastSeenCounter(meterRegistry, "bump_dropped");
+    this.roleReadExecutor = Executors.newSingleThreadExecutor(runnable -> {
+      Thread thread = new Thread(runnable, "epoch-role-replay-read");
+      thread.setDaemon(true);
+      return thread;
+    });
     this.replayQueue = new EpochReplayQueue(replayCapacityUsers);
     this.roleReplayQueue = new RoleReplayQueue(replayCapacityRoles);
     this.rolesReplayed = Counter.builder(METRIC_ROLE_REPLAYED)
@@ -326,6 +361,24 @@ public final class PermissionFreshnessService {
         .description("Users whose permission-epoch bump failed and awaits replay on this instance")
         .strongReference(true)
         .register(meterRegistry);
+  }
+
+  private static Counter lastSeenCounter(MeterRegistry meterRegistry, String reason) {
+    return Counter.builder(METRIC_LAST_SEEN_DROPPED)
+        .description("Locally-seen epochs not recorded because a bound of the map was reached")
+        .tag(TAG_REASON, reason)
+        .register(meterRegistry);
+  }
+
+  /** Stops the thread that reads role holders for the replay. */
+  @PreDestroy
+  void shutdown() {
+    roleReadExecutor.shutdownNow();
+  }
+
+  /** Test hook: a role holder read is still running on the replay thread. */
+  boolean roleReadInFlight() {
+    return roleReadInFlight.get();
   }
 
   /** Returns the outage state of this instance. */
@@ -372,7 +425,7 @@ public final class PermissionFreshnessService {
         read = epochPort.current(tenantId, userId);
       }
       if (read.isPresent()) {
-        remember(key, read.getAsLong(), now);
+        remember(key, read.getAsLong(), now, false);
         return new MintEpoch(read.getAsLong(), true);
       }
     } catch (EpochUnparseableException e) {
@@ -439,7 +492,7 @@ public final class PermissionFreshnessService {
           yield unverified(key, tokenEpoch, FreshnessVerdict.SKIPPED_ERROR, now);
         }
         recordReadSuccess(now);
-        remember(key, current.getAsLong(), now);
+        remember(key, current.getAsLong(), now, false);
         yield tokenEpoch < current.getAsLong() ? FreshnessVerdict.STALE : FreshnessVerdict.FRESH;
       }
     };
@@ -659,40 +712,85 @@ public final class PermissionFreshnessService {
 
   /**
    * Keeps the highest epoch seen; epoch 0 (no bump within the key TTL) is not worth a slot. Never
-   * scans the map (H-1): when it is full, or the user's tenant is at its share of it (L-3), a new
-   * user is only counted as dropped, and the scheduled tick frees expired slots.
+   * scans the map (H-1).
+   *
+   * <p>An entry derived from a read is bounded: when the map is full, or the user's tenant holds
+   * its share of it (L-3), a new user is only counted as dropped, and the scheduled tick frees
+   * expired slots. An entry from this instance's own bump ({@code ownBump}) is never subject to the
+   * per-tenant cap or the soft capacity, because dropping it would let a revoked token through
+   * while the store is down: if the tenant or the map is at its bound, one older read-derived entry
+   * of the same tenant is evicted to make room ({@code reason=bump_evicted}), and if there is none
+   * the entry is recorded over the bound ({@code reason=bump_over_cap}, ticketed). Only at {@value
+   * #LAST_SEEN_HARD_LIMIT_FACTOR} times the capacity is a bump entry dropped ({@code
+   * reason=bump_dropped}, paged), so a huge fan-out cannot exhaust the heap.
    */
-  private void remember(UserKey key, long epoch, Instant now) {
+  private void remember(UserKey key, long epoch, Instant now, boolean ownBump) {
     if (epoch <= 0) {
       return;
     }
-    if (lastSeen.size() >= LAST_SEEN_CAPACITY && !lastSeen.containsKey(key)) {
+    boolean known = lastSeen.containsKey(key);
+    if (!ownBump && !known && lastSeen.size() >= LAST_SEEN_CAPACITY) {
       lastSeenDroppedCapacity.increment();
       return;
     }
-    SeenEpoch fresh = new SeenEpoch(epoch, now.plus(lastSeenTtl));
-    boolean[] dropped = {false};
+    if (ownBump && !known) {
+      if (lastSeen.size() >= LAST_SEEN_HARD_LIMIT_FACTOR * LAST_SEEN_CAPACITY) {
+        lastSeenDroppedBump.increment();
+        return;
+      }
+      makeRoomForBump(key.tenantId());
+    }
+    SeenEpoch fresh = new SeenEpoch(epoch, now.plus(lastSeenTtl), ownBump);
+    boolean[] outcome = new boolean[2]; // {inserted, droppedByTenantCap}
     lastSeen.compute(key, (k, old) -> {
       if (old != null) {
-        return fresh.epoch() > old.epoch() ? fresh : old;
+        SeenEpoch winner = fresh.epoch() > old.epoch() ? fresh : old;
+        return winner.ownBump() == (old.ownBump() || fresh.ownBump())
+            ? winner
+            : new SeenEpoch(winner.epoch(), winner.expiresAt(), true);
       }
-      if (!claimTenantSlot(k.tenantId())) {
-        dropped[0] = true;
+      if (!claimTenantSlot(k.tenantId(), ownBump)) {
+        outcome[1] = true;
         return null;
       }
+      outcome[0] = true;
       return fresh;
     });
-    if (dropped[0]) {
+    if (outcome[1]) {
       lastSeenDroppedTenantCap.increment();
+    } else if (outcome[0] && !ownBump) {
+      readEntries.computeIfAbsent(key.tenantId(), id -> new ConcurrentLinkedQueue<>()).add(key);
     }
   }
 
-  /** Takes one of the tenant's slots; {@code false} when it already holds its share. */
-  private boolean claimTenantSlot(UUID tenantId) {
+  /** Evicts one read-derived entry of the tenant when the tenant or the map is at its bound. */
+  private void makeRoomForBump(UUID tenantId) {
+    boolean tenantFull = lastSeenPerTenant.getOrDefault(tenantId, 0) >= lastSeenTenantCap;
+    if (!tenantFull && lastSeen.size() < LAST_SEEN_CAPACITY) {
+      return;
+    }
+    Queue<UserKey> candidates = readEntries.get(tenantId);
+    UserKey candidate;
+    while (candidates != null && (candidate = candidates.poll()) != null) {
+      SeenEpoch seen = lastSeen.get(candidate);
+      if (seen != null && !seen.ownBump() && lastSeen.remove(candidate, seen)) {
+        releaseTenantSlot(tenantId);
+        lastSeenBumpEvicted.increment();
+        return;
+      }
+    }
+    lastSeenBumpOverCap.increment();
+  }
+
+  /**
+   * Takes one of the tenant's slots. A read-derived entry is refused ({@code false}) when the
+   * tenant already holds its share; an own-bump entry always gets one.
+   */
+  private boolean claimTenantSlot(UUID tenantId, boolean ownBump) {
     boolean[] claimed = {false};
     lastSeenPerTenant.compute(tenantId, (id, count) -> {
       int held = count == null ? 0 : count;
-      if (held >= lastSeenTenantCap) {
+      if (held >= lastSeenTenantCap && !ownBump) {
         return count;
       }
       claimed[0] = true;
@@ -705,18 +803,43 @@ public final class PermissionFreshnessService {
     lastSeenPerTenant.computeIfPresent(tenantId, (id, count) -> count <= 1 ? null : count - 1);
   }
 
-  /** Frees the slots of expired entries, once a second from the scheduler thread (H-1). */
+  /**
+   * Frees the slots of expired entries, once a second from the scheduler thread (H-1). A slot is
+   * released only for an entry this call really removed: an entry that a concurrent write
+   * replaced is left, and its slot stays claimed.
+   */
   private void purgeExpiredSeen(Instant now) {
-    lastSeen.entrySet().removeIf(entry -> {
-      boolean expired = !now.isBefore(entry.getValue().expiresAt());
-      if (expired) {
+    for (Map.Entry<UserKey, SeenEpoch> entry : lastSeen.entrySet()) {
+      SeenEpoch seen = entry.getValue();
+      if (!now.isBefore(seen.expiresAt()) && lastSeen.remove(entry.getKey(), seen)) {
         releaseTenantSlot(entry.getKey().tenantId());
       }
-      return expired;
+    }
+    // Candidates whose entry is gone or became an own-bump entry are no longer evictable.
+    readEntries.entrySet().removeIf(tenant -> {
+      tenant.getValue().removeIf(key -> {
+        SeenEpoch seen = lastSeen.get(key);
+        return seen == null || seen.ownBump();
+      });
+      return tenant.getValue().isEmpty();
     });
     // A window that ended a full window ago has nothing left to report (L-2).
     unparseableWindows.values().removeIf(
         window -> !now.isBefore(window.endsAt().plus(UNPARSEABLE_WARN_WINDOW)));
+  }
+
+  /** Test hook: how many entries the map really holds, per tenant. */
+  Map<UUID, Integer> lastSeenCountsFromMap() {
+    Map<UUID, Integer> counts = new HashMap<>();
+    for (UserKey key : lastSeen.keySet()) {
+      counts.merge(key.tenantId(), 1, Integer::sum);
+    }
+    return counts;
+  }
+
+  /** Test hook: what the per-tenant slot counters say. */
+  Map<UUID, Integer> lastSeenCountsFromCounters() {
+    return new HashMap<>(lastSeenPerTenant);
   }
 
   /**
@@ -728,7 +851,7 @@ public final class PermissionFreshnessService {
     for (UUID userId : userIds) {
       UserKey key = new UserKey(tenantId, userId);
       Long epoch = written.epochs().get(userId);
-      remember(key, epoch != null ? epoch : lowerBound(key, now), now);
+      remember(key, epoch != null ? epoch : lowerBound(key, now), now, true);
     }
   }
 
@@ -742,7 +865,7 @@ public final class PermissionFreshnessService {
     Instant now = clock.instant();
     for (UUID userId : userIds) {
       UserKey key = new UserKey(tenantId, userId);
-      remember(key, lowerBound(key, now), now);
+      remember(key, lowerBound(key, now), now, true);
     }
   }
 
@@ -759,7 +882,7 @@ public final class PermissionFreshnessService {
 
   private record UserKey(UUID tenantId, UUID userId) {}
 
-  private record SeenEpoch(long epoch, Instant expiresAt) {}
+  private record SeenEpoch(long epoch, Instant expiresAt, boolean ownBump) {}
 
   /**
    * Makes every token of a user minted so far stale. Post-commit only (MC-7b).
@@ -933,7 +1056,7 @@ public final class PermissionFreshnessService {
       RoleReplayQueue.Entry entry = polled.get();
       List<UUID> holders;
       try {
-        holders = userRoleAssignmentPort.findActiveUserIdsForRole(entry.roleId());
+        holders = readHoldersBounded(entry.roleId());
       } catch (RuntimeException e) {
         roleReplayQueue.requeue(entry);
         bumpFailedCounter(OPERATION_ROLE_REPLAY, REASON_HOLDER_READ).increment();
@@ -955,6 +1078,47 @@ public final class PermissionFreshnessService {
           .addKeyValue("holderCount", holders.size())
           .addKeyValue("ageMs", Duration.between(entry.oldestFailedAt(), now).toMillis())
           .log("Role holders read and bumped by the replay");
+    }
+  }
+
+  /**
+   * Reads a role's holders on the replay thread and waits at most {@link #ROLE_READ_TIMEOUT}, so a
+   * hung database cannot stall the tick's purge, probe and user replay. While an earlier read is
+   * still running the thread is busy and this one fails at once rather than queueing behind it.
+   *
+   * @throws IllegalStateException if the read timed out, is still running from an earlier tick,
+   *     or was interrupted; any exception of the read itself is rethrown as thrown
+   */
+  private List<UUID> readHoldersBounded(UUID roleId) {
+    if (!roleReadInFlight.compareAndSet(false, true)) {
+      throw new IllegalStateException("previous role holder read still running");
+    }
+    Future<List<UUID>> read;
+    try {
+      read = roleReadExecutor.submit(() -> {
+        try {
+          return userRoleAssignmentPort.findActiveUserIdsForRole(roleId);
+        } finally {
+          roleReadInFlight.set(false);
+        }
+      });
+    } catch (RuntimeException e) {
+      roleReadInFlight.set(false);
+      throw e;
+    }
+    try {
+      return read.get(ROLE_READ_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+    } catch (TimeoutException e) {
+      read.cancel(true);
+      throw new IllegalStateException("role holder read timed out", e);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IllegalStateException("role holder read interrupted", e);
+    } catch (ExecutionException e) {
+      if (e.getCause() instanceof RuntimeException cause) {
+        throw cause;
+      }
+      throw new IllegalStateException("role holder read failed", e.getCause());
     }
   }
 
