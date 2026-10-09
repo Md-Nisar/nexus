@@ -165,7 +165,8 @@ Design: `03-design.md` §9; threat model: `03b-threat-model.md`; decision record
 
 **Decisions made late (pre-PR review).**
 - `server.forward-headers-strategy: none` in `application.yml`: the per-IP keys stay `getRemoteAddr()` only (DF-1). Per-client keys behind a proxy need `native` and a pinned `server.tomcat.remoteip.internal-proxies`.
-- `/actuator/metrics/**` and `/actuator/prometheus` need `ROLE_TENANT_ADMIN`.
+- `/actuator/metrics/**` and `/actuator/prometheus` accept only the operator's `nexus.management.scrape-token` (`ScrapeTokenFilter`); no tenant role can read them, and they are closed when the token is unset (RR-M2).
+- A failed bump evicts the users' cached permission sets, so another instance cannot re-mint a detached permission from the cache while Redis refuses writes (RR-M1). Tokens already issued stay valid on other instances for their TTL (RES-46).
 - A refused read-derived last-seen entry pages but does not fail the tenant closed (RES-31).
 - The SPA attaches the bearer token only on whole `/api` path segments.
 

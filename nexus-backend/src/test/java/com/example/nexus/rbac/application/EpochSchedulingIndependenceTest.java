@@ -123,6 +123,7 @@ class EpochSchedulingIndependenceTest {
         .withUserConfiguration(EpochSchedulingConfig.class)
         .withBean(PermissionEpochPort.class, () -> port)
         .withBean(UserRoleAssignmentPort.class, () -> userRoles)
+        .withBean(PermissionCachePort.class, () -> mock(PermissionCachePort.class))
         .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
         .withBean(Clock.class, Clock::systemUTC)
         .withBean(PermissionFreshnessService.class)

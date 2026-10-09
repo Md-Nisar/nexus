@@ -142,7 +142,9 @@ Redis answered a read or a mint below an epoch this instance already knows. A re
 - [ ] **If the cause is memory,** free or add memory first; the replay then lands by itself.
 - [ ] **If the replay overflowed or an instance restarted,** re-apply the revocation by hand (section 8) for the affected holders.
 
-## 10. Metrics return 403, or a scrape suddenly fails
+## 10. Metrics return 401 or 403, or a scrape suddenly fails
 
-`/actuator/metrics/**` and `/actuator/prometheus` need `ROLE_TENANT_ADMIN` since the pre-PR review (L-3). Scrape with a token of a tenant administrator, or put the scrape on a network path of its own.
-
+`/actuator/prometheus` and `/actuator/metrics/**` accept only the operator's scrape token (pre-PR re-review RR-M2): `Authorization: Bearer <NEXUS_MANAGEMENT_SCRAPE_TOKEN>`. A user or administrator JWT is refused with 401, and a tenant credential must never be used for scraping.
+- **403 for everyone:** the token is not set on the instance, which closes both endpoints. Set `NEXUS_MANAGEMENT_SCRAPE_TOKEN` (at least 32 random characters, from a secret) and restart; a shorter value fails startup.
+- **401 from the scraper:** the scraper's token differs from the backend's, or it sends something else in the header. Rotate by changing the secret on both sides.
+- The token is never logged. Treat it like a password: it can read the degraded state, drop counters and tenant ids in the tags.
