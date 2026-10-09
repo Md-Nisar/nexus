@@ -386,3 +386,20 @@ DegradedClosed returns UNAVAILABLE for every non-public request before it consul
 - `nexus-frontend/src/app/core/http/auth.interceptor.ts` (lines 112-113, 150-151)
 - `nexus-test/performance-test/scenarios/detach-refresh-storm.js`, `config/environment.js` (line 98)
 - `docs/features/US-018/03b-threat-model.md` (T-E38 362, T-D19 378, T-T16 395, RC-30 607, RC-41 to RC-45 1002-1042, T-E46 1154, RES-40 1190/1334)
+
+---
+
+## Resolution
+
+Recorded 2026-10-09 on `ccr-4e9e7cbe-4vl9v6`. Design decisions are A-22 in `04-tasks.md`.
+
+| Finding | Status | What changed | Where documented |
+|---|---|---|---|
+| H-1 `require-auth` not set in `application-prod.yml`, test `@Disabled` | **Open, human action** | Untouched on purpose: a human edits `application-prod.yml` and removes `@Disabled` from `RedisAuthStartupAssertionTest.should_resolveRequireAuthTrue_when_prodProfileActive`. Still blocks the merge | `04-tasks.md` merge checklist (H-3) |
+| M-1 junk refreshes exhaust `REFRESH_IP`, SPA logs out on 429 | **Fixed (decision a) and accepted** | Frontend keeps the session and retries after `Retry-After` on a refresh 429 (separate commit). `LoginRateLimitFilter` Javadoc corrected. RES-40, design §9.7, ADR-0022 D8 and A-20 state that invalid refreshes consume `REFRESH_IP`. New k6 case `refresh-junk-flood.js` (400 junk/min, valid users get 200 or 429 with a valid `Retry-After`, never 401, recover after the flood). **The k6 case has not been run** (no dev stack); `k6 inspect` and prettier pass | `03b-threat-model.md` RES-40, `03-design.md` §9.7, ADR-0022 D8, `04-tasks.md` A-20 (7), A-22 (2) and merge checklist, nexus-test README |
+| M-2 failed detach holder read never replayed | **Fixed** | `RoleReplayQueue` (tenant, role, failedAt; bounded, coalesced, same TTL rule); the 1 s tick re-reads the holders (1 s timeout, own thread) and bumps them through `invalidateHolders`; paging counter kept; new `role_replayed`, `role_replay_queue_roles`, `bump_failed{role_overflow}` and `{operation=role_replay}` | design §9.3, ADR-0022 D3, RES-31, runbook §8, `monitoring.md` §6, A-22 (1) |
+| L-1 Lua guard vs Java parser | **Fixed** | One range: 1 to 16 ASCII digits and at most `2^53 - 2`. Script rejects `nan`, `inf`, hex, exponent forms, signs and everything at or above `2^53 - 1`, and never writes a value Java rejects; Java rejects the same set. A bad value in a script result omits only that user. Verified against `redis:7.4-alpine` (IT) and a local `redis-server` 7.0.15 | design §9.2, runbook §8 (script updated), A-22 (3) |
+| L-2 unbounded `RBAC_EPOCH_UNPARSEABLE` WARN, no metric | **Fixed** | WARN once per tenant per minute with `suppressed`; `epoch.check{outcome=unparseable}` | design §9.2 and §9.9, `monitoring.md` §6, runbook §8, A-22 (4) |
+| L-3 last-seen map saturable | **Fixed** | Per-tenant cap on read-derived entries (`last-seen-tenant-percent`, 10), own-bump entries in a separate per-tenant pool, `last_seen_dropped{reason=tenant_cap,capacity,bump_dropped}`, slot accounting released only on real removal | design §9.2 and §9.9, runbook §8, `monitoring.md` §6, merge checklist, A-22 (5) |
+| Hygiene: tenant predicate on `findActiveUserIdsByRole` | **Not done, follow-up** | Needs an allowlist change in `TenantIsolationArchitectureTest` and a port signature change | A-22 (6) |
+| Forward item: request-rate panel (07 M-1 b) | Listed in the alert content | Added to the merge-checklist alert list and `monitoring.md` §6; the panel itself is built with the alerts | `04-tasks.md`, `monitoring.md` |

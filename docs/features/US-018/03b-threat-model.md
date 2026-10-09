@@ -987,10 +987,10 @@ Only the rows that changed, or that are new. All other rows in §8 stand as writ
 | **RES-29** | Catalogue coupling for custom administrators | **Low** (RC-27.1 adopted), conditional on RC-48 | Architect | Accept |
 | **RES-14** | Tenants with no admin-defining role are invisible to the indicator | Low (RC-27.1) | Architect | Accept |
 | **RES-30** | A Redis outage longer than the window is a platform-wide authenticated 503 | Medium | SRE + PM | **Escalate; still open.** The design records the intent, not the sign-off, so acceptance must be recorded at Gate 2. Once RC-41 lands, the window also bounds intermittent failure |
-| **RES-31** | Replay queue lost on restart; bumps lost to async replication at Sentinel failover; overflow drops | Low after RC-42 | SRE | Accept |
+| **RES-31** | Replay queue (users, and since M7 part 2 review M-2 the role queue of failed detach holder reads) lost on restart; bumps lost to async replication at Sentinel failover; overflow drops (`overflow`, `role_overflow`) | Low after RC-42 | SRE | Accept |
 | **RES-32** | Redis write access equals authorization | Low after RC-34 **and RC-45** | SRE / Platform | Accept once enforced in the production profile |
 | **RES-34** | Cross-tenant evidence is log-only | Low | Security + Ops | Accept, with the RC-50(c) floor and the RES-6 M8 sign-off |
-| **RES-40** | Per-IP refresh ceiling raised for successful refreshes | **Low after RC-43** (Medium until then, per T-D24) | Security | Accept after RC-43 |
+| **RES-40** | Per-IP refresh ceiling raised for successful refreshes; **amended (M7 part 2 review M-1): `REFRESH_IP` also counts invalid refreshes, so 300 junk requests a minute from one IP make valid refreshes from it answer 429 for the window (platform-wide behind the proxy, DF-1). Accepted because the SPA keeps the session on a refresh 429 and retries after `Retry-After`; k6 `refresh-junk-flood.js` is the gate** | **Low after RC-43** (Medium until then, per T-D24) | Security | Accept after RC-43 |
 | **RES-43** *(new)* | A verified bearer on a `@PublicEndpoint` request sets a principal without an epoch check; only logout reads it, to revoke its own families | Low after RC-44 | Architect | Accept |
 | **RES-44** *(new)* | A failed V7–V10 migration blocks instance start until `flyway repair` | Low | Ops | Accept, with the RC-49 runbook step |
 | **RES-45** *(new)* | C1 DELETE versus admin-defining assign can deadlock (only if RC-46 option (b) is chosen) | Low | Architect | Accept |

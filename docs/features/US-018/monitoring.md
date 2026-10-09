@@ -83,3 +83,16 @@ WHERE event_type = 'ROLE_ASSIGNMENT_DENIED'
   AND created_at >= NOW() - INTERVAL 1 DAY
 ORDER BY created_at DESC;
 ```
+
+## 6. Token freshness (US-018 M7), alerts added by the part 2 security review
+
+All suggestions; the full table is design §9.9, the response steps are in the runbook (sections 7 and 8).
+
+| Alert | Suggested expression | Suggested severity | Why |
+|---|---|---|---|
+| `nexus_rbac_epoch_bump_failed` | `increase(nexus_rbac_epoch_bump_failed_total[5m]) > 0` (reasons `redis`, `overflow`, `holder_read`, `role_overflow`) | page | A revocation was not applied on the request thread. `holder_read` and `role_overflow` concern a detach whose holders could not be read; the role is replayed by the tick unless `role_overflow` or a restart intervened (runbook section 8) |
+| `nexus_rbac_epoch_role_replay_stuck` | `nexus_rbac_epoch_role_replay_queue_roles > 0` for 5 min | ticket | A role's holder read keeps failing; revocations of its holders are pending |
+| `nexus_rbac_epoch_last_seen_dropped` | `increase(nexus_rbac_epoch_last_seen_dropped_total{reason=~"tenant_cap\|capacity"}[15m]) > 0` | ticket | The last-seen defence is shedding users (one busy tenant or a full map) |
+| `nexus_rbac_epoch_last_seen_bump_dropped` | `increase(nexus_rbac_epoch_last_seen_dropped_total{reason="bump_dropped"}[15m]) > 0` | page | An own bump was not remembered locally (a tenant over its own-bump ceiling) |
+| `nexus_rbac_epoch_unparseable` | `increase(nexus_rbac_epoch_check_total{outcome="unparseable"}[15m]) > 0` | ticket | Corrupt or foreign epoch keys in Redis (RES-32); the WARN is limited to one per tenant per minute, so the counter is the full signal |
+| `nexus_rbac_epoch_skipped_error_rate_panel` | per-instance request rate next to `outcome="skipped_error"` | dashboard panel | Review 07 M-1 (b): shows whether reads are being pushed past 50 ms |
