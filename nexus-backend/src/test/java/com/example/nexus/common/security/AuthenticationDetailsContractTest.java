@@ -46,7 +46,7 @@ class AuthenticationDetailsContractTest {
     entryPoint = mock(AuthenticationEntryPoint.class);
     publicEndpoints = mock(PublicEndpointRequestMatcher.class);
     PermissionFreshnessService freshness = mock(PermissionFreshnessService.class);
-    when(freshness.check(any(), any(), anyLong())).thenReturn(FreshnessVerdict.FRESH);
+    when(freshness.check(any(), any(), anyLong(), anyLong())).thenReturn(FreshnessVerdict.FRESH);
     filter = new JwtAuthenticationFilter(jwtPort, entryPoint, publicEndpoints, freshness);
     SecurityContextHolder.clearContext();
   }

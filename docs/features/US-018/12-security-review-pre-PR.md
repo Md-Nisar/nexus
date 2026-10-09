@@ -32,6 +32,19 @@ Once both are done, the verdict becomes **APPROVED**. The Lows can be ticketed.
 
 ---
 
+## Resolution of M-1 (after this review)
+
+M-1 is fixed in `PermissionFreshnessService` (not re-reviewed by the reviewer; re-run `/security-review` to confirm):
+- **(a)** In Healthy and Recovering, `check()` compares the token with the larger of the store value and the locally known epoch. It does not consult `revocationLost()` on that path, because the store answered, and failing a whole tenant closed for one key TTL on a healthy store costs more than it buys.
+- **(b)** `mintEpoch()` returns the larger of the two, `verified=false`, when the store reads below the local bound or a failed bump is unreplayed, so the permission set is resolved uncached.
+- **(c)** A failed bump records the failure instant on the user's entry. `check(tenant, user, epoch, iat)` treats a token issued at or before that second as stale until a replay or a read at or above that instant clears it. `JwtAuthenticationFilter` now passes `iat`; the three-argument `check` passes `Long.MAX_VALUE`, which never matches. A token issued in the failure's own second is refused once and refreshed.
+- **(d)** `nexus.rbac.epoch.store_regressed` (no tags) is documented in `monitoring.md` as a page.
+- **Tests:** six in `PermissionFreshnessServiceTest` (bump fails while reads succeed; unverified mint; key loss for a seen user; unseen user by `iat`; marker cleared by replay; unknown `iat`).
+- **Residual:** the marker clears on an epoch at or above the failure instant, so a Redis clock behind the app clock keeps it until the key TTL; this only keeps the mint uncached.
+- **`require-shared-store`:** the open item above overstates it. RC-45 sets it with M8, when the property is introduced. `require-auth: true` is now in `application-prod.yml` and the prod-profile test is enabled.
+
+---
+
 ## Findings
 
 ```

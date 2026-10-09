@@ -59,7 +59,7 @@ class JwtAuthenticationFilterTest {
     entryPoint = mock(AuthenticationEntryPoint.class);
     publicEndpoints = mock(PublicEndpointRequestMatcher.class);
     freshness = mock(PermissionFreshnessService.class);
-    when(freshness.check(any(), any(), anyLong())).thenReturn(FreshnessVerdict.FRESH);
+    when(freshness.check(any(), any(), anyLong(), anyLong())).thenReturn(FreshnessVerdict.FRESH);
     filter = new JwtAuthenticationFilter(jwtPort, entryPoint, publicEndpoints, freshness);
     SecurityContextHolder.clearContext();
   }
@@ -219,7 +219,7 @@ class JwtAuthenticationFilterTest {
     MockHttpServletResponse res = new MockHttpServletResponse();
     FilterChain chain = mock(FilterChain.class);
     when(jwtPort.verify("stale.jwt")).thenReturn(claims());
-    when(freshness.check(any(), any(), anyLong())).thenReturn(FreshnessVerdict.STALE);
+    when(freshness.check(any(), any(), anyLong(), anyLong())).thenReturn(FreshnessVerdict.STALE);
 
     filter.doFilterInternal(req, res, chain);
 
@@ -234,7 +234,7 @@ class JwtAuthenticationFilterTest {
     MockHttpServletResponse res = new MockHttpServletResponse();
     FilterChain chain = mock(FilterChain.class);
     when(jwtPort.verify("valid.jwt")).thenReturn(claims());
-    when(freshness.check(any(), any(), anyLong())).thenReturn(FreshnessVerdict.SKIPPED_ERROR);
+    when(freshness.check(any(), any(), anyLong(), anyLong())).thenReturn(FreshnessVerdict.SKIPPED_ERROR);
 
     filter.doFilterInternal(req, res, chain);
 
@@ -253,7 +253,7 @@ class JwtAuthenticationFilterTest {
         bearerRequest("valid.jwt"), new MockHttpServletResponse(), mock(FilterChain.class));
 
     verify(freshness, times(1))
-        .check(UUID.fromString(TENANT_ID), UUID.fromString(USER_ID), TOKEN_EPOCH);
+        .check(UUID.fromString(TENANT_ID), UUID.fromString(USER_ID), TOKEN_EPOCH, 1000L);
   }
 
   @Test
@@ -271,7 +271,7 @@ class JwtAuthenticationFilterTest {
 
     verify(entryPoint).commence(eq(req), eq(res), any());
     verify(chain, never()).doFilter(any(), any());
-    verify(freshness, never()).check(any(), any(), anyLong());
+    verify(freshness, never()).check(any(), any(), anyLong(), anyLong());
   }
 
   @Test
@@ -282,7 +282,7 @@ class JwtAuthenticationFilterTest {
     filter.doFilterInternal(
         bearerRequest("bad.jwt"), new MockHttpServletResponse(), mock(FilterChain.class));
 
-    verify(freshness, never()).check(any(), any(), anyLong());
+    verify(freshness, never()).check(any(), any(), anyLong(), anyLong());
   }
 
   // -----------------------------------------------------------------------
@@ -297,7 +297,7 @@ class JwtAuthenticationFilterTest {
     MockHttpServletResponse res = new MockHttpServletResponse();
     FilterChain chain = mock(FilterChain.class);
     when(jwtPort.verify("valid.jwt")).thenReturn(claims());
-    when(freshness.check(any(), any(), anyLong())).thenReturn(FreshnessVerdict.UNAVAILABLE);
+    when(freshness.check(any(), any(), anyLong(), anyLong())).thenReturn(FreshnessVerdict.UNAVAILABLE);
 
     filter.doFilterInternal(req, res, chain);
 
@@ -319,7 +319,7 @@ class JwtAuthenticationFilterTest {
     req.setRequestURI("/api/\"x\\y\n");
     MockHttpServletResponse res = new MockHttpServletResponse();
     when(jwtPort.verify("valid.jwt")).thenReturn(claims());
-    when(freshness.check(any(), any(), anyLong())).thenReturn(FreshnessVerdict.UNAVAILABLE);
+    when(freshness.check(any(), any(), anyLong(), anyLong())).thenReturn(FreshnessVerdict.UNAVAILABLE);
     org.slf4j.MDC.put("traceId", "trace\"1");
     try {
       filter.doFilterInternal(req, res, mock(FilterChain.class));
@@ -337,7 +337,7 @@ class JwtAuthenticationFilterTest {
     MockHttpServletResponse res = new MockHttpServletResponse();
     FilterChain chain = mock(FilterChain.class);
     when(jwtPort.verify("valid.jwt")).thenReturn(claims());
-    when(freshness.check(any(), any(), anyLong())).thenReturn(FreshnessVerdict.SKIPPED_DEGRADED);
+    when(freshness.check(any(), any(), anyLong(), anyLong())).thenReturn(FreshnessVerdict.SKIPPED_DEGRADED);
 
     filter.doFilterInternal(req, res, chain);
 
@@ -352,7 +352,7 @@ class JwtAuthenticationFilterTest {
     FilterChain chain = mock(FilterChain.class);
     when(publicEndpoints.matches(req)).thenReturn(true);
     when(jwtPort.verify("valid.jwt")).thenReturn(claims());
-    when(freshness.check(any(), any(), anyLong())).thenReturn(FreshnessVerdict.UNAVAILABLE);
+    when(freshness.check(any(), any(), anyLong(), anyLong())).thenReturn(FreshnessVerdict.UNAVAILABLE);
 
     filter.doFilterInternal(req, res, chain);
 
@@ -373,13 +373,13 @@ class JwtAuthenticationFilterTest {
     FilterChain chain = mock(FilterChain.class);
     when(publicEndpoints.matches(req)).thenReturn(true);
     when(jwtPort.verify("stale.jwt")).thenReturn(claims());
-    when(freshness.check(any(), any(), anyLong())).thenReturn(FreshnessVerdict.STALE);
+    when(freshness.check(any(), any(), anyLong(), anyLong())).thenReturn(FreshnessVerdict.STALE);
 
     filter.doFilterInternal(req, res, chain);
 
     verify(chain).doFilter(req, res);
     verify(entryPoint, never()).commence(any(), any(), any());
-    verify(freshness, never()).check(any(), any(), anyLong());
+    verify(freshness, never()).check(any(), any(), anyLong(), anyLong());
   }
 
   @Test

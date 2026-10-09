@@ -1044,6 +1044,101 @@ class PermissionFreshnessServiceTest {
     assertThat(service.check(TENANT, USER, 1L)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
   }
 
+  // --- M-1 (pre-PR review): the store answers reads but refused or lost the bump ---
+
+  private static final long PAST = T.toEpochMilli() - 60_000;
+
+  private double storeRegressed() {
+    return registry.get("nexus.rbac.epoch.store_regressed").counter().count();
+  }
+
+  @Test
+  void should_beStaleWhileHealthy_when_bumpFailsButReadsStillSucceed() {
+    clock.set(T);
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(PAST));
+    service.check(TENANT, USER, PAST);
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+
+    assertThat(service.check(TENANT, USER, PAST)).isEqualTo(FreshnessVerdict.STALE);
+    assertThat(service.check(TENANT, USER, PAST + 1)).isEqualTo(FreshnessVerdict.FRESH);
+    assertThat(service.state()).isEqualTo(DegradedState.HEALTHY);
+    assertThat(storeRegressed()).isEqualTo(2);
+  }
+
+  @Test
+  void should_mintUnverifiedWithLocalBound_when_bumpFailsButReadsStillSucceed() {
+    clock.set(T);
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(PAST));
+    service.check(TENANT, USER, PAST);
+    failBumps();
+    service.invalidateUser(TENANT, USER, "detach");
+
+    PermissionFreshnessService.MintEpoch minted = service.mintEpoch(TENANT, USER);
+
+    assertThat(minted.epoch()).isEqualTo(PAST + 1);
+    assertThat(minted.verified()).isFalse();
+    assertThat(service.check(TENANT, USER, minted.epoch())).isEqualTo(FreshnessVerdict.FRESH);
+    assertThat(storeRegressed()).isEqualTo(2);
+  }
+
+  @Test
+  void should_enforceLocalBound_when_storeLosesTheKeyOfASeenUser() {
+    clock.set(T);
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(PAST));
+    service.check(TENANT, USER, PAST);
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(0L));
+
+    PermissionFreshnessService.MintEpoch minted = service.mintEpoch(TENANT, USER);
+
+    assertThat(minted.epoch()).isEqualTo(PAST);
+    assertThat(minted.verified()).isFalse();
+    assertThat(service.check(TENANT, USER, PAST)).isEqualTo(FreshnessVerdict.FRESH);
+    assertThat(service.check(TENANT, USER, PAST - 1)).isEqualTo(FreshnessVerdict.STALE);
+  }
+
+  @Test
+  void should_beStaleByIssueTime_when_bumpFailsForAUserThisInstanceNeverSaw() {
+    clock.set(T);
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(PAST));
+    long failedSecond = T.getEpochSecond();
+
+    assertThat(service.check(TENANT, USER, PAST, failedSecond - 30))
+        .isEqualTo(FreshnessVerdict.STALE);
+    assertThat(service.check(TENANT, USER, PAST, failedSecond)).isEqualTo(FreshnessVerdict.STALE);
+    assertThat(service.check(TENANT, USER, PAST, failedSecond + 1))
+        .isEqualTo(FreshnessVerdict.FRESH);
+    PermissionFreshnessService.MintEpoch minted = service.mintEpoch(TENANT, USER);
+    assertThat(minted.verified()).isFalse();
+  }
+
+  @Test
+  void should_clearIssueTimeMarker_when_theReplayLands() {
+    clock.set(T);
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    storeWrites(T.toEpochMilli() + 500);
+    clock.set(T.plusSeconds(1));
+    service.probe();
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(T.toEpochMilli() + 500));
+
+    assertThat(service.check(TENANT, USER, T.toEpochMilli() + 500, T.getEpochSecond()))
+        .isEqualTo(FreshnessVerdict.FRESH);
+    assertThat(service.mintEpoch(TENANT, USER).verified()).isTrue();
+  }
+
+  @Test
+  void should_notApplyIssueTimeMarker_when_issuedAtIsUnknown() {
+    clock.set(T);
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(PAST));
+
+    assertThat(service.check(TENANT, USER, PAST)).isEqualTo(FreshnessVerdict.FRESH);
+  }
+
   @Test
   void should_recordLowerBoundForEveryUserNotSent_when_fanoutBatchFails() {
     List<UUID> holders = users(1001);

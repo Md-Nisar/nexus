@@ -230,7 +230,7 @@ class SecurityConfigWebTest {
   @Test
   void should_return401Auth003_when_staleEpochOnProtectedEndpoint() throws Exception {
     when(jwtPort.verify(any())).thenReturn(validClaims());
-    when(permissionFreshness.check(any(), any(), anyLong())).thenReturn(FreshnessVerdict.STALE);
+    when(permissionFreshness.check(any(), any(), anyLong(), anyLong())).thenReturn(FreshnessVerdict.STALE);
 
     mvc.perform(get("/api/v1/users/me")
             .header(HttpHeaders.AUTHORIZATION, "Bearer stale.epoch.token"))
@@ -242,7 +242,7 @@ class SecurityConfigWebTest {
   @Test
   void should_return200_when_epochFreshOnProtectedEndpoint() throws Exception {
     when(jwtPort.verify(any())).thenReturn(validClaims());
-    when(permissionFreshness.check(any(), any(), anyLong())).thenReturn(FreshnessVerdict.FRESH);
+    when(permissionFreshness.check(any(), any(), anyLong(), anyLong())).thenReturn(FreshnessVerdict.FRESH);
 
     mvc.perform(get("/api/v1/users/me")
             .header(HttpHeaders.AUTHORIZATION, "Bearer fresh.epoch.token"))
