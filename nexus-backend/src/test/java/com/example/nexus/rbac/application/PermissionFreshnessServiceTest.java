@@ -1182,18 +1182,18 @@ class PermissionFreshnessServiceTest {
   }
 
   @Test
-  void should_notScanOnRequestPath_when_localBumpRecordedIntoFullMap() {
+  void should_recordOwnBumpAndCountOverCap_when_mapFullAndNothingToEvict() {
     when(port.current(any(), any())).thenReturn(OptionalLong.of(EPOCH));
     fillSeenMapToCapacity();
     clock.set(T.plusSeconds(KEY_TTL_SECONDS));
     storeWrites(EPOCH + 5);
 
     service.invalidateHolders(TENANT, List.of(USER), "detach");
+    failRead();
 
-    assertThat(lastSeenDropped("capacity")).isEqualTo(1.0);
+    assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.STALE);
+    assertThat(lastSeenDropped("bump_over_cap")).isEqualTo(1.0);
   }
-
-  // --- last-seen map: per-tenant cap (security review part 2, L-3) ---
 
   @Test
   void should_dropNewUserAndCountTenantCap_when_oneTenantAtItsCap() {
@@ -1256,13 +1256,180 @@ class PermissionFreshnessServiceTest {
   }
 
   @Test
-  void should_dropLocalBumpAndCountTenantCap_when_tenantAtCap() {
+  void should_recordOwnBumpAndEvictReadEntry_when_tenantAtCap() {
     fillTenantToCap(TENANT);
     storeWrites(EPOCH + 5);
 
     service.invalidateHolders(TENANT, List.of(USER), "detach");
+    failRead();
+
+    assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.STALE);
+    assertThat(lastSeenDropped("bump_evicted")).isEqualTo(1.0);
+    assertThat(lastSeenDropped("tenant_cap")).isZero();
+    assertThat(lastSeenDropped("bump_over_cap")).isZero();
+    assertThat(seenCountersMatchMap()).isTrue();
+  }
+
+  @Test
+  void should_recordFailedBumpLowerBound_when_tenantAtCap() {
+    fillTenantToCap(TENANT);
+    failBumps();
+
+    service.invalidateUser(TENANT, USER, "revoke");
+    failRead();
+
+    assertThat(service.check(TENANT, USER, 0L)).isEqualTo(FreshnessVerdict.STALE);
+  }
+
+  @Test
+  void should_recordReplayedBump_when_tenantAtCap() {
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    clock.set(T.plusSeconds(1));
+    fillTenantToCap(TENANT);
+    storeWrites(EPOCH + 7);
+
+    service.probe();
+    failRead();
+
+    assertThat(service.check(TENANT, USER, EPOCH + 6)).isEqualTo(FreshnessVerdict.STALE);
+  }
+
+  @Test
+  void should_recordEveryBumpBeyondCap_when_tenantFullOfBumpEntries() {
+    storeWrites(EPOCH + 5);
+    service.invalidateHolders(TENANT, users(TENANT_CAP), "detach");
+
+    service.invalidateHolders(TENANT, List.of(USER), "detach");
+    failRead();
+
+    assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.STALE);
+    assertThat(lastSeenDropped("bump_over_cap")).isEqualTo(1.0);
+    assertThat(seenCountersMatchMap()).isTrue();
+  }
+
+  @Test
+  void should_dropBumpAndCount_when_mapReachedHardLimit() {
+    storeWrites(EPOCH + 5);
+    for (int tenant = 0; tenant < 2 * 100 / TENANT_PERCENT; tenant++) {
+      service.invalidateHolders(new UUID(2, tenant), users(TENANT_CAP), "detach");
+    }
+    assertThat(lastSeenDropped("bump_dropped")).isZero();
+
+    service.invalidateHolders(TENANT, List.of(USER), "detach");
+
+    assertThat(lastSeenDropped("bump_dropped")).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_notEvictBumpEntry_when_readEntryNeedsRoomLater() {
+    storeWrites(EPOCH + 5);
+    service.invalidateHolders(TENANT, users(TENANT_CAP), "detach");
+    when(port.current(any(), any())).thenReturn(OptionalLong.of(EPOCH));
+
+    service.check(TENANT, USER, EPOCH);
 
     assertThat(lastSeenDropped("tenant_cap")).isEqualTo(1.0);
+    assertThat(lastSeenDropped("bump_evicted")).isZero();
+  }
+
+  // --- tenant slot accounting under concurrency (coordinator review, finding 2) ---
+
+  @Test
+  void should_keepTenantCountersEqualToMap_when_purgeRacesReadsAndBumps() throws Exception {
+    when(port.current(any(), any())).thenReturn(OptionalLong.of(EPOCH));
+    storeWrites(EPOCH + 5);
+    List<UUID> tenants = List.of(new UUID(3, 1), new UUID(3, 2));
+    List<UUID> people = users(40);
+    ExecutorService pool = Executors.newFixedThreadPool(4);
+    CountDownLatch go = new CountDownLatch(1);
+    List<java.util.concurrent.Future<?>> work = new java.util.ArrayList<>();
+    for (int worker = 0; worker < 2; worker++) {
+      work.add(pool.submit(() -> {
+        go.await();
+        for (int i = 0; i < 3000; i++) {
+          service.check(tenants.get(i % 2), people.get(i % people.size()), EPOCH);
+        }
+        return null;
+      }));
+    }
+    work.add(pool.submit(() -> {
+      go.await();
+      for (int i = 0; i < 3000; i++) {
+        service.invalidateHolders(tenants.get(i % 2), List.of(people.get(i % people.size())), "x");
+      }
+      return null;
+    }));
+    work.add(pool.submit(() -> {
+      go.await();
+      for (int i = 0; i < 3000; i++) {
+        clock.set(T.plusSeconds((i % 3) * KEY_TTL_SECONDS));
+        service.probe();
+      }
+      return null;
+    }));
+    go.countDown();
+    for (java.util.concurrent.Future<?> f : work) {
+      f.get(60, TimeUnit.SECONDS);
+    }
+    pool.shutdownNow();
+
+    assertThat(seenCountersMatchMap()).isTrue();
+  }
+
+  // --- role replay read is bounded (coordinator review, finding 3) ---
+
+  @Test
+  void should_requeueWithOriginalTimeAndKeepTickRunning_when_holderReadHangs() throws Exception {
+    CountDownLatch release = new CountDownLatch(1);
+    when(userRoles.findActiveUserIdsForRole(ROLE)).thenAnswer(invocation -> {
+      // Like a JDBC call stuck in a socket read: an interrupt does not end it.
+      long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+      while (release.getCount() > 0 && System.nanoTime() < deadline) {
+        try {
+          release.await(100, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ignored) {
+          // keep waiting
+        }
+      }
+      return List.of(USER);
+    });
+    failBumps();
+    service.invalidateUser(TENANT, USER, "revoke");
+    service.holderReadFailed(TENANT, ROLE, "detach");
+    bumpsSucceed();
+    org.mockito.Mockito.clearInvocations(port);
+    long started = System.nanoTime();
+
+    service.probe();
+
+    assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(5));
+    assertThat(roleQueueSize()).isEqualTo(1.0);
+    assertThat(bumpFailed("role_replay", "holder_read")).isEqualTo(1.0);
+    verify(port).bump(TENANT, List.of(USER));
+    assertThat(replayQueueUsers()).isZero();
+
+    service.probe();
+    verify(userRoles, times(1)).findActiveUserIdsForRole(ROLE);
+
+    release.countDown();
+    clock.set(T.plusSeconds(KEY_TTL_SECONDS));
+    awaitRoleReadIdle();
+    service.probe();
+    verify(userRoles, times(1)).findActiveUserIdsForRole(ROLE);
+    assertThat(roleQueueSize()).isZero();
+  }
+
+  private void awaitRoleReadIdle() throws InterruptedException {
+    long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+    while (service.roleReadInFlight() && System.nanoTime() < deadline) {
+      Thread.sleep(20);
+    }
+    assertThat(service.roleReadInFlight()).isFalse();
+  }
+
+  private boolean seenCountersMatchMap() {
+    return service.lastSeenCountsFromMap().equals(service.lastSeenCountsFromCounters());
   }
 
   @Test

@@ -34,10 +34,15 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *       {@code user-window-seconds} keyed by email HMAC. Body is read, parsed for email,
  *       then replayed to the downstream handler.
  *   <li>{@code POST /api/v1/auth/refresh} — {@code refresh-ip-max-attempts} (300) per
- *       {@code ip-window-seconds} per IP, a total over valid and invalid requests alike (no
- *       body). The filter consults no failure bucket: the per-family and per-IP failure buckets
- *       are enforced in {@code RefreshTokenUseCase}, where the outcome is known, so failing
- *       refreshes can never block a valid one behind a shared IP (US-018 RC-43).
+ *       {@code ip-window-seconds} per IP, a total over valid and invalid requests alike,
+ *       cookie or not (no body). The filter consults no failure bucket: the per-family and per-IP
+ *       failure buckets are enforced in {@code RefreshTokenUseCase}, where the outcome is known,
+ *       so 30 failing refreshes a minute no longer block a valid one (US-018 RC-43). <b>Failing
+ *       refreshes still consume the total, though</b>: a client that sends 300 junk refreshes in
+ *       a window makes every valid refresh from the same IP answer 429 until the window slides
+ *       (security review M7 part 2 M-1, accepted as RES-40). The lever is bounded by the SPA,
+ *       which keeps the session on a refresh 429 and retries after {@code Retry-After}, and
+ *       by DF-1 (below). An invalid refresh costs the sender the same as a valid one.
  * </ul>
  *
  * <p>On a rate-limit breach, writes a 429 RFC 7807 problem document directly to the response
