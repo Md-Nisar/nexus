@@ -1182,17 +1182,17 @@ class PermissionFreshnessServiceTest {
   }
 
   @Test
-  void should_recordOwnBumpAndCountOverCap_when_mapFullAndNothingToEvict() {
+  void should_recordOwnBump_when_readCapacityFull() {
     when(port.current(any(), any())).thenReturn(OptionalLong.of(EPOCH));
     fillSeenMapToCapacity();
-    clock.set(T.plusSeconds(KEY_TTL_SECONDS));
     storeWrites(EPOCH + 5);
 
     service.invalidateHolders(TENANT, List.of(USER), "detach");
     failRead();
 
     assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.STALE);
-    assertThat(lastSeenDropped("bump_over_cap")).isEqualTo(1.0);
+    assertThat(lastSeenDropped("bump_dropped")).isZero();
+    assertThat(seenCountersMatchMap()).isTrue();
   }
 
   @Test
@@ -1255,8 +1255,10 @@ class PermissionFreshnessServiceTest {
         .allSatisfy(counter -> assertThat(counter.count()).isZero());
   }
 
+  // --- own bumps are never dropped by the read bounds, and tenants do not share a pool ---
+
   @Test
-  void should_recordOwnBumpAndEvictReadEntry_when_tenantAtCap() {
+  void should_recordOwnBump_when_tenantAtItsReadCap() {
     fillTenantToCap(TENANT);
     storeWrites(EPOCH + 5);
 
@@ -1264,14 +1266,13 @@ class PermissionFreshnessServiceTest {
     failRead();
 
     assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.STALE);
-    assertThat(lastSeenDropped("bump_evicted")).isEqualTo(1.0);
     assertThat(lastSeenDropped("tenant_cap")).isZero();
-    assertThat(lastSeenDropped("bump_over_cap")).isZero();
+    assertThat(lastSeenDropped("bump_dropped")).isZero();
     assertThat(seenCountersMatchMap()).isTrue();
   }
 
   @Test
-  void should_recordFailedBumpLowerBound_when_tenantAtCap() {
+  void should_recordFailedBumpLowerBound_when_tenantAtItsReadCap() {
     fillTenantToCap(TENANT);
     failBumps();
 
@@ -1282,7 +1283,7 @@ class PermissionFreshnessServiceTest {
   }
 
   @Test
-  void should_recordReplayedBump_when_tenantAtCap() {
+  void should_recordReplayedBump_when_tenantAtItsReadCap() {
     failBumps();
     service.invalidateUser(TENANT, USER, "revoke");
     clock.set(T.plusSeconds(1));
@@ -1296,24 +1297,23 @@ class PermissionFreshnessServiceTest {
   }
 
   @Test
-  void should_recordEveryBumpBeyondCap_when_tenantFullOfBumpEntries() {
+  void should_moveEntryToBumpPool_when_readDerivedUserIsBumped() {
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+    service.check(TENANT, USER, EPOCH);
     storeWrites(EPOCH + 5);
-    service.invalidateHolders(TENANT, users(TENANT_CAP), "detach");
 
     service.invalidateHolders(TENANT, List.of(USER), "detach");
-    failRead();
 
-    assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.STALE);
-    assertThat(lastSeenDropped("bump_over_cap")).isEqualTo(1.0);
     assertThat(seenCountersMatchMap()).isTrue();
+    assertThat(service.lastSeenCountsFromCounters().bumps()).containsEntry(TENANT, 1);
+    assertThat(service.lastSeenCountsFromCounters().reads()).doesNotContainKey(TENANT);
   }
 
   @Test
-  void should_dropBumpAndCount_when_mapReachedHardLimit() {
+  void should_dropOnlyBeyondTenantCeilingAndCount_when_oneTenantDetachesHugeRole() {
     storeWrites(EPOCH + 5);
-    for (int tenant = 0; tenant < 2 * 100 / TENANT_PERCENT; tenant++) {
-      service.invalidateHolders(new UUID(2, tenant), users(TENANT_CAP), "detach");
-    }
+    int ceiling = TENANT_CAP * PermissionFreshnessService.LAST_SEEN_BUMP_CEILING_FACTOR;
+    service.invalidateHolders(TENANT, users(ceiling), "detach");
     assertThat(lastSeenDropped("bump_dropped")).isZero();
 
     service.invalidateHolders(TENANT, List.of(USER), "detach");
@@ -1322,15 +1322,76 @@ class PermissionFreshnessServiceTest {
   }
 
   @Test
-  void should_notEvictBumpEntry_when_readEntryNeedsRoomLater() {
+  void should_stillRecordOtherTenantRevocationAndReads_when_oneTenantFilledItsBumpCeiling() {
+    UUID other = UUID.fromString("00000000-0000-7000-8000-0000000000ad");
+    storeWrites(EPOCH + 5);
+    int ceiling = TENANT_CAP * PermissionFreshnessService.LAST_SEEN_BUMP_CEILING_FACTOR;
+    service.invalidateHolders(TENANT, users(ceiling + 10), "detach");
+
+    service.invalidateHolders(other, List.of(USER), "detach");
+    UUID reader = UUID.randomUUID();
+    when(port.current(other, reader)).thenReturn(OptionalLong.of(EPOCH));
+    service.check(other, reader, EPOCH);
+    when(port.current(other, USER)).thenReturn(OptionalLong.empty());
+
+    assertThat(service.check(other, USER, EPOCH)).isEqualTo(FreshnessVerdict.STALE);
+    assertThat(lastSeenDropped("capacity")).isZero();
+    assertThat(lastSeenDropped("tenant_cap")).isZero();
+    assertThat(lastSeenDropped("bump_dropped")).isEqualTo(10.0);
+    assertThat(seenCountersMatchMap()).isTrue();
+  }
+
+  @Test
+  void should_notCountOtherTenantsBumpEntriesTowardsReadCapacity_when_readsArrive() {
+    storeWrites(EPOCH + 5);
+    int ceiling = TENANT_CAP * PermissionFreshnessService.LAST_SEEN_BUMP_CEILING_FACTOR;
+    for (int tenant = 0; tenant < 3; tenant++) {
+      service.invalidateHolders(new UUID(4, tenant), users(ceiling), "detach");
+    }
+
+    fillSeenMapToCapacity();
+
+    assertThat(lastSeenDropped("capacity")).isZero();
+    assertThat(lastSeenDropped("tenant_cap")).isZero();
+  }
+
+  @Test
+  void should_notEvictBumpEntry_when_readsFillTenant() {
     storeWrites(EPOCH + 5);
     service.invalidateHolders(TENANT, users(TENANT_CAP), "detach");
     when(port.current(any(), any())).thenReturn(OptionalLong.of(EPOCH));
 
     service.check(TENANT, USER, EPOCH);
 
-    assertThat(lastSeenDropped("tenant_cap")).isEqualTo(1.0);
-    assertThat(lastSeenDropped("bump_evicted")).isZero();
+    assertThat(lastSeenDropped("tenant_cap")).isZero();
+    assertThat(seenCountersMatchMap()).isTrue();
+  }
+
+  // --- role replay: the in-flight slot follows the thread, not the future ---
+
+  @Test
+  void should_readAgainOnNextTick_when_earlierReadWasCancelledBeforeItRan() throws Exception {
+    CountDownLatch release = new CountDownLatch(1);
+    java.util.concurrent.Future<?> blocker = service.runOnRoleReadThread(() -> {
+      try {
+        release.await(30, TimeUnit.SECONDS);
+      } catch (InterruptedException ignored) {
+        Thread.currentThread().interrupt();
+      }
+    });
+    service.holderReadFailed(TENANT, ROLE, "detach");
+    holdersOfRole(USER);
+    storeWrites(EPOCH + 5);
+
+    service.probe();
+
+    assertThat(roleQueueSize()).isEqualTo(1.0);
+    assertThat(service.roleReadInFlight()).isFalse();
+    blocker.cancel(false);
+    release.countDown();
+    service.probe();
+    assertThat(roleQueueSize()).isZero();
+    verify(port).bump(TENANT, List.of(USER));
   }
 
   // --- tenant slot accounting under concurrency (coordinator review, finding 2) ---
