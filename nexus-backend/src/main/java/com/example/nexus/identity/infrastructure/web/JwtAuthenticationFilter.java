@@ -113,7 +113,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
       reject(req, res, new AuthenticationException(AUTH_003, "Token identifiers are malformed"));
       return;
     }
-    FreshnessVerdict verdict = permissionFreshness.check(tenantId, userId, claims.permEpoch());
+    FreshnessVerdict verdict = permissionFreshness.check(tenantId, userId, claims.permEpoch(), claims.iat());
     switch (verdict) {
       case STALE -> {
         reject(req, res, new AuthenticationException(AUTH_003, "Token permissions are stale"));

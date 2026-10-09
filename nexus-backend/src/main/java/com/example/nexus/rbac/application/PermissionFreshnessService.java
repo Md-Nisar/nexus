@@ -19,6 +19,7 @@ import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.UUID;
@@ -215,6 +216,7 @@ public final class PermissionFreshnessService {
   private final Counter bumpReplayed;
   private final Counter rolesReplayed;
   private final Counter unparseableCounter;
+  private final Counter storeRegressedCounter;
   private final EpochReplayQueue replayQueue;
   private final RoleReplayQueue roleReplayQueue;
   private final UserRoleAssignmentPort userRoleAssignmentPort;
@@ -319,6 +321,9 @@ public final class PermissionFreshnessService {
     this.unparseableCounter = Counter.builder(METRIC_CHECK)
         .description("Request-time permission-epoch checks, by outcome")
         .tag("outcome", OUTCOME_UNPARSEABLE)
+        .register(meterRegistry);
+    this.storeRegressedCounter = Counter.builder("nexus.rbac.epoch.store_regressed")
+        .description("Reads or mints where the store answered below an epoch this instance knows")
         .register(meterRegistry);
     this.checkLatency = Timer.builder(METRIC_CHECK_LATENCY)
         .description("Latency of the request-time permission-epoch check")
@@ -445,6 +450,17 @@ public final class PermissionFreshnessService {
       }
       if (read.isPresent()) {
         remember(key, read.getAsLong(), now, false);
+        // The store answered, but below what this instance knows, or while a bump this instance
+        // could not write is still owed: do not vouch for the store's value (M-1). The token
+        // carries the local bound and the permission set is resolved uncached, because the
+        // epoch-keyed cache entry was never deleted.
+        SeenEpoch known = lastSeenEntry(key, now);
+        if (known != null && (known.epoch() > read.getAsLong() || known.failedBumpAt() != null)) {
+          if (known.epoch() > read.getAsLong()) {
+            storeRegressedCounter.increment();
+          }
+          return new MintEpoch(Math.max(known.epoch(), read.getAsLong()), false);
+        }
         return new MintEpoch(read.getAsLong(), true);
       }
     } catch (EpochUnparseableException e) {
@@ -480,20 +496,41 @@ public final class PermissionFreshnessService {
    *     FreshnessVerdict#UNAVAILABLE} while degraded-closed, for the caller to turn into a 503
    */
   public FreshnessVerdict check(UUID tenantId, UUID userId, long tokenEpoch) {
+    return check(tenantId, userId, tokenEpoch, Long.MAX_VALUE);
+  }
+
+  /**
+   * As {@link #check(UUID, UUID, long)}, and also {@link FreshnessVerdict#STALE} for a token
+   * issued at or before the second of a bump this instance could not write (M-1): the lower bound
+   * {@code seen + 1} cannot catch a user this instance had not seen, whose real epochs are Redis
+   * time in milliseconds.
+   *
+   * @param tenantId the token's tenant
+   * @param userId the token's subject
+   * @param tokenEpoch the token's {@code perm_epoch} ({@code 0} for a v2 token)
+   * @param issuedAtSeconds the token's {@code iat} in epoch seconds; {@link Long#MAX_VALUE} when
+   *     unknown, which never matches the failed-bump marker
+   * @return the verdict of {@link #check(UUID, UUID, long)}
+   */
+  public FreshnessVerdict check(
+      UUID tenantId, UUID userId, long tokenEpoch, long issuedAtSeconds) {
     Timer.Sample sample = Timer.start();
     AtomicBoolean unparseable = new AtomicBoolean();
-    FreshnessVerdict verdict = evaluate(new UserKey(tenantId, userId), tokenEpoch, unparseable);
+    FreshnessVerdict verdict =
+        evaluate(new UserKey(tenantId, userId), tokenEpoch, issuedAtSeconds, unparseable);
     sample.stop(checkLatency);
     // An unparseable value is STALE for the caller but its own outcome for the operator (L-2).
     (unparseable.get() ? unparseableCounter : outcomeCounters.get(verdict)).increment();
     return verdict;
   }
 
-  private FreshnessVerdict evaluate(UserKey key, long tokenEpoch, AtomicBoolean unparseable) {
+  private FreshnessVerdict evaluate(
+      UserKey key, long tokenEpoch, long issuedAt, AtomicBoolean unparseable) {
     Instant now = clock.instant();
     return switch (refreshState(now)) {
       case DEGRADED_CLOSED -> FreshnessVerdict.UNAVAILABLE;
-      case DEGRADED_OPEN -> unverified(key, tokenEpoch, FreshnessVerdict.SKIPPED_DEGRADED, now);
+      case DEGRADED_OPEN ->
+          unverified(key, tokenEpoch, issuedAt, FreshnessVerdict.SKIPPED_DEGRADED, now);
       case HEALTHY, RECOVERING -> {
         OptionalLong current;
         try {
@@ -508,11 +545,19 @@ public final class PermissionFreshnessService {
         if (current.isEmpty()) {
           // Also an adapter that is not connected yet: it answers empty at once (design §9.5).
           recordReadFailure(now);
-          yield unverified(key, tokenEpoch, FreshnessVerdict.SKIPPED_ERROR, now);
+          yield unverified(key, tokenEpoch, issuedAt, FreshnessVerdict.SKIPPED_ERROR, now);
         }
         recordReadSuccess(now);
         remember(key, current.getAsLong(), now, false);
-        yield tokenEpoch < current.getAsLong() ? FreshnessVerdict.STALE : FreshnessVerdict.FRESH;
+        // The store is not the whole truth (M-1): a bump it refused or lost leaves it below what
+        // this instance knows, and its read side keeps answering. The local bound still holds.
+        SeenEpoch known = lastSeenEntry(key, now);
+        if (known != null && known.epoch() > current.getAsLong()) {
+          storeRegressedCounter.increment();
+        }
+        yield tokenEpoch < current.getAsLong() || staleByLocalKnowledge(known, tokenEpoch, issuedAt)
+            ? FreshnessVerdict.STALE
+            : FreshnessVerdict.FRESH;
       }
     };
   }
@@ -544,12 +589,25 @@ public final class PermissionFreshnessService {
 
   /** The verdict when the store was not consulted: stale if this instance already saw a bump. */
   private FreshnessVerdict unverified(
-      UserKey key, long tokenEpoch, FreshnessVerdict fallback, Instant now) {
-    OptionalLong seen = lastSeenEpoch(key, now);
-    if (seen.isPresent() && tokenEpoch < seen.getAsLong()) {
+      UserKey key, long tokenEpoch, long issuedAt, FreshnessVerdict fallback, Instant now) {
+    if (staleByLocalKnowledge(lastSeenEntry(key, now), tokenEpoch, issuedAt)) {
       return FreshnessVerdict.STALE;
     }
     return revocationLost(key.tenantId(), now) ? FreshnessVerdict.STALE : fallback;
+  }
+
+  /**
+   * Whether what this instance knows alone makes the token stale: its epoch is below the highest
+   * one seen, or it was issued at or before the second of a bump that could not be written and has
+   * not been replayed since. The second is compared whole, so a token issued in the same second as
+   * the failure is refused once and refreshed.
+   */
+  private static boolean staleByLocalKnowledge(SeenEpoch known, long tokenEpoch, long issuedAt) {
+    if (known == null) {
+      return false;
+    }
+    return tokenEpoch < known.epoch()
+        || (known.failedBumpAt() != null && issuedAt <= known.failedBumpAt().getEpochSecond());
   }
 
   /**
@@ -719,17 +777,23 @@ public final class PermissionFreshnessService {
   // --- locally-seen epochs (security review M-1) ---
 
   private OptionalLong lastSeenEpoch(UserKey key, Instant now) {
+    SeenEpoch seen = lastSeenEntry(key, now);
+    return seen == null ? OptionalLong.empty() : OptionalLong.of(seen.epoch());
+  }
+
+  /** The unexpired entry of the user, or {@code null}; an expired one is removed on the way. */
+  private SeenEpoch lastSeenEntry(UserKey key, Instant now) {
     SeenEpoch seen = lastSeen.get(key);
     if (seen == null) {
-      return OptionalLong.empty();
+      return null;
     }
     if (!now.isBefore(seen.expiresAt())) {
       if (lastSeen.remove(key, seen)) {
         release(key.tenantId(), seen.ownBump());
       }
-      return OptionalLong.empty();
+      return null;
     }
-    return OptionalLong.of(seen.epoch());
+    return seen;
   }
 
   /**
@@ -753,10 +817,21 @@ public final class PermissionFreshnessService {
    * An entry first derived from a read and then bumped moves to the bump pool.
    */
   private void remember(UserKey key, long epoch, Instant now, boolean ownBump) {
+    remember(key, epoch, now, ownBump, null);
+  }
+
+  /**
+   * As above; {@code failedBumpAt} is the instant of a bump this instance could not write (M-1).
+   * The marker stays on the entry until a later epoch at or after that instant is recorded, which
+   * only a bump that landed (or a store that has caught up) can produce: the store writes at least
+   * Redis time.
+   */
+  private void remember(
+      UserKey key, long epoch, Instant now, boolean ownBump, Instant failedBumpAt) {
     if (epoch <= 0) {
       return;
     }
-    SeenEpoch fresh = new SeenEpoch(epoch, now.plus(lastSeenTtl), ownBump);
+    SeenEpoch fresh = new SeenEpoch(epoch, now.plus(lastSeenTtl), ownBump, failedBumpAt);
     Counter[] dropped = {null};
     boolean[] moveRefused = {false};
     lastSeen.compute(key, (k, old) -> {
@@ -775,9 +850,14 @@ public final class PermissionFreshnessService {
           moveRefused[0] = true;
         }
       }
-      return winner.ownBump() == bump
+      Instant marker = failedBumpAt;
+      if (marker == null && old.failedBumpAt() != null
+          && fresh.epoch() < old.failedBumpAt().toEpochMilli()) {
+        marker = old.failedBumpAt();
+      }
+      return winner.ownBump() == bump && Objects.equals(winner.failedBumpAt(), marker)
           ? winner
-          : new SeenEpoch(winner.epoch(), winner.expiresAt(), bump);
+          : new SeenEpoch(winner.epoch(), winner.expiresAt(), bump, marker);
     });
     if (dropped[0] != null) {
       dropped[0].increment();
@@ -916,7 +996,7 @@ public final class PermissionFreshnessService {
     Instant now = clock.instant();
     for (UUID userId : userIds) {
       UserKey key = new UserKey(tenantId, userId);
-      remember(key, lowerBound(key, now), now, true);
+      remember(key, lowerBound(key, now), now, true, now);
     }
   }
 
@@ -933,7 +1013,8 @@ public final class PermissionFreshnessService {
 
   private record UserKey(UUID tenantId, UUID userId) {}
 
-  private record SeenEpoch(long epoch, Instant expiresAt, boolean ownBump) {}
+  /** {@code failedBumpAt} is non-null while a bump this instance could not write is unreplayed. */
+  private record SeenEpoch(long epoch, Instant expiresAt, boolean ownBump, Instant failedBumpAt) {}
 
   /**
    * Makes every token of a user minted so far stale. Post-commit only (MC-7b).
