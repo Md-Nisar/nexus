@@ -204,6 +204,22 @@ class RedisPermissionCacheAdapterIT {
   }
 
   @Test
+  void should_leaveOtherTenantsEntry_when_evictingSameUserIdInOneTenant() {
+    var adapter = newAdapter();
+    UUID tenantA = UUID.randomUUID();
+    UUID tenantB = UUID.randomUUID();
+    UUID userId = UUID.randomUUID();
+    ResolvedPermissions entry = new ResolvedPermissions(List.of("MEMBER"), List.of("user:read"));
+    adapter.put(tenantA, userId, 0L, entry);
+    adapter.put(tenantB, userId, 0L, entry);
+
+    adapter.evict(tenantA, List.of(userId));
+
+    assertThat(adapter.get(tenantA, userId, 0L)).isEmpty();
+    assertThat(adapter.get(tenantB, userId, 0L)).contains(entry);
+  }
+
+  @Test
   void should_leaveOtherUsersEntries_when_evictingOneUser() {
     var adapter = newAdapter();
     UUID tenantId = UUID.randomUUID();

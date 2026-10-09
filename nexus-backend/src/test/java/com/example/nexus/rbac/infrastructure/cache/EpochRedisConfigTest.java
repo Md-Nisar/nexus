@@ -234,6 +234,36 @@ class EpochRedisConfigTest {
     assertThat(client.getCommandTimeout()).isEqualTo(Duration.ofMillis(50));
   }
 
+  /** RC-45.2: the TLS mode and peer verification of the main factory carry over, never weaker. */
+  @Test
+  void should_copyStartTlsAndPeerVerification_when_mainFactoryUsesThem() {
+    LettuceConnectionFactory main = new LettuceConnectionFactory(
+        new RedisStandaloneConfiguration("redis.internal", 6380),
+        LettuceClientConfiguration.builder().useSsl().startTls().and().build());
+
+    LettuceConnectionFactory read = EpochRedisConfig.dedicatedFactory(
+        standalone("redis.internal", 6380, 0, null, null), main, clientResources,
+        Duration.ofMillis(50));
+
+    assertThat(read.getClientConfiguration().isStartTls()).isTrue();
+    assertThat(read.getClientConfiguration().getVerifyMode())
+        .isEqualTo(main.getClientConfiguration().getVerifyMode());
+  }
+
+  @Test
+  void should_notEnableStartTls_when_mainFactoryUsesPlainSsl() {
+    LettuceConnectionFactory main = new LettuceConnectionFactory(
+        new RedisStandaloneConfiguration("redis.internal", 6380),
+        LettuceClientConfiguration.builder().useSsl().and().build());
+
+    LettuceConnectionFactory bump = EpochRedisConfig.dedicatedFactory(
+        standalone("redis.internal", 6380, 0, null, null), main, clientResources,
+        Duration.ofMillis(500));
+
+    assertThat(bump.getClientConfiguration().isUseSsl()).isTrue();
+    assertThat(bump.getClientConfiguration().isStartTls()).isFalse();
+  }
+
   @Test
   void should_useSsl_when_mainFactoryAutoConfiguredFromRedissUrl() {
     new ApplicationContextRunner()
