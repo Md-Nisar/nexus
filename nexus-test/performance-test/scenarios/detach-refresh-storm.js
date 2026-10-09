@@ -220,7 +220,7 @@ export function cleanupStorm(data) {
   );
 }
 
-function refresh(refreshToken, expected) {
+export function refresh(refreshToken, expected) {
   return http.post(`${config.baseUrl}/api/v1/auth/refresh`, null, {
     headers: { Cookie: `refresh_token=${refreshToken}` },
     jar: new http.CookieJar(),
@@ -230,11 +230,11 @@ function refresh(refreshToken, expected) {
 }
 
 // Each request uses its own empty jar so cookies never leak between the simulated browsers.
-function noJar() {
+export function noJar() {
   return { jar: new http.CookieJar() };
 }
 
-function refreshCookie(res) {
+export function refreshCookie(res) {
   const cookies = res.cookies.refresh_token;
   if (!cookies || cookies.length === 0) {
     fail('Response carried no refresh_token cookie');
@@ -260,7 +260,7 @@ function permissionIdsByName(admin) {
 }
 
 /** Polls MailHog until every address has its verification mail; returns { email: token }. */
-function awaitVerificationTokens(mailhogUrl, emails) {
+export function awaitVerificationTokens(mailhogUrl, emails) {
   const found = {};
   for (let attempt = 0; attempt < 60; attempt++) {
     const res = http.get(`${mailhogUrl}/api/v2/messages?limit=${emails.length * 4 + 50}`, {
@@ -307,7 +307,7 @@ function safeJson(res, selector) {
   }
 }
 
-function randomHex(length) {
+export function randomHex(length) {
   let out = '';
   while (out.length < length) {
     out += Math.floor(Math.random() * 16).toString(16);
