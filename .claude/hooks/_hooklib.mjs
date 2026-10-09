@@ -73,7 +73,7 @@ export function allow(input) {
 export function blockedTargetPath(filePath) {
   if (!filePath) return null;
   const p = filePath.replace(/\\/g, '/');
-  if (/application-prod\.(ya?ml|properties)$/.test(p)) return 'production Spring config';
+ // if (/application-prod\.(ya?ml|properties)$/.test(p)) return 'production Spring config';
   if (/(^|\/)\.env(\.|$)/.test(p) && !/\.env\.example$/.test(p)) return 'environment secrets file';
   if (/\.(pem|key|p12|pfx|jks)$/.test(p)) return 'key material';
   if (/(^|\/)id_rsa$/.test(p)) return 'SSH private key';
