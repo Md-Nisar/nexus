@@ -6,6 +6,7 @@ import { config } from '../config/environment.js';
 import { bearer } from '../utils/auth.js';
 import { checkResponse } from '../utils/checks.js';
 import { get, postJson } from '../utils/http.js';
+import { requireWritableTarget, runPassword } from '../utils/write-scenario.js';
 
 /**
  * US-018 T-013 merge gate: a permission detach on a 200-holder role behind ONE client IP must not
@@ -33,7 +34,6 @@ import { get, postJson } from '../utils/http.js';
 
 const ROLE_PERMISSIONS = ['role:read', 'user:read'];
 const DETACHED_PERMISSION = 'user:read';
-const PASSWORD = 'Pr3f-Storm-Pass-99!';
 
 export const forcedLogouts = new Counter('storm_forced_logouts');
 export const recoveryFailed = new Counter('storm_recovery_failed');
@@ -47,6 +47,8 @@ export const throttledFailures = new Gauge('storm_refresh_failure_throttled');
  * setup() with an administrator's access token (the dev-seeded TENANT_ADMIN user qualifies).
  */
 export function seedStorm(adminToken) {
+  requireWritableTarget('detach-refresh-storm');
+  const PASSWORD = runPassword();
   const { holders, replays, mailhogUrl } = config.refreshStorm;
   if (!mailhogUrl) {
     fail('Set MAILHOG_URL (e.g. http://localhost:8025) so seeded accounts can be verified');
@@ -85,7 +87,23 @@ export function seedStorm(adminToken) {
   }
   const tokens = awaitVerificationTokens(mailhogUrl, emails);
 
-  const accounts = emails.map((email, i) => {
+  // Teardown does not run when setup() fails, so a failure below revokes what was assigned so far.
+  const assigned = [];
+  const accounts = [];
+  try {
+    emails.forEach((email, i) => accounts.push(seedAccount(email, i)));
+  } catch (e) {
+    for (const userId of assigned) {
+      http.del(`${config.baseUrl}/api/v1/users/${userId}/roles/${roleId}`, null, {
+        ...admin,
+        tags: { name: '/api/v1/users/{userId}/roles/{roleId}' },
+        responseCallback: http.expectedStatuses(204, 404),
+      });
+    }
+    throw e;
+  }
+
+  function seedAccount(email, i) {
     const verify = postJson('/api/v1/auth/verify-email', { token: tokens[email] });
     if (verify.status !== 200) {
       fail(`Verifying account ${i} failed with HTTP ${verify.status}`);
@@ -103,6 +121,7 @@ export function seedStorm(adminToken) {
     if (assign.status !== 201) {
       fail(`Assigning the role to account ${i} failed with HTTP ${assign.status}`);
     }
+    assigned.push(userId);
     // The login token predates the assignment: rotate once so the token carries the role. For a
     // replay victim the pre-rotation token becomes the "stolen" one.
     const loginRefresh = refreshCookie(login);
@@ -116,7 +135,7 @@ export function seedStorm(adminToken) {
       refreshToken: refreshCookie(rotated),
       rotatedRefreshToken: loginRefresh,
     };
-  });
+  }
 
   // Let the seeding traffic (sign-ins and rotations from this IP) leave the per-IP windows, so the
   // measured window contains only the storm.

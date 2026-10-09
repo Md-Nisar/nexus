@@ -345,6 +345,46 @@ class EpochReplayQueueTest {
     assertThat(queue.size()).isZero();
   }
 
+  // --- L-2 (pre-PR review): a tenant over its share overflows itself, not the others ---
+
+  @Test
+  void should_dropOnlyTheOverflowingTenantsUsers_when_oneTenantExceedsItsShare() {
+    EpochReplayQueue queue = new EpochReplayQueue(10, 3);
+
+    int droppedOfFirst = queue.offer(TENANT, users(5), T);
+    int droppedOfSecond = queue.offer(OTHER_TENANT, users(2), T);
+
+    assertThat(droppedOfFirst).isEqualTo(2);
+    assertThat(droppedOfSecond).isZero();
+    assertThat(queue.size()).isEqualTo(5);
+  }
+
+  @Test
+  void should_coalesceWithoutUsingShare_when_queuedUserOfFullTenantFailsAgain() {
+    EpochReplayQueue queue = new EpochReplayQueue(10, 1);
+    queue.offer(TENANT, List.of(USER), T);
+
+    assertThat(queue.offer(TENANT, List.of(USER), T.plusSeconds(1))).isZero();
+    assertThat(queue.size()).isEqualTo(1);
+  }
+
+  @Test
+  void should_stillBoundTheTotal_when_tenantSharesAddUpToMore() {
+    EpochReplayQueue queue = new EpochReplayQueue(4, 3);
+
+    queue.offer(TENANT, users(3), T);
+    int dropped = queue.offer(OTHER_TENANT, users(3), T);
+
+    assertThat(dropped).isEqualTo(2);
+    assertThat(queue.size()).isEqualTo(4);
+  }
+
+  @Test
+  void should_rejectNonPositiveTenantShare() {
+    assertThatThrownBy(() -> new EpochReplayQueue(10, 0))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
   private static List<UUID> users(int count) {
     return IntStream.range(0, count).mapToObj(i -> UUID.randomUUID()).toList();
   }

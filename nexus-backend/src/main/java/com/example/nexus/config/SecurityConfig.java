@@ -6,6 +6,7 @@ import com.example.nexus.identity.infrastructure.web.JwtAuthenticationFilter;
 import com.example.nexus.identity.infrastructure.web.LoginRateLimitFilter;
 import com.example.nexus.identity.infrastructure.web.PublicEndpointRequestMatcher;
 import com.example.nexus.rbac.application.PermissionFreshnessService;
+import com.example.nexus.rbac.domain.RbacRoleNames;
 import java.util.List;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
@@ -90,6 +91,10 @@ public class SecurityConfig {
             .requestMatchers(
                 "/actuator/health/**", "/actuator/info",
                 "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
+            // Pre-PR security review L-3: the metrics publish the instance's degraded state and
+            // drop counters, which time the fail-open window for anyone who can read them.
+            .requestMatchers("/actuator/metrics/**", "/actuator/prometheus")
+                .hasRole(RbacRoleNames.TENANT_ADMIN)
             .anyRequest().authenticated())
         .exceptionHandling(e -> e
             .authenticationEntryPoint(jwtAuthenticationEntryPoint())

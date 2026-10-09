@@ -364,8 +364,11 @@ public final class PermissionFreshnessService {
       thread.setDaemon(true);
       return thread;
     });
-    this.replayQueue = new EpochReplayQueue(replayCapacityUsers);
-    this.roleReplayQueue = new RoleReplayQueue(replayCapacityRoles);
+    // Each tenant's share of both queues is the same percentage as its last-seen share (L-2).
+    this.replayQueue = new EpochReplayQueue(
+        replayCapacityUsers, Math.max(1, replayCapacityUsers * lastSeenTenantPercent / 100));
+    this.roleReplayQueue = new RoleReplayQueue(
+        replayCapacityRoles, Math.max(1, replayCapacityRoles * lastSeenTenantPercent / 100));
     this.rolesReplayed = Counter.builder(METRIC_ROLE_REPLAYED)
         .description("Roles whose holders were read and bumped by the tick after a failed read")
         .register(meterRegistry);

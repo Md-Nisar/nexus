@@ -199,4 +199,31 @@ class RoleReplayQueueTest {
     assertThat(queue.poll(T.plusSeconds(1))).isEmpty();
     assertThat(queue.isEmpty()).isTrue();
   }
+
+  // --- L-2 (pre-PR review): a tenant over its share overflows itself, not the others ---
+
+  @Test
+  void should_refuseOnlyTheOverflowingTenantsRole_when_oneTenantExceedsItsShare() {
+    RoleReplayQueue queue = new RoleReplayQueue(10, 1);
+
+    assertThat(queue.offer(TENANT, ROLE, T)).isTrue();
+    assertThat(queue.offer(TENANT, OTHER_ROLE, T)).isFalse();
+    assertThat(queue.offer(OTHER_TENANT, OTHER_ROLE, T)).isTrue();
+    assertThat(queue.size()).isEqualTo(2);
+  }
+
+  @Test
+  void should_coalesceWithoutUsingShare_when_queuedRoleOfFullTenantFailsAgain() {
+    RoleReplayQueue queue = new RoleReplayQueue(10, 1);
+    queue.offer(TENANT, ROLE, T);
+
+    assertThat(queue.offer(TENANT, ROLE, T.plusSeconds(1))).isTrue();
+    assertThat(queue.size()).isEqualTo(1);
+  }
+
+  @Test
+  void should_rejectNonPositiveTenantShare() {
+    assertThatThrownBy(() -> new RoleReplayQueue(10, 0))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
 }

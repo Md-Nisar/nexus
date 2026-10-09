@@ -45,6 +45,21 @@ M-1 is fixed in `PermissionFreshnessService` (not re-reviewed by the reviewer; r
 
 ---
 
+## Resolution of L-1 to L-6 (after this review)
+
+Not re-reviewed by the reviewer; re-run `/security-review` to confirm.
+
+| Low | Resolution |
+|---|---|
+| **L-1** | **Partly as proposed.** The global arithmetic (10 tenants fill the read pool, 5 the own-bump pool) is recorded in RES-31, and `last_seen_dropped{reason=capacity}` now pages (`monitoring.md`); `tenant_cap` stays a ticket. **Not adopted:** failing a tenant closed when a read-derived entry is refused. The read pool is full on any busy instance, so that would turn the fail-open grace into constant 401 loops. The eviction alternative is not built. |
+| **L-2** | Both queues take a per-tenant share, `last-seen-tenant-percent` (default 10%) of each capacity: 10,000 users and 100 roles. A tenant over its share overflows itself and pages. **Tradeoff:** one tenant's fan-out above 10,000 holders during an outage now overflows at that point, not at 100,000. Tests in `EpochReplayQueueTest`, `RoleReplayQueueTest` and `PermissionFreshnessServiceTest`. |
+| **L-3** | `/actuator/metrics/**` and `/actuator/prometheus` now require `ROLE_TENANT_ADMIN` (`SecurityConfig`), not just authentication. The k6 scrapes already use an admin token. **Open:** `TENANT_ADMIN` is tenant-scoped, so a tenant admin can still read the instance's metrics. A scrape network or a platform permission would close that, and is a deployment or product decision. |
+| **L-4** | `utils/write-scenario.js`: both write scenarios refuse to start unless `BASE_URL` is loopback or a compose host (or `ALLOW_WRITE_SCENARIO=true`), generate the password per run (`k6/crypto`), and `seedStorm` revokes its assignments when setup aborts. README updated. Checked with `k6 run` against four URLs and `k6 inspect`; not run against a stack. |
+| **L-5** | `isApiRequest` compares whole path segments. Specs for `/apiary/x`, `/api-docs`, `/api.v2/users`, and for the base path itself. |
+| **L-6** | `server.forward-headers-strategy: none` is set in `application.yml` (all profiles), keeping T-1.3 and DF-1. `native` was the first assumption, but it is only safe with `server.tomcat.remoteip.internal-proxies` pinned to the ingress, which needs the real CIDR. Not in `application-prod.yml`, which is guarded. |
+
+---
+
 ## Findings
 
 ```
