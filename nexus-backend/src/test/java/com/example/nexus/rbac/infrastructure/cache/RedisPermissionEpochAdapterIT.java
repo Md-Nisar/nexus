@@ -320,6 +320,36 @@ class RedisPermissionEpochAdapterIT {
     assertThat(written).containsEntry(userId, stored + 1);
   }
 
+  /** The Lua rule and parse() agree on a 16-digit zero-padded value: valid, read and raised. */
+  @Test
+  void should_readAndRaiseByOne_when_storedValueIsZeroPaddedTo16Digits() {
+    UUID tenantId = UUID.randomUUID();
+    UUID userId = UUID.randomUUID();
+    long ahead = redisTimeMillis() + 3_600_000L;
+    templates.read().opsForValue().set(key(tenantId, userId), String.format("%016d", ahead));
+
+    OptionalLong read = adapter(templates).current(tenantId, userId);
+    Map<UUID, Long> written = adapter(templates).bump(tenantId, List.of(userId));
+
+    assertThat(read).hasValue(ahead);
+    assertThat(written).containsEntry(userId, ahead + 1);
+  }
+
+  /** A stored 0 is a valid epoch (not corrupt): read as 0, the bump writes Redis TIME. */
+  @Test
+  void should_readZeroAndBumpToRedisTime_when_storedValueIsZero() {
+    UUID tenantId = UUID.randomUUID();
+    UUID userId = UUID.randomUUID();
+    templates.read().opsForValue().set(key(tenantId, userId), "0");
+    long before = redisTimeMillis();
+
+    OptionalLong read = adapter(templates).current(tenantId, userId);
+    Map<UUID, Long> written = adapter(templates).bump(tenantId, List.of(userId));
+
+    assertThat(read).hasValue(0L);
+    assertThat(written.get(userId)).isBetween(before, redisTimeMillis());
+  }
+
   @Test
   void should_neverLowerOrExceedCeiling_when_storedValueIsCeiling() {
     UUID tenantId = UUID.randomUUID();
@@ -565,6 +595,41 @@ class RedisPermissionEpochAdapterIT {
     assertThat(templates.read().hasKey(cacheKey("roleset", tenantId, bystander, 0L))).isTrue();
     assertThat(templates.read().hasKey(cacheKey("permset", tenantId, bystander, 0L))).isTrue();
     assertThat(templates.read().hasKey(key(tenantId, bystander))).isFalse();
+  }
+
+  /**
+   * The script formats the old epoch itself (%.0f); at 16 digits a wrong format (exponent form)
+   * would make the DEL miss the key Java built with Long.toString.
+   */
+  @Test
+  void should_deleteCacheEntryUnderSixteenDigitEpoch_when_bumped() {
+    UUID tenantId = UUID.randomUUID();
+    UUID userId = UUID.randomUUID();
+    long old = RedisPermissionEpochAdapter.MAX_EPOCH - 1;
+    templates.read().opsForValue().set(key(tenantId, userId), Long.toString(old));
+    writeCacheEntry(tenantId, userId, old);
+
+    adapter(templates).bump(tenantId, List.of(userId));
+
+    assertThat(templates.read().hasKey(cacheKey("roleset", tenantId, userId, old))).isFalse();
+    assertThat(templates.read().hasKey(cacheKey("permset", tenantId, userId, old))).isFalse();
+  }
+
+  /** Tenant isolation of the script: the same user id bumped in tenant A touches nothing of B. */
+  @Test
+  void should_leaveOtherTenantsEpochAndCacheEntry_when_sameUserIdBumped() {
+    UUID tenantA = UUID.randomUUID();
+    UUID tenantB = UUID.randomUUID();
+    UUID userId = UUID.randomUUID();
+    writeCacheEntry(tenantA, userId, 0L);
+    writeCacheEntry(tenantB, userId, 0L);
+
+    adapter(templates).bump(tenantA, List.of(userId));
+
+    assertThat(templates.read().hasKey(cacheKey("permset", tenantA, userId, 0L))).isFalse();
+    assertThat(templates.read().hasKey(cacheKey("permset", tenantB, userId, 0L))).isTrue();
+    assertThat(templates.read().hasKey(cacheKey("roleset", tenantB, userId, 0L))).isTrue();
+    assertThat(templates.read().hasKey(key(tenantB, userId))).isFalse();
   }
 
   @Test
