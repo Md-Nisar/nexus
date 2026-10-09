@@ -1,6 +1,15 @@
 import { HttpErrorResponse, HttpInterceptorFn } from '@angular/common/http';
 import { inject } from '@angular/core';
-import { catchError, finalize, Observable, shareReplay, switchMap, throwError } from 'rxjs';
+import {
+  catchError,
+  finalize,
+  Observable,
+  retry,
+  shareReplay,
+  switchMap,
+  throwError,
+  timer,
+} from 'rxjs';
 import { Router } from '@angular/router';
 import { AuthStore } from '../auth/auth.store';
 import { AuthService } from '../../features/auth/auth.service';
@@ -26,6 +35,44 @@ const AUTH_PATHS = new Set(['/api/v1/auth/login', '/api/v1/auth/refresh', '/api/
  * Prevents 401 responses on user actions by refreshing just before expiry.
  */
 const PROACTIVE_REFRESH_THRESHOLD_MS = 120_000; // 2 min
+
+/** Total refresh attempts (1 initial + retries) when the server answers 429. */
+const REFRESH_MAX_ATTEMPTS = 3;
+const RETRY_AFTER_DEFAULT_S = 5;
+const RETRY_AFTER_MIN_S = 1;
+const RETRY_AFTER_MAX_S = 60;
+
+function isRateLimited(err: unknown): boolean {
+  return err instanceof HttpErrorResponse && err.status === 429;
+}
+
+/**
+ * Delay in ms before retrying a rate-limited refresh. Reads the `Retry-After` header
+ * (delta-seconds), clamped to 1..60 s; absent or non-numeric values fall back to 5 s.
+ */
+function retryAfterMs(err: HttpErrorResponse): number {
+  const raw = err.headers?.get('Retry-After')?.trim() ?? '';
+  const seconds = /^\d+$/.test(raw) ? Number(raw) : RETRY_AFTER_DEFAULT_S;
+  return Math.min(Math.max(seconds, RETRY_AFTER_MIN_S), RETRY_AFTER_MAX_S) * 1000;
+}
+
+/**
+ * Starts (or joins) the single shared refresh. A 429 (per-IP rate limit, RATE_001) is retried
+ * up to REFRESH_MAX_ATTEMPTS times honouring Retry-After; other errors are not retried.
+ */
+function sharedRefresh(authService: AuthService): Observable<AuthSession> {
+  refreshInFlight ??= authService.refresh().pipe(
+    retry({
+      count: REFRESH_MAX_ATTEMPTS - 1,
+      delay: (err) => (isRateLimited(err) ? timer(retryAfterMs(err)) : throwError(() => err)),
+    }),
+    finalize(() => {
+      refreshInFlight = null;
+    }),
+    shareReplay(1),
+  );
+  return refreshInFlight;
+}
 
 /**
  * Determines whether a request targets the Nexus API (same origin + apiBaseUrl prefix).
@@ -67,7 +114,8 @@ function isApiRequest(url: string, apiBaseUrl: string): boolean {
  * false theft-detection triggers (see design §8).
  *
  * @security Validates request origin and endpoint before attaching tokens.
- *           Always fails closed on refresh errors (logs out and redirects to login).
+ *           Fails closed on refresh errors (logs out and redirects to login), except 429
+ *           rate limiting: the session is kept and the refresh is retried per Retry-After.
  *           Never leaks tokens to third-party origins.
  */
 export const authInterceptor: HttpInterceptorFn = (req, next) => {
@@ -102,16 +150,13 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
     session !== null && session.expiresAt - Date.now() < PROACTIVE_REFRESH_THRESHOLD_MS;
 
   if (proactive && !isAuthEndpoint) {
-    refreshInFlight ??= authService.refresh().pipe(
-      finalize(() => {
-        refreshInFlight = null;
-      }),
-      shareReplay(1),
-    );
-    return refreshInFlight.pipe(
+    return sharedRefresh(authService).pipe(
       catchError((err) => {
-        authStore.clearSession();
-        router.navigate(['/auth/login']);
+        // A 429 means rate-limited, not unauthenticated: keep the session so a later action retries.
+        if (!isRateLimited(err)) {
+          authStore.clearSession();
+          router.navigate(['/auth/login']);
+        }
         return throwError(() => err);
       }),
       switchMap((session) =>
@@ -136,20 +181,15 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
       // manage their own session state.
       // ───────────────────────────────────────────────────────────────────────────────
       if (error instanceof HttpErrorResponse && error.status === 401 && !isAuthEndpoint) {
-        refreshInFlight ??= authService.refresh().pipe(
-          finalize(() => {
-            refreshInFlight = null;
-          }),
-          shareReplay(1),
-        );
-
-        return refreshInFlight.pipe(
+        return sharedRefresh(authService).pipe(
           switchMap((session) =>
             next(req.clone({ setHeaders: { Authorization: `Bearer ${session.accessToken}` } })),
           ),
-          catchError(() => {
-            authStore.clearSession();
-            router.navigate(['/auth/login']);
+          catchError((refreshErr: unknown) => {
+            if (!isRateLimited(refreshErr)) {
+              authStore.clearSession();
+              router.navigate(['/auth/login']);
+            }
             return throwError(() => error);
           }),
         );
