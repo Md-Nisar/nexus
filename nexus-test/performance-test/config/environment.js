@@ -100,6 +100,15 @@ export const config = Object.freeze({
     leadInSeconds: optionalInt('STORM_LEAD_IN_SECONDS', 30),
   }),
 
+  // US-018 security review M7 part 2 M-1 (tests/load/refresh-junk-flood.js): cookie-less junk
+  // refreshes from one IP above the per-IP refresh total (300 per 60 s), next to valid users.
+  refreshJunkFlood: Object.freeze({
+    mailhogUrl: (__ENV.MAILHOG_URL || '').replace(/\/+$/, '') || undefined,
+    floodPerMinute: optionalInt('JUNK_FLOOD_PER_MINUTE', 400),
+    validUsers: optionalInt('JUNK_VALID_USERS', 10),
+    floodSeconds: optionalInt('JUNK_FLOOD_SECONDS', 120),
+  }),
+
   // Credentials are only ever read from the environment — never commit them.
   auth: Object.freeze({
     accessToken: __ENV.ACCESS_TOKEN || undefined,

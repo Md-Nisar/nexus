@@ -11,6 +11,7 @@
     "test:load:rbac-read": "k6 run --no-usage-report --summary-export=results/load-rbac-read.json tests/load/rbac-read.js",
     "test:load:epoch-check": "k6 run --no-usage-report --summary-export=results/load-epoch-check.json tests/load/epoch-check-latency.js",
     "test:load:detach-refresh-storm": "k6 run --no-usage-report --summary-export=results/load-detach-refresh-storm.json tests/load/detach-refresh-storm.js",
+    "test:load:refresh-junk-flood": "k6 run --no-usage-report --summary-export=results/load-refresh-junk-flood.json tests/load/refresh-junk-flood.js",
     "test:stress": "k6 run --no-usage-report --summary-export=results/stress-platform-health.json tests/stress/platform-health.js",
     "test:spike": "k6 run --no-usage-report --summary-export=results/spike-platform-health.json tests/spike/platform-health.js",
     "test:soak": "k6 run --no-usage-report --summary-export=results/soak-platform-health.json tests/soak/platform-health.js",

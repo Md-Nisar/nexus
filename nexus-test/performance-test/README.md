@@ -9,7 +9,7 @@ Plain k6 JavaScript: no custom framework, no build step.
 performance-test/
 ├── tests/                  # Entry points: one file = one runnable test = scenario(s) + workload + thresholds
 │   ├── smoke/              #   platform-health.js, user-profile.js
-│   ├── load/               #   platform-health.js, rbac-read.js, epoch-check-latency.js, detach-refresh-storm.js
+│   ├── load/               #   platform-health.js, rbac-read.js, epoch-check-latency.js, detach-refresh-storm.js, refresh-junk-flood.js
 │   ├── stress/             #   platform-health.js
 │   ├── spike/              #   platform-health.js
 │   └── soak/               #   platform-health.js
@@ -111,6 +111,7 @@ BASE_URL=http://localhost:1000 npm run wait-for-ready        # optional arg: tim
 | load (RBAC read)    | `... npm run test:load:rbac-read`                                                         | same profile                                      | 6.5m       |
 | load (epoch check)  | `... npm run test:load:epoch-check` (see below)                                           | 200 requests/s for 5m (`RATE`, `DURATION`)        | 5m         |
 | load (detach storm) | `... npm run test:load:detach-refresh-storm` (write path, see below)                      | 200 holders, attacker 100/min, about 3m + seeding | 8-10m      |
+| load (junk flood)   | `... npm run test:load:refresh-junk-flood` (write path, see below)                        | 10 valid users, junk 400/min, about 2m + 65s      | 6-8m       |
 | stress              | `BASE_URL=http://localhost:1000 npm run test:stress`                                      | steps ⅓ → ⅔ → peak 30 VUs, 2m at peak             | 10m        |
 | spike               | `BASE_URL=http://localhost:1000 npm run test:spike`                                       | baseline 5 → jump to 50 VUs for 1m → recover      | 4.5m       |
 | soak                | `BASE_URL=http://localhost:1000 npm run test:soak`                                        | 10 VUs for 1h                                     | 1h 4m      |
@@ -138,6 +139,23 @@ same machine, Redis and JVM settings:
 The server computes the p95 over a sliding window of about 2 minutes, so keep `DURATION` at 3m or
 more. It logs in once, so keep the run under the 900 s token lifetime, and wait a minute between
 runs (login rate limit).
+
+### Refresh junk flood (US-018 security review M7 part 2, M-1, write path)
+
+`tests/load/refresh-junk-flood.js` pins the accepted outcome of RES-40's last lever. One IP sends
+cookie-less junk refreshes at `JUNK_FLOOD_PER_MINUTE` (400), above the per-IP refresh total of 300
+per 60 s, which the filter counts junk against. Next to it, `JUNK_VALID_USERS` (10) registered users
+refresh once during the flood and once more after it. It fails unless **no valid refresh is answered
+401** (a 429 is a throttle, and the SPA keeps the session on it), every 429 carries a whole-second
+`Retry-After` in 1..60 (the SPA retries after it, 3 attempts, mirrored here), and every user's
+refresh is 200 again once the flood has stopped and the window has slid. During the flood most valid
+refreshes are expected to be 429: `junk_valid_refresh_throttled` is informational, not a gate.
+
+Setup, MailHog, `MAILHOG_URL` and the login-limit override are those of the storm gate below (this
+test needs only 10 accounts, so `NEXUS_SECURITY_RATE_LIMIT_IP_MAX_ATTEMPTS=100` is enough); no role
+is created. Run it once per deployment shape with the storm gate and record both results. It has
+not been run yet: it needs the dev stack, which the authoring environment lacked (`k6 inspect`
+validates it statically).
 
 ### Detach-refresh storm (US-018 T-013, write path)
 
