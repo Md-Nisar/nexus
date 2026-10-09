@@ -693,7 +693,7 @@ public static final Set<Integer> ACCEPTED_VERSIONS = Set.of(2, 3);
 
 | Component | Layer | Role |
 |---|---|---|
-| `PermissionEpochPort` | `rbac.application.port.out` | `OptionalLong current(UUID tenantId, UUID userId)`; `void bump(UUID tenantId, Collection<UUID> userIds)`. An empty `OptionalLong` means Redis could not answer |
+| `PermissionEpochPort` | `rbac.application.port.out` | `OptionalLong current(UUID tenantId, UUID userId)`; `Map<UUID, Long> bump(UUID tenantId, Collection<UUID> userIds)`. An empty `OptionalLong` means Redis could not answer. **M7 review H-2:** `bump` returns the epoch the store wrote for each user, and the caller records exactly that. **M7 review L-1:** a stored value that is not a non-negative long makes `current` throw `EpochUnparseableException`, which is not an "unanswered" read |
 | `RedisPermissionEpochAdapter` | `rbac.infrastructure.cache` | GET read on the dedicated 50 ms epoch-read template. **Revision 2 (RC-42.2):** the Lua bump and its replay run on a **separate** dedicated template with its own bound, `nexus.rbac.epoch.bump-timeout` (default **500 ms** per script call), never on the 50 ms read template (§9.5) |
 | `PermissionFreshnessService` **new** | `rbac.application` | policy: the mint-time read, the request-time check, the degraded-state machine, and post-commit invalidation (`invalidateUser`, `invalidateHolders`) that bundles the epoch bump with cache eviction. **Revision 1:** it also owns the bounded lost-bump replay queue (§9.3) and a scheduled 1 s task (Spring `@Scheduled`, as `AuthEventRetryBuffer` already uses; no new dependency) that probes Redis in the degraded states. **Revision 2 (RC-42.1):** the same task drains the replay queue off the request thread **whenever it is non-empty, in every state, Healthy included**. **Revision 3 (RC-52):** the task is enabled by its **own unconditional scheduling configuration** in `rbac` (an `@EnableScheduling` configuration with no `@ConditionalOnProperty`), **not** by `SchedulingConfig`, whose `@EnableScheduling` is conditional on `nexus.identity.audit.retry-buffer.enabled` (`SchedulingConfig.java:21-27`). Turning off the retry buffer's escape hatch must not stop the probe (a degraded instance would never recover) or the drain (lost bumps would never be replayed). `@EnableScheduling` is idempotent, so two declarations are harmless |
 | `RoleResolutionService` | `rbac.application` | `resolve(userId, tenantId, epoch)`; the cache key gains the epoch |
@@ -701,7 +701,8 @@ public static final Set<Integer> ACCEPTED_VERSIONS = Set.of(2, 3);
 | `JwtAuthenticationFilter` | `identity.infrastructure.web` | one freshness check per request, **except** on requests that `PublicEndpointRequestMatcher` (§3.1) matches, which the filter never rejects (§9.5, RC-24) |
 
 ```java
-public long epochForMint(UUID tenantId, UUID userId);                 // 0 when absent or Redis fails
+public MintEpoch mintEpoch(UUID tenantId, UUID userId);               // (epoch, verified); epoch 0 when absent or Redis fails; verified=false when the store did not confirm it
+public long epochForMint(UUID tenantId, UUID userId);                 // mintEpoch(...).epoch()
 public FreshnessVerdict check(UUID tenantId, UUID userId, long tokenEpoch); // FRESH, STALE, SKIPPED_DEGRADED, UNAVAILABLE
 public void invalidateHolders(UUID tenantId, Collection<UUID> userIds);    // post-commit only
 ```
@@ -712,7 +713,9 @@ public void invalidateHolders(UUID tenantId, Collection<UUID> userIds);    // po
   - `old = GET`;
   - `new = max(old + 1, redis TIME in ms)`, using the Redis server's clock, which is the same for every app instance;
   - `SET key new EX ttl`;
-  - `DEL nexus:rbac:permset:{tenantId}:{userId}:{old or 0}` (A10's eviction).
+  - `DEL nexus:rbac:permset:{tenantId}:{userId}:{old or 0}` (A10's eviction);
+  - **return the new value of every user** (**M7 review H-2**). `PermissionEpochPort.bump` hands it to the caller, which records exactly those values as its locally known epochs (§9.5, ADR-0022 D5). No instance clock enters the value, so a token minted with the store's value is never refused because of a local-clock term, and an instance clock that runs ahead cannot mint an epoch above a revoke that lands within the skew.
+  - A stored value that is not a non-negative long below 2^53 is treated as 0 by the script, so a corrupt key recovers on the next bump. A *read* of such a value (**M7 review L-1**) is not a Redis failure: it makes that user's tokens `STALE` and logs WARN `RBAC_EPOCH_UNPARSEABLE {tenantId}`, never counts towards the 3-in-10 s window, and mints an unverified epoch 0.
 
   Standalone or Sentinel topology only (ADR-0016 D1 rejects Cluster), so multi-key scripts are legal.
 - **Token claim.** `perm_epoch` (a long) is required in v3 and **added to `JwtClaims`**, so `CURRENT_VERSION` goes 2→3 and `JwtClaimsContractTest` changes, which is its purpose as a freeze gate. For a v2 token, `permEpoch = 0`.
@@ -726,7 +729,8 @@ public void invalidateHolders(UUID tenantId, Collection<UUID> userIds);    // po
 
 ### 9.3 Ordering rules and bump triggers (Decision 15)
 
-- **Mint: read the epoch before the permissions.** `JwtRs256Service.issue()` first calls `epochForMint`, then `RoleResolutionService.resolve(..., epoch)`.
+- **Mint: read the epoch before the permissions.** `JwtRs256Service.issue()` first calls `mintEpoch`, then `RoleResolutionService.resolve(..., epoch)`.
+  - **Unverified epochs skip the cache (M7 review L-3).** When the store could not confirm the epoch (read failure after one retry, or degraded), `mintEpoch` returns `verified=false` and `issue()` calls `resolveUncached`: the permission set is read from the database and neither read from nor written to the cache. Under an unconfirmed epoch (`0` or the last seen one) no bump deletes the key, so a set cached there could outlive a detach.
   - If a bump lands between the two reads, the token carries the old epoch and new permissions: it is rejected once and the client refreshes (safe).
   - The reverse order would produce a new epoch with old permissions, which is accepted (fail-open).
   - `JwtRs256ServiceTest` pins the order with Mockito `InOrder` (MC-7a).
@@ -734,17 +738,19 @@ public void invalidateHolders(UUID tenantId, Collection<UUID> userIds);    // po
 - **Triggers:**
   - `revoke`: `invalidateUser(target)`.
   - `detach`: `invalidateHolders(all active holders)`. The holders are read **after commit** with `findActiveUserIdsForRole`, so every assignment committed before that read is included. An assignment committed after it mints fresh, because its role set changed.
+    - **Holder read failure (M7 review M-2).** The read is retried once. If the retry fails too, the revocation could not be applied: the ERROR `RBAC_HOLDER_READ_FAILED` is logged and `bump_failed{operation="detach", reason="holder_read"}` is incremented. **Page.** There is no replay for it (the holders are unknown); the operator re-applies the change as in the runbook, section 8. A role-level replay is not built.
   - **`attach` and `assign` evict the cache but do not bump.** They only ever *add* permissions. A token that lacks a new permission is fail-safe (the holder is denied until the next refresh, at most 900 s), and not bumping halves the refresh-storm exposure (§9.7). This deviates from AC A9's list ("revoke, attach and detach bump"), and is recorded for approval.
+  - **Accepted residual (M7 review L-4):** an attach evicts the holders' entries after commit, but a mint that read the pre-attach set before the commit can `put` it back after the eviction, so that holder lacks the new permission until the entry expires (at most the 900 s cache TTL, as with no eviction at all). It is fail-safe (a missing permission, never an extra one) and is the same race §9.4 closes for detach by epoch-keying; closing it for attach would need a bump, which Decision 15 rejects.
   - C1 rename and delete (M9) do not bump: a rename is cosmetic, and a deleted role has no holders.
 - **Lost bumps are replayed (revised, Revision 1, RC-30).** If Redis fails during a post-commit bump, the change still committed (it is never rolled back). Without replay the bump would be lost for good: after Redis recovers, the holder's token (up to 900 s) is accepted and the un-evicted cache entry (up to 900 s) re-mints the revoked permission, about 30 minutes of exposure while Redis is healthy, and the administrator who got 204 cannot know. So:
   - A failed bump **enqueues** `(tenantId, userIds, failedAt)` in a **bounded per-instance replay queue** (`nexus.rbac.epoch.replay-capacity-users`, default 100,000). The failure does **not** count towards the degraded-state entry window (Revision 3, RC-53; §9.5); it pages through `bump_failed`.
   - **Queue semantics (Revision 2, RC-42.3).**
-    - The queue **coalesces by `(tenantId, userId)`**, keeping the **oldest** `failedAt`, so capacity counts distinct users and a user queued repeatedly takes one slot. Keeping the oldest time is the conservative choice: drop-by-age then never discards an entry whose earliest lost bump may still matter.
+    - The queue **coalesces by `(tenantId, userId)`**, so capacity counts distinct users and a user queued repeatedly takes one slot. **Revised (M7 review M-1):** the slot keeps both the **oldest** failure time (the replay's `ageMs`) and the **newest** (for expiry). A token minted just before the last lost bump lives for a further full key TTL, so expiry compares the newest: a user queued at T and again at T+900 is still replayed at T+960, where comparing the oldest would have dropped them and left a token minted at T+899 FRESH.
     - **Overflow drops the newest.** When an enqueue would exceed capacity, the arriving ids beyond capacity are rejected, and `bump_failed{reason="overflow"}` is incremented **by the number of ids dropped**. It pages (below).
     - In a post-commit fan-out, a failed batch enqueues that batch **and every batch not yet sent**, so a down Redis costs the request at most one bump timeout, not one per batch.
   - **Drain in every state (revised, Revision 2, RC-42.1).** The 1 s scheduled task drains a **non-empty** queue on every tick, **in every state, Healthy included**, off the request thread, by re-running the bump script in batches of 500. In the degraded states it drains only after that tick's probe succeeds. A single post-commit failure while the instance stays Healthy, which is the common case, is therefore replayed within about a second, not left for the next degraded episode. Running late is safe: `max(old + 1, TIME)` is monotonic, and the script also deletes the permset entry under the old epoch.
-  - **Partial drain failure.** A drain that fails partway **re-enqueues the unreplayed remainder with its original `failedAt`** (coalescing as above). The failure pages through `bump_failed` but does not count towards the entry window (Revision 3, RC-53). Replayed users leave the queue.
-  - Entries older than `key-ttl-seconds` are dropped at drain: their tokens and cache entries have expired.
+  - **Partial drain failure.** A drain that fails partway **re-enqueues the unreplayed remainder with its original failure times** (coalescing as above). The failure pages through `bump_failed` but does not count towards the entry window (Revision 3, RC-53). Replayed users leave the queue.
+  - Entries whose **newest** lost bump is older than `key-ttl-seconds` are dropped at drain: every token and cache entry such a bump could have outdated has expired (M7 review M-1).
   - ERROR `RBAC_EPOCH_BUMP_FAILED {operation, tenantId, userCount}` plus `nexus.rbac.epoch.bump_failed{operation, reason="redis"}`. **Page.** Overflow increments `bump_failed{reason="overflow"}` by the dropped count and **pages**. Replays emit INFO `RBAC_EPOCH_BUMP_REPLAYED {tenantId, userCount, ageMs}` and `nexus.rbac.epoch.bump_replayed`.
   - **Not covered (RES-31, Low):** the queue is lost on instance restart, and a bump acknowledged by the Redis primary but lost to async replication at a Sentinel failover is silent. The incident runbook step (§9.10) covers the operator side.
 
@@ -761,7 +767,7 @@ Impact §8.2 shows that A9 without A10 fails open: after a detach, the refreshed
 **Fix: the permission-cache key includes the epoch the entry was computed under.** The key becomes `nexus:rbac:permset:{tenantId}:{userId}:{epoch}`. The stale write in the race lands under E, while every later mint reads R and misses. Eviction (the `DEL` inside the bump script) is kept as the "real holder eviction" A10's DoD asks for. It also frees memory, and it covers the attach path, which evicts without bumping. The existing role-name fingerprint (`RoleResolutionService.java:59-62`) is kept, because it covers assign and revoke without an epoch change.
 
 **Fan-out bounds.**
-- Holders are processed in Lua batches of **500** users per script call, pipelined. At 10,000 holders that is 20 calls, each about 1 ms on the Redis side.
+- Holders are processed in Lua batches of **500** users per script call. **Recorded deviation (M7 review N-4):** the batches are sent **sequentially**, not pipelined: the first failed batch then ends the fan-out, so a down Redis costs the request one bump timeout rather than one per batch (§9.3). At 10,000 holders that is 20 calls, each about 1 ms on the Redis side.
 - **There is no hard cap.** A cap would mean silently leaving some holders unrevoked, which is a fail-open.
 - The fan-out runs on the request thread after commit, so the 204 waits for it. It is admin-only and rare.
 - WARN `RBAC_EPOCH_FANOUT_LARGE` when `holders > 1000`.
@@ -842,7 +848,7 @@ A detach on a role with N holders sends each holder's next request into 401 and 
   - a **valid** token proceeds, subject to the family bucket, **whatever `REFRESH_IP_FAIL` says**. So invalid refreshes from an IP can never block a valid refresh from the same IP, and an attacker behind a shared NAT cannot log its other users out (T-D24);
   - **reuse is never gated by the failure bucket (Revision 3, RC-51; T-E46).** When a revoked token is presented (the reuse branch, `RefreshTokenUseCase.java:114-122`), the use case **always runs `revokeFamily` first, before `REFRESH_IP_FAIL` is consulted**. `revokeFamily` returns the number of **unrevoked** tokens it revoked (a return-type change only; no other port change; an expired but unrevoked token counts). If that number is at least 1, the `TOKEN_REFRESH_REUSE` row is **always** written and the request gets today's reuse response, whatever the failure bucket says. Only a reuse that revoked nothing (the family is already revoked) is treated as an ordinary failure outcome below. So an attacker who keeps the victim IP's failure bucket exhausted cannot suppress the theft response or its evidence;
   - on any other **failure** outcome (unknown, expired or revoked token, or a reuse that revoked nothing), the use case calls `tryConsume("REFRESH_IP_FAIL:{ip}", 60, 30)` **before** writing `TOKEN_REFRESH_FAILURE` (through `REQUIRES_NEW`, `RefreshTokenUseCase.java:99-110`). The consume is atomic in the store, so N concurrent failing requests write at most 30 rows. This also removes the check-then-consume race of a filter-side check;
-  - when that call **rejects**, the response is **429 with `Retry-After`** (the bucket's remaining window, in seconds) and **no audit row is written**. Instead the use case increments `nexus.auth.refresh_failure_throttled` and emits at most **one** WARN `AUTH_REFRESH_FAILURE_THROTTLED {suppressedCount}` per window, as RC-33 does for B8. The raw IP is not logged.
+  - when that call **rejects**, the response is **429 with `Retry-After`** (the bucket's remaining window, in seconds) and **no audit row is written**. Instead the use case increments `nexus.auth.refresh_failure_throttled` and emits at most **one** WARN `AUTH_REFRESH_FAILURE_THROTTLED {rejectedCount}` per window (renamed from `suppressedCount`, M7 part 2 review N-2), as RC-33 does for B8. The raw IP is not logged. **Family bucket (amended after the commit security review):** its rejections increment `nexus.auth.refresh_family_throttled` and emit at most one WARN `AUTH_REFRESH_FAMILY_THROTTLED {rejectedCount}` per window, with neither the family id nor the IP.
   - The brute-force and theft-probing population, and its unauthenticated, append-only audit writes, therefore stay at today's 30/60 s per source.
   - `RateLimitStore` is **unchanged**: the `isExhausted` method proposed in Revision 1 is dropped, because only the existing `tryConsume` is needed. The Redis adapter's fail-open (ADR-0016 §7) applies to this bucket as to every other.
 
@@ -901,6 +907,7 @@ sequenceDiagram
 | `nexus.rbac.epoch.degraded_entries` | counter per instance | **page** on 3 or more increases within 15 min on one instance (flapping, RC-31.2) |
 | `nexus.rbac.epoch.bump_failed{operation, reason=redis,overflow}` | counter; `overflow` is incremented by the number of ids dropped (RC-42.3) | **page** on any increase |
 | `nexus.auth.refresh_failure_throttled` (Revision 2, RC-43) | counter | none (a dashboard panel; the one-per-window WARN `AUTH_REFRESH_FAILURE_THROTTLED` is the log signal) |
+| `nexus.auth.refresh_family_throttled` (M7 part 2 review) | counter | none (one session being hammered; the one-per-window WARN `AUTH_REFRESH_FAMILY_THROTTLED` is the log signal) |
 | `nexus.rbac.epoch.replay_queue_users` | gauge per instance | none (a dashboard panel; non-zero only during an outage) |
 | `nexus.rbac.epoch.bump_replayed` | counter | none |
 | `nexus.rbac.epoch.fanout{holders}` | counter (bucketed) | none (a dashboard panel) |

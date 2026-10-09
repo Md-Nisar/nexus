@@ -17,7 +17,7 @@ Access tokens are stateless RS256 JWTs with a 900 s TTL that carry `permissions[
 ### D1 — A per-user epoch claim, not a revoked-before timestamp
 
 - Redis key `nexus:rbac:epoch:{tenantId}:{userId}` holds a millisecond value.
-- A bump sets it to `max(old + 1, Redis TIME)` in one Lua script. The value is monotonic across app instances and survives key loss.
+- A bump sets it to `max(old + 1, Redis TIME)` in one Lua script. The value is monotonic across app instances and survives key loss. The script returns the new value of every user, and the instance records exactly that as its locally known epoch; no instance clock enters the value (M7 review H-2).
 - **The key's TTL is `max(access-token TTL, permission-cache TTL) + margin`, with margin ≥ 60 s** (960 s today; revised in Revision 1, RC-29). The earlier "token TTL + 2 × skew" gave 900 s, because `AUTH_CLOCK_SKEW_SECONDS` is 0, which equals the cache TTL: zero margin. A stale cache entry written under the old epoch by a racing mint could then outlive the key, and mints in that gap would read epoch 0, hit it, and be accepted as fresh. The key must outlive every token **and** every cache entry that could carry an older epoch. Startup fails if the configured TTL does not exceed both the access-token TTL and the permission-cache TTL. An absent key reads as 0, meaning "no revocation".
 - Access tokens carry `perm_epoch`, the value read at mint. A request is rejected with **401 `AUTH_003`** iff `perm_epoch < current`.
 - `JwtClaims.CURRENT_VERSION` goes from 2 to 3.
@@ -33,20 +33,20 @@ Comparing a revoked-before timestamp with the existing `iat` was rejected. `iat`
 
 - **Revoke** bumps the target user.
 - **Detach** bumps every active holder, read after commit.
-- **Assign, attach and role rename** do not bump. They only add permissions, and a token that lacks a new permission is fail-safe. This deviates from the story's AC text on purpose, and halves the refresh-storm exposure.
+- **Assign, attach and role rename** do not bump. They only add permissions, and a token that lacks a new permission is fail-safe. This deviates from the story's AC text on purpose, and halves the refresh-storm exposure. Accepted residual (M7 review L-4): a mint that read the pre-attach set can put it back after the attach's eviction, so a holder may lack the new permission for up to the cache TTL; fail-safe.
 - **Lost bumps are replayed (revised, Revision 1, RC-30; Revision 2, RC-42).** A bump that fails after commit is counted, paged (it does not drive the D5 state machine; Revision 3, RC-53), and enqueued as `(tenantId, userIds, failedAt)` in a **bounded per-instance replay queue**.
-  - The queue **coalesces by `(tenantId, userId)`**, keeping the oldest `failedAt`, so capacity counts distinct users.
+  - The queue **coalesces by `(tenantId, userId)`**, so capacity counts distinct users. Each slot keeps the oldest failure time (for `ageMs`) and the **newest** (for expiry): a user is dropped only once their newest lost bump is older than the key TTL (M7 review M-1).
   - **Overflow drops the newest:** arriving ids beyond capacity are rejected, and `bump_failed{reason="overflow"}` is incremented by the number dropped, which pages.
-  - A scheduled 1 s task **drains a non-empty queue in every state, Healthy included**, off the request thread (in the degraded states, after that tick's probe succeeds). A single failed bump on a Healthy instance is therefore replayed within about a second instead of waiting for a degraded episode. A drain that fails partway re-enqueues the unreplayed remainder with its original `failedAt`.
+  - A scheduled 1 s task **drains a non-empty queue in every state, Healthy included**, off the request thread (in the degraded states, after that tick's probe succeeds). A single failed bump on a Healthy instance is therefore replayed within about a second instead of waiting for a degraded episode. A drain that fails partway re-enqueues the unreplayed remainder with its original failure times.
   - The bump and its replay run on their own bounded timeout (500 ms per script call, sized for a 500-user batch), never on the 50 ms epoch-read factory (D5).
-  - Replaying late is safe because the bump is monotonic and also evicts the old-epoch cache entry. Entries older than the key TTL are dropped, because their tokens have expired. Without replay, a lost bump would leave the revoked permission live for up to token TTL plus cache TTL **after Redis recovers**, and the administrator who revoked would not know. The queue is lost on instance restart, and a bump lost to async replication at a Sentinel failover is silent (RES-31, Low).
+  - Replaying late is safe because the bump is monotonic and also evicts the old-epoch cache entry. Entries whose newest lost bump is older than the key TTL are dropped, because their tokens have expired. Without replay, a lost bump would leave the revoked permission live for up to token TTL plus cache TTL **after Redis recovers**, and the administrator who revoked would not know. The queue is lost on instance restart, and a bump lost to async replication at a Sentinel failover is silent (RES-31, Low).
 
 ### D4 — The permission cache is keyed by epoch, and holders are evicted (A10)
 
 - The key becomes `nexus:rbac:permset:{tenantId}:{userId}:{epoch}`.
 - The bump script also deletes the entry under the old epoch, which is the per-holder eviction.
 - Eviction alone is racy: a mint that read pre-commit permissions can write them back after the eviction. The epoch in the key makes that stale write unreachable by any later mint.
-- Fan-out runs in batches of 500 users per script, pipelined, after commit, with **no cap** (a cap would silently leave holders unrevoked). Fan-outs above 1,000 holders are logged and bucketed.
+- Fan-out runs in batches of 500 users per script, sent sequentially (not pipelined; the first failed batch ends it), after commit, with **no cap** (a cap would silently leave holders unrevoked). Fan-outs above 1,000 holders are logged and bucketed.
 - The role-name fingerprint is kept, because it covers assign and revoke.
 
 ### D5 — Failure policy
@@ -66,7 +66,7 @@ Comparing a revoked-before timestamp with the existing `iat` was rejected. `iat`
 - State is per instance. **Pod restarts reset it**, including the runbook's own "raise the window, then rolling restart"; that is accepted because per-revocation exposure is bounded by token TTL plus cache TTL regardless.
 - **A Redis outage longer than the window is a platform-wide authenticated 503** (RES-30). Owners SRE (Redis capacity) and PM; **acceptance pending at Gate 2** as an SLO item, not yet recorded. Redis capacity is part of the M7 runbook.
 - The window is extended by configuration and a restart. There is deliberately no runtime toggle endpoint.
-- Mint during an outage embeds 0.
+- Mint during an outage embeds the epoch this instance last saw for the user, else 0 (design §9.3), and is marked unverified so the permission set is read from the database, not the cache (M7 review L-3). A failed bump records the lower bound `seen + 1` locally (M7 review L-5; decision A-18). A stored value that is not an epoch is a per-user condition, not a Redis failure: that user's tokens are stale and it never counts towards the window (M7 review L-1).
 - Readiness stays blind to Redis.
 
 ### D6 — Latency budget
