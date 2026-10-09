@@ -69,27 +69,28 @@ public class RedisPermissionEpochAdapter implements PermissionEpochPort {
   @SuppressWarnings("rawtypes")
   private static final RedisScript<List> BUMP_SCRIPT = RedisScript.of("""
       local ttl = tonumber(ARGV[1])
-      local maxEpoch = %d
+      local maxEpoch = @MAX@
       local time = redis.call('TIME')
       local nowMs = tonumber(time[1]) * 1000 + math.floor(tonumber(time[2]) / 1000)
       local result = {}
       for i, key in ipairs(KEYS) do
         local old = 0
         local raw = redis.call('GET', key)
-        if raw and string.len(raw) <= %d and string.find(raw, '^%%d+$') then
+        if raw and string.len(raw) <= @DIGITS@ and string.find(raw, '^%d+$') then
           local v = tonumber(raw)
           if v == v and v >= 0 and v <= maxEpoch then
             old = v
           end
         end
         local new = math.min(math.max(old + 1, nowMs), maxEpoch)
-        redis.call('SET', key, string.format('%%.0f', new), 'EX', ttl)
-        local oldEpoch = string.format('%%.0f', old)
+        redis.call('SET', key, string.format('%.0f', new), 'EX', ttl)
+        local oldEpoch = string.format('%.0f', old)
         redis.call('DEL', ARGV[2 * i] .. oldEpoch, ARGV[2 * i + 1] .. oldEpoch)
-        result[i] = string.format('%%.0f', new)
+        result[i] = string.format('%.0f', new)
       end
       return result
-      """.formatted(MAX_EPOCH, MAX_EPOCH_DIGITS), List.class);
+      """.replace("@MAX@", Long.toString(MAX_EPOCH))
+          .replace("@DIGITS@", Integer.toString(MAX_EPOCH_DIGITS)), List.class);
 
   private final EpochTemplates templates;
   private final RbacRedisKeys keys;
