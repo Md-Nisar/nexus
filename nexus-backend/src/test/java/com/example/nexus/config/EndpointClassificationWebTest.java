@@ -22,6 +22,7 @@ import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.domain.JavaModifier;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
+import jakarta.servlet.ServletContext;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.lang.annotation.Annotation;
@@ -533,7 +534,8 @@ class EndpointClassificationWebTest {
               .anyMatch(pattern -> PathPatternParser.defaultInstance.parse(pattern)
                   .matches(PathContainer.parsePath(path)));
           List<String> mismatches = ALL_METHODS.stream()
-              .filter(method -> isGrantedAnonymously(authorization, method, path)
+              .filter(method -> isGrantedAnonymously(
+                  authorization, context.getServletContext(), method, path)
                   != (listed || matcher.matches(new MockHttpServletRequest(method.name(), path))))
               .map(method -> method + " " + path)
               .toList();
@@ -759,10 +761,15 @@ class EndpointClassificationWebTest {
     return managers.get(0);
   }
 
+  // The servlet context is what lets an endpoint-aware matcher (the actuator rule) find the web
+  // application context; a bare request has none.
   private static boolean isGrantedAnonymously(
-      AuthorizationManager<HttpServletRequest> authorization, RequestMethod method, String path) {
-    AuthorizationResult result =
-        authorization.authorize(() -> ANONYMOUS, new MockHttpServletRequest(method.name(), path));
+      AuthorizationManager<HttpServletRequest> authorization,
+      ServletContext servletContext,
+      RequestMethod method,
+      String path) {
+    AuthorizationResult result = authorization.authorize(
+        () -> ANONYMOUS, new MockHttpServletRequest(servletContext, method.name(), path));
     return result != null && result.isGranted();
   }
 
@@ -992,13 +999,16 @@ class EndpointClassificationWebTest {
     void should_deny_anonymous_access_when_non_public_pattern_matches_public_literal() {
       AuthorizationManager<HttpServletRequest> authorization = authorizationManager(probeContext);
 
-      assertThat(isGrantedAnonymously(authorization, RequestMethod.GET, "/api/v1/auth/login"))
+      assertThat(isGrantedAnonymously(
+          authorization, probeContext.getServletContext(), RequestMethod.GET, "/api/v1/auth/login"))
           .as("anonymous GET /api/v1/auth/login, served by the non-public probe")
           .isFalse();
-      assertThat(isGrantedAnonymously(authorization, RequestMethod.HEAD, "/api/v1/auth/login"))
+      assertThat(isGrantedAnonymously(
+          authorization, probeContext.getServletContext(), RequestMethod.HEAD, "/api/v1/auth/login"))
           .as("anonymous HEAD /api/v1/auth/login, served by the non-public probe")
           .isFalse();
-      assertThat(isGrantedAnonymously(authorization, RequestMethod.POST, "/api/v1/auth/login"))
+      assertThat(isGrantedAnonymously(
+          authorization, probeContext.getServletContext(), RequestMethod.POST, "/api/v1/auth/login"))
           .as("anonymous POST /api/v1/auth/login, the public login handler")
           .isTrue();
     }
