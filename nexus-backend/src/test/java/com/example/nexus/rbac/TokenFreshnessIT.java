@@ -104,7 +104,7 @@ import org.testcontainers.containers.GenericContainer;
         "nexus.security.rate-limit.ip-window-seconds=60",
         "nexus.security.rate-limit.user-max-attempts=10000",
         "nexus.security.rate-limit.user-window-seconds=900",
-        "nexus.security.rate-limit.refresh-max-attempts=10000",
+        "nexus.security.rate-limit.refresh-ip-max-attempts=10000",
         "nexus.rbac.epoch.fail-open-window=PT3S",
         "nexus.rbac.epoch.recovery-sustain=PT2S"
     })

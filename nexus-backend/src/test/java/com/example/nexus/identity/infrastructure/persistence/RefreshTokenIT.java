@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.example.nexus.TestcontainersConfiguration;
 import com.example.nexus.identity.application.port.out.RefreshTokenPort;
 import com.example.nexus.identity.application.port.out.UserRegistrationPort;
+import com.example.nexus.identity.application.service.SecureEventService;
 import com.example.nexus.identity.domain.EmailCipher;
 import com.example.nexus.identity.domain.RefreshToken;
 import com.example.nexus.identity.domain.User;
@@ -32,6 +33,7 @@ class RefreshTokenIT {
   @Autowired private RefreshTokenPort refreshTokenPort;
   @Autowired private UserRegistrationPort userRegistrationPort;
   @Autowired private UuidGenerator uuidGenerator;
+  @Autowired private SecureEventService secureEventService;
 
   private static final UUID TENANT_ID =
       UUID.fromString("00000000-0000-7000-8000-000000000001");
@@ -175,5 +177,45 @@ class RefreshTokenIT {
     RefreshToken loaded = refreshTokenPort.findByTokenHash(hash).orElseThrow();
     assertThat(loaded.getRevokedAt()).isNotNull();
     assertThat(loaded.getRevokedAt()).isBefore(second);
+  }
+
+  // L-3: revokeFamily returns the number of UNREVOKED rows it revoked.
+
+  @Test
+  void revokeFamily_returns_number_of_unrevoked_rows_and_excludes_already_revoked() {
+    User user = createUser("revFamCount");
+    UUID familyId = uuidGenerator.newId();
+    String alreadyRevokedHash = uniqueHash();
+    RefreshToken alreadyRevoked = saveToken(user.getId(), alreadyRevokedHash, familyId);
+    alreadyRevoked.revoke(Instant.parse("2026-01-01T00:00:00Z"));
+    refreshTokenPort.save(alreadyRevoked);
+    saveToken(user.getId(), uniqueHash(), familyId);
+    saveToken(user.getId(), uniqueHash(), familyId);
+    saveToken(user.getId(), uniqueHash(), uuidGenerator.newId()); // other family, untouched
+
+    int first = refreshTokenPort.revokeFamily(familyId, Instant.parse("2026-01-02T00:00:00Z"));
+    int second = refreshTokenPort.revokeFamily(familyId, Instant.parse("2026-01-03T00:00:00Z"));
+
+    assertThat(first).isEqualTo(2);
+    assertThat(second).isZero();
+  }
+
+  @Test
+  void revokeFamily_returns_zero_when_family_has_no_tokens() {
+    assertThat(refreshTokenPort.revokeFamily(uuidGenerator.newId(), Instant.now())).isZero();
+  }
+
+  @Test
+  void secureEventService_revokeFamily_propagates_committed_count_through_all_layers() {
+    User user = createUser("revFamSvc");
+    UUID familyId = uuidGenerator.newId();
+    saveToken(user.getId(), uniqueHash(), familyId);
+    saveToken(user.getId(), uniqueHash(), familyId);
+
+    int first = secureEventService.revokeFamily(familyId, Instant.parse("2026-01-02T00:00:00Z"));
+    int replay = secureEventService.revokeFamily(familyId, Instant.parse("2026-01-03T00:00:00Z"));
+
+    assertThat(first).isEqualTo(2);
+    assertThat(replay).isZero();
   }
 }

@@ -49,6 +49,10 @@ function optionalPositiveNumber(name) {
   return value;
 }
 
+function optionalInt(name, fallback) {
+  return optionalPositiveInt(name) ?? fallback;
+}
+
 export const config = Object.freeze({
   baseUrl: requireBaseUrl(),
 
@@ -76,6 +80,24 @@ export const config = Object.freeze({
   epochCheck: Object.freeze({
     mode: epochCheckMode(),
     baselineP95Ms: optionalPositiveNumber('BASELINE_P95_MS'),
+  }),
+
+  // US-018 T-013 detach-refresh storm (tests/load/detach-refresh-storm.js). This is a write-path
+  // test: it seeds users and a role, so the defaults mirror the merge gate (200 holders, one
+  // attacker at 100 invalid refreshes per minute) and only MAILHOG_URL has no default.
+  refreshStorm: Object.freeze({
+    // Where the backend's outgoing mail is readable (MailHog API), needed to verify the seeded
+    // accounts. Read in setup(), not at init, so `k6 inspect` needs no value.
+    mailhogUrl: (__ENV.MAILHOG_URL || '').replace(/\/+$/, '') || undefined,
+    holders: optionalInt('STORM_HOLDERS', 200),
+    // Seconds over which the holders' refreshes arrive after the detach (a real tenant's users do
+    // not all click in the same second). Any 60 s window then holds at most holders * 60 / spread
+    // holder refreshes next to the attacker's, so keep it above 60 or the REFRESH_IP total of 300
+    // is exceeded by arithmetic alone.
+    holderSpreadSeconds: optionalInt('STORM_HOLDER_SPREAD_SECONDS', 90),
+    attackerPerMinute: optionalInt('STORM_ATTACKER_PER_MINUTE', 100),
+    replays: optionalInt('STORM_REPLAYS', 5),
+    leadInSeconds: optionalInt('STORM_LEAD_IN_SECONDS', 30),
   }),
 
   // Credentials are only ever read from the environment — never commit them.

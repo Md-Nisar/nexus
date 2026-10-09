@@ -32,7 +32,7 @@ class LoginRateLimitFilterTest {
   void setUp() {
     rateLimitStore = mock(RateLimitStore.class);
     emailBlindIndexService = mock(EmailBlindIndexService.class);
-    filter = new LoginRateLimitFilter(rateLimitStore, emailBlindIndexService, 5, 60, 5, 900, 30, 10, 20);
+    filter = new LoginRateLimitFilter(rateLimitStore, emailBlindIndexService, 5, 60, 5, 900, 300, 10, 20);
   }
 
   @Test
@@ -126,6 +126,23 @@ class LoginRateLimitFilterTest {
     verify(chain, never()).doFilter(
         any(jakarta.servlet.ServletRequest.class),
         any(jakarta.servlet.ServletResponse.class));
+  }
+
+  @Test
+  void should_useThreeHundredPerIpTotalAndNeverConsultFailureBucket_when_refreshPath() throws Exception {
+    MockHttpServletRequest req = new MockHttpServletRequest("POST", "/api/v1/auth/refresh");
+    req.setRemoteAddr("10.0.0.2");
+    MockHttpServletResponse res = new MockHttpServletResponse();
+    FilterChain chain = mock(FilterChain.class);
+    when(rateLimitStore.tryConsume("REFRESH_IP:10.0.0.2", 60, 300))
+        .thenReturn(RateLimitResult.permit());
+
+    filter.doFilterInternal(req, res, chain);
+
+    verify(chain).doFilter(any(), any());
+    verify(rateLimitStore).tryConsume("REFRESH_IP:10.0.0.2", 60, 300);
+    verify(rateLimitStore, never()).tryConsume(startsWith("REFRESH_IP_FAIL:"), anyInt(), anyInt());
+    verify(rateLimitStore, never()).tryConsume(startsWith("REFRESH_FAMILY:"), anyInt(), anyInt());
   }
 
   @Test

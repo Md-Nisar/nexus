@@ -37,8 +37,8 @@ public class JpaRefreshTokenAdapter implements RefreshTokenPort {
 
   @Override
   @Transactional
-  public void revokeFamily(UUID familyId, Instant revokedAt) {
-    repo.revokeByFamilyId(familyId, revokedAt);
+  public int revokeFamily(UUID familyId, Instant revokedAt) {
+    return repo.revokeByFamilyId(familyId, revokedAt);
   }
 
   @Override

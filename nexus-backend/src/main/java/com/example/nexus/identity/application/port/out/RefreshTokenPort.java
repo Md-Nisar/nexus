@@ -28,13 +28,19 @@ public interface RefreshTokenPort {
   Optional<RefreshToken> findByTokenHash(String tokenHash);
 
   /**
-   * Revokes all active (non-revoked) tokens in the given family.
+   * Revokes all unrevoked tokens in the given family.
    * Used for theft detection: when a revoked token is presented, the entire family is revoked.
+   *
+   * <p>The result counts only rows this call actually revoked ({@code revokedAt IS NULL}); rows
+   * revoked earlier are not counted, so a replay that finds the family already revoked gets 0.
+   * An expired but unrevoked token counts. The count is for the caller's decision only and must
+   * never reach a response, header, log line or audit metadata.
    *
    * @param familyId the token family to revoke
    * @param revokedAt the revocation timestamp
+   * @return the number of unrevoked tokens this call revoked
    */
-  void revokeFamily(UUID familyId, Instant revokedAt);
+  int revokeFamily(UUID familyId, Instant revokedAt);
 
   /**
    * Revokes all active tokens belonging to a user.
