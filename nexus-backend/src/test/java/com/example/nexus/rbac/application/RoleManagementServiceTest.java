@@ -1406,7 +1406,7 @@ class RoleManagementServiceTest {
     service.detachPermission(actor, roleId, permissionId, ctx);
 
     verify(userRoleAssignmentPort, times(2)).findActiveUserIdsForRole(roleId);
-    verify(permissionFreshness).holderReadFailed("detach");
+    verify(permissionFreshness).holderReadFailed(tenantId, roleId, "detach");
     verify(permissionFreshness, never()).invalidateHolders(any(), any(), any());
   }
 
@@ -1421,7 +1421,7 @@ class RoleManagementServiceTest {
     service.detachPermission(actor, roleId, permissionId, ctx);
 
     verify(permissionFreshness).invalidateHolders(tenantId, holders, "detach");
-    verify(permissionFreshness, never()).holderReadFailed(any());
+    verify(permissionFreshness, never()).holderReadFailed(any(), any(), any());
   }
 
   @Test

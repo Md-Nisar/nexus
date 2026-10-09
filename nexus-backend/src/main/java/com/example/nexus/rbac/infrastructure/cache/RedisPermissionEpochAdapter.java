@@ -26,7 +26,7 @@ import org.springframework.stereotype.Component;
  * {keyPrefix}:rbac:epoch:{tenantId}:{userId}}, holding a millisecond value.
  *
  * <p>Reads use the dedicated 50 ms template and fail open: a failed or slow read returns empty,
- * which the caller counts. A value that is not a non-negative epoch throws {@link
+ * which the caller counts. A value outside {@code 0..MAX_EPOCH} (digits only) throws {@link
  * EpochUnparseableException}, which the caller must not count (L-1). Bumps use the dedicated bump
  * template and throw on failure. Until a template's connection has been opened off-thread at startup, the read returns
  * empty and the bump throws immediately, without touching Redis: the first connection is never

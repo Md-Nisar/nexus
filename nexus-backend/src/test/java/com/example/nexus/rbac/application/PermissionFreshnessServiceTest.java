@@ -22,6 +22,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.example.nexus.rbac.application.port.out.EpochUnparseableException;
 import com.example.nexus.rbac.application.port.out.PermissionEpochPort;
+import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
 import java.time.Duration;
@@ -61,8 +62,14 @@ class PermissionFreshnessServiceTest {
   private static final Duration WINDOW = Duration.ofMinutes(15);
   private static final long KEY_TTL_SECONDS = 960;
   private static final int REPLAY_CAPACITY = 100_000;
+  private static final int ROLE_REPLAY_CAPACITY = 1000;
+  private static final int TENANT_PERCENT = 10;
+  private static final int TENANT_CAP =
+      PermissionFreshnessService.LAST_SEEN_CAPACITY * TENANT_PERCENT / 100;
+  private static final UUID ROLE = UUID.fromString("00000000-0000-7000-8000-0000000000c1");
 
   private PermissionEpochPort port;
+  private UserRoleAssignmentPort userRoles;
   private SimpleMeterRegistry registry;
   private MutableClock clock;
   private PermissionFreshnessService service;
@@ -70,6 +77,7 @@ class PermissionFreshnessServiceTest {
   @BeforeEach
   void setUp() {
     port = mock(PermissionEpochPort.class);
+    userRoles = mock(UserRoleAssignmentPort.class);
     registry = new SimpleMeterRegistry();
     clock = new MutableClock(T);
     service = newService(registry);
@@ -80,9 +88,14 @@ class PermissionFreshnessServiceTest {
   }
 
   private PermissionFreshnessService newService(SimpleMeterRegistry meters, int replayCapacity) {
+    return newService(meters, replayCapacity, ROLE_REPLAY_CAPACITY, TENANT_PERCENT);
+  }
+
+  private PermissionFreshnessService newService(
+      SimpleMeterRegistry meters, int replayCapacity, int roleCapacity, int tenantPercent) {
     return new PermissionFreshnessService(
-        port, meters, clock, WINDOW, 3, Duration.ofSeconds(10), Duration.ofSeconds(60),
-        KEY_TTL_SECONDS, replayCapacity);
+        port, userRoles, meters, clock, WINDOW, 3, Duration.ofSeconds(10), Duration.ofSeconds(60),
+        KEY_TTL_SECONDS, replayCapacity, roleCapacity, tenantPercent);
   }
 
   // --- check: verdicts ---
@@ -911,8 +924,9 @@ class PermissionFreshnessServiceTest {
   @Test
   void should_rejectNonPositiveSettings_when_constructed() {
     org.assertj.core.api.Assertions.assertThatThrownBy(() -> new PermissionFreshnessService(
-            port, registry, clock, WINDOW, 0, Duration.ofSeconds(10), Duration.ofSeconds(60),
-            KEY_TTL_SECONDS, REPLAY_CAPACITY))
+            port, userRoles, registry, clock, WINDOW, 0, Duration.ofSeconds(10),
+            Duration.ofSeconds(60), KEY_TTL_SECONDS, REPLAY_CAPACITY, ROLE_REPLAY_CAPACITY,
+            TENANT_PERCENT))
         .isInstanceOf(IllegalArgumentException.class);
   }
 
@@ -1111,26 +1125,40 @@ class PermissionFreshnessServiceTest {
     assertThat(service.state()).isEqualTo(DegradedState.HEALTHY);
   }
 
+  /** Fills the locally-seen map with {@code LAST_SEEN_CAPACITY} users, each tenant at its cap. */
+  private void fillSeenMapToCapacity() {
+    for (int tenant = 0; tenant < 100 / TENANT_PERCENT; tenant++) {
+      fillTenantToCap(new UUID(1, tenant));
+    }
+  }
+
+  private void fillTenantToCap(UUID tenantId) {
+    when(port.current(any(), any())).thenReturn(OptionalLong.of(EPOCH));
+    for (int i = 0; i < TENANT_CAP; i++) {
+      service.check(tenantId, new UUID(0, i), EPOCH);
+    }
+  }
+
+  private double lastSeenDropped(String reason) {
+    return registry.get("nexus.rbac.epoch.last_seen_dropped").tag("reason", reason)
+        .counter().count();
+  }
+
   @Test
   void should_dropNewUsersAndCount_when_seenMapFull() {
     when(port.current(any(), any())).thenReturn(OptionalLong.of(EPOCH));
-    for (int i = 0; i < PermissionFreshnessService.LAST_SEEN_CAPACITY; i++) {
-      service.check(TENANT, new UUID(0, i), EPOCH);
-    }
+    fillSeenMapToCapacity();
     service.check(TENANT, USER, EPOCH);
     failRead();
 
     assertThat(service.check(TENANT, USER, 0L)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
-    assertThat(registry.get("nexus.rbac.epoch.last_seen_dropped").counter().count())
-        .isEqualTo(1.0);
+    assertThat(lastSeenDropped("capacity")).isEqualTo(1.0);
   }
 
   @Test
   void should_reclaimExpiredSlots_when_seenMapFullOfExpiredEntries() {
     when(port.current(any(), any())).thenReturn(OptionalLong.of(EPOCH));
-    for (int i = 0; i < PermissionFreshnessService.LAST_SEEN_CAPACITY; i++) {
-      service.check(TENANT, new UUID(0, i), EPOCH);
-    }
+    fillSeenMapToCapacity();
     clock.set(T.plusSeconds(KEY_TTL_SECONDS));
     service.probe();
     service.check(TENANT, USER, EPOCH);
@@ -1143,32 +1171,135 @@ class PermissionFreshnessServiceTest {
   @Test
   void should_notScanOnRequestPath_when_seenMapFullOfExpiredEntries() {
     when(port.current(any(), any())).thenReturn(OptionalLong.of(EPOCH));
-    for (int i = 0; i < PermissionFreshnessService.LAST_SEEN_CAPACITY; i++) {
-      service.check(TENANT, new UUID(0, i), EPOCH);
-    }
+    fillSeenMapToCapacity();
     clock.set(T.plusSeconds(KEY_TTL_SECONDS));
 
     service.check(TENANT, USER, EPOCH);
     failRead();
 
     assertThat(service.check(TENANT, USER, 0L)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
-    assertThat(registry.get("nexus.rbac.epoch.last_seen_dropped").counter().count())
-        .isEqualTo(1.0);
+    assertThat(lastSeenDropped("capacity")).isEqualTo(1.0);
   }
 
   @Test
   void should_notScanOnRequestPath_when_localBumpRecordedIntoFullMap() {
     when(port.current(any(), any())).thenReturn(OptionalLong.of(EPOCH));
-    for (int i = 0; i < PermissionFreshnessService.LAST_SEEN_CAPACITY; i++) {
-      service.check(TENANT, new UUID(0, i), EPOCH);
-    }
+    fillSeenMapToCapacity();
     clock.set(T.plusSeconds(KEY_TTL_SECONDS));
     storeWrites(EPOCH + 5);
 
     service.invalidateHolders(TENANT, List.of(USER), "detach");
 
-    assertThat(registry.get("nexus.rbac.epoch.last_seen_dropped").counter().count())
+    assertThat(lastSeenDropped("capacity")).isEqualTo(1.0);
+  }
+
+  // --- last-seen map: per-tenant cap (security review part 2, L-3) ---
+
+  @Test
+  void should_dropNewUserAndCountTenantCap_when_oneTenantAtItsCap() {
+    fillTenantToCap(TENANT);
+    UUID newcomer = UUID.fromString("00000000-0000-7000-8000-0000000000cc");
+    when(port.current(TENANT, newcomer)).thenReturn(OptionalLong.of(EPOCH));
+    service.check(TENANT, newcomer, EPOCH);
+    when(port.current(TENANT, newcomer)).thenReturn(OptionalLong.empty());
+
+    assertThat(service.check(TENANT, newcomer, 0L)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
+    assertThat(lastSeenDropped("tenant_cap")).isEqualTo(1.0);
+    assertThat(lastSeenDropped("capacity")).isZero();
+  }
+
+  @Test
+  void should_stillRecordOtherTenant_when_oneTenantAtItsCap() {
+    fillTenantToCap(TENANT);
+    UUID otherTenant = UUID.fromString("00000000-0000-7000-8000-0000000000ad");
+    when(port.current(otherTenant, USER)).thenReturn(OptionalLong.of(EPOCH));
+    service.check(otherTenant, USER, EPOCH);
+    when(port.current(otherTenant, USER)).thenReturn(OptionalLong.empty());
+
+    assertThat(service.check(otherTenant, USER, 0L)).isEqualTo(FreshnessVerdict.STALE);
+  }
+
+  @Test
+  void should_acceptLastSlotOfTenant_when_oneBelowCap() {
+    when(port.current(any(), any())).thenReturn(OptionalLong.of(EPOCH));
+    for (int i = 0; i < TENANT_CAP - 1; i++) {
+      service.check(TENANT, new UUID(0, i), EPOCH);
+    }
+
+    service.check(TENANT, USER, EPOCH);
+
+    assertThat(registry.get("nexus.rbac.epoch.last_seen_dropped").counters())
+        .allSatisfy(counter -> assertThat(counter.count()).isZero());
+  }
+
+  @Test
+  void should_raiseEpochOfKnownUser_when_tenantAtCap() {
+    fillTenantToCap(TENANT);
+    when(port.current(TENANT, new UUID(0, 0))).thenReturn(OptionalLong.of(EPOCH + 9));
+    service.check(TENANT, new UUID(0, 0), EPOCH);
+    when(port.current(TENANT, new UUID(0, 0))).thenReturn(OptionalLong.empty());
+
+    assertThat(service.check(TENANT, new UUID(0, 0), EPOCH + 5)).isEqualTo(FreshnessVerdict.STALE);
+    assertThat(lastSeenDropped("tenant_cap")).isZero();
+  }
+
+  @Test
+  void should_freeTenantSlots_when_tickPurgesExpiredEntries() {
+    fillTenantToCap(TENANT);
+    clock.set(T.plusSeconds(KEY_TTL_SECONDS));
+    service.probe();
+
+    service.check(TENANT, USER, EPOCH);
+
+    assertThat(registry.get("nexus.rbac.epoch.last_seen_dropped").counters())
+        .allSatisfy(counter -> assertThat(counter.count()).isZero());
+  }
+
+  @Test
+  void should_dropLocalBumpAndCountTenantCap_when_tenantAtCap() {
+    fillTenantToCap(TENANT);
+    storeWrites(EPOCH + 5);
+
+    service.invalidateHolders(TENANT, List.of(USER), "detach");
+
+    assertThat(lastSeenDropped("tenant_cap")).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_capEachTenantSeparately_when_tenantPercentIsOne() {
+    SimpleMeterRegistry meters = new SimpleMeterRegistry();
+    PermissionFreshnessService small =
+        newService(meters, REPLAY_CAPACITY, ROLE_REPLAY_CAPACITY, 1);
+    when(port.current(any(), any())).thenReturn(OptionalLong.of(EPOCH));
+    int cap = PermissionFreshnessService.LAST_SEEN_CAPACITY / 100;
+    for (int i = 0; i <= cap; i++) {
+      small.check(TENANT, new UUID(0, i), EPOCH);
+    }
+
+    assertThat(meters.get("nexus.rbac.epoch.last_seen_dropped").tag("reason", "tenant_cap")
+            .counter().count())
         .isEqualTo(1.0);
+  }
+
+  @Test
+  void should_rejectTenantPercentOutsideOneToHundred_when_constructed() {
+    org.assertj.core.api.Assertions.assertThatThrownBy(
+            () -> newService(new SimpleMeterRegistry(), REPLAY_CAPACITY, 10, 0))
+        .isInstanceOf(IllegalArgumentException.class);
+    org.assertj.core.api.Assertions.assertThatThrownBy(
+            () -> newService(new SimpleMeterRegistry(), REPLAY_CAPACITY, 10, 101))
+        .isInstanceOf(IllegalArgumentException.class);
+    assertThatCode(() -> newService(new SimpleMeterRegistry(), REPLAY_CAPACITY, 10, 100))
+        .doesNotThrowAnyException();
+    assertThatCode(() -> newService(new SimpleMeterRegistry(), REPLAY_CAPACITY, 10, 1))
+        .doesNotThrowAnyException();
+  }
+
+  @Test
+  void should_rejectNonPositiveRoleCapacity_when_constructed() {
+    org.assertj.core.api.Assertions.assertThatThrownBy(
+            () -> newService(new SimpleMeterRegistry(), REPLAY_CAPACITY, 0, TENANT_PERCENT))
+        .isInstanceOf(IllegalArgumentException.class);
   }
 
   @Test
@@ -1593,9 +1724,258 @@ class PermissionFreshnessServiceTest {
   /** M-2: the paging counter for a detach whose holders could not be read. */
   @Test
   void should_countHolderReadFailureAsPagingSignal() {
-    service.holderReadFailed("detach");
+    service.holderReadFailed(TENANT, ROLE, "detach");
 
     assertThat(bumpFailed("detach", "holder_read")).isEqualTo(1.0);
+  }
+
+  // --- role-level replay (security review part 2, M-2) ---
+
+  private double roleQueueSize() {
+    return registry.get("nexus.rbac.epoch.role_replay_queue_roles").gauge().value();
+  }
+
+  private double rolesReplayed() {
+    return registry.get("nexus.rbac.epoch.role_replayed").counter().count();
+  }
+
+  private void holdersOfRole(UUID... holders) {
+    when(userRoles.findActiveUserIdsForRole(ROLE)).thenReturn(List.of(holders));
+  }
+
+  @Test
+  void should_queueRole_when_holderReadFailed() {
+    service.holderReadFailed(TENANT, ROLE, "detach");
+
+    assertThat(roleQueueSize()).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_queueRoleOnce_when_sameRoleFailsTwice() {
+    service.holderReadFailed(TENANT, ROLE, "detach");
+    service.holderReadFailed(TENANT, ROLE, "detach");
+
+    assertThat(roleQueueSize()).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_bumpEveryHolderAndEmptyQueue_when_tickResolvesRole() {
+    UUID other = UUID.randomUUID();
+    service.holderReadFailed(TENANT, ROLE, "detach");
+    holdersOfRole(USER, other);
+    storeWrites(EPOCH + 5);
+
+    service.probe();
+
+    verify(port).bump(TENANT, List.of(USER, other));
+    assertThat(roleQueueSize()).isZero();
+    assertThat(rolesReplayed()).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_makeHolderTokensStale_when_roleResolvedAfterFailedRead() {
+    service.holderReadFailed(TENANT, ROLE, "detach");
+    holdersOfRole(USER);
+    storeWrites(EPOCH + 5);
+    service.probe();
+    failRead();
+
+    assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.STALE);
+  }
+
+  @Test
+  void should_notReadHolders_when_nothingQueued() {
+    service.probe();
+
+    verifyNoInteractions(userRoles);
+  }
+
+  @Test
+  void should_keepRoleQueuedAndCount_when_holderReadFailsOnTick() {
+    service.holderReadFailed(TENANT, ROLE, "detach");
+    when(userRoles.findActiveUserIdsForRole(ROLE))
+        .thenThrow(new QueryTimeoutException("db down"));
+
+    service.probe();
+
+    assertThat(roleQueueSize()).isEqualTo(1.0);
+    assertThat(bumpFailed("role_replay", "holder_read")).isEqualTo(1.0);
+    verify(port, never()).bump(any(), anyCollection());
+  }
+
+  @Test
+  void should_resolveRole_when_holderReadRecoversOnLaterTick() {
+    service.holderReadFailed(TENANT, ROLE, "detach");
+    when(userRoles.findActiveUserIdsForRole(ROLE))
+        .thenThrow(new QueryTimeoutException("db down"))
+        .thenReturn(List.of(USER));
+    storeWrites(EPOCH + 5);
+
+    service.probe();
+    service.probe();
+
+    verify(port).bump(TENANT, List.of(USER));
+    assertThat(roleQueueSize()).isZero();
+  }
+
+  @Test
+  void should_keepOneErrorLinePerTick_when_holderReadKeepsFailing() {
+    service.holderReadFailed(TENANT, ROLE, "detach");
+    UUID otherRole = UUID.randomUUID();
+    service.holderReadFailed(TENANT, otherRole, "detach");
+    when(userRoles.findActiveUserIdsForRole(any()))
+        .thenThrow(new QueryTimeoutException("db down"));
+
+    service.probe();
+
+    verify(userRoles, times(1)).findActiveUserIdsForRole(any());
+    assertThat(roleQueueSize()).isEqualTo(2.0);
+  }
+
+  @Test
+  void should_dropRoleWithoutReading_when_newestFailureOlderThanKeyTtl() {
+    service.holderReadFailed(TENANT, ROLE, "detach");
+    holdersOfRole(USER);
+    clock.set(T.plusSeconds(KEY_TTL_SECONDS));
+
+    service.probe();
+
+    verify(userRoles, never()).findActiveUserIdsForRole(any());
+    assertThat(roleQueueSize()).isZero();
+  }
+
+  @Test
+  void should_stillResolveRole_when_oneSecondBeforeKeyTtl() {
+    service.holderReadFailed(TENANT, ROLE, "detach");
+    holdersOfRole(USER);
+    storeWrites(EPOCH + 5);
+    clock.set(T.plusSeconds(KEY_TTL_SECONDS - 1));
+
+    service.probe();
+
+    verify(port).bump(TENANT, List.of(USER));
+  }
+
+  @Test
+  void should_extendLife_when_sameRoleFailsAgainLater() {
+    service.holderReadFailed(TENANT, ROLE, "detach");
+    clock.set(T.plusSeconds(500));
+    service.holderReadFailed(TENANT, ROLE, "detach");
+    holdersOfRole(USER);
+    storeWrites(EPOCH + 5);
+    clock.set(T.plusSeconds(KEY_TTL_SECONDS + 100));
+
+    service.probe();
+
+    verify(port).bump(TENANT, List.of(USER));
+  }
+
+  @Test
+  void should_queueHoldersForUserReplay_when_roleResolvedButBumpFails() {
+    service.holderReadFailed(TENANT, ROLE, "detach");
+    holdersOfRole(USER, UUID.randomUUID());
+    failBumps();
+
+    service.probe();
+
+    assertThat(roleQueueSize()).isZero();
+    assertThat(replayQueueUsers()).isEqualTo(2.0);
+  }
+
+  @Test
+  void should_resolveRoleWithoutBump_when_roleHasNoHolders() {
+    service.holderReadFailed(TENANT, ROLE, "detach");
+    holdersOfRole();
+
+    service.probe();
+
+    verify(port, never()).bump(any(), anyCollection());
+    assertThat(roleQueueSize()).isZero();
+  }
+
+  @Test
+  void should_dropNewestRoleAndCount_when_roleQueueFull() {
+    SimpleMeterRegistry meters = new SimpleMeterRegistry();
+    PermissionFreshnessService small = newService(meters, REPLAY_CAPACITY, 1, TENANT_PERCENT);
+    small.holderReadFailed(TENANT, ROLE, "detach");
+
+    small.holderReadFailed(TENANT, UUID.randomUUID(), "detach");
+
+    assertThat(meters.get("nexus.rbac.epoch.role_replay_queue_roles").gauge().value())
+        .isEqualTo(1.0);
+    assertThat(meters.get("nexus.rbac.epoch.bump_failed")
+            .tags("operation", "detach", "reason", "role_overflow").counter().count())
+        .isEqualTo(1.0);
+  }
+
+  @Test
+  void should_notReadHolders_when_degradedAndProbeFails() {
+    tripAtT();
+    service.holderReadFailed(TENANT, ROLE, "detach");
+    when(port.probe()).thenReturn(false);
+
+    service.probe();
+
+    verify(userRoles, never()).findActiveUserIdsForRole(any());
+  }
+
+  @Test
+  void should_resolveRole_when_degradedAndProbeSucceeds() {
+    tripAtT();
+    service.holderReadFailed(TENANT, ROLE, "detach");
+    holdersOfRole(USER);
+    storeWrites(EPOCH + 5);
+    when(port.probe()).thenReturn(true);
+
+    service.probe();
+
+    verify(port).bump(TENANT, List.of(USER));
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+  }
+
+  @Test
+  void should_stayDegraded_when_roleStillQueuedAfterProbeSucceeds() {
+    tripAtT();
+    service.holderReadFailed(TENANT, ROLE, "detach");
+    when(userRoles.findActiveUserIdsForRole(ROLE))
+        .thenThrow(new QueryTimeoutException("db down"));
+    when(port.probe()).thenReturn(true);
+
+    service.probe();
+
+    assertThat(service.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+  }
+
+  @Test
+  void should_notCountRoleReplayFailureAsReadFailure_when_recovering() {
+    tripAtT();
+    recoverNow();
+    service.holderReadFailed(TENANT, ROLE, "detach");
+    when(userRoles.findActiveUserIdsForRole(ROLE))
+        .thenThrow(new QueryTimeoutException("db down"));
+
+    for (int i = 0; i < 5; i++) {
+      service.probe();
+    }
+
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+  }
+
+  @Test
+  void should_notLogUserIds_when_roleReplayed() {
+    service.holderReadFailed(TENANT, ROLE, "detach");
+    holdersOfRole(USER);
+    storeWrites(EPOCH + 5);
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      service.probe();
+    } finally {
+      stopLogCapture(appender);
+    }
+
+    assertThat(appender.list)
+        .noneSatisfy(event ->
+            assertThat(event.getFormattedMessage() + keyValues(event)).contains(USER.toString()));
   }
 
   /** L-1: a corrupt key makes that user's tokens stale and never counts as a store failure. */
@@ -1609,7 +1989,8 @@ class PermissionFreshnessServiceTest {
 
     assertThat(service.state()).isEqualTo(DegradedState.HEALTHY);
     assertThat(outcomeCount("skipped_error")).isZero();
-    assertThat(outcomeCount("stale")).isEqualTo(10.0);
+    assertThat(outcomeCount("stale")).isZero();
+    assertThat(outcomeCount("unparseable")).isEqualTo(10.0);
   }
 
   @Test
@@ -1651,6 +2032,109 @@ class PermissionFreshnessServiceTest {
 
     assertThat(service.mintEpoch(TENANT, USER))
         .isEqualTo(new PermissionFreshnessService.MintEpoch(0L, false));
+  }
+
+  // --- RBAC_EPOCH_UNPARSEABLE rate limit (security review part 2, L-2) ---
+
+  private List<ILoggingEvent> unparseableWarnsDuring(Runnable action) {
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      action.run();
+    } finally {
+      stopLogCapture(appender);
+    }
+    return appender.list.stream()
+        .filter(e -> "RBAC_EPOCH_UNPARSEABLE".equals(keyValues(e).get("event")))
+        .toList();
+  }
+
+  @Test
+  void should_warnOncePerMinutePerTenant_when_manyChecksUnparseable() {
+    when(port.current(TENANT, USER)).thenThrow(new EpochUnparseableException());
+
+    List<ILoggingEvent> warns = unparseableWarnsDuring(() -> {
+      for (int i = 0; i < 50; i++) {
+        service.check(TENANT, USER, EPOCH);
+      }
+    });
+
+    assertThat(warns).singleElement()
+        .satisfies(e -> assertThat(keyValues(e)).containsEntry("suppressed", 0L));
+  }
+
+  @Test
+  void should_reportSuppressedCount_when_nextWindowOpens() {
+    when(port.current(TENANT, USER)).thenThrow(new EpochUnparseableException());
+    for (int i = 0; i < 5; i++) {
+      service.check(TENANT, USER, EPOCH);
+    }
+    clock.set(T.plusSeconds(60));
+
+    List<ILoggingEvent> warns = unparseableWarnsDuring(() -> service.check(TENANT, USER, EPOCH));
+
+    assertThat(warns).singleElement()
+        .satisfies(e -> assertThat(keyValues(e)).containsEntry("suppressed", 4L));
+  }
+
+  @Test
+  void should_stillSuppress_when_oneSecondBeforeWindowEnds() {
+    when(port.current(TENANT, USER)).thenThrow(new EpochUnparseableException());
+    service.check(TENANT, USER, EPOCH);
+    clock.set(T.plusSeconds(59));
+
+    List<ILoggingEvent> warns = unparseableWarnsDuring(() -> service.check(TENANT, USER, EPOCH));
+
+    assertThat(warns).isEmpty();
+  }
+
+  @Test
+  void should_warnForEachTenant_when_twoTenantsUnparseable() {
+    UUID other = UUID.fromString("00000000-0000-7000-8000-0000000000ad");
+    when(port.current(any(), any())).thenThrow(new EpochUnparseableException());
+
+    List<ILoggingEvent> warns = unparseableWarnsDuring(() -> {
+      service.check(TENANT, USER, EPOCH);
+      service.check(other, USER, EPOCH);
+      service.check(TENANT, USER, EPOCH);
+    });
+
+    assertThat(warns).hasSize(2);
+  }
+
+  @Test
+  void should_shareTheLimitBetweenCheckAndMint_when_sameTenant() {
+    when(port.current(TENANT, USER)).thenThrow(new EpochUnparseableException());
+
+    List<ILoggingEvent> warns = unparseableWarnsDuring(() -> {
+      service.check(TENANT, USER, EPOCH);
+      service.mintEpoch(TENANT, USER);
+    });
+
+    assertThat(warns).hasSize(1);
+  }
+
+  @Test
+  void should_reportZeroSuppressed_when_windowEndedWithoutFurtherEvents() {
+    when(port.current(TENANT, USER)).thenThrow(new EpochUnparseableException());
+    service.check(TENANT, USER, EPOCH);
+    clock.set(T.plusSeconds(600));
+    service.probe();
+
+    List<ILoggingEvent> warns = unparseableWarnsDuring(() -> service.check(TENANT, USER, EPOCH));
+
+    assertThat(warns).singleElement()
+        .satisfies(e -> assertThat(keyValues(e)).containsEntry("suppressed", 0L));
+  }
+
+  @Test
+  void should_notCountUnparseableAsStaleOrFresh_when_checkUnparseable() {
+    when(port.current(TENANT, USER)).thenThrow(new EpochUnparseableException());
+
+    service.check(TENANT, USER, EPOCH);
+
+    assertThat(outcomeCount("unparseable")).isEqualTo(1.0);
+    assertThat(outcomeCount("stale")).isZero();
+    assertThat(outcomeCount("fresh")).isZero();
   }
 
   /** L-2: the 60 s sustain starts when the drain is done, not when the probe answered. */

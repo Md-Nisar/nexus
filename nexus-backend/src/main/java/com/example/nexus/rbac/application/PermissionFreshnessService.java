@@ -2,6 +2,7 @@ package com.example.nexus.rbac.application;
 
 import com.example.nexus.rbac.application.port.out.EpochUnparseableException;
 import com.example.nexus.rbac.application.port.out.PermissionEpochPort;
+import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -22,6 +23,7 @@ import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -72,15 +74,29 @@ import org.springframework.stereotype.Service;
  * nexus.rbac.epoch.replay_queue_users}; ERROR {@code RBAC_EPOCH_BUMP_FAILED} and INFO {@code
  * RBAC_EPOCH_BUMP_REPLAYED}, never with user ids.
  *
+ * <p><b>Lost holder read (M7 part 2 review M-2).</b> When the post-commit read of a detached
+ * role's holders fails twice, {@link #holderReadFailed} queues the role (tenant, role, failure time)
+ * in a bounded {@link RoleReplayQueue} ({@code replay-capacity-roles}), coalesced per role. The same
+ * scheduler tick, before it drains users, re-reads the role's holders and passes them to {@link
+ * #invalidateHolders}, so a failed bump falls into the user queue above. A role whose read keeps
+ * failing stays queued until its newest failure is older than {@code key-ttl-seconds}; the first
+ * failed read ends that tick's role replay. Signals: the paging counter {@code bump_failed{reason=
+ * holder_read}} (kept), {@code bump_failed{operation=role_replay, reason=holder_read}} for a failed
+ * tick read, {@code bump_failed{reason=role_overflow}} for a role refused by a full queue, {@code
+ * nexus.rbac.epoch.role_replayed} and the gauge {@code nexus.rbac.epoch.role_replay_queue_roles}.
+ * The degraded state is left only when both queues are empty.
+ *
  * <p><b>Locally known bumps (security review M-1).</b> While reads fail, an attacker who drives
  * the instance into fail-open could replay a revoked token. The service therefore keeps a bounded
  * per-instance map of the highest epoch it has seen per user (from successful reads and from its
  * own bumps), expiring at {@code key-ttl-seconds}. When the store cannot answer, or the
  * instance is degraded-open, a token below that epoch is {@link FreshnessVerdict#STALE}. The map
  * holds only users with an epoch above 0, that is, users bumped within the key TTL. It holds at
- * most {@value #LAST_SEEN_CAPACITY} entries; a new user beyond that is not recorded and counted in
- * {@code nexus.rbac.epoch.last_seen_dropped}. Expired entries are purged by the scheduled tick,
- * never on a request thread (H-1).
+ * most {@value #LAST_SEEN_CAPACITY} entries, and one tenant at most {@code
+ * last-seen-tenant-percent} of that (M7 part 2 review L-3), so one tenant's large detach cannot
+ * crowd the others out. A new user beyond either bound is not recorded and counted in {@code
+ * nexus.rbac.epoch.last_seen_dropped{reason=tenant_cap|capacity}}. Expired entries are purged by
+ * the scheduled tick, never on a request thread (H-1).
  *
  * <p>A successful bump records exactly the epoch the store wrote and returned (H-2); no instance
  * clock enters the value. A failed bump records the lower bound {@code seen + 1} (L-5): it cannot
@@ -90,7 +106,9 @@ import org.springframework.stereotype.Service;
  * <p>An epoch that the store could not confirm (the read failed or the instance is degraded) is
  * reported by {@link #mintEpoch} as unverified, so the minter does not cache the permission set
  * under it (L-3). A stored value that is not an epoch makes that user's tokens stale and is not
- * counted as a store failure (L-1).
+ * counted as a store failure (L-1). It is counted as {@code nexus.rbac.epoch.check{outcome=
+ * unparseable}} (the verdict stays {@link FreshnessVerdict#STALE}), and its WARN is logged once per
+ * tenant per minute with the number of occurrences it suppressed (M7 part 2 review L-2).
  */
 @Service
 public final class PermissionFreshnessService {
@@ -107,11 +125,19 @@ public final class PermissionFreshnessService {
   static final String METRIC_BUMP_FAILED = "nexus.rbac.epoch.bump_failed";
   static final String METRIC_BUMP_REPLAYED = "nexus.rbac.epoch.bump_replayed";
   static final String METRIC_REPLAY_QUEUE = "nexus.rbac.epoch.replay_queue_users";
+  static final String METRIC_ROLE_REPLAYED = "nexus.rbac.epoch.role_replayed";
+  static final String METRIC_ROLE_REPLAY_QUEUE = "nexus.rbac.epoch.role_replay_queue_roles";
 
   private static final String REASON_REDIS = "redis";
   private static final String REASON_OVERFLOW = "overflow";
   private static final String REASON_HOLDER_READ = "holder_read";
+  private static final String REASON_ROLE_OVERFLOW = "role_overflow";
+  private static final String REASON_TENANT_CAP = "tenant_cap";
+  private static final String REASON_CAPACITY = "capacity";
   private static final String OPERATION_REPLAY = "replay";
+  private static final String OPERATION_ROLE_REPLAY = "role_replay";
+  private static final String TAG_REASON = "reason";
+  private static final String OUTCOME_UNPARSEABLE = "unparseable";
 
   /** Entries into a degraded state within {@link #FLAP_WINDOW} that raise the flap signal. */
   static final int FLAP_ENTRIES = 3;
@@ -120,6 +146,9 @@ public final class PermissionFreshnessService {
 
   /** Upper bound of the locally-seen epoch map (security review M-1). */
   static final int LAST_SEEN_CAPACITY = 100_000;
+
+  /** One {@code RBAC_EPOCH_UNPARSEABLE} WARN per tenant per this window (L-2). */
+  static final Duration UNPARSEABLE_WARN_WINDOW = Duration.ofMinutes(1);
 
   private static final String INSTANCE = System.getenv().getOrDefault("HOSTNAME", "unknown");
 
@@ -136,6 +165,7 @@ public final class PermissionFreshnessService {
   private static final String LOG_KEY_CAUSE = "cause";
   private static final String LOG_KEY_STATE = "state";
   private static final String LOG_KEY_USER_COUNT = "userCount";
+  private static final String LOG_KEY_ROLE_ID = "roleId";
 
   private final PermissionEpochPort epochPort;
   private final BiFunction<String, String, Counter> bumpFailedCounters;
@@ -150,10 +180,18 @@ public final class PermissionFreshnessService {
   private final Map<String, Counter> fanoutCounters;
   private final Counter degradedEntries;
   private final Counter degradedFlaps;
-  private final Counter lastSeenDropped;
+  private final Counter lastSeenDroppedTenantCap;
+  private final Counter lastSeenDroppedCapacity;
   private final Counter bumpReplayed;
+  private final Counter rolesReplayed;
+  private final Counter unparseableCounter;
   private final EpochReplayQueue replayQueue;
+  private final RoleReplayQueue roleReplayQueue;
+  private final UserRoleAssignmentPort userRoleAssignmentPort;
+  private final int lastSeenTenantCap;
   private final Map<UserKey, SeenEpoch> lastSeen = new ConcurrentHashMap<>();
+  private final Map<UUID, Integer> lastSeenPerTenant = new ConcurrentHashMap<>();
+  private final Map<UUID, UnparseableWindow> unparseableWindows = new ConcurrentHashMap<>();
 
   // State machine. Every field below is written only while holding `lock`; `state` is volatile so
   // the Healthy fast path reads it without the lock.
@@ -168,6 +206,7 @@ public final class PermissionFreshnessService {
    * Creates the service.
    *
    * @param epochPort the epoch store
+   * @param userRoleAssignmentPort reads a role's holders when the tick resolves a queued role
    * @param meterRegistry registry for the signals listed on the class
    * @param clock the time source of the state machine and the locally-seen map
    * @param failOpenWindow {@code nexus.rbac.epoch.fail-open-window}: time from {@code t0} until
@@ -181,10 +220,16 @@ public final class PermissionFreshnessService {
    *     epoch, equal to the store key's; also the age after which a queued bump is dropped
    * @param replayCapacityUsers {@code nexus.rbac.epoch.replay-capacity-users}: the most distinct
    *     users whose failed bump is queued for replay
-   * @throws IllegalArgumentException if the threshold is below 1 or a duration is not positive
+   * @param replayCapacityRoles {@code nexus.rbac.epoch.replay-capacity-roles}: the most distinct
+   *     roles whose holder read is queued for replay
+   * @param lastSeenTenantPercent {@code nexus.rbac.epoch.last-seen-tenant-percent}: the share of
+   *     the locally-seen map one tenant may fill, 1 to 100
+   * @throws IllegalArgumentException if the threshold is below 1, a duration is not positive or
+   *     the percentage is outside 1 to 100
    */
   public PermissionFreshnessService(
       PermissionEpochPort epochPort,
+      UserRoleAssignmentPort userRoleAssignmentPort,
       MeterRegistry meterRegistry,
       Clock clock,
       @Value("${nexus.rbac.epoch.fail-open-window}") Duration failOpenWindow,
@@ -192,21 +237,28 @@ public final class PermissionFreshnessService {
       @Value("${nexus.rbac.epoch.entry-failure-window}") Duration entryFailureWindow,
       @Value("${nexus.rbac.epoch.recovery-sustain}") Duration recoverySustain,
       @Value("${nexus.rbac.epoch.key-ttl-seconds}") long keyTtlSeconds,
-      @Value("${nexus.rbac.epoch.replay-capacity-users}") int replayCapacityUsers) {
+      @Value("${nexus.rbac.epoch.replay-capacity-users}") int replayCapacityUsers,
+      @Value("${nexus.rbac.epoch.replay-capacity-roles:1000}") int replayCapacityRoles,
+      @Value("${nexus.rbac.epoch.last-seen-tenant-percent:10}") int lastSeenTenantPercent) {
     if (entryFailureThreshold < 1
         || !failOpenWindow.isPositive()
         || !entryFailureWindow.isPositive()
         || !recoverySustain.isPositive()
         || keyTtlSeconds < 1
-        || replayCapacityUsers < 1) {
+        || replayCapacityUsers < 1
+        || replayCapacityRoles < 1
+        || lastSeenTenantPercent < 1
+        || lastSeenTenantPercent > 100) {
       throw new IllegalArgumentException("permission epoch outage policy settings must be positive");
     }
     this.epochPort = epochPort;
+    this.userRoleAssignmentPort = userRoleAssignmentPort;
+    this.lastSeenTenantCap = Math.max(1, LAST_SEEN_CAPACITY * lastSeenTenantPercent / 100);
     // Operation is a caller-supplied label, so the counter is looked up per call (get or create).
     this.bumpFailedCounters = (operation, reason) -> Counter.builder(METRIC_BUMP_FAILED)
         .description("Failed permission-epoch bumps and replays; overflow counts dropped users")
         .tag(LOG_KEY_OPERATION, operation)
-        .tag("reason", reason)
+        .tag(TAG_REASON, reason)
         .register(meterRegistry);
     this.clock = clock;
     this.failOpenWindow = failOpenWindow;
@@ -221,6 +273,10 @@ public final class PermissionFreshnessService {
           .tag("outcome", verdict.tag())
           .register(meterRegistry));
     }
+    this.unparseableCounter = Counter.builder(METRIC_CHECK)
+        .description("Request-time permission-epoch checks, by outcome")
+        .tag("outcome", OUTCOME_UNPARSEABLE)
+        .register(meterRegistry);
     this.checkLatency = Timer.builder(METRIC_CHECK_LATENCY)
         .description("Latency of the request-time permission-epoch check")
         .publishPercentiles(0.5, 0.95, 0.99)
@@ -246,10 +302,23 @@ public final class PermissionFreshnessService {
     this.degradedFlaps = Counter.builder(METRIC_DEGRADED_FLAP)
         .description("Degraded entries that made 3 or more within 15 minutes")
         .register(meterRegistry);
-    this.lastSeenDropped = Counter.builder(METRIC_LAST_SEEN_DROPPED)
-        .description("Locally-seen epochs not recorded because the bounded map was full")
+    this.lastSeenDroppedTenantCap = Counter.builder(METRIC_LAST_SEEN_DROPPED)
+        .description("Locally-seen epochs not recorded because a bound of the map was reached")
+        .tag(TAG_REASON, REASON_TENANT_CAP)
+        .register(meterRegistry);
+    this.lastSeenDroppedCapacity = Counter.builder(METRIC_LAST_SEEN_DROPPED)
+        .description("Locally-seen epochs not recorded because a bound of the map was reached")
+        .tag(TAG_REASON, REASON_CAPACITY)
         .register(meterRegistry);
     this.replayQueue = new EpochReplayQueue(replayCapacityUsers);
+    this.roleReplayQueue = new RoleReplayQueue(replayCapacityRoles);
+    this.rolesReplayed = Counter.builder(METRIC_ROLE_REPLAYED)
+        .description("Roles whose holders were read and bumped by the tick after a failed read")
+        .register(meterRegistry);
+    Gauge.builder(METRIC_ROLE_REPLAY_QUEUE, roleReplayQueue::size)
+        .description("Roles whose post-commit holder read failed and awaits replay on this instance")
+        .strongReference(true)
+        .register(meterRegistry);
     this.bumpReplayed = Counter.builder(METRIC_BUMP_REPLAYED)
         .description("Users whose lost permission-epoch bump was replayed")
         .register(meterRegistry);
@@ -307,7 +376,7 @@ public final class PermissionFreshnessService {
         return new MintEpoch(read.getAsLong(), true);
       }
     } catch (EpochUnparseableException e) {
-      logUnparseable(tenantId);
+      logUnparseable(tenantId, now);
       return new MintEpoch(0L, false);
     }
     return unverifiedMint(key, now);
@@ -340,13 +409,15 @@ public final class PermissionFreshnessService {
    */
   public FreshnessVerdict check(UUID tenantId, UUID userId, long tokenEpoch) {
     Timer.Sample sample = Timer.start();
-    FreshnessVerdict verdict = evaluate(new UserKey(tenantId, userId), tokenEpoch);
+    AtomicBoolean unparseable = new AtomicBoolean();
+    FreshnessVerdict verdict = evaluate(new UserKey(tenantId, userId), tokenEpoch, unparseable);
     sample.stop(checkLatency);
-    outcomeCounters.get(verdict).increment();
+    // An unparseable value is STALE for the caller but its own outcome for the operator (L-2).
+    (unparseable.get() ? unparseableCounter : outcomeCounters.get(verdict)).increment();
     return verdict;
   }
 
-  private FreshnessVerdict evaluate(UserKey key, long tokenEpoch) {
+  private FreshnessVerdict evaluate(UserKey key, long tokenEpoch, AtomicBoolean unparseable) {
     Instant now = clock.instant();
     return switch (refreshState(now)) {
       case DEGRADED_CLOSED -> FreshnessVerdict.UNAVAILABLE;
@@ -358,7 +429,8 @@ public final class PermissionFreshnessService {
         } catch (EpochUnparseableException e) {
           // The store answered; this user's key is corrupt. Not a read failure (L-1), so it never
           // moves the state machine, and the user's tokens cannot be vouched for.
-          logUnparseable(key.tenantId());
+          logUnparseable(key.tenantId(), now);
+          unparseable.set(true);
           yield FreshnessVerdict.STALE;
         }
         if (current.isEmpty()) {
@@ -373,12 +445,30 @@ public final class PermissionFreshnessService {
     };
   }
 
-  private void logUnparseable(UUID tenantId) {
-    log.atWarn()
-        .addKeyValue(LOG_KEY_EVENT, "RBAC_EPOCH_UNPARSEABLE")
-        .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
-        .log("Stored permission epoch is not a number; treating the user's tokens as stale");
+  /**
+   * Logs once per tenant per {@link #UNPARSEABLE_WARN_WINDOW}, with the occurrences since the last
+   * line (L-2). A corrupt keyspace would otherwise log once per request, twice per refresh loop.
+   * The count of every occurrence is {@code nexus.rbac.epoch.check{outcome=unparseable}}.
+   */
+  private void logUnparseable(UUID tenantId, Instant now) {
+    long[] suppressed = {-1};
+    unparseableWindows.compute(tenantId, (id, window) -> {
+      if (window == null || !now.isBefore(window.endsAt())) {
+        suppressed[0] = window == null ? 0 : window.suppressed();
+        return new UnparseableWindow(now.plus(UNPARSEABLE_WARN_WINDOW), 0);
+      }
+      return new UnparseableWindow(window.endsAt(), window.suppressed() + 1);
+    });
+    if (suppressed[0] >= 0) {
+      log.atWarn()
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_EPOCH_UNPARSEABLE")
+          .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
+          .addKeyValue("suppressed", suppressed[0])
+          .log("Stored permission epoch is not a number; treating the user's tokens as stale");
+    }
   }
+
+  private record UnparseableWindow(Instant endsAt, long suppressed) {}
 
   /** The verdict when the store was not consulted: stale if this instance already saw a bump. */
   private FreshnessVerdict unverified(
@@ -398,6 +488,7 @@ public final class PermissionFreshnessService {
   public void probe() {
     purgeExpiredSeen(clock.instant());
     if (refreshState(clock.instant()) == DegradedState.HEALTHY) {
+      drainRoleQueue();
       drainReplayQueue();
       return;
     }
@@ -406,6 +497,7 @@ public final class PermissionFreshnessService {
       recordReadFailure(clock.instant());
       return;
     }
+    drainRoleQueue();
     drainReplayQueue();
     // The sustain starts when the drain is done, not when the probe answered (L-2, RC-31.2): a
     // long drain must not let the next read count as sixty seconds of health.
@@ -494,9 +586,9 @@ public final class PermissionFreshnessService {
     }
   }
 
-  /** The lost-bump replay queue is empty. */
+  /** Neither the lost-bump replay queue nor the lost-holder-read queue holds anything. */
   private boolean drainComplete() {
-    return replayQueue.isEmpty();
+    return replayQueue.isEmpty() && roleReplayQueue.isEmpty();
   }
 
   /** Must hold {@code lock}. */
@@ -557,7 +649,9 @@ public final class PermissionFreshnessService {
       return OptionalLong.empty();
     }
     if (!now.isBefore(seen.expiresAt())) {
-      lastSeen.remove(key, seen);
+      if (lastSeen.remove(key, seen)) {
+        releaseTenantSlot(key.tenantId());
+      }
       return OptionalLong.empty();
     }
     return OptionalLong.of(seen.epoch());
@@ -565,26 +659,64 @@ public final class PermissionFreshnessService {
 
   /**
    * Keeps the highest epoch seen; epoch 0 (no bump within the key TTL) is not worth a slot. Never
-   * scans the map (H-1): when it is full a new user is only counted as dropped, and the scheduled
-   * tick frees expired slots.
+   * scans the map (H-1): when it is full, or the user's tenant is at its share of it (L-3), a new
+   * user is only counted as dropped, and the scheduled tick frees expired slots.
    */
   private void remember(UserKey key, long epoch, Instant now) {
     if (epoch <= 0) {
       return;
     }
     if (lastSeen.size() >= LAST_SEEN_CAPACITY && !lastSeen.containsKey(key)) {
-      lastSeenDropped.increment();
+      lastSeenDroppedCapacity.increment();
       return;
     }
-    lastSeen.merge(
-        key,
-        new SeenEpoch(epoch, now.plus(lastSeenTtl)),
-        (old, fresh) -> fresh.epoch() > old.epoch() ? fresh : old);
+    SeenEpoch fresh = new SeenEpoch(epoch, now.plus(lastSeenTtl));
+    boolean[] dropped = {false};
+    lastSeen.compute(key, (k, old) -> {
+      if (old != null) {
+        return fresh.epoch() > old.epoch() ? fresh : old;
+      }
+      if (!claimTenantSlot(k.tenantId())) {
+        dropped[0] = true;
+        return null;
+      }
+      return fresh;
+    });
+    if (dropped[0]) {
+      lastSeenDroppedTenantCap.increment();
+    }
+  }
+
+  /** Takes one of the tenant's slots; {@code false} when it already holds its share. */
+  private boolean claimTenantSlot(UUID tenantId) {
+    boolean[] claimed = {false};
+    lastSeenPerTenant.compute(tenantId, (id, count) -> {
+      int held = count == null ? 0 : count;
+      if (held >= lastSeenTenantCap) {
+        return count;
+      }
+      claimed[0] = true;
+      return held + 1;
+    });
+    return claimed[0];
+  }
+
+  private void releaseTenantSlot(UUID tenantId) {
+    lastSeenPerTenant.computeIfPresent(tenantId, (id, count) -> count <= 1 ? null : count - 1);
   }
 
   /** Frees the slots of expired entries, once a second from the scheduler thread (H-1). */
   private void purgeExpiredSeen(Instant now) {
-    lastSeen.values().removeIf(seen -> !now.isBefore(seen.expiresAt()));
+    lastSeen.entrySet().removeIf(entry -> {
+      boolean expired = !now.isBefore(entry.getValue().expiresAt());
+      if (expired) {
+        releaseTenantSlot(entry.getKey().tenantId());
+      }
+      return expired;
+    });
+    // A window that ended a full window ago has nothing left to report (L-2).
+    unparseableWindows.values().removeIf(
+        window -> !now.isBefore(window.endsAt().plus(UNPARSEABLE_WARN_WINDOW)));
   }
 
   /**
@@ -718,12 +850,26 @@ public final class PermissionFreshnessService {
 
   /**
    * Counts a post-commit holder read that failed after its retry, so a detach whose revocation
-   * could not be applied pages an operator (M-2): {@code bump_failed{reason=holder_read}}.
+   * could not be applied pages an operator ({@code bump_failed{reason=holder_read}}), and queues
+   * the role: the scheduler tick reads its holders again and bumps them (M7 part 2 review M-2). A
+   * role already queued is coalesced; one refused by a full queue is counted as {@code
+   * bump_failed{reason=role_overflow}} and logged.
    *
+   * @param tenantId the role's tenant
+   * @param roleId the role whose permission set shrank
    * @param operation what shrank the permission set (for example {@code detach})
    */
-  public void holderReadFailed(String operation) {
+  public void holderReadFailed(UUID tenantId, UUID roleId, String operation) {
     bumpFailedCounter(operation, REASON_HOLDER_READ).increment();
+    if (!roleReplayQueue.offer(tenantId, roleId, clock.instant())) {
+      bumpFailedCounter(operation, REASON_ROLE_OVERFLOW).increment();
+      log.atError()
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_HOLDER_READ_REPLAY_DROPPED")
+          .addKeyValue(LOG_KEY_OPERATION, operation)
+          .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
+          .addKeyValue(LOG_KEY_ROLE_ID, roleId)
+          .log("Role holder replay queue full; the revocation of this role needs a manual re-apply");
+    }
   }
 
   private Counter bumpFailedCounter(String operation, String reason) {
@@ -768,6 +914,47 @@ public final class PermissionFreshnessService {
           .addKeyValue(LOG_KEY_USER_COUNT, userIds.size())
           .addKeyValue("ageMs", Duration.between(batch.oldestFailedAt(), now).toMillis())
           .log("Permission epoch bump replayed");
+    }
+  }
+
+  /**
+   * Resolves queued roles: reads each role's holders, outside any transaction of ours, and passes
+   * them to {@link #invalidateHolders}, whose failed bumps land in the user queue. The first failed
+   * read puts the role back at the end and ends the tick's role replay, so a database outage costs
+   * one read and one ERROR line a second. Called only from the scheduler.
+   */
+  private void drainRoleQueue() {
+    while (!roleReplayQueue.isEmpty()) {
+      Instant now = clock.instant();
+      Optional<RoleReplayQueue.Entry> polled = roleReplayQueue.poll(now.minus(lastSeenTtl));
+      if (polled.isEmpty()) {
+        return;
+      }
+      RoleReplayQueue.Entry entry = polled.get();
+      List<UUID> holders;
+      try {
+        holders = userRoleAssignmentPort.findActiveUserIdsForRole(entry.roleId());
+      } catch (RuntimeException e) {
+        roleReplayQueue.requeue(entry);
+        bumpFailedCounter(OPERATION_ROLE_REPLAY, REASON_HOLDER_READ).increment();
+        log.atError()
+            .addKeyValue(LOG_KEY_EVENT, "RBAC_HOLDER_READ_FAILED")
+            .addKeyValue(LOG_KEY_OPERATION, OPERATION_ROLE_REPLAY)
+            .addKeyValue(LOG_KEY_TENANT_ID, entry.tenantId())
+            .addKeyValue(LOG_KEY_ROLE_ID, entry.roleId())
+            .addKeyValue("exception", e.getClass().getSimpleName())
+            .log("Reading role holders for replay failed");
+        return;
+      }
+      invalidateHolders(entry.tenantId(), holders, OPERATION_ROLE_REPLAY);
+      rolesReplayed.increment();
+      log.atInfo()
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_HOLDER_READ_REPLAYED")
+          .addKeyValue(LOG_KEY_TENANT_ID, entry.tenantId())
+          .addKeyValue(LOG_KEY_ROLE_ID, entry.roleId())
+          .addKeyValue("holderCount", holders.size())
+          .addKeyValue("ageMs", Duration.between(entry.oldestFailedAt(), now).toMillis())
+          .log("Role holders read and bumped by the replay");
     }
   }
 

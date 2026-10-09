@@ -26,6 +26,7 @@ import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.application.port.out.PermissionCachePort;
 import com.example.nexus.rbac.application.port.out.PermissionEpochPort;
+import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
@@ -136,6 +137,7 @@ class TokenFreshnessIT {
   @Autowired private RoleManagementService roleManagementService;
   @MockitoSpyBean private PermissionCachePort permissionCache;
   @MockitoSpyBean private PermissionEpochPort epochPort;
+  @MockitoSpyBean private UserRoleAssignmentPort userRoleAssignmentPort;
   @Autowired private PermissionFreshnessService freshness;
   @Autowired private JwtPort jwtPort;
   @Autowired private RsaKeyConfig rsaKeyConfig;
@@ -158,6 +160,7 @@ class TokenFreshnessIT {
   @AfterEach
   void restoreHealthyState() throws InterruptedException {
     reset(epochPort);
+    reset(userRoleAssignmentPort);
     awaitState(DegradedState.HEALTHY);
   }
 
@@ -402,6 +405,30 @@ class TokenFreshnessIT {
     assertThat(redisTemplate.hasKey(epochKey(holder.user().getId()))).isFalse();
     awaitEpochKey(holder.user().getId(), Duration.ofSeconds(2));
     assertThat(freshness.state()).isEqualTo(DegradedState.HEALTHY);
+    assertThat(get(GUARDED, session.accessToken()).getStatusCode().value()).isEqualTo(401);
+  }
+
+  /**
+   * Security review part 2, M-2: the post-commit holder read fails twice, so the request thread
+   * bumps nobody; the 1 s tick then reads the holders and revokes them.
+   */
+  @Test
+  void should_revokeEveryHolderByTick_when_detachHolderReadFailsTwice() throws Exception {
+    Role reader = readerRole("M2READ");
+    RoleChangeActor admin = seedAdmin();
+    String email = "freshness-m2-" + UUID.randomUUID() + "@example.com";
+    User holder = activeUser(email);
+    assign(holder, reader, admin);
+    Session session = login(email);
+    assertThat(get(GUARDED, session.accessToken()).getStatusCode().value()).isEqualTo(200);
+    doThrow(new QueryTimeoutException("db down"))
+        .doThrow(new QueryTimeoutException("db down"))
+        .doCallRealMethod()
+        .when(userRoleAssignmentPort).findActiveUserIdsForRole(reader.getId());
+
+    detach(admin, reader, ROLE_READ);
+
+    awaitEpochKey(holder.getId(), Duration.ofSeconds(5));
     assertThat(get(GUARDED, session.accessToken()).getStatusCode().value()).isEqualTo(401);
   }
 
