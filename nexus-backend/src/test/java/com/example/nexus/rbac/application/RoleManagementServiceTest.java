@@ -8,6 +8,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -1394,6 +1395,45 @@ class RoleManagementServiceTest {
         .doesNotThrowAnyException();
 
     verify(permissionFreshness, never()).invalidateHolders(any(), any(), any());
+  }
+
+  @Test
+  void should_countPagingSignalAndReadTwice_when_detachHolderReadFailsTwice() {
+    stubHappyPathDetach();
+    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId))
+        .thenThrow(new org.springframework.dao.QueryTimeoutException("db down"));
+
+    service.detachPermission(actor, roleId, permissionId, ctx);
+
+    verify(userRoleAssignmentPort, times(2)).findActiveUserIdsForRole(roleId);
+    verify(permissionFreshness).holderReadFailed("detach");
+    verify(permissionFreshness, never()).invalidateHolders(any(), any(), any());
+  }
+
+  @Test
+  void should_invalidateHolders_when_detachHolderReadFailsOnceThenSucceeds() {
+    stubHappyPathDetach();
+    List<UUID> holders = List.of(UUID.randomUUID());
+    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId))
+        .thenThrow(new org.springframework.dao.QueryTimeoutException("pool timeout"))
+        .thenReturn(holders);
+
+    service.detachPermission(actor, roleId, permissionId, ctx);
+
+    verify(permissionFreshness).invalidateHolders(tenantId, holders, "detach");
+    verify(permissionFreshness, never()).holderReadFailed(any());
+  }
+
+  @Test
+  void should_notRaisePagingSignalOrRetry_when_attachHolderReadFails() {
+    stubHappyPathBenignAttach();
+    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId))
+        .thenThrow(new org.springframework.dao.QueryTimeoutException("db down"));
+
+    service.attachPermission(actor, roleId, permissionId, ctx);
+
+    verify(userRoleAssignmentPort).findActiveUserIdsForRole(roleId);
+    verifyNoInteractions(permissionFreshness);
   }
 
   @Test
