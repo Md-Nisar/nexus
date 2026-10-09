@@ -252,6 +252,13 @@ nexus:
   # --- Mail Service ---
   mail:
     from-address: ${NEXUS_MAIL_FROM_ADDRESS:noreply@nexus.example.com}
+  # --- Platform metrics access (pre-PR security re-review RR-M2) ---
+  management:
+    # Bearer token the metrics scraper presents to /actuator/prometheus and /actuator/metrics.
+    # At least 32 random characters, held by operators only; no tenant credential can read these
+    # endpoints. Empty (the default) closes both endpoints for everyone. Set it from a secret
+    # (env NEXUS_MANAGEMENT_SCRAPE_TOKEN), never in a file.
+    scrape-token: ${NEXUS_MANAGEMENT_SCRAPE_TOKEN:}
   # --- Frontend Integration ---
   frontend:
     base-url: ${NEXUS_FRONTEND_BASE_URL:http://localhost:2000}

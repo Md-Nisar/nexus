@@ -71,6 +71,7 @@ Set them as OS variables or pass `-e NAME=value` to k6 (`npm run test:smoke -- -
 | --------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------- |
 | `BASE_URL`                              | **yes**      | Backend root URL, e.g. `http://localhost:1000`. No default, so a test can never silently hit the wrong environment. |
 | `TEST_ENV`                              | no (`local`) | Label tagged on every metric (`local`, `ci`, `staging`, `perf`).                                                    |
+| `SCRAPE_TOKEN`                          | for the epoch and storm gates | The backend's `NEXUS_MANAGEMENT_SCRAPE_TOKEN` (at least 32 characters; the same value must be set on the backend). `/actuator/prometheus` accepts only this operator token, not a user or admin JWT. |
 | `VUS`                                   | no           | Scales the workload: steady-state users (load, soak) or peak users (stress, spike).                                 |
 | `DURATION`                              | no           | Hold time of the workload's main phase, e.g. `30s`, `10m`, `2h`.                                                    |
 | `THRESHOLD_P95_MS`, `THRESHOLD_P99_MS`  | no           | Override the latency thresholds for this environment.                                                               |

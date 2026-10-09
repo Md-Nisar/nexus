@@ -21,6 +21,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.example.nexus.rbac.application.port.out.EpochUnparseableException;
+import com.example.nexus.rbac.application.port.out.PermissionCachePort;
 import com.example.nexus.rbac.application.port.out.PermissionEpochPort;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -74,6 +75,7 @@ class PermissionFreshnessServiceTest {
 
   private PermissionEpochPort port;
   private UserRoleAssignmentPort userRoles;
+  private PermissionCachePort cachePort;
   private SimpleMeterRegistry registry;
   private MutableClock clock;
   private PermissionFreshnessService service;
@@ -82,6 +84,7 @@ class PermissionFreshnessServiceTest {
   void setUp() {
     port = mock(PermissionEpochPort.class);
     userRoles = mock(UserRoleAssignmentPort.class);
+    cachePort = mock(PermissionCachePort.class);
     registry = new SimpleMeterRegistry();
     clock = new MutableClock(T);
     service = newService(registry);
@@ -98,7 +101,7 @@ class PermissionFreshnessServiceTest {
   private PermissionFreshnessService newService(
       SimpleMeterRegistry meters, int replayCapacity, int roleCapacity, int tenantPercent) {
     return new PermissionFreshnessService(
-        port, userRoles, meters, clock, WINDOW, 3, Duration.ofSeconds(10), Duration.ofSeconds(60),
+        port, userRoles, cachePort, meters, clock, WINDOW, 3, Duration.ofSeconds(10), Duration.ofSeconds(60),
         KEY_TTL_SECONDS, replayCapacity, roleCapacity, tenantPercent);
   }
 
@@ -928,7 +931,7 @@ class PermissionFreshnessServiceTest {
   @Test
   void should_rejectNonPositiveSettings_when_constructed() {
     org.assertj.core.api.Assertions.assertThatThrownBy(() -> new PermissionFreshnessService(
-            port, userRoles, registry, clock, WINDOW, 0, Duration.ofSeconds(10),
+            port, userRoles, cachePort, registry, clock, WINDOW, 0, Duration.ofSeconds(10),
             Duration.ofSeconds(60), KEY_TTL_SECONDS, REPLAY_CAPACITY, ROLE_REPLAY_CAPACITY,
             TENANT_PERCENT))
         .isInstanceOf(IllegalArgumentException.class);
@@ -1042,6 +1045,47 @@ class PermissionFreshnessServiceTest {
     failRead();
 
     assertThat(service.check(TENANT, USER, 1L)).isEqualTo(FreshnessVerdict.SKIPPED_ERROR);
+  }
+
+  // --- RR-M1 (pre-PR re-review): a refused bump must not leave the cached set readable ---
+
+  @Test
+  void should_evictCachedSetsOfEveryHolder_when_aBumpFails() {
+    List<UUID> holders = users(3);
+    failBumps();
+
+    service.invalidateHolders(TENANT, holders, "detach");
+
+    verify(cachePort).evict(TENANT, holders);
+  }
+
+  @Test
+  void should_evictCachedSet_when_aSingleUserBumpFails() {
+    failBumps();
+
+    service.invalidateUser(TENANT, USER, "revoke");
+
+    verify(cachePort).evict(TENANT, List.of(USER));
+  }
+
+  @Test
+  void should_notEvict_when_theBumpSucceeds() {
+    bumpsSucceed();
+
+    service.invalidateUser(TENANT, USER, "revoke");
+
+    verify(cachePort, never()).evict(any(UUID.class), anyCollection());
+  }
+
+  @Test
+  void should_stillQueueTheReplay_when_theEvictionAlsoFails() {
+    failBumps();
+    doThrow(new QueryTimeoutException("evict timeout")).when(cachePort)
+        .evict(any(UUID.class), anyCollection());
+
+    service.invalidateUser(TENANT, USER, "revoke");
+
+    assertThat(replayQueueUsers()).isEqualTo(1.0);
   }
 
   // --- M-1 (pre-PR review): the store answers reads but refused or lost the bump ---
