@@ -145,3 +145,31 @@ Final full run: 1177 unit tests (1 skipped), 353 integration tests, 0 failures, 
 ## 11. ADR decision
 
 **No new ADR is needed for M2.** The grant-subset model, the per-role administrator definition, the `user:role:assign` naming amendment and the retirement plan are already recorded in **ADR-0021** (D1 to D8), and the freshness trade-off (JWT staleness, M7 as the systemic fix) in **ADR-0022**. The two review-driven additions, the live DB re-check of the endpoint permission (L-1) and revoke-subset arriving in M2, are tactical applications of ADR-0021 D2 and D5, and the central metric increment is the existing `GlobalExceptionHandler` behaviour. ADR-0021 is still **Proposed**; its status should be moved to Accepted when M2 merges (an ADR status change is a maintainer decision and was not made here).
+
+---
+
+## 12. M7: permission token freshness (A9, A10, T-009 to T-014)
+
+Design: `03-design.md` §9; threat model: `03b-threat-model.md`; decision record: ADR-0022 (Proposed). Reviews: `06-code-review-M7.md`, `07-security-review-M7.md`, `09-code-review-M7-part2.md`, `10-security-review-M7-part2.md`, `12-security-review-pre-PR.md`. Tests: `11-test-audit-M7-part2.md`.
+
+**What it does.** A revoked or detached user's access token is rejected with 401 `AUTH_003` on its next request, instead of staying valid for up to 15 minutes (token) plus 15 minutes (permission cache).
+
+**How.**
+- **Epoch.** Redis key `nexus:rbac:epoch:{tenantId}:{userId}` holds a millisecond counter. One Lua script bumps it to `max(old + 1, Redis TIME)` after the revoking transaction commits (MC-7b). Tokens carry it as `perm_epoch` (schema version 3), read before permissions are resolved (MC-7a). `JwtAuthenticationFilter` rejects a token whose `perm_epoch` is below the current value. Timeouts: 50 ms per read, 500 ms per bump.
+- **Detach fan-out (A10).** A detach bumps every active holder of the role in batches of 500, and the permission cache is keyed by epoch, so a bump also retires the cached set.
+- **Outage policy.** `PermissionFreshnessService` is a per-instance state machine: Healthy, DegradedOpen (3 failures in 10 s), DegradedClosed after 15 min (503 `AUTH_005`, `Retry-After: 30`), Recovering (60 s). While degraded-open, an epoch this instance already saw still makes a token stale.
+- **Locally known epochs.** A bounded last-seen map (read pool and own-bump pool, per tenant and global) holds the highest epoch seen. Pre-PR review M-1: the Healthy and Recovering check and the mint also use it, so a bump Redis refused or lost (`maxmemory`, a bump timeout, a failover) still makes the old token stale, and the mint is then unverified (permission set resolved uncached). A failed bump also records its instant, so a token issued at or before it is stale for a user this instance never saw. `nexus.rbac.epoch.store_regressed` counts the cases.
+- **Replay.** Failed bumps and failed holder reads are queued (bounded, coalesced, per-tenant share) and retried each second.
+- **Refresh limits (T-013).** `REFRESH_FAMILY` 30/60 s, `REFRESH_IP` 300/60 s, `REFRESH_IP_FAIL` 30/60 s, answered 429 `RATE_001`; junk refreshes count against the per-IP total (RES-40, accepted).
+- **Startup (T-014).** `nexus.rbac.redis.require-auth` fails startup unless all three Redis factories authenticate; `application-prod.yml` sets it.
+
+**Decisions made late (pre-PR review).**
+- `server.forward-headers-strategy: none` in `application.yml`: the per-IP keys stay `getRemoteAddr()` only (DF-1). Per-client keys behind a proxy need `native` and a pinned `server.tomcat.remoteip.internal-proxies`.
+- `/actuator/metrics/**` and `/actuator/prometheus` need `ROLE_TENANT_ADMIN`.
+- A refused read-derived last-seen entry pages but does not fail the tenant closed (RES-31).
+- The SPA attaches the bearer token only on whole `/api` path segments.
+
+**Residual risks** (all in `03b-threat-model.md`): RES-26, RES-30 (a Redis outage longer than 15 minutes is a platform-wide authenticated 503; SRE and PM acceptance pending), RES-31, RES-40.
+
+**API surface.** No new endpoint. Refresh answers 429 `RATE_001`; authenticated endpoints can answer 503 `AUTH_005`; `perm_epoch` is a new token claim.
+

@@ -80,3 +80,38 @@ None.
 ## 9. Rollback
 
 See [rollback.md](rollback.md).
+
+---
+
+## 10. M7: permission token freshness (A9, A10)
+
+**Feature flag.** None. M7 is always on once deployed; the parent RBAC flags do not gate it.
+
+**Migrations.** None for M7 (Redis keys only; the holder query uses existing tables).
+
+**Merge unit.** M7 merges as **one** PR containing T-009 to T-014. T-009 alone would deploy token freshness without the outage policy, the replay queue and the Redis-auth assertion.
+
+**Required before production traffic**
+- [ ] The `prod` profile is active (A-3). `application-prod.yml` sets `nexus.rbac.redis.require-auth: true`, and without `prod` the property defaults to `false` (`NEXUS_RBAC_REDIS_REQUIRE_AUTH` overrides it).
+- [ ] Redis authenticates (`spring.data.redis.password`, or credentials in the URL), is configured with `maxmemory-policy noeviction` (ADR-0016) and, where used, TLS.
+- [ ] SRE and PM have accepted the availability consequence of RES-30.
+- [ ] `/actuator/prometheus` scrapes use a token holding `TENANT_ADMIN`, or are moved to a scrape network (they were open to every authenticated user before).
+- [ ] If the deployment relies on per-client IP limits behind a proxy: the default is `server.forward-headers-strategy: none`, so limits are platform-wide (DF-1). Changing it needs `native` and a pinned `server.tomcat.remoteip.internal-proxies`.
+- [ ] The k6 gates were run once for the deployment shape: `epoch-check-latency.js` (baseline, then gate), `detach-refresh-storm.js`, `refresh-junk-flood.js`. They write accounts that cannot be deleted: run them against a disposable stack (they refuse non-local targets unless `ALLOW_WRITE_SCENARIO=true`).
+
+**New configuration** (all under `nexus.rbac.epoch`, defaults in `application.yml`; env var form `NEXUS_RBAC_EPOCH_...`)
+
+| Property | Default | Notes |
+|---|---|---|
+| `command-timeout` | `50ms` | One epoch read, on every authenticated request |
+| `bump-timeout` | `500ms` | One bump script call |
+| `key-ttl-seconds` | `960` | Must be at least the larger of the token TTL and the permission-cache TTL plus 60 s, or startup fails |
+| `fail-open-window` | `PT15M` | Degraded-open until this, then 503 `AUTH_005`; raise only by env var and restart |
+| `entry-failure-threshold` / `entry-failure-window` / `recovery-sustain` | `3` / `PT10S` / `PT60S` | State machine |
+| `replay-capacity-users` / `replay-capacity-roles` | `100000` / `1000` | Per instance; one tenant may use `last-seen-tenant-percent` of each |
+| `last-seen-tenant-percent` | `10` | Share of the last-seen map and of both replay queues per tenant |
+
+**Rolling deploy.** M6 already accepts schema versions 2 and 3, so M6 and M7 instances can share a load balancer: the M7 instance mints v3, and an M6 instance accepts it. Watch `token_rejected{reason=schema_version}` (expected 0) and `epoch.check{outcome=stale}` for an hour. M7b later contracts the accepted set to {3}.
+
+**Post-deploy checks.** `epoch.check{outcome=skipped_error}` stays near 0, `epoch.degraded{state}` is `healthy`, `bump_failed` is 0, `store_regressed` is 0, and a revoke makes the revoked user's next request a 401 (smoke test).
+
