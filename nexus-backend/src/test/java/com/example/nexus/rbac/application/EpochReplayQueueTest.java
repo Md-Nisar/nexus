@@ -345,18 +345,29 @@ class EpochReplayQueueTest {
     assertThat(queue.size()).isZero();
   }
 
-  // --- L-2 (pre-PR review): a tenant over its share overflows itself, not the others ---
+  // --- L-2 (pre-PR review): borrow beyond the share while the queue is under half full ---
 
   @Test
-  void should_dropOnlyTheOverflowingTenantsUsers_when_oneTenantExceedsItsShare() {
+  void should_letOneTenantBorrowUpToHalfTheQueue_when_noOtherTenantNeedsIt() {
     EpochReplayQueue queue = new EpochReplayQueue(10, 3);
 
-    int droppedOfFirst = queue.offer(TENANT, users(5), T);
-    int droppedOfSecond = queue.offer(OTHER_TENANT, users(2), T);
+    int dropped = queue.offer(TENANT, users(8), T);
 
-    assertThat(droppedOfFirst).isEqualTo(2);
-    assertThat(droppedOfSecond).isZero();
+    assertThat(dropped).isEqualTo(3);
     assertThat(queue.size()).isEqualTo(5);
+  }
+
+  @Test
+  void should_keepTheReservedHalfForOtherTenants_when_oneTenantHasBorrowedToTheLimit() {
+    EpochReplayQueue queue = new EpochReplayQueue(10, 3);
+    queue.offer(TENANT, users(8), T);
+
+    int droppedOfSecond = queue.offer(OTHER_TENANT, users(3), T);
+    int droppedOfFirstAgain = queue.offer(TENANT, users(1), T);
+
+    assertThat(droppedOfSecond).isZero();
+    assertThat(droppedOfFirstAgain).isEqualTo(1);
+    assertThat(queue.size()).isEqualTo(8);
   }
 
   @Test

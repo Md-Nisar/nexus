@@ -26,6 +26,7 @@ final class RoleReplayQueue {
 
   private final int capacity;
   private final int tenantCapacity;
+  private final int borrowLimit;
   // Guarded by `this`; insertion-ordered, so the oldest role is polled first.
   private final Map<RoleKey, Times> roles = new LinkedHashMap<>();
 
@@ -40,8 +41,8 @@ final class RoleReplayQueue {
   }
 
   /**
-   * Creates the queue with a share per tenant, so that one tenant's failed holder reads overflow
-   * itself and not the others (pre-PR security review L-2).
+   * Creates the queue with a share per tenant, so that one tenant's failed holder reads cannot
+   * take the whole queue from the others (pre-PR security review L-2).
    *
    * @param capacity the most distinct roles held at once
    * @param tenantCapacity the most distinct roles of one tenant held at once
@@ -53,6 +54,7 @@ final class RoleReplayQueue {
     }
     this.capacity = capacity;
     this.tenantCapacity = tenantCapacity;
+    this.borrowLimit = Math.max(tenantCapacity, capacity / 2);
   }
 
   /**
@@ -70,7 +72,11 @@ final class RoleReplayQueue {
       roles.put(key, queued.merge(failedAt, failedAt));
       return true;
     }
-    if (roles.size() >= capacity || queuedFor(tenantId) >= tenantCapacity) {
+    if (roles.size() >= capacity) {
+      return false;
+    }
+    // Over its share, a tenant may borrow only while the queue is under half full.
+    if (roles.size() >= borrowLimit && queuedFor(tenantId) >= tenantCapacity) {
       return false;
     }
     roles.put(key, new Times(failedAt, failedAt));

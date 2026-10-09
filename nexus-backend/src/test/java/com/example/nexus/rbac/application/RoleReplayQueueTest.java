@@ -200,16 +200,17 @@ class RoleReplayQueueTest {
     assertThat(queue.isEmpty()).isTrue();
   }
 
-  // --- L-2 (pre-PR review): a tenant over its share overflows itself, not the others ---
+  // --- L-2 (pre-PR review): borrow beyond the share while the queue is under half full ---
 
   @Test
-  void should_refuseOnlyTheOverflowingTenantsRole_when_oneTenantExceedsItsShare() {
-    RoleReplayQueue queue = new RoleReplayQueue(10, 1);
+  void should_letATenantBorrowUntilHalfFull_then_refuseOnlyThatTenant() {
+    RoleReplayQueue queue = new RoleReplayQueue(4, 1);
 
     assertThat(queue.offer(TENANT, ROLE, T)).isTrue();
-    assertThat(queue.offer(TENANT, OTHER_ROLE, T)).isFalse();
-    assertThat(queue.offer(OTHER_TENANT, OTHER_ROLE, T)).isTrue();
-    assertThat(queue.size()).isEqualTo(2);
+    assertThat(queue.offer(TENANT, OTHER_ROLE, T)).isTrue();
+    assertThat(queue.offer(TENANT, UUID.randomUUID(), T)).isFalse();
+    assertThat(queue.offer(OTHER_TENANT, UUID.randomUUID(), T)).isTrue();
+    assertThat(queue.size()).isEqualTo(3);
   }
 
   @Test

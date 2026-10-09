@@ -1944,17 +1944,18 @@ class PermissionFreshnessServiceTest {
   }
 
   @Test
-  void should_overflowOnlyTheBusyTenant_when_itsFanoutExceedsItsReplayShare() {
+  void should_overflowOnlyTheBusyTenant_when_itsFanoutExceedsItsShareAndTheBorrowLimit() {
     UUID otherTenant = UUID.fromString("00000000-0000-7000-8000-0000000000ac");
     registry = new SimpleMeterRegistry();
     service = newService(registry, 100, ROLE_REPLAY_CAPACITY, 10);
     failBumps();
 
-    service.invalidateHolders(TENANT, users(15), "detach");
+    service.invalidateHolders(TENANT, users(60), "detach");
     service.invalidateHolders(otherTenant, users(3), "detach");
 
-    assertThat(replayQueueUsers()).isEqualTo(13.0);
-    assertThat(bumpFailed("detach", "overflow")).isEqualTo(5.0);
+    // The busy tenant borrowed up to half the queue (50); the other tenant still fits.
+    assertThat(replayQueueUsers()).isEqualTo(53.0);
+    assertThat(bumpFailed("detach", "overflow")).isEqualTo(10.0);
   }
 
   @Test

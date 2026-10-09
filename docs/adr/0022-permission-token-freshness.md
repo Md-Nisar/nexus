@@ -157,7 +157,7 @@ The matching amendment note on ADR-0016 D2 is added under US-018 D2, as a dated 
 ## Revision 4 (pre-PR security review, 2026-10-09)
 
 - **D1 amended (M-1).** "Rejected iff `perm_epoch < current`" holds for the value the store reports. The instance also keeps the highest epoch it has seen or tried to write, and in every state the check rejects a token below that value, whatever the store now says. A bump this instance could not write also records its instant, and a token issued at or before that second is rejected until a later epoch is recorded (for a user the instance had not seen, `seen + 1` is no bound). A mint that finds the store below the local bound uses the local bound and is unverified, so the permission set is resolved uncached. Signal: `nexus.rbac.epoch.store_regressed`. This closes the case where Redis refuses writes under `noeviction` while reads still answer.
-- **Replay queues (L-2).** Both queues give each tenant a share (`last-seen-tenant-percent`); a tenant over its share overflows itself.
+- **Replay queues (L-2).** Both queues give each tenant a share (`last-seen-tenant-percent`). A tenant over its share may borrow only while the queue is under half full, so one tenant cannot take the whole queue from the others and a large tenant is not cut off while the queue is mostly empty.
 - **Last-seen capacity (L-1).** A refused read-derived entry pages (`reason=capacity`) and does not fail the tenant closed; the arithmetic is in RES-31.
 - **Metrics access (L-3).** The Prometheus and metrics endpoints require `TENANT_ADMIN`.
 
