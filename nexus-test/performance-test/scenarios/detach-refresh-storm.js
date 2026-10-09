@@ -3,7 +3,7 @@ import exec from 'k6/execution';
 import { check, fail, sleep } from 'k6';
 import { Counter, Gauge } from 'k6/metrics';
 import { config } from '../config/environment.js';
-import { bearer } from '../utils/auth.js';
+import { bearer, scrapeHeaders } from '../utils/auth.js';
 import { checkResponse } from '../utils/checks.js';
 import { get, postJson } from '../utils/http.js';
 import { requireWritableTarget, runPassword } from '../utils/write-scenario.js';
@@ -147,7 +147,7 @@ export function seedStorm(adminToken) {
     detachedPermissionId: permissionIds[DETACHED_PERMISSION],
     holders: accounts.slice(0, holders),
     victims: accounts.slice(holders),
-    throttledBefore: scrapeThrottled(adminToken),
+    throttledBefore: scrapeThrottled(),
     startedAt: new Date().toISOString(),
   };
 }
@@ -231,7 +231,7 @@ export function cleanupStorm(data) {
       responseCallback: http.expectedStatuses(204, 404),
     });
   }
-  const throttled = scrapeThrottled(data.adminToken);
+  const throttled = scrapeThrottled();
   throttledFailures.add(throttled - data.throttledBefore);
   console.log(
     `detach-refresh-storm finished: run started ${data.startedAt}, ${data.victims.length} replays; ` +
@@ -304,10 +304,8 @@ export function awaitVerificationTokens(mailhogUrl, emails) {
   return fail('Timed out waiting for verification emails in MailHog');
 }
 
-function scrapeThrottled(adminToken) {
-  const res = get('/actuator/prometheus', {
-    headers: { ...bearer(adminToken).headers, Accept: 'text/plain;version=0.0.4' },
-  });
+function scrapeThrottled() {
+  const res = get('/actuator/prometheus', { headers: scrapeHeaders() });
   if (res.status !== 200) {
     fail(`GET /actuator/prometheus returned HTTP ${res.status}`);
   }

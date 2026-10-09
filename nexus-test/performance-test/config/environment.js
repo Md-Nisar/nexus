@@ -74,6 +74,10 @@ export const config = Object.freeze({
     p99Ms: optionalPositiveInt('THRESHOLD_P99_MS'),
   }),
 
+  // Operator token for /actuator/prometheus (the backend's NEXUS_MANAGEMENT_SCRAPE_TOKEN). No
+  // tenant credential can read the platform metrics (US-018 pre-PR security re-review RR-M2).
+  scrapeToken: __ENV.SCRAPE_TOKEN || undefined,
+
   // US-018 epoch-check hot-path test (tests/load/epoch-check-latency.js). "baseline" measures the
   // endpoint on a build without the epoch check; "gate" (default) enforces the server-side epoch
   // p95 and the regression against baselineP95Ms, which gate mode requires.

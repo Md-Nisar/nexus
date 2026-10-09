@@ -72,6 +72,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
     this.permissionFreshness = permissionFreshness;
   }
 
+  /** A request {@link ScrapeTokenFilter} already authenticated carries a scrape token, not a JWT. */
+  @Override
+  protected boolean shouldNotFilter(HttpServletRequest request) {
+    return Boolean.TRUE.equals(request.getAttribute(ScrapeTokenFilter.AUTHENTICATED_ATTRIBUTE));
+  }
+
   /**
    * Validates the {@code Authorization: Bearer <jwt>} header and populates {@link SecurityContextHolder}
    * with the authenticated principal. See the class description for the public and non-public rules.

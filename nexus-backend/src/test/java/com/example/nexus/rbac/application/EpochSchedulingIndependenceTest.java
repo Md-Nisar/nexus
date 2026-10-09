@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.example.nexus.rbac.application.port.out.PermissionCachePort;
 import com.example.nexus.rbac.application.port.out.PermissionEpochPort;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.infrastructure.cache.EpochSchedulingConfig;
@@ -45,6 +46,7 @@ class EpochSchedulingIndependenceTest {
         .withUserConfiguration(EpochSchedulingConfig.class)
         .withBean(PermissionEpochPort.class, () -> port)
         .withBean(UserRoleAssignmentPort.class, () -> mock(UserRoleAssignmentPort.class))
+        .withBean(PermissionCachePort.class, () -> mock(PermissionCachePort.class))
         .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
         .withBean(Clock.class, Clock::systemUTC)
         .withBean(PermissionFreshnessService.class)
@@ -83,6 +85,7 @@ class EpochSchedulingIndependenceTest {
         .withUserConfiguration(EpochSchedulingConfig.class)
         .withBean(PermissionEpochPort.class, () -> port)
         .withBean(UserRoleAssignmentPort.class, () -> mock(UserRoleAssignmentPort.class))
+        .withBean(PermissionCachePort.class, () -> mock(PermissionCachePort.class))
         .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
         .withBean(Clock.class, Clock::systemUTC)
         .withBean(PermissionFreshnessService.class)

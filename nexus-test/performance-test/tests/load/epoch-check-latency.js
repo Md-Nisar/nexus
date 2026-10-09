@@ -4,7 +4,7 @@ import { baseOptions } from '../../config/base-options.js';
 import { config } from '../../config/environment.js';
 import { listRoles } from '../../scenarios/rbac-read.js';
 import { errorThresholds } from '../../thresholds/default-thresholds.js';
-import { bearer, obtainAccessToken } from '../../utils/auth.js';
+import { bearer, obtainAccessToken, scrapeHeaders } from '../../utils/auth.js';
 import { get } from '../../utils/http.js';
 import { constantArrivalRate } from '../../workloads/constant-arrival-rate.js';
 
@@ -63,23 +63,21 @@ export const options = {
 
 export function setup() {
   const accessToken = obtainAccessToken();
-  return { accessToken, skippedErrorBefore: gate ? scrape(accessToken).skippedError : 0 };
+  return { accessToken, skippedErrorBefore: gate ? scrape().skippedError : 0 };
 }
 
 export function teardown(data) {
   if (!gate) {
     return;
   }
-  const { p95Seconds, skippedError } = scrape(data.accessToken);
+  const { p95Seconds, skippedError } = scrape();
   epochCheckP95Ms.add(p95Seconds * 1000);
   epochCheckSkippedError.add(skippedError - data.skippedErrorBefore);
 }
 
 /** Reads the epoch-check p95 (seconds) and the cumulative skipped_error count from Prometheus. */
-function scrape(accessToken) {
-  const res = get('/actuator/prometheus', {
-    headers: { ...bearer(accessToken).headers, Accept: 'text/plain;version=0.0.4' },
-  });
+function scrape() {
+  const res = get('/actuator/prometheus', { headers: scrapeHeaders() });
   if (res.status !== 200) {
     fail(`GET /actuator/prometheus returned HTTP ${res.status}`);
   }

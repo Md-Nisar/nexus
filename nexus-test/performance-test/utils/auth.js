@@ -26,6 +26,15 @@ export function obtainAccessToken() {
   return res.json('accessToken');
 }
 
+/** Headers for GET /actuator/prometheus: the operator scrape token, not a user token. */
+export function scrapeHeaders() {
+  const token = config.scrapeToken;
+  if (!token) {
+    fail('Set SCRAPE_TOKEN to the backend NEXUS_MANAGEMENT_SCRAPE_TOKEN to read /actuator/prometheus');
+  }
+  return { Authorization: `Bearer ${token}`, Accept: 'text/plain;version=0.0.4' };
+}
+
 export function bearer(accessToken) {
   return { headers: { Authorization: `Bearer ${accessToken}` } };
 }

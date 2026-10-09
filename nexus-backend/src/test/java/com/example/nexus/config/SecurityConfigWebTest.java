@@ -71,6 +71,7 @@ import org.springframework.web.context.WebApplicationContext;
         "nexus.identity.argon2.parallelism=1",
         "nexus.mail.from-address=test@nexus.test",
         "nexus.frontend.base-url=http://localhost:2000",
+        "nexus.management.scrape-token=test-scrape-token-0123456789-abcdefghij",
         // High ceiling so no test request is throttled
         "nexus.security.rate-limit.ip-max-attempts=1000",
         "nexus.security.rate-limit.ip-window-seconds=60",
@@ -258,37 +259,16 @@ class SecurityConfigWebTest {
         .andExpect(jsonPath("$.code").value("AUTH_003"));
   }
 
-  // ── Pre-PR security review L-3: metrics are for admins, not every authenticated user ──
+  // ── Pre-PR security re-review RR-M2: platform metrics are for the scrape token only ──
+
+  private static final String SCRAPE_TOKEN = "test-scrape-token-0123456789-abcdefghij";
+  private static final String[] METRICS_PATHS = {
+    "/actuator/prometheus", "/actuator/prometheus/", "/actuator/prometheus/x",
+    "/actuator/metrics", "/actuator/metrics/", "/actuator/metrics/nexus.rbac.epoch.degraded"
+  };
 
   @Test
-  void should_return403_when_nonAdminReadsPrometheus() throws Exception {
-    when(jwtPort.verify(any())).thenReturn(validClaims());
-    when(permissionFreshness.check(any(), any(), anyLong(), anyLong()))
-        .thenReturn(FreshnessVerdict.FRESH);
-
-    mvc.perform(get("/actuator/prometheus")
-            .header(HttpHeaders.AUTHORIZATION, "Bearer member.token"))
-        .andExpect(status().isForbidden());
-    mvc.perform(get("/actuator/metrics/nexus.rbac.epoch.degraded")
-            .header(HttpHeaders.AUTHORIZATION, "Bearer member.token"))
-        .andExpect(status().isForbidden());
-  }
-
-  @Test
-  void should_return403_when_nonAdminReadsPrometheusWithTrailingSlashOrSubPath() throws Exception {
-    when(jwtPort.verify(any())).thenReturn(validClaims());
-    when(permissionFreshness.check(any(), any(), anyLong(), anyLong()))
-        .thenReturn(FreshnessVerdict.FRESH);
-
-    for (String path : new String[] {"/actuator/prometheus/", "/actuator/prometheus/x",
-        "/actuator/metrics/"}) {
-      mvc.perform(get(path).header(HttpHeaders.AUTHORIZATION, "Bearer member.token"))
-          .andExpect(status().isForbidden());
-    }
-  }
-
-  @Test
-  void should_passAuthorization_when_tenantAdminReadsPrometheus() throws Exception {
+  void should_return401_when_tenantAdminJwtReadsMetrics() throws Exception {
     JwtClaims member = validClaims();
     when(jwtPort.verify(any())).thenReturn(new JwtClaims(
         member.sub(), member.tenantId(), true, List.of("TENANT_ADMIN"), List.of(), member.iat(),
@@ -296,11 +276,42 @@ class SecurityConfigWebTest {
     when(permissionFreshness.check(any(), any(), anyLong(), anyLong()))
         .thenReturn(FreshnessVerdict.FRESH);
 
-    // Whatever the slice then answers, it is neither the entry point's 401 nor the 403.
-    int status = mvc.perform(get("/actuator/prometheus")
-            .header(HttpHeaders.AUTHORIZATION, "Bearer admin.token"))
-        .andReturn().getResponse().getStatus();
-    assertThat(status).isNotIn(401, 403);
+    for (String path : METRICS_PATHS) {
+      mvc.perform(get(path).header(HttpHeaders.AUTHORIZATION, "Bearer admin.jwt"))
+          .andExpect(status().isUnauthorized());
+    }
+  }
+
+  @Test
+  void should_return401_when_scrapeTokenMissingOrWrong() throws Exception {
+    for (String path : METRICS_PATHS) {
+      mvc.perform(get(path)).andExpect(status().isUnauthorized());
+      mvc.perform(get(path).header(HttpHeaders.AUTHORIZATION, "Bearer " + SCRAPE_TOKEN + "x"))
+          .andExpect(status().isUnauthorized());
+      mvc.perform(get(path).header(HttpHeaders.AUTHORIZATION, SCRAPE_TOKEN))
+          .andExpect(status().isUnauthorized());
+    }
+  }
+
+  @Test
+  void should_passAuthorization_when_scrapeTokenPresented() throws Exception {
+    for (String path : METRICS_PATHS) {
+      // Whatever the slice then answers, it is neither the 401 nor the 403.
+      int status = mvc.perform(get(path)
+              .header(HttpHeaders.AUTHORIZATION, "Bearer " + SCRAPE_TOKEN))
+          .andReturn().getResponse().getStatus();
+      assertThat(status).as(path).isNotIn(401, 403);
+    }
+  }
+
+  @Test
+  void should_notReadScrapeTokenAsAJwt_when_otherEndpointsAreCalledWithIt() throws Exception {
+    when(jwtPort.verify(any()))
+        .thenThrow(new AuthenticationException("AUTH_003", "Token expired or invalid"));
+
+    mvc.perform(get("/api/v1/users/me")
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + SCRAPE_TOKEN))
+        .andExpect(status().isUnauthorized());
   }
 
   private static JwtClaims validClaims() {

@@ -1,6 +1,7 @@
 package com.example.nexus.rbac.application;
 
 import com.example.nexus.rbac.application.port.out.EpochUnparseableException;
+import com.example.nexus.rbac.application.port.out.PermissionCachePort;
 import com.example.nexus.rbac.application.port.out.PermissionEpochPort;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import io.micrometer.core.instrument.Counter;
@@ -220,6 +221,7 @@ public final class PermissionFreshnessService {
   private final EpochReplayQueue replayQueue;
   private final RoleReplayQueue roleReplayQueue;
   private final UserRoleAssignmentPort userRoleAssignmentPort;
+  private final PermissionCachePort permissionCachePort;
   private final int lastSeenTenantCap;
   private final Map<UserKey, SeenEpoch> lastSeen = new ConcurrentHashMap<>();
   // Slot accounting, two pools. Every change happens inside lastSeen.compute for the entry's key,
@@ -251,6 +253,7 @@ public final class PermissionFreshnessService {
    *
    * @param epochPort the epoch store
    * @param userRoleAssignmentPort reads a role's holders when the tick resolves a queued role
+   * @param permissionCachePort evicts cached permission sets when a bump fails (RR-M1)
    * @param meterRegistry registry for the signals listed on the class
    * @param clock the time source of the state machine and the locally-seen map
    * @param failOpenWindow {@code nexus.rbac.epoch.fail-open-window}: time from {@code t0} until
@@ -274,6 +277,7 @@ public final class PermissionFreshnessService {
   public PermissionFreshnessService(
       PermissionEpochPort epochPort,
       UserRoleAssignmentPort userRoleAssignmentPort,
+      PermissionCachePort permissionCachePort,
       MeterRegistry meterRegistry,
       Clock clock,
       @Value("${nexus.rbac.epoch.fail-open-window}") Duration failOpenWindow,
@@ -297,6 +301,7 @@ public final class PermissionFreshnessService {
     }
     this.epochPort = epochPort;
     this.userRoleAssignmentPort = userRoleAssignmentPort;
+    this.permissionCachePort = permissionCachePort;
     this.lastSeenTenantCap = Math.max(1, LAST_SEEN_CAPACITY * lastSeenTenantPercent / 100);
     this.lastSeenBumpCeiling = lastSeenTenantCap * LAST_SEEN_BUMP_CEILING_FACTOR;
     // Operation is a caller-supplied label, so the counter is looked up per call (get or create).
@@ -1093,6 +1098,7 @@ public final class PermissionFreshnessService {
         .addKeyValue("exception", e.getClass().getSimpleName())
         .log("Permission epoch bump failed");
     rememberFailedBump(tenantId, userIds);
+    evictCachedSets(tenantId, userIds);
     int dropped = replayQueue.offer(tenantId, userIds, clock.instant());
     if (dropped > 0) {
       bumpFailedCounter(operation, REASON_OVERFLOW).increment(dropped);
@@ -1103,6 +1109,26 @@ public final class PermissionFreshnessService {
           .addKeyValue(LOG_KEY_USER_COUNT, dropped)
           .addKeyValue("reason", REASON_OVERFLOW)
           .log("Permission epoch bump dropped, replay queue full");
+    }
+  }
+
+  /**
+   * Drops the users' cached permission sets under their current epoch (pre-PR re-review RR-M1).
+   * A bump Redis refused leaves the epoch unchanged, so another instance that mints for a holder
+   * reads the pre-detach set from the cache under that same epoch. A plain {@code DEL} is not
+   * refused under {@code noeviction} the way the bump's write is, so the next mint anywhere reads
+   * the database. Best effort: a failure here is only logged, because the bump failure already
+   * pages and the replay retries the bump.
+   */
+  private void evictCachedSets(UUID tenantId, List<UUID> userIds) {
+    try {
+      permissionCachePort.evict(tenantId, userIds);
+    } catch (RuntimeException e) {
+      log.atDebug()
+          .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
+          .addKeyValue(LOG_KEY_USER_COUNT, userIds.size())
+          .addKeyValue("exception", e.getClass().getSimpleName())
+          .log("Cached permission sets could not be evicted after a failed bump");
     }
   }
 

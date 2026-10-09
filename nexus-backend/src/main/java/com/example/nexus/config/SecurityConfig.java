@@ -5,8 +5,8 @@ import com.example.nexus.identity.application.port.out.JwtPort;
 import com.example.nexus.identity.infrastructure.web.JwtAuthenticationFilter;
 import com.example.nexus.identity.infrastructure.web.LoginRateLimitFilter;
 import com.example.nexus.identity.infrastructure.web.PublicEndpointRequestMatcher;
+import com.example.nexus.identity.infrastructure.web.ScrapeTokenFilter;
 import com.example.nexus.rbac.application.PermissionFreshnessService;
-import com.example.nexus.rbac.domain.RbacRoleNames;
 import java.util.List;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
@@ -52,9 +52,13 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 public class SecurityConfig {
 
   private final String frontendBaseUrl;
+  private final String scrapeToken;
 
-  public SecurityConfig(@Value("${nexus.frontend.base-url}") String frontendBaseUrl) {
+  public SecurityConfig(
+      @Value("${nexus.frontend.base-url}") String frontendBaseUrl,
+      @Value("${nexus.management.scrape-token:}") String scrapeToken) {
     this.frontendBaseUrl = frontendBaseUrl;
+    this.scrapeToken = scrapeToken;
   }
 
   /**
@@ -85,6 +89,9 @@ public class SecurityConfig {
                 .maxAgeInSeconds(31_536_000)))
         .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
         .addFilterBefore(rateLimitFilter, JwtAuthenticationFilter.class)
+        .addFilterBefore(
+            new ScrapeTokenFilter(EndpointRequest.to("prometheus", "metrics"), scrapeToken),
+            JwtAuthenticationFilter.class)
         .authorizeHttpRequests(auth -> auth
             // Runs again after the JWT filter on purpose: caching the answer on the request could
             // outlive a forward or error dispatch to another path, and this matcher must fail closed.
@@ -92,12 +99,11 @@ public class SecurityConfig {
             .requestMatchers(
                 "/actuator/health/**", "/actuator/info",
                 "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
-            // Pre-PR security review L-3: the metrics publish the instance's degraded state and
-            // drop counters, which time the fail-open window for anyone who can read them.
-            // The endpoint-aware matcher follows the actuator's own path mapping, so a trailing
-            // slash or a changed base path cannot slip past a hand-written pattern.
+            // Platform telemetry is for the operator's scrape token only (L-3, RR-M2): no tenant
+            // role, not even TENANT_ADMIN, may read it. ScrapeTokenFilter authenticates the
+            // request; the endpoint-aware matcher follows the actuator's own path mapping.
             .requestMatchers(EndpointRequest.to("prometheus", "metrics"))
-                .hasRole(RbacRoleNames.TENANT_ADMIN)
+                .hasAuthority(ScrapeTokenFilter.AUTHORITY)
             .anyRequest().authenticated())
         .exceptionHandling(e -> e
             .authenticationEntryPoint(jwtAuthenticationEntryPoint())
