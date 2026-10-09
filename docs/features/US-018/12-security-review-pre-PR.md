@@ -1,10 +1,14 @@
 # Security Review (pre-PR): US-018 M7 part 2 (A9 per-user permission epoch, T-009 to T-014)
 
-**Verdict: BLOCKED** for merge. The code has **no Blocker and no High**. Two things block the merge:
-- **The open human item.** `application-prod.yml` does not yet set `nexus.rbac.redis.require-auth: true` (nor `nexus.rbac.throttle.require-shared-store: true`, RC-45.1), and `RedisAuthStartupAssertionTest.should_resolveRequireAuthTrue_when_prodProfileActive` is still `@Disabled`. An agent is deliberately not allowed to make this edit, so it is **not a finding against the implementation**. It is listed here only because the threat-model cross-reference requires T-T16/RC-45 to be visible in code before merge.
-- **M-1 below** must be fixed, or explicitly accepted with a named owner, before merge, following the convention of `10-security-review-M7-part2.md`.
+**Verdict as issued (HEAD `bdea089`): BLOCKED** for merge. The code had **no Blocker and no High**. Two things blocked the merge:
+- **The open human item.** `application-prod.yml` did not set `nexus.rbac.redis.require-auth: true`, and `RedisAuthStartupAssertionTest.should_resolveRequireAuthTrue_when_prodProfileActive` was `@Disabled`. (`nexus.rbac.throttle.require-shared-store` was named too, but RC-45 sets it with M8.)
+- **M-1** had to be fixed, or accepted with a named owner, following the convention of `10-security-review-M7-part2.md`.
 
-Once both are done, the verdict becomes **APPROVED**. The Lows can be ticketed.
+**Status after the fixes (2026-10-09): both blockers are addressed, and the verdict has not been re-issued.**
+- `require-auth: true` is in `application-prod.yml` and the test is enabled and passing (`0ec0ec1`).
+- M-1 is fixed (`07b7626`) and L-1 to L-6 are resolved or recorded (`a14d789`); see the two Resolution sections below.
+- **Not re-reviewed.** The reviewer has not re-checked any of this, and the ITs, e2e and k6 gates have not been run since (no Docker). Re-run `/security-review` and update this line to APPROVED only on that result.
+- Two automated commit reviews raised MEDIUM points on the Low fixes: the strict per-tenant replay share (L-2), and whether the actuator matcher covers `/actuator/prometheus/` with a trailing slash (L-3). Neither is resolved yet.
 
 **Scope:** `git diff origin/main...HEAD` on `ccr-4e9e7cbe-4vl9v6` at HEAD `bdea089` (102 files, +14415/-404).
 - **Priority:** the commits made after `10-security-review-M7-part2.md`: `19f85a3`, `340c406`, `e443a44`, `e4dd1a2`, `ecfb9b2`, `9ccc890`, `f5dc670`, and the test-audit commits `46a55e0` to `4dd7060`.
