@@ -32,6 +32,8 @@
 
 Next in delivery order now that M1, M2, M4 and M6 are merged: M5 (T-007, T-008) and M7 (T-009..T-014), neither depending on the other. M7 then unblocks M3 and M7b.
 
+**M7 pending items (backlog):** RES-46 acceptance and RR-M3 (client IP handling) are open decisions, recorded in `14-pending-items.md`.
+
 ## M1 exit sequence
 
 | Step | State |
