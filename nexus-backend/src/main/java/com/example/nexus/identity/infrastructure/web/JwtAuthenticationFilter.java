@@ -129,7 +129,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         writeUnavailable(req, res);
         return;
       }
-      case FRESH, SKIPPED_ERROR, SKIPPED_DEGRADED -> { }
+      case FRESH, SKIPPED_ERROR, SKIPPED_DEGRADED -> {
+        // the token is accepted: fall through to authentication
+      }
     }
     List<SimpleGrantedAuthority> authorities = claims.roles().stream()
         .map(r -> new SimpleGrantedAuthority("ROLE_" + r))

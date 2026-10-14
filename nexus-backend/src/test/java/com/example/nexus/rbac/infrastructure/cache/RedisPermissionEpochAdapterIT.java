@@ -2,6 +2,7 @@ package com.example.nexus.rbac.infrastructure.cache;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 import com.example.nexus.rbac.application.port.out.EpochUnparseableException;
@@ -86,18 +87,9 @@ class RedisPermissionEpochAdapterIT {
 
   /** The first connection is opened off-thread, so wait for it before using the templates. */
   private static void awaitReady(EpochTemplates epochTemplates) {
-    long deadline = System.nanoTime() + Duration.ofSeconds(15).toNanos();
-    while (!(epochTemplates.readReady() && epochTemplates.bumpReady())) {
-      if (System.nanoTime() > deadline) {
-        throw new AssertionError("epoch templates not ready within 15 s");
-      }
-      try {
-        Thread.sleep(25);
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        throw new AssertionError("interrupted while waiting for epoch templates", e);
-      }
-    }
+    await("epoch templates ready within 15 s").atMost(Duration.ofSeconds(15))
+        .pollInterval(Duration.ofMillis(25))
+        .until(() -> epochTemplates.readReady() && epochTemplates.bumpReady());
   }
 
   private static RedisPermissionEpochAdapter adapter(EpochTemplates epochTemplates) {

@@ -114,8 +114,8 @@ public class RedisPermissionEpochAdapter implements PermissionEpochPort {
     try {
       value = templates.read().opsForValue().get(keys.epoch(tenantId, userId));
     } catch (DataAccessException e) {
-      // One line per failed request at DEBUG only; nexus.rbac.epoch.check{outcome=skipped_error}
-      // is the signal.
+      // One line per failed request at DEBUG only; the signal is the nexus.rbac.epoch.check
+      // counter with outcome skipped_error.
       log.debug("permission epoch read failed exception={}", e.getClass().getSimpleName());
       return OptionalLong.empty();
     }

@@ -2,6 +2,7 @@ package com.example.nexus.rbac.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.awaitility.Awaitility.await;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.Mockito.doAnswer;
@@ -1746,12 +1747,9 @@ class PermissionFreshnessServiceTest {
     assertThat(roleQueueSize()).isZero();
   }
 
-  private void awaitRoleReadIdle() throws InterruptedException {
-    long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
-    while (service.roleReadInFlight() && System.nanoTime() < deadline) {
-      Thread.sleep(20);
-    }
-    assertThat(service.roleReadInFlight()).isFalse();
+  private void awaitRoleReadIdle() {
+    await().atMost(Duration.ofSeconds(10)).pollInterval(Duration.ofMillis(20))
+        .untilAsserted(() -> assertThat(service.roleReadInFlight()).isFalse());
   }
 
   private boolean seenCountersMatchMap() {

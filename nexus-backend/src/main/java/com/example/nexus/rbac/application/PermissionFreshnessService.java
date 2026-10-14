@@ -33,6 +33,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -197,6 +198,10 @@ public final class PermissionFreshnessService {
   private static final String LOG_KEY_STATE = "state";
   private static final String LOG_KEY_USER_COUNT = "userCount";
   private static final String LOG_KEY_ROLE_ID = "roleId";
+  private static final String LOG_KEY_EXCEPTION = "exception";
+  private static final String EVENT_BUMP_FAILED = "RBAC_EPOCH_BUMP_FAILED";
+  private static final String LAST_SEEN_DROPPED_DESCRIPTION =
+      "Locally-seen epochs not recorded because a bound of the map was reached";
 
   private final PermissionEpochPort epochPort;
   private final BiFunction<String, String, Counter> bumpFailedCounters;
@@ -236,7 +241,7 @@ public final class PermissionFreshnessService {
   private volatile Instant lostAllUntil = Instant.MIN;
   private final int lastSeenBumpCeiling;
   private final ExecutorService roleReadExecutor;
-  private volatile RoleRead currentRoleRead;
+  private final AtomicReference<RoleRead> currentRoleRead = new AtomicReference<>();
   private final Map<UUID, UnparseableWindow> unparseableWindows = new ConcurrentHashMap<>();
 
   // State machine. Every field below is written only while holding `lock`; `state` is volatile so
@@ -356,11 +361,11 @@ public final class PermissionFreshnessService {
         .description("Degraded entries that made 3 or more within 15 minutes")
         .register(meterRegistry);
     this.lastSeenDroppedTenantCap = Counter.builder(METRIC_LAST_SEEN_DROPPED)
-        .description("Locally-seen epochs not recorded because a bound of the map was reached")
+        .description(LAST_SEEN_DROPPED_DESCRIPTION)
         .tag(TAG_REASON, REASON_TENANT_CAP)
         .register(meterRegistry);
     this.lastSeenDroppedCapacity = Counter.builder(METRIC_LAST_SEEN_DROPPED)
-        .description("Locally-seen epochs not recorded because a bound of the map was reached")
+        .description(LAST_SEEN_DROPPED_DESCRIPTION)
         .tag(TAG_REASON, REASON_CAPACITY)
         .register(meterRegistry);
     this.lastSeenDroppedBump = lastSeenCounter(meterRegistry, "bump_dropped");
@@ -392,7 +397,7 @@ public final class PermissionFreshnessService {
 
   private static Counter lastSeenCounter(MeterRegistry meterRegistry, String reason) {
     return Counter.builder(METRIC_LAST_SEEN_DROPPED)
-        .description("Locally-seen epochs not recorded because a bound of the map was reached")
+        .description(LAST_SEEN_DROPPED_DESCRIPTION)
         .tag(TAG_REASON, reason)
         .register(meterRegistry);
   }
@@ -409,8 +414,8 @@ public final class PermissionFreshnessService {
   }
 
   /** Test hook: occupies the replay thread, to leave a role read queued behind it. */
-  Future<?> runOnRoleReadThread(Runnable task) {
-    return roleReadExecutor.submit(task);
+  Future<Void> runOnRoleReadThread(Runnable task) {
+    return roleReadExecutor.submit(task, null);
   }
 
   /** Returns the outage state of this instance. */
@@ -722,7 +727,9 @@ public final class PermissionFreshnessService {
           }
         }
         case RECOVERING -> recordReadSuccess(now);
-        case HEALTHY -> { }
+        case HEALTHY -> {
+          // already healthy: a successful read changes nothing
+        }
       }
     }
   }
@@ -847,25 +854,7 @@ public final class PermissionFreshnessService {
         dropped[0] = claim(k.tenantId(), ownBump);
         return dropped[0] == null ? fresh : null;
       }
-      SeenEpoch winner = fresh.epoch() > old.epoch() ? fresh : old;
-      boolean bump = old.ownBump();
-      if (ownBump && !old.ownBump()) {
-        if (claim(k.tenantId(), true) == null) {
-          release(k.tenantId(), false);
-          bump = true;
-        } else {
-          // The epoch is still recorded, as a read-derived entry; only the pool move failed.
-          moveRefused[0] = true;
-        }
-      }
-      Instant marker = failedBumpAt;
-      if (marker == null && old.failedBumpAt() != null
-          && fresh.epoch() < old.failedBumpAt().toEpochMilli()) {
-        marker = old.failedBumpAt();
-      }
-      return winner.ownBump() == bump && Objects.equals(winner.failedBumpAt(), marker)
-          ? winner
-          : new SeenEpoch(winner.epoch(), winner.expiresAt(), bump, marker);
+      return merge(k, old, fresh, moveRefused);
     });
     if (dropped[0] != null) {
       dropped[0].increment();
@@ -876,6 +865,34 @@ public final class PermissionFreshnessService {
     if (moveRefused[0]) {
       lastSeenDroppedBump.increment();
     }
+  }
+
+  /**
+   * The entry that replaces {@code old} when {@code fresh} is recorded over it; runs inside {@code
+   * lastSeen.compute} for the key. Sets {@code moveRefused[0]} when an own bump could not move the
+   * entry into the bump pool.
+   */
+  private SeenEpoch merge(
+      UserKey k, SeenEpoch old, SeenEpoch fresh, boolean[] moveRefused) {
+    SeenEpoch winner = fresh.epoch() > old.epoch() ? fresh : old;
+    boolean bump = old.ownBump();
+    if (fresh.ownBump() && !old.ownBump()) {
+      if (claim(k.tenantId(), true) == null) {
+        release(k.tenantId(), false);
+        bump = true;
+      } else {
+        // The epoch is still recorded, as a read-derived entry; only the pool move failed.
+        moveRefused[0] = true;
+      }
+    }
+    Instant marker = fresh.failedBumpAt();
+    if (marker == null && old.failedBumpAt() != null
+        && fresh.epoch() < old.failedBumpAt().toEpochMilli()) {
+      marker = old.failedBumpAt();
+    }
+    return winner.ownBump() == bump && Objects.equals(winner.failedBumpAt(), marker)
+        ? winner
+        : new SeenEpoch(winner.epoch(), winner.expiresAt(), bump, marker);
   }
 
   /**
@@ -1091,11 +1108,11 @@ public final class PermissionFreshnessService {
       UUID tenantId, String operation, List<UUID> userIds, RuntimeException e) {
     bumpFailedCounter(operation, REASON_REDIS).increment();
     log.atError()
-        .addKeyValue(LOG_KEY_EVENT, "RBAC_EPOCH_BUMP_FAILED")
+        .addKeyValue(LOG_KEY_EVENT, EVENT_BUMP_FAILED)
         .addKeyValue(LOG_KEY_OPERATION, operation)
         .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
         .addKeyValue(LOG_KEY_USER_COUNT, userIds.size())
-        .addKeyValue("exception", e.getClass().getSimpleName())
+        .addKeyValue(LOG_KEY_EXCEPTION, e.getClass().getSimpleName())
         .log("Permission epoch bump failed");
     rememberFailedBump(tenantId, userIds);
     evictCachedSets(tenantId, userIds);
@@ -1103,11 +1120,11 @@ public final class PermissionFreshnessService {
     if (dropped > 0) {
       bumpFailedCounter(operation, REASON_OVERFLOW).increment(dropped);
       log.atError()
-          .addKeyValue(LOG_KEY_EVENT, "RBAC_EPOCH_BUMP_FAILED")
+          .addKeyValue(LOG_KEY_EVENT, EVENT_BUMP_FAILED)
           .addKeyValue(LOG_KEY_OPERATION, operation)
           .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
           .addKeyValue(LOG_KEY_USER_COUNT, dropped)
-          .addKeyValue("reason", REASON_OVERFLOW)
+          .addKeyValue(TAG_REASON, REASON_OVERFLOW)
           .log("Permission epoch bump dropped, replay queue full");
     }
   }
@@ -1127,7 +1144,7 @@ public final class PermissionFreshnessService {
       log.atDebug()
           .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
           .addKeyValue(LOG_KEY_USER_COUNT, userIds.size())
-          .addKeyValue("exception", e.getClass().getSimpleName())
+          .addKeyValue(LOG_KEY_EXCEPTION, e.getClass().getSimpleName())
           .log("Cached permission sets could not be evicted after a failed bump");
     }
   }
@@ -1182,11 +1199,11 @@ public final class PermissionFreshnessService {
         replayQueue.requeue(batch);
         bumpFailedCounter(OPERATION_REPLAY, REASON_REDIS).increment();
         log.atError()
-            .addKeyValue(LOG_KEY_EVENT, "RBAC_EPOCH_BUMP_FAILED")
+            .addKeyValue(LOG_KEY_EVENT, EVENT_BUMP_FAILED)
             .addKeyValue(LOG_KEY_OPERATION, OPERATION_REPLAY)
             .addKeyValue(LOG_KEY_TENANT_ID, batch.tenantId())
             .addKeyValue(LOG_KEY_USER_COUNT, userIds.size())
-            .addKeyValue("exception", e.getClass().getSimpleName())
+            .addKeyValue(LOG_KEY_EXCEPTION, e.getClass().getSimpleName())
             .log("Permission epoch replay failed");
         return;
       }
@@ -1226,7 +1243,7 @@ public final class PermissionFreshnessService {
             .addKeyValue(LOG_KEY_OPERATION, OPERATION_ROLE_REPLAY)
             .addKeyValue(LOG_KEY_TENANT_ID, entry.tenantId())
             .addKeyValue(LOG_KEY_ROLE_ID, entry.roleId())
-            .addKeyValue("exception", e.getClass().getSimpleName())
+            .addKeyValue(LOG_KEY_EXCEPTION, e.getClass().getSimpleName())
             .log("Reading role holders for replay failed");
         return;
       }
@@ -1255,7 +1272,7 @@ public final class PermissionFreshnessService {
       throw new IllegalStateException("previous role holder read still running");
     }
     RoleRead tracker = new RoleRead();
-    currentRoleRead = tracker;
+    currentRoleRead.set(tracker);
     Future<List<UUID>> read;
     try {
       read = roleReadExecutor.submit(() -> {
@@ -1300,7 +1317,7 @@ public final class PermissionFreshnessService {
   }
 
   private boolean roleReadBusy() {
-    RoleRead tracker = currentRoleRead;
+    RoleRead tracker = currentRoleRead.get();
     return tracker != null && tracker.state.get() == RoleRead.RUNNING;
   }
 

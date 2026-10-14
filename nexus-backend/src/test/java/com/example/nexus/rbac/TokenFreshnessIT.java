@@ -1,6 +1,7 @@
 package com.example.nexus.rbac;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -158,7 +159,7 @@ class TokenFreshnessIT {
   }
 
   @AfterEach
-  void restoreHealthyState() throws InterruptedException {
+  void restoreHealthyState() {
     reset(epochPort);
     reset(userRoleAssignmentPort);
     awaitState(DegradedState.HEALTHY);
@@ -345,7 +346,7 @@ class TokenFreshnessIT {
     doReturn(false).when(epochPort).probe();
   }
 
-  private void driveToDegradedClosed() throws InterruptedException {
+  private void driveToDegradedClosed() {
     Holder bystander = seedHolder("outage-trip");
     Session bystanderSession = login(bystander.email());
     failReads();
@@ -355,13 +356,9 @@ class TokenFreshnessIT {
     awaitState(DegradedState.DEGRADED_CLOSED);
   }
 
-  private void awaitState(DegradedState expected) throws InterruptedException {
-    long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
-    while (freshness.state() != expected) {
-      assertThat(System.nanoTime()).as("state " + expected + ", was " + freshness.state())
-          .isLessThan(deadline);
-      Thread.sleep(50);
-    }
+  private void awaitState(DegradedState expected) {
+    await().atMost(Duration.ofSeconds(30)).pollInterval(Duration.ofMillis(50))
+        .untilAsserted(() -> assertThat(freshness.state()).isEqualTo(expected));
   }
 
   // ── T-012: a bump lost to a Redis failure is replayed (RC-30, RC-42.4) ────
@@ -432,12 +429,9 @@ class TokenFreshnessIT {
     assertThat(get(GUARDED, session.accessToken()).getStatusCode().value()).isEqualTo(401);
   }
 
-  private void awaitEpochKey(UUID userId, Duration within) throws InterruptedException {
-    long deadline = System.nanoTime() + within.toNanos();
-    while (!Boolean.TRUE.equals(redisTemplate.hasKey(epochKey(userId)))) {
-      assertThat(System.nanoTime()).as("epoch key of the replayed bump").isLessThan(deadline);
-      Thread.sleep(50);
-    }
+  private void awaitEpochKey(UUID userId, Duration within) {
+    await("epoch key of the replayed bump").atMost(within).pollInterval(Duration.ofMillis(50))
+        .until(() -> Boolean.TRUE.equals(redisTemplate.hasKey(epochKey(userId))));
   }
 
   // ── T-010: detach fans out to every holder (TS-9) ─────────────────────────
@@ -633,12 +627,10 @@ class TokenFreshnessIT {
     redisTemplate.expire(key, Duration.ofMillis(ttl - shiftMillis));
   }
 
-  private void awaitAbsent(List<String> keys) throws InterruptedException {
-    long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
-    while (keys.stream().anyMatch(redisTemplate::hasKey)) {
-      assertThat(System.nanoTime()).as("stale entry expired within 10 s").isLessThan(deadline);
-      Thread.sleep(50);
-    }
+  private void awaitAbsent(List<String> keys) {
+    await("stale entry expired within 10 s").atMost(Duration.ofSeconds(10))
+        .pollInterval(Duration.ofMillis(50))
+        .until(() -> keys.stream().noneMatch(redisTemplate::hasKey));
   }
 
   // ── fixtures ──────────────────────────────────────────────────────────────
