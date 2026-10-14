@@ -15,6 +15,7 @@ import com.example.nexus.rbac.application.port.out.BreakGlassAlert;
 import com.example.nexus.rbac.application.port.out.BreakGlassAlertPort;
 import com.example.nexus.rbac.application.port.out.BreakGlassAuditEvent;
 import com.example.nexus.rbac.application.port.out.BreakGlassGrantLookupPort;
+import com.example.nexus.rbac.application.port.out.PermissionCachePort;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.UserDirectoryPort;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
@@ -184,7 +185,8 @@ class BreakGlassAdminRunnerTest {
             mock(UserDirectoryPort.class),
             auditPort,
             alertPort,
-            mock(BreakGlassGrantLookupPort.class));
+            mock(BreakGlassGrantLookupPort.class),
+            mock(PermissionCachePort.class));
     BreakGlassAdminRunner real = new BreakGlassAdminRunner(realService, alertPort, exit, Duration.ZERO);
 
     real.run(args("--target-user-id=SECRET-TARGET", "--change-ref=ABC-0001"));

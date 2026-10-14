@@ -15,6 +15,7 @@ import com.example.nexus.rbac.application.port.out.BreakGlassAlert;
 import com.example.nexus.rbac.application.port.out.BreakGlassAlertPort;
 import com.example.nexus.rbac.application.port.out.BreakGlassAuditEvent;
 import com.example.nexus.rbac.application.port.out.BreakGlassGrantLookupPort;
+import com.example.nexus.rbac.application.port.out.PermissionCachePort;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.UserDirectoryPort;
 import com.example.nexus.rbac.application.port.out.UserDirectoryPort.DirectoryUser;
@@ -51,6 +52,7 @@ class BootstrapAdminServiceTest {
   @Mock private RbacAuditPort rbacAuditPort;
   @Mock private BreakGlassAlertPort alertPort;
   @Mock private BreakGlassGrantLookupPort grantLookupPort;
+  @Mock private PermissionCachePort permissionCachePort;
 
   private BootstrapAdminService service;
 
@@ -62,7 +64,12 @@ class BootstrapAdminServiceTest {
   void setUp() {
     service =
         new BootstrapAdminService(
-            userRoleAssignmentPort, userDirectoryPort, rbacAuditPort, alertPort, grantLookupPort);
+            userRoleAssignmentPort,
+            userDirectoryPort,
+            rbacAuditPort,
+            alertPort,
+            grantLookupPort,
+            permissionCachePort);
     tenantId = UUID.randomUUID();
     targetUserId = UUID.randomUUID();
     adminRoleId = UUID.randomUUID();
@@ -301,6 +308,32 @@ class BootstrapAdminServiceTest {
     order.verify(userRoleAssignmentPort).assign(targetUserId, adminRoleId, tenantId, targetUserId);
     order.verify(rbacAuditPort).recordBreakGlassGranted(any());
     order.verify(alertPort).raise(any());
+  }
+
+  @Test
+  void should_evictNewAdministratorsCachedPermissionsAfterCommit_when_granted() {
+    givenActiveTargetWithSystemAdminRole();
+    givenHolders();
+    TransactionSynchronizationManager.initSynchronization();
+
+    service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    verifyNoInteractions(permissionCachePort);
+    TransactionSynchronizationManager.getSynchronizations()
+        .forEach(TransactionSynchronization::afterCommit);
+    InOrder order = inOrder(alertPort, permissionCachePort);
+    order.verify(alertPort).raise(any());
+    order.verify(permissionCachePort).evict(tenantId, targetUserId);
+  }
+
+  @Test
+  void should_notEvictCache_when_refusingForExistingAdministrator() {
+    givenActiveTargetWithSystemAdminRole();
+    givenHolders(new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), adminRoleId));
+
+    service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    verifyNoInteractions(permissionCachePort);
   }
 
   @Test

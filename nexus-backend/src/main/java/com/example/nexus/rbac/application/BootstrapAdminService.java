@@ -5,6 +5,7 @@ import com.example.nexus.rbac.application.port.out.BreakGlassAlert;
 import com.example.nexus.rbac.application.port.out.BreakGlassAlertPort;
 import com.example.nexus.rbac.application.port.out.BreakGlassAuditEvent;
 import com.example.nexus.rbac.application.port.out.BreakGlassGrantLookupPort;
+import com.example.nexus.rbac.application.port.out.PermissionCachePort;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.UserDirectoryPort;
 import com.example.nexus.rbac.application.port.out.UserDirectoryPort.DirectoryUser;
@@ -50,18 +51,21 @@ public class BootstrapAdminService {
   private final RbacAuditPort rbacAuditPort;
   private final BreakGlassAlertPort alertPort;
   private final BreakGlassGrantLookupPort grantLookupPort;
+  private final PermissionCachePort permissionCachePort;
 
   public BootstrapAdminService(
       UserRoleAssignmentPort userRoleAssignmentPort,
       UserDirectoryPort userDirectoryPort,
       RbacAuditPort rbacAuditPort,
       BreakGlassAlertPort alertPort,
-      BreakGlassGrantLookupPort grantLookupPort) {
+      BreakGlassGrantLookupPort grantLookupPort,
+      PermissionCachePort permissionCachePort) {
     this.userRoleAssignmentPort = userRoleAssignmentPort;
     this.userDirectoryPort = userDirectoryPort;
     this.rbacAuditPort = rbacAuditPort;
     this.alertPort = alertPort;
     this.grantLookupPort = grantLookupPort;
+    this.permissionCachePort = permissionCachePort;
   }
 
   /**
@@ -73,7 +77,7 @@ public class BootstrapAdminService {
    * 6, RC-37.2; before any user lookup) → target user (missing or not ACTIVE, exit 3) → system {@code
    * TENANT_ADMIN} (absent, exit 4) → M10 prime and M11 set lock → zero-administrator check (an
    * administrator exists, exit 5) → insert with {@code assigned_by = target} (Decision 10) → atomic
-   * audit → page after commit.
+   * audit → page, then permission-cache eviction, after commit.
    */
   @Transactional
   public BreakGlassOutcome grantFirstAdmin(UUID targetUserId, String changeRef) {
@@ -116,11 +120,15 @@ public class BootstrapAdminService {
     rbacAuditPort.recordBreakGlassGranted(
         new BreakGlassAuditEvent(tenantId, targetUserId, changeRef, null));
 
+    // Page first, then evict the new administrator's cached permission set (it may hold the
+    // pre-grant, empty set for up to its TTL), as assign() does. Eviction never throws.
     afterCommit(
-        () ->
-            alertPort.raise(
-                new BreakGlassAlert(
-                    tenantId, targetUserId, BreakGlassAlert.OUTCOME_GRANTED, null, changeRef)));
+        () -> {
+          alertPort.raise(
+              new BreakGlassAlert(
+                  tenantId, targetUserId, BreakGlassAlert.OUTCOME_GRANTED, null, changeRef));
+          permissionCachePort.evict(tenantId, targetUserId);
+        });
     return BreakGlassOutcome.GRANTED;
   }
 

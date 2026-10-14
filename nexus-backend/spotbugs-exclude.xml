@@ -127,6 +127,15 @@
         <Bug pattern="EI_EXPOSE_REP2" />
     </Match>
     <!--
+      US-018 M5 (D-31): BootstrapAdminService constructor-injects the Spring-managed singleton
+      PermissionCachePort bean and stores it directly, to evict the new administrator's cached
+      permission set after a break-glass grant. Same rationale as RoleAssignmentService above.
+    -->
+    <Match>
+        <Class name="com.example.nexus.rbac.application.BootstrapAdminService" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
+    <!--
       US-012: RbacAuthEventAdapter constructor-injects two Spring-managed singletons and stores
       them directly, per this project's constructor-injection-only convention (CLAUDE.md):
         - MeterRegistry: a metrics registry/factory, not a value object (same rationale as
