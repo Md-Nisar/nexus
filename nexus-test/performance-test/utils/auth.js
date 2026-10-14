@@ -30,7 +30,9 @@ export function obtainAccessToken() {
 export function scrapeHeaders() {
   const token = config.scrapeToken;
   if (!token) {
-    fail('Set SCRAPE_TOKEN to the backend NEXUS_MANAGEMENT_SCRAPE_TOKEN to read /actuator/prometheus');
+    fail(
+      'Set SCRAPE_TOKEN to the backend NEXUS_MANAGEMENT_SCRAPE_TOKEN to read /actuator/prometheus',
+    );
   }
   return { Authorization: `Bearer ${token}`, Accept: 'text/plain;version=0.0.4' };
 }
