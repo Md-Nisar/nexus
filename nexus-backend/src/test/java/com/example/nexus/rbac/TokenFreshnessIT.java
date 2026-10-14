@@ -558,11 +558,14 @@ class TokenFreshnessIT {
     assertThat(redisTemplate.hasKey(epochKey(holderId)))
         .as("the epoch key outlives the stale entry written under its old epoch")
         .isTrue();
+    long bumpedEpoch = storedEpoch(holderId);
     redisTemplate.delete(epochKey(holderId));
     ResponseEntity<Map> refreshed = refresh(null, raced.refreshCookie());
     assertThat(refreshed.getStatusCode().value()).isEqualTo(200);
     JwtClaims claims = jwtPort.verify((String) refreshed.getBody().get("accessToken"));
-    assertThat(claims.permEpoch()).isZero();
+    assertThat(claims.permEpoch())
+        .as("the mint keeps the locally known epoch (M-1) rather than regressing to zero")
+        .isGreaterThanOrEqualTo(bumpedEpoch);
     assertThat(claims.permissions()).doesNotContain("role:read");
   }
 
