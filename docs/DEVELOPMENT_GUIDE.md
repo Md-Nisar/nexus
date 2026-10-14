@@ -230,6 +230,7 @@ Every non-trivial change follows this model. It is enforced by approval gates (h
 - **DB design** (ADR 0003): Flyway migration plan; additive vs expand/contract; indexes; audit columns; naming (`docs/coding-standards.md`).
 - **Security** (`SECURITY.md`): STRIDE threat model; each threat → a mitigation task; authz/PII/tenant concerns.
 - **Frontend** (`angular-standards`): routes, smart/dumb components, signal state, guards.
+- **Critical decisions** (`critical-decisions` skill): only for the design triggers (T1–T9) that fired at discovery. Each fired trigger gets one row: invariant → mechanism → proof test, using the simplest mechanism that holds. `/breakdown` traces each row to the task that writes its proof test. When no trigger fires, the design says `none` and no further analysis is done.
 
 ### Action half — build, prove, ship
 

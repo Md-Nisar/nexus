@@ -14,7 +14,15 @@ Prerequisites:
 - `docs/features/$1/02-impact.md` (approved)
 
 1. Read both prerequisites.
-2. Produce the Technical Design Document per the architect agent's spec — including mermaid diagrams, API contracts, DB design, error handling, observability plan, feature flag, rollout plan.
+2. Produce the Technical Design Document per the architect agent's spec. It includes:
+   - mermaid diagrams;
+   - API contracts;
+   - DB design;
+   - error handling;
+   - observability plan;
+   - feature flag;
+   - rollout plan;
+   - the **Critical decisions** section (`critical-decisions` skill). It has one row per fired design trigger, or the line `none`.
 3. Save to `docs/features/$1/03-design.md`.
 
 ## Step B — Threat Model (security-reviewer agent)
@@ -23,7 +31,7 @@ Use the **security-reviewer** sub-agent.
 
 1. Read `docs/features/$1/03-design.md`.
 2. Apply STRIDE to each component and trust boundary.
-3. Identify threats, existing mitigations, required mitigations, residual risk.
+3. Identify threats, existing mitigations, required mitigations, residual risk. Check the **Critical decisions** rows for T1 and T9 (races, timing/enumeration) as part of STRIDE; a mechanism that doesn't hold under concurrency is a Tampering or Information-disclosure finding.
 4. Save to `docs/features/$1/03b-threat-model.md`.
 5. Flag any threats that require design changes back to the architect — surface these to chat.
 6. **Re-verify only what's new or changed.** For a fact a prior story in this epic already verified in code (cite it), trust it unless `git log -- <path>` shows the file changed since that verification — don't re-derive it from scratch. This bounds review cost without lowering rigor on anything actually new.
