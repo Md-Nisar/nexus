@@ -36,9 +36,10 @@ Steps:
    - **Tests** — the unit / integration / e2e cases written first for this slice
    - **Definition of Done**
 
-3. End the file with two traceability tables so nothing is lost by slicing coarser:
+3. End the file with three traceability tables so nothing is lost by slicing coarser:
    - **Threat → task:** every required mitigation in `03b-threat-model.md` → the task that implements it.
    - **AC → task:** every acceptance criterion in `01-requirements.md` → the task(s) that prove it.
+   - **Decision → proof test → task:** every row of `03-design.md` → *Critical decisions* → the named proof test → the task that writes it first and implements the mechanism. Omit the table only when that section says `none`. A task carrying a T1, T2 or T6 row names it under **Risks** (drives model escalation in `/implement`).
 
 4. If `01-requirements.md` marks the feature a hot path (peak > 10 RPS or on every request), add a load test to the **Tests** of the slice that owns the hot path, asserting its p95 latency budget. If it states no budget, send that back as a Gate 1 gap rather than inventing one.
 

@@ -7,7 +7,7 @@ Deliver feature **`$1`** end to end without a human at each gate. This is the **
 
 ## Preconditions — refuse and stop if any fails
 
-1. **Risk tier is low or medium.** Apply the `/new-feature` Step 0 tiering. A **high-risk** story (authn/authz, permission gates, tenant isolation, lockout/data-integrity logic, secrets, PII) is out of scope for this mode: say so and direct the user to `/new-feature $1`.
+1. **Risk tier is low or medium.** Apply the `/new-feature` Step 0 tiering. A **high-risk** story (authn/authz, permission gates, tenant isolation, lockout/data-integrity logic, secrets, PII) is out of scope for this mode: say so and direct the user to `/new-feature $1`. The same applies to a story whose `Design triggers` (`feature-discovery` §4a) include **T1, T2 or T6**, meaning concurrency, cross-row invariants or transaction boundaries. That is where agent-held gates have let defects through.
 2. **Environment is complete.** Java 25 (`java -version`), `docker info` succeeds (Testcontainers ITs), and `nexus-frontend/node_modules` is installed. If not, stop and point to `docs/runbooks/cloud-agent-setup.md` — never ship a PR whose ITs silently did not run.
 3. Branch: `feature/$1-<short-description>` from latest `main` (`CONTRIBUTING.md`). **Never** an `ai/` branch — that prefix triggers the Sonar-fix guardrails, not this flow.
 
@@ -17,8 +17,8 @@ Deliver feature **`$1`** end to end without a human at each gate. This is the **
 |---|---|---|---|
 | 0–1 Discovery + requirements | `/new-feature` Step 0, `/analyze-story $1` | **human only if open questions remain** | See *Stop-and-ask* |
 | 2 Impact | `/impact-analysis $1` | — | — |
-| 3 Design + threat model (Gate 2) | `/design $1` | `security-reviewer` | Required changes all closed by the Step C delta review; no open Blocker |
-| 4 Breakdown (Gate 3) | `/breakdown $1` | `architect` | Threat → task and AC → task tables are complete; sizing rules in `/breakdown` met |
+| 3 Design + threat model (Gate 2) | `/design $1` | `security-reviewer` | Required changes all closed by the Step C delta review; no open Blocker; *Critical decisions* has a row with a named proof test for every fired trigger (or `none`) |
+| 4 Breakdown (Gate 3) | `/breakdown $1` | `architect` | Threat → task, AC → task and decision → proof test → task tables are complete; sizing rules in `/breakdown` met |
 | 5 Implement, per task | `/implement $1 <TASK>` | `code-reviewer` approves each plan | Plan matches `03-design.md` and the standards skills; tests green after each task |
 | 6–8 Review, security, tests | `/review`, `/security-review`, `/test-validate` | the phase agents | `APPROVE` / `APPROVE WITH NITS`; no Blocker; coverage gates green |
 | 9 Docs | `/docs $1` | — | `09-technical.md` present |
