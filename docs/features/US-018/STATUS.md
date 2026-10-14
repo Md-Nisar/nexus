@@ -1,6 +1,6 @@
 # US-018 — Progress and handoff
 
-**Updated:** 2026-10-08 · **Source of truth for scope:** `04-tasks.md` (Gate 3 approved). This file only tracks where we are.
+**Updated:** 2026-10-14 · **Source of truth for scope:** `04-tasks.md` (Gate 3 approved). This file only tracks where we are.
 
 **Decision 2026-10-05 — no staging, no deployment.** The app is not deployed and no environment exists; work starts without one. The same decision is recorded at the top of `04-tasks.md`. In short: M3's staging-soak gate is waived for starting M3 and its soak moves to the first staging deployment; rollout-order waits become "merged earlier"; environment-dependent checklist items are deferred to the first deployment and stay required before production (see "Deferred to the first deployment" below).
 
@@ -12,9 +12,11 @@
 | **M1** A8 deny-by-default | T-004 | **Merged to `main`** as PR #82 (squash, `0da1597`, 2026-10-06). Review, security review and test-validate done (below). |
 | **M6** A11 token claim validation | T-005 | **Merged to `main`** as PR #84 (`b11dbde`, 2026-10-07). Code review (APPROVE WITH NITS), security review (APPROVED, 2 Low) and test audit are in `06/07/08-*-M6.md`. The OWASP dependency-check could not run locally (NVD 403) and was left to CI. |
 | **M4** A6 atomic RBAC audit | T-006 | **Merged to `main`** as `25ceeed` (2026-10-06 commit; its title carries no PR number). No `*-M4.md` review, security or test-audit file exists in this folder, so whether those phases ran is not recorded here. |
-| M3 | T-016..T-019 | **Blocked on M7 (T-009..T-014) merging.** M4 is merged. The staging-soak gate is waived (no environment); M3 still needs its own threat-model re-pass before merge. |
-| M7 | T-009..T-014 | **T-009, T-010, T-011, T-012, T-013 and T-014 implemented** on `ccr-4e9e7cbe-4vl9v6`; T-009's code review findings fixed (`06-code-review-M7.md`, Resolution); **not merged**. **M7 merges as ONE PR containing T-009..T-014; T-009 must not merge or be released alone.** |
-| M5, M7b, M8, M9, M9-contract | see `04-tasks.md` | Not started. M5 (T-007, T-008) is unblocked (it needed M4). M7b follows M7 with no wait; M9-contract follows M9 with no wait. |
+| M3 | T-016..T-019 | **Unblocked** now that M7 is merged (2026-10-14). The staging-soak gate is waived (no environment); M3 still needs its own threat-model re-pass before merge. |
+| **M7** A9 revocation epoch, A10 holder fan-out | T-009..T-014 | **Merged to `main`** as PR #88 (`803e33e`, 2026-10-14), one PR containing T-009..T-014 as required. H-3 is done on `main`: `application-prod.yml` sets `nexus.rbac.redis.require-auth: true` and `RedisAuthStartupAssertionTest` is no longer `@Disabled`. Whether P-1 (RES-46) and P-2 (RR-M3) in `14-pending-items.md` were decided at merge is not recorded there. |
+| M5, M7b, M8, M9, M9-contract | see `04-tasks.md` | Not started. M5 (T-007, T-008) is unblocked (it needed M4). M7b is unblocked: M7 is merged, and with no environment its "≥ 900 s on every instance" wait becomes "merged earlier" (2026-10-05 decision); it is still a separate PR. M9-contract follows M9 with no wait. |
+
+*The M7 notes below were written before the merge and say "not merged"; all of them shipped in PR #88.*
 
 **M7 / T-009 (A9 core): implemented on `ccr-4e9e7cbe-4vl9v6`, code review findings fixed, not merged.** Backend `verify` passes with and without ITs after the review fixes (1521 unit, 376 IT, 0 failures; the k6 figures below are from before the fixes). Local-Docker k6 hot-path run (200 RPS, 5 min, one JVM at `-Xmx1g`, MySQL and Redis in Docker; **not the staging topology**): server-side `nexus.rbac.epoch.check.latency` p95 0.58 ms (≤ 2 ms), `GET /api/v1/roles` p95 4.99 ms against a 4.25 ms baseline on `25ceeed` (+0.74 ms, budget < 5 ms), 0 dropped iterations, 0 `skipped_error`. Local Redis round-trips are about 0.1 ms, so this is optimistic: the staging re-run stays under "Deferred to the first deployment". T-009 must not merge or ship without T-011: M7 merges as one PR containing T-009..T-014, because an outage fails open on every request until the T-011 state machine exists. `/review` ran (`06-code-review-M7.md`, all findings fixed, re-review pending); `/security-review` and `/test-validate` for M7 have not run.
 
@@ -30,7 +32,7 @@
 
 **M7 part 2 security review fixes (`10-security-review-M7-part2.md`): implemented on `ccr-4e9e7cbe-4vl9v6`, not merged. H-1 stays open (human action).** M-1: filter Javadoc, RES-40, design and ADR amended (junk counts against `REFRESH_IP`; the SPA keeps the session on a refresh 429), new k6 case `refresh-junk-flood.js` (not run, no dev stack). M-2: role-level replay of a failed detach holder read (`RoleReplayQueue`, 1 s tick, 1 s read timeout). L-1: one valid epoch range for the Lua script and the Java parser. L-2: rate-limited `RBAC_EPOCH_UNPARSEABLE` WARN and `epoch.check{outcome=unparseable}`. L-3: per-tenant last-seen cap, own bumps in a separate per-tenant pool, `last_seen_dropped{reason}`. See A-22 in `04-tasks.md`, runbook §8 and `monitoring.md` §6.
 
-Next in delivery order now that M1, M2, M4 and M6 are merged: M5 (T-007, T-008) and M7 (T-009..T-014), neither depending on the other. M7 then unblocks M3 and M7b.
+Next in delivery order now that M1, M2, M4, M6 and M7 are merged: M5 (T-007, T-008), M7b (T-015) and M3 (T-016..T-019), none depending on another. M3 needs its threat-model re-pass first.
 
 **M7 pending items (backlog):** RES-46 acceptance and RR-M3 (client IP handling) are open decisions, recorded in `14-pending-items.md`.
 

@@ -278,6 +278,27 @@ class JwtRs256ServiceSecurityTest {
   // US-018 T-005 / T-S10 (RC-40.1): sub must be a canonical UUID — 401, never a downstream 500
   // -----------------------------------------------------------------------
 
+  /** US-018 M7b: a correctly signed v2 token (no perm_epoch) is no longer accepted. */
+  @Test
+  void should_rejectWithSchemaVersionReason_when_correctlySignedV2Token() {
+    Instant now = Instant.now();
+    String token = Jwts.builder()
+        .subject(UUID.randomUUID().toString())
+        .claim("tenant_id", UUID.randomUUID().toString())
+        .claim("email_verified", true)
+        .claim("roles", List.of("USER"))
+        .claim("permissions", List.of("read:only"))
+        .issuedAt(Date.from(now))
+        .expiration(Date.from(now.plusSeconds(900)))
+        .id(UUID.randomUUID().toString())
+        .claim("token_version", 0)
+        .claim("schema_version", 2)
+        .signWith(rsaKeyConfig.getKeyPair().getPrivate(), Jwts.SIG.RS256)
+        .compact();
+
+    assertRejectedWithReason(token, "schema_version");
+  }
+
   @Test
   void should_rejectWithSubReason_when_subIsNotAUuid() {
     String token = signedToken("not-a-uuid-subject", rsaKeyConfig.getKeyPair().getPrivate(),
@@ -376,7 +397,7 @@ class JwtRs256ServiceSecurityTest {
   // Helpers
   // -----------------------------------------------------------------------
 
-  /** A token carrying every valid v2 claim, with the given {@code sub}, key and algorithm. */
+  /** A token carrying every valid v3 claim, with the given {@code sub}, key and algorithm. */
   private static String signedToken(
       String subject, PrivateKey signingKey, SignatureAlgorithm algorithm) {
     Instant now = Instant.now();
@@ -391,6 +412,7 @@ class JwtRs256ServiceSecurityTest {
         .id(UUID.randomUUID().toString())
         .claim("token_version", 0)
         .claim("schema_version", JwtClaims.CURRENT_VERSION)
+        .claim("perm_epoch", 1_000L)
         .signWith(signingKey, algorithm)
         .compact();
   }

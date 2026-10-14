@@ -416,13 +416,6 @@ class JwtRs256ServiceTest {
   }
 
   @Test
-  void should_verifyV2TokenAsEpochZero() {
-    JwtClaims verified = service(Clock.systemUTC()).verify(signedToken(validClaims(2)));
-
-    assertThat(verified.permEpoch()).isZero();
-  }
-
-  @Test
   void should_returnPermEpoch_when_v3TokenVerified() {
     Map<String, Object> claims = validClaims(3);
     claims.put("perm_epoch", 1_759_000_000_000L);
@@ -456,21 +449,13 @@ class JwtRs256ServiceTest {
     assertRejectedWithReason(signedToken(claims), "perm_epoch");
   }
 
-  @Test
-  void should_ignorePermEpochClaim_when_v2TokenCarriesOne() {
-    Map<String, Object> claims = validClaims(2);
-    claims.put("perm_epoch", 1_759_000_000_000L);
-
-    assertThat(service(Clock.systemUTC()).verify(signedToken(claims)).permEpoch()).isZero();
-  }
-
   // -----------------------------------------------------------------------
   // US-018 T-005 (A11): schema_version must be in JwtClaims.ACCEPTED_VERSIONS (Decision 18)
   // -----------------------------------------------------------------------
 
   @Test
   void should_rejectWithSchemaVersionReason_when_schemaVersionIs1() {
-    Map<String, Object> claims = validClaims(2);
+    Map<String, Object> claims = validClaims(3);
     claims.put("schema_version", 1);
 
     assertRejectedWithReason(signedToken(claims), "schema_version");
@@ -486,7 +471,7 @@ class JwtRs256ServiceTest {
 
   @Test
   void should_rejectWithSchemaVersionReason_when_schemaVersionIsString() {
-    Map<String, Object> claims = validClaims(2);
+    Map<String, Object> claims = validClaims(3);
     claims.put("schema_version", "2");
 
     assertRejectedWithReason(signedToken(claims), "schema_version");
@@ -494,26 +479,31 @@ class JwtRs256ServiceTest {
 
   @Test
   void should_rejectWithSchemaVersionReason_when_schemaVersionAbsent() {
-    Map<String, Object> claims = validClaims(2);
+    Map<String, Object> claims = validClaims(3);
     claims.remove("schema_version");
 
     assertRejectedWithReason(signedToken(claims), "schema_version");
   }
 
   @Test
-  void should_acceptToken_when_schemaVersionIs2() {
-    JwtClaims verified = service(Clock.systemUTC()).verify(signedToken(validClaims(2)));
-
-    assertThat(verified.schemaVersion()).isEqualTo(2);
+  void should_rejectWithSchemaVersionReason_when_schemaVersionIs2() {
+    assertRejectedWithReason(signedToken(validClaims(2)), "schema_version");
   }
 
   @Test
-  void should_acceptToken_when_schemaVersionIs2WithoutPermEpoch() {
+  void should_rejectWithSchemaVersionReason_when_schemaVersionIs2WithoutPermEpoch() {
     Map<String, Object> claims = validClaims(2);
 
     assertThat(claims).doesNotContainKey("perm_epoch");
-    assertThat(service(Clock.systemUTC()).verify(signedToken(claims)).schemaVersion())
-        .isEqualTo(2);
+    assertRejectedWithReason(signedToken(claims), "schema_version");
+  }
+
+  @Test
+  void should_rejectWithSchemaVersionReason_when_schemaVersionIs2WithPermEpoch() {
+    Map<String, Object> claims = validClaims(2);
+    claims.put("perm_epoch", 1_759_000_000_000L);
+
+    assertRejectedWithReason(signedToken(claims), "schema_version");
   }
 
   @Test
@@ -584,7 +574,7 @@ class JwtRs256ServiceTest {
 
   @Test
   void should_rejectWithTenantIdReason_when_tenantIdAbsent() {
-    Map<String, Object> claims = validClaims(2);
+    Map<String, Object> claims = validClaims(3);
     claims.remove("tenant_id");
 
     assertRejectedWithReason(signedToken(claims), "tenant_id");
@@ -592,7 +582,7 @@ class JwtRs256ServiceTest {
 
   @Test
   void should_rejectWithTenantIdReason_when_tenantIdNotAUuid() {
-    Map<String, Object> claims = validClaims(2);
+    Map<String, Object> claims = validClaims(3);
     claims.put("tenant_id", "t-1");
 
     assertRejectedWithReason(signedToken(claims), "tenant_id");
@@ -601,7 +591,7 @@ class JwtRs256ServiceTest {
   @Test
   void should_rejectWithTenantIdReason_when_tenantIdNotCanonicalUuid() {
     // UUID.fromString is lenient and parses this; the canonical round-trip check must not.
-    Map<String, Object> claims = validClaims(2);
+    Map<String, Object> claims = validClaims(3);
     claims.put("tenant_id", "1-1-1-1-1");
 
     assertRejectedWithReason(signedToken(claims), "tenant_id");
@@ -609,7 +599,7 @@ class JwtRs256ServiceTest {
 
   @Test
   void should_rejectWithTenantIdReason_when_tenantIdNotAString() {
-    Map<String, Object> claims = validClaims(2);
+    Map<String, Object> claims = validClaims(3);
     claims.put("tenant_id", 42);
 
     assertRejectedWithReason(signedToken(claims), "tenant_id");
@@ -618,7 +608,7 @@ class JwtRs256ServiceTest {
   @Test
   void should_rejectWithTenantIdReason_when_tenantIdIsUppercaseUuid() {
     // issue() only ever mints UUID.toString() (lowercase); tenant_id must be canonical too.
-    Map<String, Object> claims = validClaims(2);
+    Map<String, Object> claims = validClaims(3);
     claims.put("tenant_id", UUID.randomUUID().toString().toUpperCase(Locale.ROOT));
 
     assertRejectedWithReason(signedToken(claims), "tenant_id");
@@ -639,7 +629,7 @@ class JwtRs256ServiceTest {
 
   @Test
   void should_rejectWithClaimsMissingReason_when_rolesClaimAbsent() {
-    Map<String, Object> claims = validClaims(2);
+    Map<String, Object> claims = validClaims(3);
     claims.remove("roles");
 
     assertRejectedWithReason(signedToken(claims), "claims_missing");
@@ -647,7 +637,7 @@ class JwtRs256ServiceTest {
 
   @Test
   void should_rejectWithClaimsMissingReason_when_rolesContainsNullElement() {
-    Map<String, Object> claims = validClaims(2);
+    Map<String, Object> claims = validClaims(3);
     claims.put("roles", Collections.singletonList(null));
 
     assertRejectedWithReason(signedToken(claims), "claims_missing");
@@ -655,7 +645,7 @@ class JwtRs256ServiceTest {
 
   @Test
   void should_rejectWithClaimsMissingReason_when_permissionsContainsNonStringElement() {
-    Map<String, Object> claims = validClaims(2);
+    Map<String, Object> claims = validClaims(3);
     claims.put("permissions", List.of(1));
 
     assertRejectedWithReason(signedToken(claims), "claims_missing");
