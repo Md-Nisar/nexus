@@ -69,6 +69,40 @@ Conventions:
 - Cover every variant of a `ViewState` machine — the discriminated union makes missed states a compile error in templates and a review error in specs.
 - E2E boots the dev server automatically (`playwright.config.ts` → `webServer`). First run: `npx playwright install chromium`.
 
+## Tests that prove a guarantee
+
+Some tests stand behind a claim the design makes:
+- at most one winner, or no lost updates;
+- a row survives a rollback;
+- a failure never blocks the main flow;
+- a refresh completes.
+
+Coverage alone cannot tell whether such a test proves anything. These rules apply wherever the code has:
+- check-then-act logic;
+- `@Version`;
+- `REQUIRES_NEW`;
+- a bulk revoke;
+- a shared in-flight request (`shareReplay`);
+- or a feature design trigger from T1, T2, T6 or T7 (`feature-discovery` skill). T1 covers concurrent actors, T2 cross-row invariants, T6 transaction-boundary changes, T7 staleness or revocation promises.
+
+A test that breaks any of the rules below does not count as proof, and a review flags it as a gap.
+
+1. **Assert the exact outcome.** Check the specific status or error code, the exact row counts and the exact audit rows. Never accept "any exception" as a pass. *Counter-example:* `RefreshTokenRotationIT`, which counts any exception as success and so hides a 500.
+2. **Prove concurrency with real concurrency on real infrastructure.**
+   - Use an `*IT` against Testcontainers MySQL, with threads released together (`CountDownLatch` / `CyclicBarrier`).
+   - Assert that exactly one caller wins and that the losers get their specific response.
+   - A mock-only "concurrency" test proves nothing. *Counter-example:* `SecureEventServiceConcurrencyTest`.
+3. **Inject faults where they really occur, through the real transaction.**
+   - Inject at the DB, for example a revoked grant or a `BEFORE INSERT` trigger that signals an error.
+   - Do not stub a repository's `save()` on a spy. That skips flush, commit and the transaction proxy. *Counter-example:* `AuditStoreDownIT`.
+4. **Prove "survives rollback" claims by reading the row back.** After the failed request returns, read the row in a new transaction.
+5. **Call the Spring bean, not `new`, when transaction behaviour matters.** Otherwise the `@Transactional` proxy and commit-time behaviour are absent.
+6. **Frontend async flows run on the real service and interceptor chain.**
+   - Do not mock `AuthService` in refresh or guard tests.
+   - Assert that the downstream request was actually sent and completed (`HttpTestingController.expectOne(...)`), and assert the final router URL.
+   - Guards need a cold-start router test.
+   - *Counter-example:* `e2e/auth/session-refresh.spec.ts`, which only asserts that a refresh was attempted.
+
 ## Commands
 
 ```bash

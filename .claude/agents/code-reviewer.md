@@ -28,10 +28,10 @@ For each, find concrete issues with file + line:
 2. **Security issues** — defer deep audit to security-reviewer, but flag obvious problems
 3. **Performance** — N+1 queries, unnecessary allocations, blocking I/O on hot paths, missing indexes, repeated computation. For every new or changed query, cite the index (Flyway migration) that serves it and confirm collection reads are bounded or paginated; measure hot paths against the p95 budget in `01-requirements.md`
 4. **Scalability** — assumptions that break under load (in-memory state, single-instance locks, unbounded queues)
-5. **Concurrency** — shared mutable state, missing transactions, isolation level issues
+5. **Concurrency** — shared mutable state, missing transactions, isolation level issues. Check every write path against the **Pitfalls** sections of `spring-boot-standards` and `nexus-frontend/ANGULAR_STANDARDS.md`
 6. **Code smells** — duplication, god classes / functions, leaky abstractions, primitive obsession, feature envy
 7. **Testability** — code that can't be unit tested cleanly
-8. **Test quality** — tests that pass trivially, missing edge cases, brittle assertions
+8. **Test quality** — tests that pass trivially, missing edge cases, brittle assertions. A test backing a guarantee (single winner, survives rollback, never blocks, refresh completes) that breaks `docs/TESTING.md` → *Tests that prove a guarantee* is at least **High**, even when coverage is green
 9. **Refactoring opportunities** — concrete suggestions, not vague "consider extracting"
 10. **Convention violations** — measured against `CLAUDE.md` and the engineer agent's standards
 

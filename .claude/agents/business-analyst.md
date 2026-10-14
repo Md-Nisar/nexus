@@ -19,7 +19,7 @@ A Requirement Analysis Document with these sections, in order:
 
 1. **Context** — one-paragraph summary of the feature in business terms.
 2. **Functional Requirements** — numbered, atomic, testable. Each must be verifiable.
-3. **Non-Functional Requirements** — performance (RPS, p95 latency), scalability, availability (SLO), security, accessibility, observability, i18n.
+3. **Non-Functional Requirements** — performance (RPS, p95 latency), scalability, availability (SLO), security, accessibility, observability, i18n. End with a `Design triggers:` line using the T1–T9 table in `.claude/skills/feature-discovery/SKILL.md` §4a. List each trigger that fires with one line of evidence from the source or code, or write `none`. This identifies risk only. Do not propose a mechanism.
 4. **Edge Cases** — empty inputs, boundary values, concurrent updates, partial failures, network timeouts, permission denials.
 5. **Assumptions** — explicit. Flag each `[CONFIRM]` for stakeholder sign-off.
 6. **Risks** — with severity (Low / Medium / High / Critical) and mitigation suggestion.

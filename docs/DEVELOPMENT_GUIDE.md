@@ -287,7 +287,7 @@ Every non-trivial change follows this model. It is enforced by approval gates (h
 
 | # | Step | Command | Agent / skill | Output | Gate |
 |---|------|---------|---------------|--------|------|
-| 0 | Discovery | `/new-feature` | `feature-discovery` skill | reuse-first survey, impact map, open questions | — |
+| 0 | Discovery | `/new-feature` | `feature-discovery` skill | reuse-first survey, impact map, design triggers (T1–T9), open questions | — |
 | 1 | Requirements | `/analyze-story` | business-analyst | `01-requirements.md` | **Gate 1: requirements approved** |
 | 2 | Impact analysis | `/impact-analysis` | architect | `02-impact.md` | — |
 | 3 | Design + API + DB + threat model | `/design` | architect + security-reviewer | `03-design.md`, `03b-threat-model.md` | **Gate 2: architecture approved** |
