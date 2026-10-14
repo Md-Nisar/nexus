@@ -71,19 +71,10 @@ class JwtClaimsTest {
     assertThat(claims.permissions()).containsExactly("user:read");
   }
 
-  /** Decision 18 / ADR-0022 D7: M6 accepts {2, 3} one release ahead of M7 minting v3. */
+  /** US-018 M7b (design §9.6): only the current schema version is accepted. */
   @Test
-  void should_containExactlyVersions2And3_when_acceptedVersionsRead() {
-    assertThat(JwtClaims.ACCEPTED_VERSIONS).containsExactlyInAnyOrder(2, 3);
-  }
-
-  /**
-   * US-018 M7 (design §9.6): M7 mints v3 (v2 plus {@code perm_epoch}) and still accepts v2, so a
-   * rolling deploy never 401s a token minted by an M6 instance.
-   */
-  @Test
-  void should_mintVersion3AndAcceptVersions2And3_when_m7Ships() {
+  void should_containExactlyVersion3_when_acceptedVersionsRead() {
     assertThat(JwtClaims.CURRENT_VERSION).isEqualTo(3);
-    assertThat(JwtClaims.ACCEPTED_VERSIONS).contains(JwtClaims.CURRENT_VERSION, 2);
+    assertThat(JwtClaims.ACCEPTED_VERSIONS).containsExactly(3);
   }
 }

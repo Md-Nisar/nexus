@@ -7,6 +7,11 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ## [Unreleased]
 
+### Changed — US-018 Milestone 7b (drop v2 token acceptance; T-015)
+
+**Backend**
+- **Behaviour change:** access tokens with `schema_version` 2 are now rejected with 401 `AUTH_003` (`nexus.auth.token_rejected{reason=schema_version}`); only v3 is accepted. Deploy only after M7 has run on every instance for at least 900 s. Rollback is redeploying M7.
+
 ### Added — US-018 Milestone 7 (permission token freshness: A9, A10; T-009 to T-014)
 
 **Backend**

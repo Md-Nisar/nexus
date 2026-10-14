@@ -501,7 +501,7 @@ public final class PermissionFreshnessService {
    *
    * @param tenantId the token's tenant
    * @param userId the token's subject
-   * @param tokenEpoch the token's {@code perm_epoch} ({@code 0} for a v2 token)
+   * @param tokenEpoch the token's {@code perm_epoch}
    * @return {@link FreshnessVerdict#STALE} iff {@code tokenEpoch} is lower than the stored epoch,
    *     or, when the store cannot answer or the instance is degraded-open, lower than the epoch
    *     this instance last saw; {@link FreshnessVerdict#SKIPPED_ERROR} when the store could not
@@ -520,7 +520,7 @@ public final class PermissionFreshnessService {
    *
    * @param tenantId the token's tenant
    * @param userId the token's subject
-   * @param tokenEpoch the token's {@code perm_epoch} ({@code 0} for a v2 token)
+   * @param tokenEpoch the token's {@code perm_epoch}
    * @param issuedAtSeconds the token's {@code iat} in epoch seconds; {@link Long#MAX_VALUE} when
    *     unknown, which never matches the failed-bump marker
    * @return the verdict of {@link #check(UUID, UUID, long)}
