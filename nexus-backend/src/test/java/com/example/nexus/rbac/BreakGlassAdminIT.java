@@ -22,9 +22,12 @@ import com.example.nexus.rbac.domain.RbacRoleNames;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.UserRole;
+import com.example.nexus.rbac.application.port.out.BreakGlassAlertPort;
+import com.example.nexus.rbac.interfaces.cli.BreakGlassAdminRunner;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import java.nio.ByteBuffer;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -36,6 +39,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,6 +49,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
@@ -67,20 +72,27 @@ import org.springframework.test.context.ActiveProfiles;
 @Tag("IT")
 class BreakGlassAdminIT {
 
-  private static final String CHANGE_REF = "OPS-4711";
+  /** Audit rows persist across tests, and a used reference is refused (exit 6): one per call. */
+  private static String uniqueRef() {
+    return "IT-" + ThreadLocalRandom.current().nextInt(1, 99_999_999);
+  }
+
 
   @Autowired private BootstrapAdminService bootstrapAdminService;
   @Autowired private RoleAssignmentService roleAssignmentService;
   @Autowired private JpaUserRepository userRepository;
   @Autowired private JpaRoleRepository roleRepository;
   @Autowired private JpaUserRoleRepository userRoleRepository;
+  @Autowired private BreakGlassAlertPort alertPort;
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private JdbcTemplate jdbc;
 
   private ListAppender<ILoggingEvent> alertLog;
+  private String changeRef;
 
   @BeforeEach
   void captureAlertLog() {
+    changeRef = uniqueRef();
     alertLog = new ListAppender<>();
     alertLog.start();
     ((Logger) LoggerFactory.getLogger(BreakGlassAlertAdapter.class)).addAppender(alertLog);
@@ -100,7 +112,7 @@ class BreakGlassAdminIT {
     Role adminRole = seedSystemTenantAdminRole(tenantId);
     User target = seedUser(tenantId, true);
 
-    BreakGlassOutcome outcome = bootstrapAdminService.grantFirstAdmin(target.getId(), CHANGE_REF);
+    BreakGlassOutcome outcome = bootstrapAdminService.grantFirstAdmin(target.getId(), changeRef);
 
     assertThat(outcome).isEqualTo(BreakGlassOutcome.GRANTED);
     assertThat(outcome.exitCode()).isZero();
@@ -111,7 +123,7 @@ class BreakGlassAdminIT {
     assertThat(rows).hasSize(1);
     assertThat(rows.get(0)).containsEntry("outcome", "SUCCESS");
     assertThat(rows.get(0)).containsEntry("actorType", "BREAK_GLASS_CLI");
-    assertThat(rows.get(0)).containsEntry("changeRef", CHANGE_REF);
+    assertThat(rows.get(0)).containsEntry("changeRef", changeRef);
     assertThat(pagedMessages())
         .singleElement()
         .satisfies(
@@ -121,7 +133,7 @@ class BreakGlassAdminIT {
                     .contains("outcome=GRANTED")
                     .contains("tenantId=" + tenantId)
                     .contains("targetUserId=" + target.getId())
-                    .contains("changeRef=" + CHANGE_REF));
+                    .contains("changeRef=" + changeRef));
   }
 
   @Test
@@ -129,18 +141,22 @@ class BreakGlassAdminIT {
     UUID tenantId = uuidGenerator.newId();
     seedSystemTenantAdminRole(tenantId);
     User target = seedUser(tenantId, true);
-    assertThat(bootstrapAdminService.grantFirstAdmin(target.getId(), CHANGE_REF))
+    assertThat(bootstrapAdminService.grantFirstAdmin(target.getId(), changeRef))
         .isEqualTo(BreakGlassOutcome.GRANTED);
 
-    BreakGlassOutcome second = bootstrapAdminService.grantFirstAdmin(target.getId(), CHANGE_REF);
+    // Same reference: refused earlier, exit 6 (design §7.2). A fresh reference reaches the
+    // precondition and is refused for the existing administrator, exit 5.
+    assertThat(bootstrapAdminService.grantFirstAdmin(target.getId(), changeRef))
+        .isEqualTo(BreakGlassOutcome.CHANGE_REF_REUSED);
+    BreakGlassOutcome second = bootstrapAdminService.grantFirstAdmin(target.getId(), uniqueRef());
 
     assertThat(second).isEqualTo(BreakGlassOutcome.TENANT_HAS_ADMIN);
     assertThat(second.exitCode()).isEqualTo(5);
     assertThat(activeAdminHolderCount(tenantId)).isEqualTo(1);
     assertThat(auditRows(tenantId))
         .extracting(row -> row.get("outcome") + ":" + row.get("reason"))
-        .containsExactlyInAnyOrder("SUCCESS:null", "FAILURE:TENANT_HAS_ADMIN");
-    assertThat(pagedMessages()).hasSize(2);
+        .contains("SUCCESS:null", "FAILURE:TENANT_HAS_ADMIN");
+    assertThat(pagedMessages()).hasSize(3);
   }
 
   // ── Refusals ─────────────────────────────────────────────────────────────────────────
@@ -156,7 +172,7 @@ class BreakGlassAdminIT {
             existingAdmin.getId()));
     User target = seedUser(tenantId, true);
 
-    BreakGlassOutcome outcome = bootstrapAdminService.grantFirstAdmin(target.getId(), CHANGE_REF);
+    BreakGlassOutcome outcome = bootstrapAdminService.grantFirstAdmin(target.getId(), changeRef);
 
     assertThat(outcome).isEqualTo(BreakGlassOutcome.TENANT_HAS_ADMIN);
     assertThat(activeAssignedBy(target.getId(), adminRole.getId())).isEmpty();
@@ -168,7 +184,7 @@ class BreakGlassAdminIT {
     UUID tenantId = uuidGenerator.newId();
     User target = seedUser(tenantId, true);
 
-    BreakGlassOutcome outcome = bootstrapAdminService.grantFirstAdmin(target.getId(), CHANGE_REF);
+    BreakGlassOutcome outcome = bootstrapAdminService.grantFirstAdmin(target.getId(), changeRef);
 
     assertThat(outcome).isEqualTo(BreakGlassOutcome.NO_SYSTEM_ADMIN_ROLE);
     assertThat(outcome.exitCode()).isEqualTo(4);
@@ -181,7 +197,7 @@ class BreakGlassAdminIT {
     roleRepository.save(new Role(uuidGenerator.newId(), tenantId, "TENANT_ADMIN", "custom", false));
     User target = seedUser(tenantId, true);
 
-    assertThat(bootstrapAdminService.grantFirstAdmin(target.getId(), CHANGE_REF))
+    assertThat(bootstrapAdminService.grantFirstAdmin(target.getId(), changeRef))
         .isEqualTo(BreakGlassOutcome.NO_SYSTEM_ADMIN_ROLE);
   }
 
@@ -191,7 +207,7 @@ class BreakGlassAdminIT {
     seedSystemTenantAdminRole(tenantId);
     User pending = seedUser(tenantId, false);
 
-    BreakGlassOutcome outcome = bootstrapAdminService.grantFirstAdmin(pending.getId(), CHANGE_REF);
+    BreakGlassOutcome outcome = bootstrapAdminService.grantFirstAdmin(pending.getId(), changeRef);
 
     assertThat(outcome).isEqualTo(BreakGlassOutcome.USER_NOT_ACTIVE);
     assertThat(outcome.exitCode()).isEqualTo(3);
@@ -202,7 +218,7 @@ class BreakGlassAdminIT {
   void should_refuseWithExit3AndNullTenantRow_when_targetUserDoesNotExist() {
     UUID unknownUser = uuidGenerator.newId();
 
-    BreakGlassOutcome outcome = bootstrapAdminService.grantFirstAdmin(unknownUser, CHANGE_REF);
+    BreakGlassOutcome outcome = bootstrapAdminService.grantFirstAdmin(unknownUser, changeRef);
 
     assertThat(outcome).isEqualTo(BreakGlassOutcome.USER_NOT_FOUND);
     List<Map<String, Object>> rows =
@@ -213,6 +229,108 @@ class BreakGlassAdminIT {
     assertThat(rows).hasSize(1);
     assertThat(rows.get(0)).containsEntry("outcome", "FAILURE").containsEntry("reason", "USER_NOT_FOUND");
     assertThat(pagedMessages()).singleElement().asString().contains("reason=USER_NOT_FOUND");
+  }
+
+  // ── T-008: replay refusal, argument validation, the runner ───────────────────────────
+
+  private int runCli(String... args) {
+    List<Integer> codes = new ArrayList<>();
+    new BreakGlassAdminRunner(bootstrapAdminService, alertPort, codes::add, Duration.ZERO)
+        .run(new org.springframework.boot.DefaultApplicationArguments(args));
+    assertThat(codes).hasSize(1);
+    return codes.get(0);
+  }
+
+  @Test
+  void should_refuseWithExit6AuditedAndPaged_when_exactChangeRefWasUsedOnASuccessfulGrant() {
+    UUID tenantId = uuidGenerator.newId();
+    seedSystemTenantAdminRole(tenantId);
+    User first = seedUser(tenantId, true);
+    String used = uniqueRef();
+    assertThat(runCli("--target-user-id=" + first.getId(), "--change-ref=" + used)).isZero();
+    // The tenant falls to zero administrators again (direct SQL, as a manual incident would).
+    jdbc.update("UPDATE user_roles SET revoked_at = NOW(6) WHERE user_id = ?", toBytes(first.getId()));
+    User second = seedUser(tenantId, true);
+    alertLog.list.clear();
+
+    int code = runCli("--target-user-id=" + second.getId(), "--change-ref=" + used);
+
+    assertThat(code).isEqualTo(6);
+    assertThat(activeAdminHolderCount(tenantId)).isZero();
+    // The replay refusal runs before the user lookup, so its row has a null tenant_id.
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM auth_events WHERE event_type = 'ROLE_BREAK_GLASS_GRANT' "
+                    + "AND outcome = 'FAILURE' AND user_id = ? "
+                    + "AND JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.reason')) = 'CHANGE_REF_REUSED'",
+                Integer.class,
+                toBytes(second.getId())))
+        .isEqualTo(1);
+    assertThat(pagedMessages()).singleElement().asString().contains("reason=CHANGE_REF_REUSED");
+  }
+
+  @Test
+  void should_refuseWithExit6_when_changeRefWasUsedOnASuccessfulGrantInAnotherTenant() {
+    UUID tenantA = uuidGenerator.newId();
+    UUID tenantB = uuidGenerator.newId();
+    seedSystemTenantAdminRole(tenantA);
+    seedSystemTenantAdminRole(tenantB);
+    User inA = seedUser(tenantA, true);
+    User inB = seedUser(tenantB, true);
+    String shared = uniqueRef();
+    assertThat(runCli("--target-user-id=" + inA.getId(), "--change-ref=" + shared)).isZero();
+
+    assertThat(runCli("--target-user-id=" + inB.getId(), "--change-ref=" + shared)).isEqualTo(6);
+    assertThat(activeAdminHolderCount(tenantB)).isZero();
+  }
+
+  @Test
+  void should_refuseWithExit2WithoutEchoingTheValue_when_changeRefIsPaddedAfterTheCanonicalOne() {
+    UUID tenantId = uuidGenerator.newId();
+    seedSystemTenantAdminRole(tenantId);
+    User first = seedUser(tenantId, true);
+    int number = ThreadLocalRandom.current().nextInt(1, 9_999);
+    assertThat(runCli("--target-user-id=" + first.getId(), "--change-ref=PAD-" + number)).isZero();
+    jdbc.update("UPDATE user_roles SET revoked_at = NOW(6) WHERE user_id = ?", toBytes(first.getId()));
+    User second = seedUser(tenantId, true);
+    alertLog.list.clear();
+    Integer before = invalidArgumentRowCount();
+
+    int code = runCli("--target-user-id=" + second.getId(), "--change-ref=PAD-000" + number);
+
+    assertThat(code).isEqualTo(2);
+    assertThat(activeAdminHolderCount(tenantId)).isZero();
+    assertThat(invalidArgumentRowCount()).isEqualTo(before + 1);
+    List<Map<String, Object>> invalidRows =
+        jdbc.queryForList(
+            "SELECT tenant_id, user_id, CAST(metadata AS CHAR) AS metadata FROM auth_events "
+                + "WHERE event_type = 'ROLE_BREAK_GLASS_GRANT' "
+                + "AND JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.reason')) = 'INVALID_ARGUMENT' "
+                + "AND outcome = 'FAILURE' AND metadata LIKE '%INVALID_ARGUMENT%'");
+    assertThat(invalidRows)
+        .allSatisfy(
+            row -> {
+              assertThat(row.get("tenant_id")).isNull();
+              assertThat((String) row.get("metadata")).doesNotContain("PAD-000" + number);
+            });
+    assertThat(pagedMessages())
+        .singleElement()
+        .asString()
+        .isEqualTo("RBAC_BREAK_GLASS_USED outcome=REFUSED reason=INVALID_ARGUMENT");
+    assertThat(alertLog.list)
+        .allSatisfy(event -> assertThat(event.getFormattedMessage()).doesNotContain("PAD-000" + number));
+  }
+
+  @Test
+  void should_exit2_when_targetUserIdIsNotAUuid() {
+    assertThat(runCli("--target-user-id=nope", "--change-ref=" + uniqueRef())).isEqualTo(2);
+  }
+
+  private Integer invalidArgumentRowCount() {
+    return jdbc.queryForObject(
+        "SELECT COUNT(*) FROM auth_events WHERE event_type = 'ROLE_BREAK_GLASS_GRANT' "
+            + "AND JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.reason')) = 'INVALID_ARGUMENT'",
+        Integer.class);
   }
 
   // ── Concurrency (TS-6) ───────────────────────────────────────────────────────────────
@@ -249,7 +367,7 @@ class BreakGlassAdminIT {
           pool.submit(
               () -> {
                 barrier.await(5, TimeUnit.SECONDS);
-                return bootstrapAdminService.grantFirstAdmin(target.getId(), CHANGE_REF);
+                return bootstrapAdminService.grantFirstAdmin(target.getId(), changeRef);
               });
 
       assertThatThrownBy(() -> revoke.get(30, TimeUnit.SECONDS))
@@ -264,7 +382,12 @@ class BreakGlassAdminIT {
     assertThat(activeAssignedBy(admin.getId(), adminRole.getId())).isNotEmpty();
   }
 
-  /** Two invocations for two users of one zero-administrator tenant: exactly one grant. */
+  /**
+   * Two invocations for two users of one zero-administrator tenant: never two grants. On an empty
+   * lock range InnoDB's two gap locks do not conflict, so the loser is either refused (exit 5) or
+   * chosen as a deadlock victim and rolled back with nothing written; both leave exactly one
+   * administrator. The runbook allows one invocation at a time (T-S11).
+   */
   @Test
   void should_grantExactlyOnce_when_twoInvocationsRaceOnAZeroAdministratorTenant() throws Exception {
     UUID tenantId = uuidGenerator.newId();
@@ -273,29 +396,34 @@ class BreakGlassAdminIT {
     User second = seedUser(tenantId, true);
 
     ExecutorService pool = Executors.newFixedThreadPool(2);
-    List<BreakGlassOutcome> outcomes = new ArrayList<>();
+    List<String> results = new ArrayList<>();
     try {
       CyclicBarrier barrier = new CyclicBarrier(2);
-      Future<BreakGlassOutcome> a =
-          pool.submit(
-              () -> {
-                barrier.await(5, TimeUnit.SECONDS);
-                return bootstrapAdminService.grantFirstAdmin(first.getId(), "OPS-1");
-              });
-      Future<BreakGlassOutcome> b =
-          pool.submit(
-              () -> {
-                barrier.await(5, TimeUnit.SECONDS);
-                return bootstrapAdminService.grantFirstAdmin(second.getId(), "OPS-2");
-              });
-      outcomes.add(a.get(30, TimeUnit.SECONDS));
-      outcomes.add(b.get(30, TimeUnit.SECONDS));
+      List<Future<BreakGlassOutcome>> futures = new ArrayList<>();
+      for (User user : List.of(first, second)) {
+        futures.add(
+            pool.submit(
+                () -> {
+                  barrier.await(5, TimeUnit.SECONDS);
+                  return bootstrapAdminService.grantFirstAdmin(user.getId(), uniqueRef());
+                }));
+      }
+      for (Future<BreakGlassOutcome> future : futures) {
+        try {
+          results.add(future.get(30, TimeUnit.SECONDS).name());
+        } catch (ExecutionException e) {
+          assertThat(e.getCause()).isInstanceOf(CannotAcquireLockException.class);
+          results.add("DEADLOCK_VICTIM");
+        }
+      }
     } finally {
       pool.shutdownNow();
     }
 
-    assertThat(outcomes)
-        .containsExactlyInAnyOrder(BreakGlassOutcome.GRANTED, BreakGlassOutcome.TENANT_HAS_ADMIN);
+    assertThat(results).containsOnlyOnce("GRANTED");
+    assertThat(results).filteredOn(r -> !r.equals("GRANTED"))
+        .singleElement()
+        .isIn("TENANT_HAS_ADMIN", "DEADLOCK_VICTIM");
     assertThat(activeAdminHolderCount(tenantId)).isEqualTo(1);
   }
 

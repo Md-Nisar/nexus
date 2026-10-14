@@ -8,6 +8,7 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.stereotype.Component;
 import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.servlet.mvc.condition.PathPatternsRequestCondition;
@@ -61,6 +62,7 @@ import org.springframework.web.util.ServletRequestPathUtils;
  * DispatcherServlet} uses and fails if the first one to answer is not the same {@code
  * @PublicEndpoint} handler. A runtime {@code registerMapping} call needs review.
  */
+@ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @Component
 public class PublicEndpointRequestMatcher {
 

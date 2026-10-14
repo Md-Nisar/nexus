@@ -14,6 +14,7 @@ import static org.mockito.Mockito.when;
 import com.example.nexus.rbac.application.port.out.BreakGlassAlert;
 import com.example.nexus.rbac.application.port.out.BreakGlassAlertPort;
 import com.example.nexus.rbac.application.port.out.BreakGlassAuditEvent;
+import com.example.nexus.rbac.application.port.out.BreakGlassGrantLookupPort;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.UserDirectoryPort;
 import com.example.nexus.rbac.application.port.out.UserDirectoryPort.DirectoryUser;
@@ -49,6 +50,7 @@ class BootstrapAdminServiceTest {
   @Mock private UserDirectoryPort userDirectoryPort;
   @Mock private RbacAuditPort rbacAuditPort;
   @Mock private BreakGlassAlertPort alertPort;
+  @Mock private BreakGlassGrantLookupPort grantLookupPort;
 
   private BootstrapAdminService service;
 
@@ -60,7 +62,7 @@ class BootstrapAdminServiceTest {
   void setUp() {
     service =
         new BootstrapAdminService(
-            userRoleAssignmentPort, userDirectoryPort, rbacAuditPort, alertPort);
+            userRoleAssignmentPort, userDirectoryPort, rbacAuditPort, alertPort, grantLookupPort);
     tenantId = UUID.randomUUID();
     targetUserId = UUID.randomUUID();
     adminRoleId = UUID.randomUUID();
@@ -356,5 +358,53 @@ class BootstrapAdminServiceTest {
     // EC2: the service has no RoleAssignmentService dependency at all.
     assertThat(BootstrapAdminService.class.getDeclaredConstructors()[0].getParameterTypes())
         .doesNotContain(RoleAssignmentService.class);
+  }
+
+  // ── T-008: replay refusal (RC-37.2, RC-47) and invalid-argument refusal (RC-54(a)) ──
+
+  @Test
+  void should_refuseWithExit6BeforeAnyUserLookup_when_changeRefWasUsedOnASuccessfulGrant() {
+    when(grantLookupPort.existsSuccessfulGrantWithChangeRef(CHANGE_REF)).thenReturn(true);
+
+    BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    assertThat(outcome).isEqualTo(BreakGlassOutcome.CHANGE_REF_REUSED);
+    assertThat(outcome.exitCode()).isEqualTo(6);
+    verifyNoInteractions(userDirectoryPort);
+    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
+    BreakGlassAuditEvent row = capturedRefusal();
+    assertThat(row)
+        .isEqualTo(new BreakGlassAuditEvent(null, targetUserId, CHANGE_REF, "CHANGE_REF_REUSED"));
+    BreakGlassAlert alert = capturedAlert();
+    assertThat(alert.outcome()).isEqualTo(BreakGlassAlert.OUTCOME_REFUSED);
+    assertThat(alert.reason()).isEqualTo("CHANGE_REF_REUSED");
+    assertThat(alert.changeRef()).isEqualTo(CHANGE_REF);
+  }
+
+  @Test
+  void should_lookUpTheExactChangeRefBeforeResolvingTheUser_when_granting() {
+    givenActiveTargetWithSystemAdminRole();
+    givenHolders();
+
+    service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    InOrder order = inOrder(grantLookupPort, userDirectoryPort);
+    order.verify(grantLookupPort).existsSuccessfulGrantWithChangeRef(CHANGE_REF);
+    order.verify(userDirectoryPort).findDirectoryUser(targetUserId);
+  }
+
+  @Test
+  void should_writeInvalidArgumentRowWithNothingElse_when_refusingAnInvalidArgument() {
+    BreakGlassOutcome outcome = service.refuseInvalidArgument();
+
+    assertThat(outcome).isEqualTo(BreakGlassOutcome.INVALID_ARGUMENT);
+    assertThat(outcome.exitCode()).isEqualTo(2);
+    assertThat(capturedRefusal())
+        .isEqualTo(new BreakGlassAuditEvent(null, null, null, "INVALID_ARGUMENT"));
+    assertThat(capturedAlert())
+        .isEqualTo(
+            new BreakGlassAlert(
+                null, null, BreakGlassAlert.OUTCOME_REFUSED, "INVALID_ARGUMENT", null));
+    verifyNoInteractions(userRoleAssignmentPort, userDirectoryPort, grantLookupPort);
   }
 }

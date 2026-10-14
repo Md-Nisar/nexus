@@ -53,7 +53,11 @@ class TenantIsolationArchitectureTest {
             "JpaRoleRepository#findPermissionNamesByRole",
             "JpaUserRoleRepository#countActiveByUserAndRole",
             "JpaUserRoleRepository#revokeById",
-            "JpaUserRoleRepository#findActiveUserIdsByRole");
+            "JpaUserRoleRepository#findActiveUserIdsByRole",
+            // US-018 A7 (T-008, RC-47): the break-glass replay check is deliberately GLOBAL. A
+            // change reference approves one grant anywhere, so a tenant predicate would let a
+            // reference used in another tenant be replayed. Parameter-bound, SUCCESS rows only.
+            "JpaAuthEventRepository#existsSuccessfulBreakGlassGrant");
 
     @ArchTest
     static final ArchRule tenant_scoped_repository_methods_must_filter_by_tenant =

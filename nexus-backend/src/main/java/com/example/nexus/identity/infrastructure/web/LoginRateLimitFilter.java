@@ -20,6 +20,7 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.http.HttpMethod;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -59,6 +60,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * com.example.nexus.identity.application.service.LoginUseCase}) remains globally authoritative
  * regardless of deployment topology.
  */
+@ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @Component
 @SuppressWarnings("java:S1075")
 public class LoginRateLimitFilter extends OncePerRequestFilter {

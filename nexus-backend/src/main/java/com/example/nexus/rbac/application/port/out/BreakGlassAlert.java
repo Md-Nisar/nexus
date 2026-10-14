@@ -8,7 +8,7 @@ import java.util.UUID;
  * argument-validation refusal never carries {@code targetUserId} or {@code changeRef} (L-6,
  * RC-54(a)).
  *
- * @param outcome {@code GRANTED} or {@code REFUSED}
+ * @param outcome {@code GRANTED}, {@code REFUSED}, or {@code ERROR} (an unexpected failure)
  * @param reason the refusal reason; {@code null} on a grant
  */
 public record BreakGlassAlert(
@@ -16,4 +16,5 @@ public record BreakGlassAlert(
 
   public static final String OUTCOME_GRANTED = "GRANTED";
   public static final String OUTCOME_REFUSED = "REFUSED";
+  public static final String OUTCOME_ERROR = "ERROR";
 }

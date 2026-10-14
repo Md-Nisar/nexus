@@ -4,6 +4,7 @@ import com.example.nexus.rbac.application.RoleAssignmentService.AdminEquivalentR
 import com.example.nexus.rbac.application.port.out.BreakGlassAlert;
 import com.example.nexus.rbac.application.port.out.BreakGlassAlertPort;
 import com.example.nexus.rbac.application.port.out.BreakGlassAuditEvent;
+import com.example.nexus.rbac.application.port.out.BreakGlassGrantLookupPort;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.UserDirectoryPort;
 import com.example.nexus.rbac.application.port.out.UserDirectoryPort.DirectoryUser;
@@ -48,16 +49,19 @@ public class BootstrapAdminService {
   private final UserDirectoryPort userDirectoryPort;
   private final RbacAuditPort rbacAuditPort;
   private final BreakGlassAlertPort alertPort;
+  private final BreakGlassGrantLookupPort grantLookupPort;
 
   public BootstrapAdminService(
       UserRoleAssignmentPort userRoleAssignmentPort,
       UserDirectoryPort userDirectoryPort,
       RbacAuditPort rbacAuditPort,
-      BreakGlassAlertPort alertPort) {
+      BreakGlassAlertPort alertPort,
+      BreakGlassGrantLookupPort grantLookupPort) {
     this.userRoleAssignmentPort = userRoleAssignmentPort;
     this.userDirectoryPort = userDirectoryPort;
     this.rbacAuditPort = rbacAuditPort;
     this.alertPort = alertPort;
+    this.grantLookupPort = grantLookupPort;
   }
 
   /**
@@ -65,13 +69,18 @@ public class BootstrapAdminService {
    * tenant has no administrator. {@code changeRef} must already have passed the runner's
    * canonical-pattern check; it is the operator's only attribution (it joins the infra audit log).
    *
-   * <p>Order (design §7.1): target user (missing or not ACTIVE, exit 3) → system {@code
+   * <p>Order (design §7.1): change reference already used on a SUCCESS grant in any tenant (exit
+   * 6, RC-37.2; before any user lookup) → target user (missing or not ACTIVE, exit 3) → system {@code
    * TENANT_ADMIN} (absent, exit 4) → M10 prime and M11 set lock → zero-administrator check (an
    * administrator exists, exit 5) → insert with {@code assigned_by = target} (Decision 10) → atomic
    * audit → page after commit.
    */
   @Transactional
   public BreakGlassOutcome grantFirstAdmin(UUID targetUserId, String changeRef) {
+    if (grantLookupPort.existsSuccessfulGrantWithChangeRef(changeRef)) {
+      return refuse(BreakGlassOutcome.CHANGE_REF_REUSED, null, targetUserId, changeRef);
+    }
+
     Optional<DirectoryUser> user = userDirectoryPort.findDirectoryUser(targetUserId);
     if (user.isEmpty()) {
       return refuse(BreakGlassOutcome.USER_NOT_FOUND, null, targetUserId, changeRef);
@@ -113,6 +122,16 @@ public class BootstrapAdminService {
                 new BreakGlassAlert(
                     tenantId, targetUserId, BreakGlassAlert.OUTCOME_GRANTED, null, changeRef)));
     return BreakGlassOutcome.GRANTED;
+  }
+
+  /**
+   * The refusal path for an invalid or missing argument (exit 2, RC-54(a)). It takes <b>no
+   * argument</b> on purpose: the rejected values never reach the audit row (null {@code tenant_id},
+   * metadata {@code {actorType, reason}} only) or the page (no {@code targetUserId}, no {@code
+   * changeRef}), so free text cannot be smuggled into either through a refusal (L-6).
+   */
+  public BreakGlassOutcome refuseInvalidArgument() {
+    return refuse(BreakGlassOutcome.INVALID_ARGUMENT, null, null, null);
   }
 
   /**

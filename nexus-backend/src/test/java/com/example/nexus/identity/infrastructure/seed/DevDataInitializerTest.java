@@ -8,6 +8,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.example.nexus.common.Profiles;
 import com.example.nexus.identity.application.EmailBlindIndexService;
 import com.example.nexus.identity.application.port.out.PasswordHasherPort;
 import com.example.nexus.identity.application.port.out.UserRegistrationPort;
@@ -27,6 +28,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.annotation.Profile;
+import org.springframework.mock.env.MockEnvironment;
 
 /** Unit tests for {@link DevDataInitializer} (dev-profile E2E test-user seed). */
 @ExtendWith(MockitoExtension.class)
@@ -131,5 +134,22 @@ class DevDataInitializerTest {
         "existing-hmac",
         "existing-hash",
         Instant.now());
+  }
+
+  /**
+   * US-018 A7 (T-008 (e), 03-design.md §7.2): the only existing runner must never run in a
+   * {@code break-glass} process. Evaluates the real profile expression against an environment with
+   * {@code break-glass} active, so a negated expression such as {@code !prod} would also fail here.
+   */
+  @Test
+  void should_notOverlapTheBreakGlassProfile() {
+    Profile profile = DevDataInitializer.class.getAnnotation(Profile.class);
+    MockEnvironment breakGlassOnly = new MockEnvironment();
+    breakGlassOnly.setActiveProfiles(Profiles.BREAK_GLASS);
+
+    assertThat(profile).isNotNull();
+    assertThat(breakGlassOnly.acceptsProfiles(org.springframework.core.env.Profiles.of(profile.value())))
+        .isFalse();
+    assertThat(profile.value()).containsExactly(Profiles.DEV);
   }
 }

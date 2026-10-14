@@ -1,0 +1,20 @@
+# Break-glass first-administrator CLI profile (US-018 A7, ADR-0025, 03-design.md §7.2).
+# The same service jar, run as a short-lived process: java -jar nexus-backend.jar
+#   --spring.profiles.active=<env>,break-glass --target-user-id=<uuid> --change-ref=<ticket>
+# It uses the service's own nexus_app credentials, so no grant change is needed.
+
+spring:
+  main:
+    # No embedded server. BreakGlassWebContextGuard fails the context refresh if this is anything
+    # but "none" (RC-37.6, RC-50(d)), including when a command-line argument overrides it.
+    web-application-type: none
+  flyway:
+    # The tool must never migrate a schema. ddl-auto=validate (application.yml) still checks it.
+    enabled: false
+
+nexus:
+  rbac:
+    break-glass:
+      # RC-37.4: how long the runner waits before exiting, so the node's log shipper reads the
+      # RBAC_BREAK_GLASS_USED page. Set it to at least the shipper's flush interval.
+      log-flush-interval: 15s

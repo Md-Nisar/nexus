@@ -32,6 +32,7 @@ import jakarta.servlet.ServletResponse;
 import java.lang.annotation.Annotation;
 import java.security.Principal;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -42,6 +43,8 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.context.annotation.Profile;
+import org.springframework.stereotype.Component;
 import org.springframework.stereotype.Controller;
 import org.springframework.web.HttpRequestHandler;
 import org.springframework.web.bind.annotation.CookieValue;
@@ -289,6 +292,41 @@ class HexagonalArchitectureTest {
                             + "without the grant-subset checks, so only the profile-gated "
                             + "rbac.interfaces.cli runner may call it. A second caller makes "
                             + "break-glass a general admin-granting path and needs an ADR.");
+
+    // US-018 A7 (03-design.md §7.2, ADR-0025 3): every Spring bean in rbac.interfaces.cli must be
+    // active ONLY under the break-glass profile, so the privileged runner can never start in a
+    // normal service process. The profile value is compared exactly: `break-glass` alone, not a
+    // list or an expression that also matches another profile. Empty is not allowed: zero beans
+    // means the predicate broke or the runner was moved.
+    @ArchTest
+    static final ArchRule rbac_cli_beans_must_be_profile_gated_to_break_glass =
+            cliBeansMustBeProfileGatedToBreakGlass("..rbac.interfaces.cli..");
+
+    /** The rule above, over {@code packageIdentifier}, so the fixtures can point it at themselves. */
+    static ArchRule cliBeansMustBeProfileGatedToBreakGlass(String packageIdentifier) {
+        return classes()
+                .that().resideInAPackage(packageIdentifier)
+                .and().areMetaAnnotatedWith(Component.class)
+                .should(beProfileGatedToBreakGlassOnly())
+                .because("US-018 A7 / ADR-0025 3: a cli bean without @Profile(\"break-glass\") would "
+                        + "start in the serving process and expose the break-glass path.");
+    }
+
+    private static ArchCondition<JavaClass> beProfileGatedToBreakGlassOnly() {
+        return new ArchCondition<>("be annotated @Profile(\"break-glass\") and nothing else") {
+            @Override
+            public void check(JavaClass javaClass, ConditionEvents events) {
+                boolean gated = javaClass.tryGetAnnotationOfType(Profile.class)
+                        .map(profile -> Arrays.equals(profile.value(), new String[] {"break-glass"}))
+                        .orElse(false);
+                if (!gated) {
+                    events.add(SimpleConditionEvent.violated(javaClass, javaClass.getName()
+                            + " is a bean in rbac.interfaces.cli but is not annotated"
+                            + " @Profile(\"break-glass\") exactly"));
+                }
+            }
+        };
+    }
 
     private static final List<Class<? extends Annotation>> ACCESS_MARKERS =
             List.of(RequiresPermission.class, AuthenticatedEndpoint.class, PublicEndpoint.class);

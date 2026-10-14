@@ -15,6 +15,10 @@ package com.example.nexus.common;
  *       ddl-auto=create-drop}. Active only for {@code NexusBackendApplicationTests} via {@code
  *       @ActiveProfiles}. Named "smoke" rather than "test" to avoid confusion with integration
  *       tests ({@code *IT}) which do not use a named profile.
+ *   <li>{@link #BREAK_GLASS} — the US-018 A7 first-administrator CLI: the same jar run as a
+ *       short-lived process with no web server and no Flyway ({@code application-break-glass.yml}).
+ *       Never combined with a serving deployment; {@code BreakGlassWebContextGuard} fails the
+ *       context refresh unless the web application type is {@code none}.
  * </ul>
  *
  * <p>Integration tests ({@code *IT}) do not use a named profile — they activate Testcontainers
@@ -33,6 +37,9 @@ public final class Profiles {
    * Never use in shared, staging, or production environments.
    */
   public static final String SMOKE = "smoke";
+
+  /** Break-glass first-administrator CLI profile (US-018 A7, ADR-0025). */
+  public static final String BREAK_GLASS = "break-glass";
 
   private Profiles() {}
 }
