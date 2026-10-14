@@ -70,6 +70,12 @@ spring:
 server:
   port: ${SERVER_PORT:1000}
   shutdown: graceful
+  # Pre-PR security review L-6: the per-IP login and refresh keys are getRemoteAddr() only (DF-1,
+  # T-1.3). Left unset, Spring Boot turns this on by itself under Kubernetes, which would
+  # rewrite getRemoteAddr() from X-Forwarded-For and let an unauthenticated client rotate its
+  # bucket. To key per client behind a proxy, set `native` AND pin
+  # server.tomcat.remoteip.internal-proxies to the ingress CIDR, and update DF-1.
+  forward-headers-strategy: none
   error:
     # Error bodies come exclusively from GlobalExceptionHandler (RFC 7807)
     include-stacktrace: never
@@ -137,9 +143,10 @@ nexus:
   rbac:
     # Permission cache TTL (ADR 0016 D4). RoleResolutionService always re-reads roles live and
     # treats a role-set mismatch as a cache miss, so a role assignment/revocation is reflected
-    # immediately (US-010 AC6) — this TTL only bounds the lag for a role's own permission set
-    # changing without any (re-)assignment (a future US-015 concern). The JWT itself (re-issued at
-    # login/refresh) remains the actual enforcement authority.
+    # immediately (US-010 AC6). Entries are keyed by permission epoch (US-018 T-010): a detach bumps
+    # every holder's epoch and an attach evicts every holder's entry, so this TTL only bounds the
+    # lag for out-of-band changes (SQL, migrations) and failed evictions. The JWT itself (re-issued
+    # at login/refresh) remains the actual enforcement authority.
     permission-cache-ttl-seconds: ${NEXUS_RBAC_PERMISSION_CACHE_TTL_SECONDS:900}
     # Denial throttle for the privileged role-change gate (US-016 D14/RC-10). Bounds the cost of
     # repeated authorization denials on assign()/revoke(); it is not an authorization control and
@@ -150,6 +157,43 @@ nexus:
       # Matches nexus.security.rate-limit.ip-window-seconds (line 191) so operators reason about
       # one window length platform-wide.
       window-seconds: ${NEXUS_RBAC_DENIAL_THROTTLE_WINDOW_SECONDS:60}
+    # Per-user permission epoch (US-018 A9, design §9.2, §9.5). Both timeouts apply to dedicated
+    # Redis connections built from spring.data.redis.*; the 2 s timeout above never applies here.
+    epoch:
+      # Bound on one epoch read: runs on every non-public authenticated request (p95 budget 2 ms).
+      command-timeout: ${NEXUS_RBAC_EPOCH_COMMAND_TIMEOUT:50ms}
+      # Bound on one bump script call, run after the revoking transaction commits.
+      bump-timeout: ${NEXUS_RBAC_EPOCH_BUMP_TIMEOUT:500ms}
+      # Must be at least max(nexus.jwt.access-token-ttl-seconds, permission-cache-ttl-seconds)
+      # + 60 s, or startup fails (RC-29, T-E37).
+      key-ttl-seconds: ${NEXUS_RBAC_EPOCH_KEY_TTL_SECONDS:960}
+      # Outage policy per instance (design §9.5, T-011). 3 read or probe failures within
+      # entry-failure-window enter degraded-open and start the clock (t0); fail-open-window after
+      # t0 non-public authenticated requests get 503 AUTH_005. recovery-sustain of failure-free
+      # time in Recovering returns to healthy. Raise fail-open-window only via env var + restart.
+      fail-open-window: ${NEXUS_RBAC_EPOCH_FAIL_OPEN_WINDOW:PT15M}
+      entry-failure-threshold: ${NEXUS_RBAC_EPOCH_ENTRY_FAILURE_THRESHOLD:3}
+      entry-failure-window: ${NEXUS_RBAC_EPOCH_ENTRY_FAILURE_WINDOW:PT10S}
+      recovery-sustain: ${NEXUS_RBAC_EPOCH_RECOVERY_SUSTAIN:PT60S}
+      # Lost-bump replay queue (design §9.3, T-012): the most distinct users whose failed bump is
+      # held per instance for replay. Overflow drops the newest and pages (bump_failed overflow).
+      replay-capacity-users: ${NEXUS_RBAC_EPOCH_REPLAY_CAPACITY_USERS:100000}
+      # Roles whose post-commit holder read failed twice, held per instance until the 1 s tick
+      # reads their holders and bumps them (security review M7 part 2, M-2). Overflow pages
+      # (bump_failed reason=role_overflow).
+      replay-capacity-roles: ${NEXUS_RBAC_EPOCH_REPLAY_CAPACITY_ROLES:1000}
+      # Share of the 100,000-entry last-seen map one tenant may fill (security review M7 part 2,
+      # L-3), so one tenant's large detach cannot switch off the defence for the others. 1 to 100.
+      # The same share applies to one tenant's users in the replay queue and its roles in the role
+      # queue (pre-PR review L-2). A tenant may borrow beyond it only while the queue is under half
+      # full, so the other half stays for tenants under their share; what fits neither overflows
+      # and pages.
+      last-seen-tenant-percent: ${NEXUS_RBAC_EPOCH_LAST_SEEN_TENANT_PERCENT:10}
+    redis:
+      # When true, startup fails unless the main Redis factory and both dedicated epoch factories
+      # authenticate (RC-34.1, RC-45.1, RC-45.2; US-018 T-014). application-prod.yml sets true.
+      # Env override: NEXUS_RBAC_REDIS_REQUIRE_AUTH.
+      require-auth: ${NEXUS_RBAC_REDIS_REQUIRE_AUTH:false}
   identity:
     # --- Encryption ---
     encryption:
@@ -200,12 +244,21 @@ nexus:
       ip-window-seconds: 60
       user-max-attempts: 5       # per-email-HMAC bucket (defense-in-depth, Gate 1 Q2=a)
       user-window-seconds: 900
-      refresh-max-attempts: 30   # POST /api/v1/auth/refresh
+      refresh-ip-max-attempts: 300  # POST /api/v1/auth/refresh — per-IP total per ip-window-seconds (US-018 RC-32; was 30)
+      refresh-family-max-attempts: 30  # per refresh family (REFRESH_FAMILY:{sha256(familyId)}), enforced in RefreshTokenUseCase
+      refresh-fail-max-attempts: 30    # per-IP FAILURE outcomes (REFRESH_IP_FAIL:{ip}), enforced in RefreshTokenUseCase; never blocks a valid token (RC-43)
       forgot-ip-max-attempts: 10  # POST /api/v1/auth/password/forgot — per-IP per ip-window-seconds
       reset-ip-max-attempts: 20   # POST /api/v1/auth/password/reset  — per-IP per ip-window-seconds
   # --- Mail Service ---
   mail:
     from-address: ${NEXUS_MAIL_FROM_ADDRESS:noreply@nexus.example.com}
+  # --- Platform metrics access (pre-PR security re-review RR-M2) ---
+  management:
+    # Bearer token the metrics scraper presents to /actuator/prometheus and /actuator/metrics.
+    # At least 32 random characters, held by operators only; no tenant credential can read these
+    # endpoints. Empty (the default) closes both endpoints for everyone. Set it from a secret
+    # (env NEXUS_MANAGEMENT_SCRAPE_TOKEN), never in a file.
+    scrape-token: ${NEXUS_MANAGEMENT_SCRAPE_TOKEN:}
   # --- Frontend Integration ---
   frontend:
     base-url: ${NEXUS_FRONTEND_BASE_URL:http://localhost:2000}

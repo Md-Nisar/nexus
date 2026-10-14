@@ -101,3 +101,50 @@ Zero-administrator tenants after a deploy: use the `rbacZeroActiveAdmins` health
 ## 6. Kill switch
 
 Set `feature.nexus-us012-rbac-role-assignment.enabled=false` (assign, list, revoke return 404) or `feature.nexus-us015-rbac-role-management.enabled=false` (role and attach endpoints), then restart. This is an availability lever, not a way back to the old rules; see [rollback.md](rollback.md).
+
+## 7. Redis authentication at startup (M7, T-014)
+
+- [ ] Check that `nexus.rbac.redis.require-auth=true` is resolved in production (the `prod` profile is active and `application-prod.yml` sets it; e.g. `/actuator/env/nexus.rbac.redis.require-auth` where exposed, or the effective config of the deployment). With it false the startup check is inert.
+
+If startup fails with `nexus.rbac.redis.require-auth=true but the "<factory>" Redis connection has no password`, set `spring.data.redis.password`, or put the password in the `spring.data.redis.url` userinfo (with a URL set, Boot ignores the password property). A `Sentinel password` message means `spring.data.redis.sentinel.password` is missing.
+
+## 8. Permission removed outside the API (Flyway or SQL) (M7, T-010)
+
+Revoke and detach make holders' tokens stale and drop their cached permission sets automatically. A permission or role assignment removed by a migration or a direct SQL change does neither: holders keep the permission in their access token (up to 900 s) and in their cached set (up to `NEXUS_RBAC_PERMISSION_CACHE_TTL_SECONDS`, 900 s by default). After such a change, in this order:
+
+- [ ] **Bump the epoch of every affected holder.** List the user ids (for a permission removed from a role, the active holders of that role):
+   ```sql
+   SELECT BIN_TO_UUID(ur.tenant_id) AS tenant_id, BIN_TO_UUID(ur.user_id) AS user_id
+   FROM user_roles ur
+   WHERE ur.role_id = UUID_TO_BIN(?) AND ur.revoked_at IS NULL;
+   ```
+   `BIN_TO_UUID` prints the dashed lower-case form that the Redis keys use; `HEX` would print upper-case ids without dashes, and the script below would then bump keys that nothing reads. Run the same monotonic bump the application runs, for up to 500 keys `{keyPrefix}:rbac:epoch:{tenantId}:{userId}` per call (the last argument is `nexus.rbac.epoch.key-ttl-seconds`, 960 by default):
+   ```
+   redis-cli EVAL "local t=redis.call('TIME') local now=tonumber(t[1])*1000+math.floor(tonumber(t[2])/1000) local max=9007199254740990 for _,k in ipairs(KEYS) do local r=redis.call('GET',k) local o=0 if r and #r<=16 and string.find(r,'^%d+$') and tonumber(r)<=max then o=tonumber(r) end redis.call('SET',k,string.format('%.0f',math.min(math.max(o+1,now),max)),'EX',ARGV[1]) end return #KEYS" <numkeys> <epoch keys...> 960
+   ```
+   Each holder's next request then gets 401 `AUTH_003` and the client refreshes. The script applies the application's valid-epoch rule (1 to 16 digits, at most 2^53 - 2; anything else counts as 0, so a corrupt key is replaced by the current time). It does not delete the cached permission sets, hence the flush below.
+- [ ] **Flush the permission cache:** `SCAN` with `MATCH {keyPrefix}:rbac:permset:*` and `MATCH {keyPrefix}:rbac:roleset:*`, and `UNLINK` the keys found. The cache is never authoritative; the only cost is one extra database read per next login or refresh.
+
+Not needed after the T-010 deploy itself: cache keys without an epoch suffix are no longer read and expire within the cache TTL.
+
+**Page `nexus.rbac.epoch.bump_failed{operation="detach", reason="holder_read"}`.** A detach committed, but the instance could not read the role's holders after commit, even on a retry (usually pool pressure or a database timeout). The ERROR `RBAC_HOLDER_READ_FAILED` names the tenant and role. Since the M7 part 2 review the instance **queues the role and retries on its 1 s tick**: watch `nexus.rbac.epoch.role_replay_queue_roles` fall to 0 and `nexus.rbac.epoch.role_replayed` rise, and the INFO `RBAC_HOLDER_READ_REPLAYED` for that role. Only act by hand if the queue does not drain within a minute or two (the database is still failing: `bump_failed{operation="role_replay", reason="holder_read"}` keeps rising, with one ERROR `RBAC_HOLDER_READ_FAILED operation=role_replay` per second), or the instance restarted (the queue is in memory), or `bump_failed{reason="role_overflow"}` fired (the role was refused: queue full): then apply the two checklist items above for that role's active holders, within the token TTL (900 s). A role is given up after `key-ttl-seconds` (960 s) without success.
+
+**Ticket on `last_seen_dropped{reason="tenant_cap"}`; page on `reason="capacity"` (pre-PR review L-1).** The per-instance last-seen map (the defence that keeps a revoked token stale while Redis reads fail) shed read-derived users: one tenant reached its share (`nexus.rbac.epoch.last-seen-tenant-percent`, default 10 of 100,000) or the instance reached 100,000. Only users who are revoked during a Redis read failure and not already in the map lose that defence, so it matters if `epoch.check{outcome=skipped_error}` is also rising. Check the tenant's traffic or a very large detach; raise the percentage only with the heap in mind. **Page `reason="bump_dropped"`:** an own bump could not be remembered locally (a tenant over its own-bump ceiling of 4 times its share, or all tenants over the global 200,000). The store has the bump. The instance logs ERROR `RBAC_LAST_SEEN_BUMP_DROPPED {tenantId}` and fails that tenant **closed** for `key-ttl-seconds`: if Redis reads fail or the instance is DegradedOpen meanwhile, all of that tenant's requests get 401 instead of being skipped (a tenant-wide outage, by design, the alternative being an unknown revocation). Nothing to do with a healthy store; with a degraded one, restore Redis first.
+
+**Ticket on any increase of `nexus.rbac.epoch.check{outcome="unparseable"}`.** A stored epoch is not a number or is out of range (`0 .. 2^53 - 2`): Redis write access, or a foreign client writing under the same `nexus.redis.key-prefix` (RES-32). That user's tokens are stale and the next bump (any detach or revoke of that user, or the script of section 8) replaces the value. The WARN `RBAC_EPOCH_UNPARSEABLE` is logged once per tenant per minute with a `suppressed` count and never names the user; find the key with `SCAN MATCH {keyPrefix}:rbac:epoch:{tenantId}:*` and check who has write access.
+
+## 9. Page: `nexus.rbac.epoch.store_regressed` (pre-PR security review M-1)
+
+Redis answered a read or a mint below an epoch this instance already knows. A revoke or detach bump was refused, timed out or lost, while reads keep working, so every instance reports Healthy. The instance still enforces the epoch it knows (the old token gets 401, and a refresh mints an unverified token whose permissions come from the database, uncached), but **other instances do not know it** until the replay lands.
+
+- [ ] **Look for the cause.** `INFO memory` on Redis: `used_memory` against `maxmemory`; with `noeviction` Redis refuses the bump script (`-OOM`) but still serves reads. Then `INFO replication` and the Sentinel log for a failover (a key lost to asynchronous replication reads as 0).
+- [ ] **Check the replay.** `nexus.rbac.epoch.bump_failed` and the `RBAC_EPOCH_BUMP_FAILED` / `RBAC_EPOCH_BUMP_REPLAYED` log events. The replay retries every second and drops an entry after 960 s.
+- [ ] **If the cause is memory,** free or add memory first; the replay then lands by itself.
+- [ ] **If the replay overflowed or an instance restarted,** re-apply the revocation by hand (section 8) for the affected holders.
+
+## 10. Metrics return 401 or 403, or a scrape suddenly fails
+
+`/actuator/prometheus` and `/actuator/metrics/**` accept only the operator's scrape token (pre-PR re-review RR-M2): `Authorization: Bearer <NEXUS_MANAGEMENT_SCRAPE_TOKEN>`. A user or administrator JWT is refused with 401, and a tenant credential must never be used for scraping.
+- **403 for everyone:** the token is not set on the instance, which closes both endpoints. Set `NEXUS_MANAGEMENT_SCRAPE_TOKEN` (at least 32 random characters, from a secret) and restart; a shorter value fails startup.
+- **401 from the scraper:** the scraper's token differs from the backend's, or it sends something else in the header. Rotate by changing the secret on both sides.
+- The token is never logged. Treat it like a password: it can read the degraded state, drop counters and tenant ids in the tags.

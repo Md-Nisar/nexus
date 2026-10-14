@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -21,7 +22,12 @@ import com.example.nexus.identity.application.port.out.AuthEventPort;
 import com.example.nexus.identity.application.port.out.JwtPort;
 import com.example.nexus.identity.application.service.LoginUseCase;
 import com.example.nexus.identity.application.service.RefreshTokenUseCase;
+import com.example.nexus.identity.domain.JwtClaims;
 import com.example.nexus.identity.domain.LoginResult;
+import com.example.nexus.rbac.application.FreshnessVerdict;
+import com.example.nexus.rbac.application.PermissionFreshnessService;
+import jakarta.servlet.http.Cookie;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -65,12 +71,13 @@ import org.springframework.web.context.WebApplicationContext;
         "nexus.identity.argon2.parallelism=1",
         "nexus.mail.from-address=test@nexus.test",
         "nexus.frontend.base-url=http://localhost:2000",
+        "nexus.management.scrape-token=test-scrape-token-0123456789-abcdefghij",
         // High ceiling so no test request is throttled
         "nexus.security.rate-limit.ip-max-attempts=1000",
         "nexus.security.rate-limit.ip-window-seconds=60",
         "nexus.security.rate-limit.user-max-attempts=1000",
         "nexus.security.rate-limit.user-window-seconds=900",
-        "nexus.security.rate-limit.refresh-max-attempts=1000",
+        "nexus.security.rate-limit.refresh-ip-max-attempts=1000",
         "feature.nexus-us002-auth-registration.enabled=true",
         "feature.nexus-us003-auth-login.enabled=true",
         // No SMTP server on localhost — disable mail health indicator to keep /actuator/health UP
@@ -85,6 +92,7 @@ class SecurityConfigWebTest {
   @MockitoBean RefreshTokenUseCase refreshTokenUseCase;
   @MockitoBean JwtPort jwtPort;
   @MockitoBean AuthEventPort authEventPort;
+  @MockitoBean PermissionFreshnessService permissionFreshness;
 
   private MockMvc mvc;
 
@@ -204,6 +212,121 @@ class SecurityConfigWebTest {
         .andExpect(status().isUnauthorized())
         .andExpect(content().contentType("application/problem+json"))
         .andExpect(jsonPath("$.code").value("AUTH_003"));
+  }
+
+  // ── US-018 T-009: public endpoints are never rejected by the bearer filter (RC-24) ──
+
+  @Test
+  void should_return200_when_refreshCarriesInvalidBearer() throws Exception {
+    when(jwtPort.verify(any()))
+        .thenThrow(new AuthenticationException("AUTH_003", "Token expired or invalid"));
+    when(refreshTokenUseCase.execute(any(), any())).thenReturn(MOCK_LOGIN_RESULT);
+
+    mvc.perform(post("/api/v1/auth/refresh")
+            .cookie(new Cookie("refresh_token", "r".repeat(64)))
+            .header(HttpHeaders.AUTHORIZATION, "Bearer expired.or.invalid.token"))
+        .andExpect(status().isOk());
+  }
+
+  @Test
+  void should_return401Auth003_when_staleEpochOnProtectedEndpoint() throws Exception {
+    when(jwtPort.verify(any())).thenReturn(validClaims());
+    when(permissionFreshness.check(any(), any(), anyLong(), anyLong())).thenReturn(FreshnessVerdict.STALE);
+
+    mvc.perform(get("/api/v1/users/me")
+            .header(HttpHeaders.AUTHORIZATION, "Bearer stale.epoch.token"))
+        .andExpect(status().isUnauthorized())
+        .andExpect(content().contentType("application/problem+json"))
+        .andExpect(jsonPath("$.code").value("AUTH_003"));
+  }
+
+  @Test
+  void should_return200_when_epochFreshOnProtectedEndpoint() throws Exception {
+    when(jwtPort.verify(any())).thenReturn(validClaims());
+    when(permissionFreshness.check(any(), any(), anyLong(), anyLong())).thenReturn(FreshnessVerdict.FRESH);
+
+    mvc.perform(get("/api/v1/users/me")
+            .header(HttpHeaders.AUTHORIZATION, "Bearer fresh.epoch.token"))
+        .andExpect(status().isOk());
+  }
+
+  // ── US-018 T-009: permitAll is the @PublicEndpoint method + pattern, not the path alone ──
+
+  @Test
+  void should_returnEntryPoint401_when_anonymousNonPublicMethodOnPublicPath() throws Exception {
+    mvc.perform(get("/api/v1/auth/login"))
+        .andExpect(status().isUnauthorized())
+        .andExpect(jsonPath("$.code").value("AUTH_003"));
+  }
+
+  // ── Pre-PR security re-review RR-M2: platform metrics are for the scrape token only ──
+
+  private static final String SCRAPE_TOKEN = "test-scrape-token-0123456789-abcdefghij";
+  private static final String[] METRICS_PATHS = {
+    "/actuator/prometheus", "/actuator/prometheus/", "/actuator/prometheus/x",
+    "/actuator/metrics", "/actuator/metrics/", "/actuator/metrics/nexus.rbac.epoch.degraded"
+  };
+
+  @Test
+  void should_return401_when_tenantAdminJwtReadsMetrics() throws Exception {
+    JwtClaims member = validClaims();
+    when(jwtPort.verify(any())).thenReturn(new JwtClaims(
+        member.sub(), member.tenantId(), true, List.of("TENANT_ADMIN"), List.of(), member.iat(),
+        member.exp(), member.jti(), 0, JwtClaims.CURRENT_VERSION, 0L));
+    when(permissionFreshness.check(any(), any(), anyLong(), anyLong()))
+        .thenReturn(FreshnessVerdict.FRESH);
+
+    for (String path : METRICS_PATHS) {
+      mvc.perform(get(path).header(HttpHeaders.AUTHORIZATION, "Bearer admin.jwt"))
+          .andExpect(status().isUnauthorized());
+    }
+  }
+
+  @Test
+  void should_return401_when_scrapeTokenMissingOrWrong() throws Exception {
+    for (String path : METRICS_PATHS) {
+      mvc.perform(get(path)).andExpect(status().isUnauthorized());
+      mvc.perform(get(path).header(HttpHeaders.AUTHORIZATION, "Bearer " + SCRAPE_TOKEN + "x"))
+          .andExpect(status().isUnauthorized());
+      mvc.perform(get(path).header(HttpHeaders.AUTHORIZATION, SCRAPE_TOKEN))
+          .andExpect(status().isUnauthorized());
+    }
+  }
+
+  @Test
+  void should_passAuthorization_when_scrapeTokenPresented() throws Exception {
+    for (String path : METRICS_PATHS) {
+      // Whatever the slice then answers, it is neither the 401 nor the 403.
+      int status = mvc.perform(get(path)
+              .header(HttpHeaders.AUTHORIZATION, "Bearer " + SCRAPE_TOKEN))
+          .andReturn().getResponse().getStatus();
+      assertThat(status).as(path).isNotIn(401, 403);
+    }
+  }
+
+  @Test
+  void should_notReadScrapeTokenAsAJwt_when_otherEndpointsAreCalledWithIt() throws Exception {
+    when(jwtPort.verify(any()))
+        .thenThrow(new AuthenticationException("AUTH_003", "Token expired or invalid"));
+
+    mvc.perform(get("/api/v1/users/me")
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + SCRAPE_TOKEN))
+        .andExpect(status().isUnauthorized());
+  }
+
+  private static JwtClaims validClaims() {
+    return new JwtClaims(
+        UUID.randomUUID().toString(),
+        "00000000-0000-7000-8000-000000000001",
+        true,
+        List.of(),
+        List.of(),
+        1_000_000_000L,
+        9_999_999_999L,
+        UUID.randomUUID().toString(),
+        0,
+        JwtClaims.CURRENT_VERSION,
+        0L);
   }
 
   // ── Oversized login body is rejected before it reaches the controller (DoS guard) ──

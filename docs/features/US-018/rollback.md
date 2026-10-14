@@ -45,3 +45,22 @@ Rolling the code back removes the grant-subset bounds: a `user:write` holder can
 1. `GET /actuator/health` is UP.
 2. With the flags on in a test environment: an assigner holding `user:write` can assign; `nexus.rbac.permission_denied{reason="GRANT_EXCEEDS_CALLER"}` and `{reason="SELF_ASSIGNMENT"}` stop increasing (they no longer exist in the old code path).
 3. No `RBAC_ENDPOINT_PERMISSION_NOT_HELD` WARN in the logs.
+
+---
+
+## 7. M7: permission token freshness (A9, A10)
+
+**Code rollback.** Revert the M7 PR (or redeploy the M6 image). It is safe in a rolling fashion: M6 accepts schema versions 2 and 3, so tokens minted by M7 (v3, with `perm_epoch`) are still accepted by M6, which ignores the claim. Do **not** roll back past M6: older code rejects v3 tokens with 401 and logs every user out.
+
+**Kill switch.** There is none. M7 has no flag. The levers short of a revert are configuration, and none disables the check:
+- `fail-open-window` bounds how long a Redis outage is tolerated before 503, but cannot be set to switch the check off.
+- A Redis outage already degrades to the pre-A9 token lifetime for up to 15 minutes.
+
+**Data.** Nothing to undo. The epoch keys expire after `key-ttl-seconds` (960 s) and nothing else reads them. Replay queues are in memory and are lost on restart (RES-31).
+
+**Cache invalidation.** After a rollback, M6 reads permission cache keys without the epoch suffix. The epoch-keyed entries written by M7 are never read again and expire within the cache TTL (900 s). To avoid serving a permission set that is stale against a role change made while M7 ran, delete `{keyPrefix}:rbac:permset:*` and `{keyPrefix}:rbac:roleset:*` (`SCAN` and `UNLINK`).
+
+**What a rollback re-opens.** A revoked or detached user's token stays valid for its remaining lifetime (up to 15 minutes) plus the cache TTL (up to 15 minutes), and the refresh limits (T-013) and the Redis-auth startup assertion (T-014) are gone. Tell the security owner before rolling back during an incident that involves a revocation.
+
+**Verification after rollback.** Login and refresh succeed, `token_rejected{reason=schema_version}` is 0, and no `perm_epoch` metrics are emitted.
+

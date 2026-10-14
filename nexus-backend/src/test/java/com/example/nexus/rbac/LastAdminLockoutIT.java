@@ -1106,14 +1106,26 @@ class LastAdminLockoutIT {
 
     // US-018 A3 (attach-subset) adds M13 (caller's held role-permission ids) to this flow; it also
     // touches user_roles, so M9 is identified by excluding role_permissions, and M13 is pinned
-    // separately (design MC-A: M13 never carries a locking clause).
-    String m9Sql =
-        findStatementMatching(
-            flowBSql, List.of("user_roles"), List.of("force index", "role_permissions"));
+    // separately (design MC-A: M13 never carries a locking clause). US-018 T-010: M9 now runs
+    // twice, the D13 holder count inside the transaction and the post-commit holder read for
+    // the cache eviction; both must be lock-free.
+    List<String> m9Sqls =
+        flowBSql.stream()
+            .filter(
+                sql -> {
+                  String lower = sql.toLowerCase(Locale.ROOT);
+                  return lower.contains("user_roles")
+                      && !lower.contains("force index")
+                      && !lower.contains("role_permissions");
+                })
+            .toList();
     String m13Sql =
         findStatementMatching(
             flowBSql, List.of("user_roles", "role_permissions"), List.of("force index"));
-    assertNoLockingClause(m9Sql, "M9 (findActiveUserIdsForRole, new caller)");
+    assertThat(m9Sqls)
+        .as("M9 runs once in the transaction and once after commit: " + flowBSql)
+        .hasSize(2);
+    m9Sqls.forEach(m9Sql -> assertNoLockingClause(m9Sql, "M9 (findActiveUserIdsForRole)"));
     assertNoLockingClause(m13Sql, "M13 (findHeldRolePermissionIdsForAuthorization)");
   }
 

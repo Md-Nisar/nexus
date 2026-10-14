@@ -7,6 +7,7 @@ import com.example.nexus.common.domain.ConflictException;
 import com.example.nexus.common.domain.DomainException;
 import com.example.nexus.common.domain.FieldValidationException;
 import com.example.nexus.common.domain.RateLimitException;
+import com.example.nexus.common.domain.RefreshThrottledException;
 import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.common.domain.TokenExpiredException;
 import com.example.nexus.common.security.AuthenticationDetailKeys;
@@ -91,7 +92,8 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler(RateLimitException.class)
   ResponseEntity<ProblemDetail> handleRateLimit(RateLimitException e) {
-    logHandledException(e, "WARN", e.code());
+    // RefreshThrottledException: the use case emits its own one-per-window WARN (US-018 T-013).
+    logHandledException(e, e instanceof RefreshThrottledException ? LEVEL_DEBUG : "WARN", e.code());
     ProblemDetail problem = problem(HttpStatus.TOO_MANY_REQUESTS, e.code(), e.getMessage());
     HttpHeaders headers = new HttpHeaders();
     headers.set(HttpHeaders.RETRY_AFTER, String.valueOf(e.retryAfterSeconds()));

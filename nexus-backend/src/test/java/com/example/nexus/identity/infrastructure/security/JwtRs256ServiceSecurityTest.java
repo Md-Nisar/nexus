@@ -14,6 +14,8 @@ import com.example.nexus.identity.domain.AccessTokenResult;
 import com.example.nexus.identity.domain.JwtClaims;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UserStatus;
+import com.example.nexus.rbac.application.PermissionFreshnessService;
+import com.example.nexus.rbac.application.PermissionFreshnessService.MintEpoch;
 import com.example.nexus.rbac.application.RoleResolutionService;
 import com.example.nexus.rbac.domain.ResolvedPermissions;
 import io.jsonwebtoken.Jwts;
@@ -66,10 +68,16 @@ class JwtRs256ServiceSecurityTest {
   private JwtRs256Service service(Clock clock) {
     RoleResolutionService roleResolutionService = mock(RoleResolutionService.class);
     when(roleResolutionService.resolve(
-            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.anyLong()))
         .thenReturn(new ResolvedPermissions(List.of("USER"), List.of("read:only")));
+    PermissionFreshnessService freshness = mock(PermissionFreshnessService.class);
+    when(freshness.mintEpoch(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+        .thenReturn(new MintEpoch(0L, true));
     return new JwtRs256Service(
-        rsaKeyConfig, UUID::randomUUID, clock, 900L, roleResolutionService, meterRegistry);
+        rsaKeyConfig, UUID::randomUUID, clock, 900L, roleResolutionService, freshness,
+        meterRegistry);
   }
 
   private User activeUser() {

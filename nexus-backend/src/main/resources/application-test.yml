@@ -22,7 +22,9 @@ nexus:
       ip-window-seconds: 60
       user-max-attempts: 100     # same — lockout ITs drive account lockout via DB, not this filter
       user-window-seconds: 900
-      refresh-max-attempts: 1000   # high so refresh-path ITs are not throttled
+      refresh-ip-max-attempts: 1000   # high so refresh-path ITs are not throttled
+      refresh-family-max-attempts: 1000
+      refresh-fail-max-attempts: 1000
   # --- Identity Context (Test Credentials) ---
   # TEST ONLY — non-secret placeholder values, mirroring application-dev.yml's dev block.
   # Statically defined here (not left solely to TestcontainersConfiguration's

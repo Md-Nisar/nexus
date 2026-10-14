@@ -18,8 +18,10 @@ import java.util.UUID;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.redis.core.StringRedisTemplate;
 
 /**
  * US-010 QA scenarios 1-4: {@link RoleResolutionService} resolves the real, migration-seeded
@@ -56,6 +58,10 @@ class RoleResolutionServiceIT {
   @Autowired private JpaRoleRepository roleRepository;
   @Autowired private JpaUserRepository userRepository;
   @Autowired private UuidGenerator uuidGenerator;
+  @Autowired private StringRedisTemplate redisTemplate;
+
+  @Value("${nexus.redis.key-prefix:nexus}")
+  private String keyPrefix;
 
   @Test
   void should_resolveEverySeededPermission_when_userHasTenantAdminRole() {
@@ -63,7 +69,7 @@ class RoleResolutionServiceIT {
     UserRole assignment = assignRole(user.getId(), TENANT_ADMIN_ROLE_ID);
 
     ResolvedPermissions resolved =
-        roleResolutionService.resolve(user.getId(), BOOTSTRAP_TENANT_ID);
+        roleResolutionService.resolve(user.getId(), BOOTSTRAP_TENANT_ID, 0L);
 
     assertThat(resolved.roles()).containsExactly("TENANT_ADMIN");
     assertThat(resolved.permissions()).containsExactlyInAnyOrderElementsOf(ALL_SEEDED_PERMISSIONS);
@@ -78,7 +84,7 @@ class RoleResolutionServiceIT {
     assignRole(user.getId(), MEMBER_ROLE_ID);
 
     ResolvedPermissions resolved =
-        roleResolutionService.resolve(user.getId(), BOOTSTRAP_TENANT_ID);
+        roleResolutionService.resolve(user.getId(), BOOTSTRAP_TENANT_ID, 0L);
 
     assertThat(resolved.roles()).containsExactly("MEMBER");
     assertThat(resolved.permissions()).containsExactly("user:read");
@@ -89,7 +95,7 @@ class RoleResolutionServiceIT {
     User user = seedUser("role-res-none");
 
     ResolvedPermissions resolved =
-        roleResolutionService.resolve(user.getId(), BOOTSTRAP_TENANT_ID);
+        roleResolutionService.resolve(user.getId(), BOOTSTRAP_TENANT_ID, 0L);
 
     assertThat(resolved.roles()).isEmpty();
     assertThat(resolved.permissions()).isEmpty();
@@ -102,7 +108,7 @@ class RoleResolutionServiceIT {
     revoke(assignment);
 
     ResolvedPermissions resolved =
-        roleResolutionService.resolve(user.getId(), BOOTSTRAP_TENANT_ID);
+        roleResolutionService.resolve(user.getId(), BOOTSTRAP_TENANT_ID, 0L);
 
     assertThat(resolved.roles()).isEmpty();
     assertThat(resolved.permissions()).isEmpty();
@@ -115,7 +121,7 @@ class RoleResolutionServiceIT {
     UserRole memberAssignment = assignRole(user.getId(), MEMBER_ROLE_ID);
 
     ResolvedPermissions resolved =
-        roleResolutionService.resolve(user.getId(), BOOTSTRAP_TENANT_ID);
+        roleResolutionService.resolve(user.getId(), BOOTSTRAP_TENANT_ID, 0L);
 
     assertThat(resolved.roles()).containsExactlyInAnyOrder("TENANT_ADMIN", "MEMBER");
     // user:read is granted by both roles — must appear once, not twice.
@@ -145,7 +151,7 @@ class RoleResolutionServiceIT {
             user.getId()));
 
     ResolvedPermissions resolved =
-        roleResolutionService.resolve(user.getId(), BOOTSTRAP_TENANT_ID);
+        roleResolutionService.resolve(user.getId(), BOOTSTRAP_TENANT_ID, 0L);
 
     assertThat(resolved.roles())
         .as("a role assigned under a different tenant must not leak into this tenant's resolution")
@@ -175,12 +181,36 @@ class RoleResolutionServiceIT {
             user.getId()));
 
     ResolvedPermissions resolved =
-        roleResolutionService.resolve(user.getId(), BOOTSTRAP_TENANT_ID);
+        roleResolutionService.resolve(user.getId(), BOOTSTRAP_TENANT_ID, 0L);
 
     assertThat(resolved.roles())
         .as("a role whose own tenant_id differs from user_roles.tenant_id must never resolve")
         .isEmpty();
     assertThat(resolved.permissions()).isEmpty();
+  }
+
+  /**
+   * US-018 T-010 (Decision 17): the resolved set is cached under the epoch passed in, in the
+   * {@code {keyPrefix}:rbac:{roleset|permset}:{tenantId}:{userId}:{epoch}} shape, and a resolution
+   * under another epoch does not read it.
+   */
+  @Test
+  void should_cacheUnderGivenEpochKey_when_resolved() {
+    User user = seedUser("role-res-epoch-key");
+    assignRole(user.getId(), MEMBER_ROLE_ID);
+    long epoch = 1_796_000_000_000L;
+
+    roleResolutionService.resolve(user.getId(), BOOTSTRAP_TENANT_ID, epoch);
+
+    String suffix = BOOTSTRAP_TENANT_ID + ":" + user.getId() + ":" + epoch;
+    assertThat(redisTemplate.opsForSet().members(keyPrefix + ":rbac:permset:" + suffix))
+        .containsExactly("user:read");
+    assertThat(redisTemplate.opsForSet().members(keyPrefix + ":rbac:roleset:" + suffix))
+        .containsExactly("MEMBER");
+    assertThat(redisTemplate.hasKey(
+            keyPrefix + ":rbac:permset:" + BOOTSTRAP_TENANT_ID + ":" + user.getId()))
+        .as("no entry without an epoch suffix is written")
+        .isFalse();
   }
 
   private User seedUser(String tag) {

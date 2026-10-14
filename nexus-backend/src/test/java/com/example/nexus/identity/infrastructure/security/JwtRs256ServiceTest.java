@@ -3,6 +3,8 @@ package com.example.nexus.identity.infrastructure.security;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -11,11 +13,14 @@ import com.example.nexus.identity.domain.AccessTokenResult;
 import com.example.nexus.identity.domain.JwtClaims;
 import com.example.nexus.identity.domain.UserStatus;
 import com.example.nexus.identity.domain.User;
+import com.example.nexus.rbac.application.PermissionFreshnessService;
+import com.example.nexus.rbac.application.PermissionFreshnessService.MintEpoch;
 import com.example.nexus.rbac.application.RoleResolutionService;
 import com.example.nexus.rbac.domain.ResolvedPermissions;
 import io.jsonwebtoken.Jwts;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.math.BigInteger;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -27,9 +32,11 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.springframework.core.env.Environment;
 
 @Tag("UnitTest")
@@ -38,6 +45,14 @@ class JwtRs256ServiceTest {
   private static RsaKeyConfig rsaKeyConfig;
 
   private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+  private final PermissionFreshnessService freshness = mock(PermissionFreshnessService.class);
+
+  @BeforeEach
+  void stubVerifiedEpochZero() {
+    when(freshness.mintEpoch(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+        .thenReturn(new MintEpoch(0L, true));
+  }
 
   @BeforeAll
   static void setUpKeyConfig() throws Exception {
@@ -49,7 +64,9 @@ class JwtRs256ServiceTest {
 
   private RoleResolutionService roleResolutionServiceReturning(ResolvedPermissions resolved) {
     RoleResolutionService svc = mock(RoleResolutionService.class);
-    when(svc.resolve(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+    when(svc.resolve(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.anyLong()))
         .thenReturn(resolved);
     return svc;
   }
@@ -65,12 +82,14 @@ class JwtRs256ServiceTest {
         clock,
         900L,
         roleResolutionServiceReturning(resolved),
+        freshness,
         meterRegistry);
   }
 
   private JwtRs256Service service(Clock clock, RoleResolutionService roleResolutionService) {
     return new JwtRs256Service(
-        rsaKeyConfig, UUID::randomUUID, clock, 900L, roleResolutionService, meterRegistry);
+        rsaKeyConfig, UUID::randomUUID, clock, 900L, roleResolutionService, freshness,
+        meterRegistry);
   }
 
   private User activeUser() {
@@ -283,7 +302,7 @@ class JwtRs256ServiceTest {
   void should_sourcePermissionsResolutionAndTenantClaim_fromSameTenantId_when_tokenIssued() {
     RoleResolutionService roleResolutionService = mock(RoleResolutionService.class);
     ArgumentCaptor<UUID> tenantIdCaptor = ArgumentCaptor.forClass(UUID.class);
-    when(roleResolutionService.resolve(any(), tenantIdCaptor.capture()))
+    when(roleResolutionService.resolve(any(), tenantIdCaptor.capture(), anyLong()))
         .thenReturn(new ResolvedPermissions(List.of("MEMBER"), List.of("user:read")));
     JwtRs256Service svc = service(Clock.systemUTC(), roleResolutionService);
     User user = activeUser();
@@ -293,6 +312,156 @@ class JwtRs256ServiceTest {
 
     assertThat(tenantIdCaptor.getValue()).isEqualTo(user.getTenantId());
     assertThat(claims.tenantId()).isEqualTo(tenantIdCaptor.getValue().toString());
+  }
+
+  // -----------------------------------------------------------------------
+  // US-018 T-009 (A9): perm_epoch is read before permissions (MC-7a) and minted in v3
+  // -----------------------------------------------------------------------
+
+  @Test
+  void should_readEpochBeforeResolvingPermissions_when_issuing() {
+    RoleResolutionService roleResolutionService = roleResolutionServiceReturning(
+        new ResolvedPermissions(List.of("MEMBER"), List.of("user:read")));
+    User user = activeUser();
+
+    service(Clock.systemUTC(), roleResolutionService).issue(user);
+
+    InOrder order = inOrder(freshness, roleResolutionService);
+    order.verify(freshness).mintEpoch(user.getTenantId(), user.getId());
+    order.verify(roleResolutionService).resolve(user.getId(), user.getTenantId(), 0L);
+  }
+
+  /**
+   * US-018 T-010 (Decision 17): the permission set is cached under the epoch the token carries,
+   * which is exactly the one {@code mintEpoch} returned, read before the permissions.
+   */
+  @Test
+  void should_resolvePermissionsUnderEpochReadFirst_when_issuing() {
+    RoleResolutionService roleResolutionService = roleResolutionServiceReturning(
+        new ResolvedPermissions(List.of("MEMBER"), List.of("user:read")));
+    User user = activeUser();
+    long epoch = 1_796_000_000_123L;
+    when(freshness.mintEpoch(user.getTenantId(), user.getId()))
+        .thenReturn(new MintEpoch(epoch, true));
+    JwtRs256Service svc = service(Clock.systemUTC(), roleResolutionService);
+
+    JwtClaims claims = svc.verify(svc.issue(user).token());
+
+    InOrder order = inOrder(freshness, roleResolutionService);
+    order.verify(freshness).mintEpoch(user.getTenantId(), user.getId());
+    order.verify(roleResolutionService).resolve(user.getId(), user.getTenantId(), epoch);
+    assertThat(claims.permEpoch()).isEqualTo(epoch);
+  }
+
+  /** L-3: an epoch the store did not confirm names a cache key no bump deletes. */
+  @Test
+  void should_resolveWithoutCache_when_epochUnverified() {
+    RoleResolutionService roleResolutionService = mock(RoleResolutionService.class);
+    when(roleResolutionService.resolveUncached(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+        .thenReturn(new ResolvedPermissions(List.of("MEMBER"), List.of("user:read")));
+    User user = activeUser();
+    when(freshness.mintEpoch(user.getTenantId(), user.getId()))
+        .thenReturn(new MintEpoch(1_796_000_000_000L, false));
+
+    JwtRs256Service svc = service(Clock.systemUTC(), roleResolutionService);
+    JwtClaims claims = svc.verify(svc.issue(user).token());
+
+    org.mockito.Mockito.verify(roleResolutionService)
+        .resolveUncached(user.getId(), user.getTenantId());
+    org.mockito.Mockito.verify(roleResolutionService, org.mockito.Mockito.never())
+        .resolve(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+            org.mockito.ArgumentMatchers.anyLong());
+    assertThat(claims.permEpoch()).isEqualTo(1_796_000_000_000L);
+  }
+
+  @Test
+  void should_resolveWithCacheUnderEpoch_when_epochVerified() {
+    RoleResolutionService roleResolutionService = roleResolutionServiceReturning(
+        new ResolvedPermissions(List.of("MEMBER"), List.of("user:read")));
+    User user = activeUser();
+    when(freshness.mintEpoch(user.getTenantId(), user.getId()))
+        .thenReturn(new MintEpoch(1_796_000_000_000L, true));
+
+    service(Clock.systemUTC(), roleResolutionService).issue(user);
+
+    org.mockito.Mockito.verify(roleResolutionService)
+        .resolve(user.getId(), user.getTenantId(), 1_796_000_000_000L);
+    org.mockito.Mockito.verify(roleResolutionService, org.mockito.Mockito.never())
+        .resolveUncached(
+            org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+  }
+
+  @Test
+  void should_mintV3WithPermEpoch_when_epochReadSucceeds() {
+    User user = activeUser();
+    when(freshness.mintEpoch(user.getTenantId(), user.getId()))
+        .thenReturn(new MintEpoch(1_796_000_000_000L, true));
+    JwtRs256Service svc = service(Clock.systemUTC());
+
+    JwtClaims claims = svc.verify(svc.issue(user).token());
+
+    assertThat(claims.schemaVersion()).isEqualTo(3);
+    assertThat(claims.permEpoch()).isEqualTo(1_796_000_000_000L);
+  }
+
+  @Test
+  void should_mintPermEpochZero_when_mintEpochReturnsZero() {
+    JwtRs256Service svc = service(Clock.systemUTC());
+
+    JwtClaims claims = svc.verify(svc.issue(activeUser()).token());
+
+    assertThat(claims.permEpoch()).isZero();
+  }
+
+  @Test
+  void should_verifyV2TokenAsEpochZero() {
+    JwtClaims verified = service(Clock.systemUTC()).verify(signedToken(validClaims(2)));
+
+    assertThat(verified.permEpoch()).isZero();
+  }
+
+  @Test
+  void should_returnPermEpoch_when_v3TokenVerified() {
+    Map<String, Object> claims = validClaims(3);
+    claims.put("perm_epoch", 1_759_000_000_000L);
+
+    assertThat(service(Clock.systemUTC()).verify(signedToken(claims)).permEpoch())
+        .isEqualTo(1_759_000_000_000L);
+  }
+
+  @Test
+  void should_returnPermEpoch_when_v3TokenEpochFitsInInteger() {
+    Map<String, Object> claims = validClaims(3);
+    claims.put("perm_epoch", 7);
+
+    assertThat(service(Clock.systemUTC()).verify(signedToken(claims)).permEpoch()).isEqualTo(7L);
+  }
+
+  @Test
+  void should_returnPermEpoch_when_v3TokenEpochIsLongMaxValue() {
+    Map<String, Object> claims = validClaims(3);
+    claims.put("perm_epoch", Long.MAX_VALUE);
+
+    assertThat(service(Clock.systemUTC()).verify(signedToken(claims)).permEpoch())
+        .isEqualTo(Long.MAX_VALUE);
+  }
+
+  @Test
+  void should_rejectWithPermEpochReason_when_v3PermEpochExceedsLongRange() {
+    Map<String, Object> claims = validClaims(3);
+    claims.put("perm_epoch", BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE));
+
+    assertRejectedWithReason(signedToken(claims), "perm_epoch");
+  }
+
+  @Test
+  void should_ignorePermEpochClaim_when_v2TokenCarriesOne() {
+    Map<String, Object> claims = validClaims(2);
+    claims.put("perm_epoch", 1_759_000_000_000L);
+
+    assertThat(service(Clock.systemUTC()).verify(signedToken(claims)).permEpoch()).isZero();
   }
 
   // -----------------------------------------------------------------------

@@ -194,3 +194,11 @@ noClasses().that().resideInAPackage("..domain..").or().resideInAPackage("..appli
 - Full implementation detail (Lua scripts, adapter sketches, phased rollout) lives in
   `docs/redis-integration-plan.md` — treat this ADR as the decision record and that document as
   the design reference.
+
+---
+
+## Amendment notes
+
+Dated notes only; the decisions above are not rewritten (ADR 0001).
+
+- **2026-10-07 (US-018 M7 review, N-4):** Redis **5 or later** is a prerequisite (7.x is what Compose and the integration tests run, `redis:7.4`). The permission-epoch bump script (ADR-0022 D1) calls `TIME` and then writes in the same script, which is only legal when scripts replicate by effects, the default from Redis 5.
