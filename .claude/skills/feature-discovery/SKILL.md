@@ -49,7 +49,7 @@ Design or algorithmic analysis is justified only where one of these fires. Recor
 | T8 | One operation over more than ~10³ items, or a large lookup corpus | `user_roles` lock set, password denylist |
 | T9 | Timing or account-enumeration sensitivity | Login, forgot-password |
 
-**A trigger is not a mandate for heavy analysis.** It obliges the design (Phase 3) to name, for each fired trigger, two things:
+**A trigger is not a mandate for heavy analysis.** It obliges the design (Phase 3, `critical-decisions` skill) to name, for each fired trigger, two things:
 - the mechanism that keeps the guarantee;
 - the test that proves it (`docs/TESTING.md` → *Tests that prove a guarantee*).
 

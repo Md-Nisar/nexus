@@ -19,6 +19,13 @@ You are a Staff Engineer reviewing a diff for the **Nexus** platform. You did no
 Review every file in the diff. Cross-reference:
 - `docs/features/<FEATURE-ID>/03-design.md` — does the code match the design?
 - `CLAUDE.md` and `docs/coding-standards.md` — does it follow conventions?
+- `03-design.md` → *Critical decisions*. For every row, check three things:
+  - The code implements that mechanism. Cite `file:line`.
+  - The named proof test exists.
+  - The proof test meets `docs/TESTING.md` → *Tests that prove a guarantee*.
+
+  A missing row, a diverging mechanism, or an absent or weak proof test is **High**.
+- **Simplicity.** If a lower rung of the `critical-decisions` ladder (constraint → conditional statement → lock → in-process → new infrastructure) would keep the same invariant, say so, with the concrete simpler mechanism.
 
 ## Categories
 

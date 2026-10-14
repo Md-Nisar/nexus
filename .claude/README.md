@@ -24,7 +24,7 @@ This directory configures Claude Code for the Nexus project. Everything here is 
 ├── skills/                # Standards skills + workflow skills
 │   ├── spring-boot-standards/  angular-standards/  api-design/  design-system/   # standards (auto-loaded by topic)
 │   ├── angular-developer/                          # vendored from angular/skills (skills-lock.json)
-│   └── feature-discovery/  pr-checklist/  pr-authoring/  sonar-triage/  sonar-safe-fix/   # workflow procedures
+│   └── feature-discovery/  critical-decisions/  pr-checklist/  pr-authoring/  sonar-triage/  sonar-safe-fix/   # workflow procedures
 └── hooks/                 # Cross-platform Node hooks wired into settings.json
     ├── _hooklib.mjs            # shared helpers
     ├── block-prod-commands.mjs # PreToolUse(Bash) — block destructive/prod commands
