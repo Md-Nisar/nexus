@@ -733,6 +733,39 @@ public class RoleAssignmentService {
       namedAdminRoleId.ifPresent(ids::add);
       return ids;
     }
+
+    /**
+     * The one M10 read plus M8 that builds both sets. Package-private static so {@code
+     * BootstrapAdminService} (US-018 A7) takes the SAME population and the SAME lock set as
+     * assign and revoke instead of re-deriving them (ADR-0018 D6).
+     */
+    static AdminEquivalentRoles resolve(UserRoleAssignmentPort port, UUID tenantId) {
+      List<RolePermissionName> tenantRolePermissions =
+          port.findPermissionNamesForTenantRoles(tenantId);
+
+      Set<UUID> adminEquivalentIds = new HashSet<>();
+      Set<UUID> fullyAdminEquivalentIds = new HashSet<>();
+      tenantRolePermissions.stream()
+          .collect(
+              Collectors.groupingBy(
+                  RolePermissionName::roleId,
+                  Collectors.mapping(RolePermissionName::permissionName, Collectors.toList())))
+          .forEach(
+              (roleId, permissionNames) -> {
+                if (RbacDangerousPermissions.carriesAny(permissionNames)) {
+                  adminEquivalentIds.add(roleId);
+                }
+                if (RbacDangerousPermissions.carriesAll(permissionNames)) {
+                  fullyAdminEquivalentIds.add(roleId);
+                }
+              });
+
+      Optional<UUID> namedAdminRoleId =
+          port.findRoleIdByName(tenantId, RbacRoleNames.TENANT_ADMIN);
+
+      return new AdminEquivalentRoles(
+          Set.copyOf(adminEquivalentIds), Set.copyOf(fullyAdminEquivalentIds), namedAdminRoleId);
+    }
   }
 
   /**
@@ -745,31 +778,7 @@ public class RoleAssignmentService {
    */
   private AdminEquivalentRoles resolveAdminEquivalentRoles(
       UUID tenantId, Role targetRole, boolean nameMatch) {
-    List<RolePermissionName> tenantRolePermissions =
-        userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId);
-
-    Set<UUID> adminEquivalentIds = new HashSet<>();
-    Set<UUID> fullyAdminEquivalentIds = new HashSet<>();
-    tenantRolePermissions.stream()
-        .collect(
-            Collectors.groupingBy(
-                RolePermissionName::roleId,
-                Collectors.mapping(RolePermissionName::permissionName, Collectors.toList())))
-        .forEach(
-            (roleId, permissionNames) -> {
-              if (RbacDangerousPermissions.carriesAny(permissionNames)) {
-                adminEquivalentIds.add(roleId);
-              }
-              if (RbacDangerousPermissions.carriesAll(permissionNames)) {
-                fullyAdminEquivalentIds.add(roleId);
-              }
-            });
-
-    Optional<UUID> namedAdminRoleId =
-        userRoleAssignmentPort.findRoleIdByName(tenantId, RbacRoleNames.TENANT_ADMIN);
-
-    return new AdminEquivalentRoles(
-        Set.copyOf(adminEquivalentIds), Set.copyOf(fullyAdminEquivalentIds), namedAdminRoleId);
+    return AdminEquivalentRoles.resolve(userRoleAssignmentPort, tenantId);
   }
 
   /**
@@ -780,7 +789,7 @@ public class RoleAssignmentService {
    * M7/M10 disagreement). "Ascending" is {@link #UNSIGNED_BYTEWISE_UUID_ORDER}, a port contract
    * of {@link UserRoleAssignmentPort#lockActiveAssignmentHolders}, not a caller convention.
    */
-  private static List<UUID> buildAscendingAdminEquivalentLockSet(
+  static List<UUID> buildAscendingAdminEquivalentLockSet(
       AdminEquivalentRoles roles, UUID targetRoleId) {
     Set<UUID> lockSet = new TreeSet<>(UNSIGNED_BYTEWISE_UUID_ORDER);
     lockSet.addAll(roles.adminEquivalentIds());

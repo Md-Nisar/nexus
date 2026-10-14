@@ -19,6 +19,7 @@ import com.example.nexus.common.security.DenialReason;
 import com.example.nexus.identity.application.service.SecureEventService;
 import com.example.nexus.identity.domain.AuthEvent;
 import com.example.nexus.identity.domain.UuidGenerator;
+import com.example.nexus.rbac.application.port.out.BreakGlassAuditEvent;
 import com.example.nexus.rbac.application.port.out.RbacAuditEvent;
 import com.example.nexus.rbac.application.port.out.RoleAuditEvent;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -950,6 +951,99 @@ class RbacAuthEventAdapterTest {
   // ---------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------
+  // US-018 A7: break-glass audit rows
+  // ---------------------------------------------------------------------
+
+  @Test
+  void should_writeAtomicSuccessRowWithActorTypeAndChangeRef_when_recordBreakGlassGranted() {
+    adapter.recordBreakGlassGranted(
+        new BreakGlassAuditEvent(TENANT_ID, TARGET_USER_ID, "OPS-12", null));
+
+    AuthEvent captured = captureRecordedEventInCurrentTransaction();
+    assertThat(captured.getEventType()).isEqualTo("ROLE_BREAK_GLASS_GRANT");
+    assertThat(captured.getOutcome()).isEqualTo("SUCCESS");
+    assertThat(captured.getUserId()).isEqualTo(TARGET_USER_ID);
+    assertThat(captured.getTenantId()).isEqualTo(TENANT_ID);
+    JsonNode metadata = objectMapper.readTree(captured.getMetadata());
+    assertThat(metadata.get("actorType").asString()).isEqualTo("BREAK_GLASS_CLI");
+    assertThat(metadata.get("changeRef").asString()).isEqualTo("OPS-12");
+    assertThat(metadata.has("reason")).isFalse();
+  }
+
+  @Test
+  void should_propagateFailure_when_atomicBreakGlassWriteFails() {
+    doThrow(new RuntimeException("db down"))
+        .when(secureEventService)
+        .recordEventInCurrentTransaction(any());
+
+    assertThatThrownBy(
+            () ->
+                adapter.recordBreakGlassGranted(
+                    new BreakGlassAuditEvent(TENANT_ID, TARGET_USER_ID, "OPS-12", null)))
+        .isInstanceOf(RuntimeException.class);
+
+    assertThat(
+            meterRegistry
+                .get("nexus.rbac.audit_write_failed")
+                .tag("operation", "breakGlassGrant")
+                .tag("mode", "atomic")
+                .counter()
+                .count())
+        .isEqualTo(1.0);
+  }
+
+  @Test
+  void should_writeIndependentFailureRowWithReason_when_recordBreakGlassRefused() {
+    adapter.recordBreakGlassRefused(
+        new BreakGlassAuditEvent(TENANT_ID, TARGET_USER_ID, "OPS-12", "TENANT_HAS_ADMIN"));
+
+    AuthEvent captured = captureRecordedEvent();
+    assertThat(captured.getEventType()).isEqualTo("ROLE_BREAK_GLASS_GRANT");
+    assertThat(captured.getOutcome()).isEqualTo("FAILURE");
+    assertThat(captured.getUserId()).isEqualTo(TARGET_USER_ID);
+    assertThat(captured.getTenantId()).isEqualTo(TENANT_ID);
+    JsonNode metadata = objectMapper.readTree(captured.getMetadata());
+    assertThat(metadata.get("actorType").asString()).isEqualTo("BREAK_GLASS_CLI");
+    assertThat(metadata.get("reason").asString()).isEqualTo("TENANT_HAS_ADMIN");
+    assertThat(metadata.get("changeRef").asString()).isEqualTo("OPS-12");
+  }
+
+  @Test
+  void should_persistOnlyActorTypeAndReasonAndNullTenant_when_invalidArgumentRefusal() {
+    adapter.recordBreakGlassRefused(
+        new BreakGlassAuditEvent(null, null, null, "INVALID_ARGUMENT"));
+
+    AuthEvent captured = captureRecordedEvent();
+    assertThat(captured.getOutcome()).isEqualTo("FAILURE");
+    assertThat(captured.getTenantId()).isNull();
+    assertThat(captured.getUserId()).isNull();
+    JsonNode metadata = objectMapper.readTree(captured.getMetadata());
+    assertThat(metadata.propertyNames()).containsExactlyInAnyOrder("actorType", "reason");
+    assertThat(metadata.get("reason").asString()).isEqualTo("INVALID_ARGUMENT");
+  }
+
+  @Test
+  void should_notThrowAndCount_when_refusalWriteFails() {
+    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+
+    assertThatCode(
+            () ->
+                adapter.recordBreakGlassRefused(
+                    new BreakGlassAuditEvent(null, null, null, "INVALID_ARGUMENT")))
+        .doesNotThrowAnyException();
+
+    assertThat(
+            meterRegistry
+                .get("nexus.rbac.audit_write_failed")
+                .tag("operation", "breakGlassRefused")
+                .tag("mode", "best_effort")
+                .counter()
+                .count())
+        .isEqualTo(1.0);
+  }
+
 
   /** Group B (best-effort, {@code REQUIRES_NEW}) capture — {@link #recordRoleAssignmentDenied}. */
   private AuthEvent captureRecordedEvent() {

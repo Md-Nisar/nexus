@@ -5,6 +5,7 @@ import com.example.nexus.identity.application.service.SecureEventService;
 import com.example.nexus.identity.domain.AuthEvent;
 import com.example.nexus.identity.domain.AuthEventType;
 import com.example.nexus.identity.domain.UuidGenerator;
+import com.example.nexus.rbac.application.port.out.BreakGlassAuditEvent;
 import com.example.nexus.rbac.application.port.out.RbacAuditEvent;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.RoleAuditEvent;
@@ -60,6 +61,9 @@ import tools.jackson.databind.ObjectMapper;
 public class RbacAuthEventAdapter implements RbacAuditPort {
 
   private static final Logger log = LoggerFactory.getLogger(RbacAuthEventAdapter.class);
+
+  private static final String OUTCOME_SUCCESS = "SUCCESS";
+  private static final String OUTCOME_FAILURE = "FAILURE";
 
   private final SecureEventService secureEventService;
   private final UuidGenerator uuidGenerator;
@@ -342,5 +346,64 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
       metadata.put(actorFieldName, event.actorUserId().toString());
     }
     return objectMapper.writeValueAsString(metadata);
+  }
+
+  /**
+   * US-018 A7 (Group A — atomic): the break-glass grant row joins the grant's transaction and
+   * RETHROWS on failure, like the five role-change successes above. {@code auth_events.user_id} is
+   * the target, matching the LOCKOUT convention; there is no request context (a CLI has no IP or
+   * user agent).
+   */
+  @Override
+  public void recordBreakGlassGranted(BreakGlassAuditEvent event) {
+    try {
+      secureEventService.recordEventInCurrentTransaction(
+          breakGlassEvent(event, OUTCOME_SUCCESS));
+    } catch (RuntimeException e) {
+      logAtomicAuditWriteFailed(event.tenantId(), null, null, "breakGlassGrant", e);
+      throw e;
+    }
+  }
+
+  /**
+   * US-018 A7 (Group B — best effort): a refusal row in its own {@code REQUIRES_NEW} transaction.
+   * Never throws; a lost write logs {@code RBAC_AUDIT_WRITE_LOST} and counts, like {@link
+   * #recordDenied}. The paging ERROR is raised separately, so a lost row never hides the page.
+   */
+  @Override
+  public void recordBreakGlassRefused(BreakGlassAuditEvent event) {
+    try {
+      secureEventService.recordEvent(breakGlassEvent(event, OUTCOME_FAILURE));
+    } catch (RuntimeException e) {
+      log.atError()
+          .addKeyValue("event", "RBAC_AUDIT_WRITE_LOST")
+          .addKeyValue("tenantId", event.tenantId())
+          .log("RBAC audit write lost: operation=breakGlassRefused");
+      Counter.builder("nexus.rbac.audit_write_failed")
+          .tag("operation", "breakGlassRefused")
+          .tag("mode", "best_effort")
+          .register(meterRegistry)
+          .increment();
+    }
+  }
+
+  /**
+   * Builds the break-glass row. Metadata is {@code actorType} then the non-null {@code changeRef}
+   * and {@code reason}: an argument-validation refusal therefore persists exactly {@code
+   * {actorType, reason}} and a null {@code tenant_id}/{@code user_id} (RC-54(a)).
+   */
+  private AuthEvent breakGlassEvent(BreakGlassAuditEvent event, String outcome) {
+    Map<String, Object> metadata = new LinkedHashMap<>();
+    metadata.put("actorType", "BREAK_GLASS_CLI");
+    if (event.changeRef() != null) {
+      metadata.put("changeRef", event.changeRef());
+    }
+    if (event.reason() != null) {
+      metadata.put("reason", event.reason());
+    }
+    return new AuthEvent(uuidGenerator.newId(), AuthEventType.ROLE_BREAK_GLASS_GRANT, outcome)
+        .withUserId(event.targetUserId())
+        .withTenantId(event.tenantId())
+        .withMetadata(objectMapper.writeValueAsString(metadata));
   }
 }

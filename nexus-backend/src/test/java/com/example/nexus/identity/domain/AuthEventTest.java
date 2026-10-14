@@ -30,4 +30,9 @@ class AuthEventTest {
     assertThat(event.getMetadata()).isNull();
     assertThat(event.getCreatedAt()).isNull();
   }
+
+  @Test
+  void should_persistBreakGlassGrantUnderItsWireName() {
+    assertThat(AuthEventType.ROLE_BREAK_GLASS_GRANT.wireName()).isEqualTo("ROLE_BREAK_GLASS_GRANT");
+  }
 }

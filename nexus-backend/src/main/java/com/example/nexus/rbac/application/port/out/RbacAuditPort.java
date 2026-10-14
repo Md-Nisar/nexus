@@ -99,4 +99,18 @@ public interface RbacAuditPort {
    * caller's transaction and MUST THROW on failure.
    */
   void recordRolePermissionRevoked(RoleAuditEvent event);
+
+  /**
+   * Records a successful break-glass first-administrator grant (US-018 A7, Group A — atomic). Joins
+   * the grant's own transaction and MUST THROW on failure, so a lost audit write rolls the grant
+   * back (03-design.md §7.1). Metadata is {@code {actorType: BREAK_GLASS_CLI, changeRef}}.
+   */
+  void recordBreakGlassGranted(BreakGlassAuditEvent event);
+
+  /**
+   * Records a refused break-glass invocation, including an argument-validation refusal (US-018 A7,
+   * Group B semantics). Written in its own ({@code REQUIRES_NEW}) transaction so the row survives
+   * the refusal, and MUST NEVER throw. Only the non-null fields of {@code event} are persisted.
+   */
+  void recordBreakGlassRefused(BreakGlassAuditEvent event);
 }

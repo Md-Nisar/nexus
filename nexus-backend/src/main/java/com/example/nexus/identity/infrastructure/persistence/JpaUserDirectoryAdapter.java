@@ -1,6 +1,7 @@
 package com.example.nexus.identity.infrastructure.persistence;
 
 import com.example.nexus.identity.domain.User;
+import com.example.nexus.identity.domain.UserStatus;
 import com.example.nexus.rbac.application.port.out.UserDirectoryPort;
 import java.util.Optional;
 import java.util.UUID;
@@ -25,5 +26,12 @@ public class JpaUserDirectoryAdapter implements UserDirectoryPort {
   @Override
   public Optional<UUID> findTenantId(UUID userId) {
     return userRepository.findById(userId).map(User::getTenantId);
+  }
+
+  @Override
+  public Optional<DirectoryUser> findDirectoryUser(UUID userId) {
+    return userRepository
+        .findById(userId)
+        .map(user -> new DirectoryUser(user.getTenantId(), user.getStatus() == UserStatus.ACTIVE));
   }
 }

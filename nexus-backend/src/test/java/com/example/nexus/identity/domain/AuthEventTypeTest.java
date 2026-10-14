@@ -112,8 +112,8 @@ class AuthEventTypeTest {
   }
 
   @Test
-  void should_defineAllTwentySixConstants_when_valuesCalled() {
-    assertThat(AuthEventType.values()).hasSize(26);
+  void should_defineAllTwentySevenConstants_when_valuesCalled() {
+    assertThat(AuthEventType.values()).hasSize(27);
     assertThat(Arrays.stream(AuthEventType.values()).map(Enum::name))
         .containsExactlyInAnyOrder(
             "LOGIN_SUCCESS",
@@ -141,7 +141,8 @@ class AuthEventTypeTest {
             "ROLE_ASSIGNMENT_DENIED",
             "ROLE_CREATED",
             "ROLE_PERMISSION_GRANTED",
-            "ROLE_PERMISSION_REVOKED");
+            "ROLE_PERMISSION_REVOKED",
+            "ROLE_BREAK_GLASS_GRANT");
   }
 
   /**

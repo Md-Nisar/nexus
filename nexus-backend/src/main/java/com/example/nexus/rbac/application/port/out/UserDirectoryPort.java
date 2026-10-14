@@ -15,4 +15,14 @@ public interface UserDirectoryPort {
    * non-matching value (versus the caller's own tenant) maps to a 403.
    */
   Optional<UUID> findTenantId(UUID userId);
+
+  /**
+   * The owning tenant and whether the account is {@code ACTIVE}, or empty when no such user exists
+   * (US-018 A7: the break-glass CLI refuses a missing or non-ACTIVE target). {@code rbac} sees only
+   * the boolean, never {@code identity}'s status enum.
+   */
+  Optional<DirectoryUser> findDirectoryUser(UUID userId);
+
+  /** A user's tenant and whether the account is ACTIVE. */
+  record DirectoryUser(UUID tenantId, boolean active) {}
 }

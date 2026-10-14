@@ -10,6 +10,7 @@ import com.example.nexus.common.security.AuthenticatedEndpoint;
 import com.example.nexus.common.security.PublicEndpoint;
 import com.example.nexus.common.security.RequiresPermission;
 import com.example.nexus.identity.infrastructure.web.JwtAuthenticationFilter;
+import com.example.nexus.rbac.application.BootstrapAdminService;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.domain.JavaClass;
@@ -273,6 +274,21 @@ class HexagonalArchitectureTest {
                     .because("MC-2 (US-018 03-design.md §4.3): A2 and A3 must decide from M13 alone. "
                             + "M12 is a non-authoritative canary read; reusing it, or the JWT, for a "
                             + "grant decision re-opens FR-A2.b.");
+
+    // US-018 A7 (03-design.md §7.2, ADR-0025 3): the break-glass grant is the platform's one
+    // privileged entry point that is not HTTP. BootstrapAdminService may be referenced only from
+    // rbac.interfaces.cli (and by itself), so REST, a scheduler or another service can never reach
+    // it. Any reference counts (field, constructor parameter, call), not only a method call.
+    @ArchTest
+    static final ArchRule bootstrap_admin_service_is_callable_only_from_the_cli =
+            noClasses()
+                    .that().resideOutsideOfPackage("..rbac.interfaces.cli..")
+                    .and().areNotAssignableTo(BootstrapAdminService.class)
+                    .should().dependOnClassesThat().areAssignableTo(BootstrapAdminService.class)
+                    .because("US-018 A7 / ADR-0025 3: BootstrapAdminService grants administration "
+                            + "without the grant-subset checks, so only the profile-gated "
+                            + "rbac.interfaces.cli runner may call it. A second caller makes "
+                            + "break-glass a general admin-granting path and needs an ADR.");
 
     private static final List<Class<? extends Annotation>> ACCESS_MARKERS =
             List.of(RequiresPermission.class, AuthenticatedEndpoint.class, PublicEndpoint.class);

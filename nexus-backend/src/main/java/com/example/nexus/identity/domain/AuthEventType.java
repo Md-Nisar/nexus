@@ -53,7 +53,12 @@ public enum AuthEventType {
   // comment on the PRIORITY field below for the admission reasoning.
   ROLE_CREATED("ROLE_CREATED"),
   ROLE_PERMISSION_GRANTED("ROLE_PERMISSION_GRANTED"),
-  ROLE_PERMISSION_REVOKED("ROLE_PERMISSION_REVOKED");
+  ROLE_PERMISSION_REVOKED("ROLE_PERMISSION_REVOKED"),
+
+  // US-018 A7 (03-design.md §7.2): the break-glass CLI's first-administrator grant, and every
+  // refusal of it (outcome FAILURE). Deliberately NOT in PRIORITY: it is never written on the
+  // buffered path (success is atomic with the grant, a refusal is its own REQUIRES_NEW write).
+  ROLE_BREAK_GLASS_GRANT("ROLE_BREAK_GLASS_GRANT");
 
   // ROLE_ASSIGNED/ROLE_REVOKED are PRIORITY (T-R4, reversing the original US-012 D10 decision):
   // role-change audit events must not share the drop-newest STANDARD lane with high-volume
