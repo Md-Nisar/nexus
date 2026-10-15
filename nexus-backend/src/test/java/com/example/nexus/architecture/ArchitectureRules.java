@@ -4,8 +4,11 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
 import com.example.nexus.common.Profiles;
+import com.example.nexus.identity.infrastructure.persistence.BreakGlassGrantLookupAdapter;
+import com.example.nexus.identity.infrastructure.persistence.JpaAuthEventRepository;
 import com.example.nexus.rbac.application.BootstrapAdminService;
 import com.example.nexus.rbac.application.RoleAssignmentService;
+import com.example.nexus.rbac.application.port.out.BreakGlassGrantLookupPort;
 import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaMethodCall;
@@ -88,6 +91,51 @@ public final class ArchitectureRules {
               "US-018 A7: a break-glass CLI bean outside the break-glass profile would run in a"
                   + " serving pod or alongside the dev seed.")
           .allowEmptyShould(false);
+
+  /**
+   * US-018 M5 security review L-3 (sign-off 1): the replay lookup is deliberately NOT tenant-scoped
+   * (RC-37.2, RC-47, T-S11) and is allowlisted in {@code TenantIsolationArchitectureTest}. That
+   * sign-off holds only while the port has no consumer but the break-glass service, so no class
+   * other than {@link BootstrapAdminService} and {@link BreakGlassGrantLookupAdapter} (and the port
+   * itself) may depend on {@link BreakGlassGrantLookupPort}. Tests are outside the production import.
+   */
+  public static final ArchRule BREAK_GLASS_GRANT_LOOKUP_PORT_IS_CONTAINED =
+      noClasses()
+          .that()
+          .doNotBelongToAnyOf(
+              BootstrapAdminService.class,
+              BreakGlassGrantLookupAdapter.class,
+              BreakGlassGrantLookupPort.class)
+          .should()
+          .dependOnClassesThat()
+          .belongToAnyOf(BreakGlassGrantLookupPort.class)
+          .because(
+              "US-018 M5 L-3: the global (cross-tenant) change-reference lookup is a cross-tenant"
+                  + " existence oracle for any other consumer; only the break-glass service may"
+                  + " ask it.")
+          .allowEmptyShould(true);
+
+  /**
+   * US-018 M5 security review L-3: the global repository query behind the port. Only {@link
+   * BreakGlassGrantLookupAdapter} may call it, so reaching it by injecting the repository directly
+   * (bypassing the port rule above) is refused too.
+   */
+  public static final ArchRule GLOBAL_BREAK_GLASS_REPLAY_QUERY_IS_CALLED_ONLY_BY_ITS_ADAPTER =
+      noClasses()
+          .that()
+          .doNotBelongToAnyOf(BreakGlassGrantLookupAdapter.class)
+          .should()
+          .callMethodWhere(
+              DescribedPredicate.describe(
+                  "target is JpaAuthEventRepository.existsSuccessfulBreakGlassGrantWithChangeRef",
+                  (JavaMethodCall call) ->
+                      call.getTargetOwner().isEquivalentTo(JpaAuthEventRepository.class)
+                          && "existsSuccessfulBreakGlassGrantWithChangeRef"
+                              .equals(call.getName())))
+          .because(
+              "US-018 M5 L-3: the query is unscoped by tenant by design; a second caller would"
+                  + " turn it into a cross-tenant existence oracle.")
+          .allowEmptyShould(true);
 
   private static ArchCondition<JavaClass> carryExactlyTheBreakGlassProfile() {
     return new ArchCondition<>("be annotated @Profile(\"" + Profiles.BREAK_GLASS + "\") only") {

@@ -26,8 +26,11 @@ import com.example.nexus.rbac.domain.UserRole;
 import com.example.nexus.rbac.interfaces.cli.BreakGlassAdminRunner;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
+import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -50,6 +53,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.slf4j.LoggerFactory;
@@ -122,6 +126,7 @@ class BreakGlassAdminIT {
     logs.stop();
     jdbc.execute("DROP TRIGGER IF EXISTS trg_ts6_block_break_glass_success");
     jdbc.execute("DROP TRIGGER IF EXISTS trg_t008_signal_deadlock");
+    jdbc.execute("DROP TRIGGER IF EXISTS trg_qa_block_break_glass_failure");
   }
 
   // ── Grant ─────────────────────────────────────────────────────────────────────────────────
@@ -475,6 +480,268 @@ class BreakGlassAdminIT {
     assertThat(newIds).hasSize(1);
   }
 
+  // ── Phase 8 QA audit additions (08-test-audit-M5.md) ─────────────────────────────────────
+
+  /**
+   * The replay lookup counts SUCCESS rows only. A FAILURE row also carries the {@code changeRef}
+   * (exit 3 here), and must not burn the approval: the operator fixes the target and re-runs the
+   * same, still unused, reference.
+   */
+  @Test
+  void should_grantWithTheSameChangeRef_when_theEarlierAttemptLeftOnlyAFailureRow() {
+    UUID tenantId = uuidGenerator.newId();
+    seedSystemTenantAdminRole(tenantId);
+    User target = seedActiveUser(tenantId, "retry-same-ref");
+    setUserStatus(target.getId(), "DISABLED");
+    String changeRef = freshChangeRef();
+    assertThat(runCli(target.getId().toString(), changeRef)).isEqualTo(3);
+    setUserStatus(target.getId(), "ACTIVE");
+
+    int exitCode = runCli(target.getId().toString(), changeRef);
+
+    assertThat(exitCode).isZero();
+    assertThat(auditRows(target.getId()))
+        .extracting(r -> r.get("outcome") + "/" + r.get("reason"))
+        .containsExactly("FAILURE/TARGET_USER_NOT_ACTIVE", "SUCCESS/null");
+  }
+
+  /**
+   * RC-47: the lookup is an exact match. A used {@code XX-12} is not {@code XX-1} (prefix) nor
+   * {@code XX-123} (superstring); only the identical string is refused.
+   */
+  @Test
+  void should_grantOtherReferences_andRefuseOnlyTheIdenticalOne_when_similarReferenceWasUsed() {
+    String prefix = randomTicketPrefix();
+    UUID[] tenants = {uuidGenerator.newId(), uuidGenerator.newId(), uuidGenerator.newId()};
+    User[] targets = new User[3];
+    for (int i = 0; i < 3; i++) {
+      seedSystemTenantAdminRole(tenants[i]);
+      targets[i] = seedActiveUser(tenants[i], "similar-" + i);
+    }
+    UUID fourthTenant = uuidGenerator.newId();
+    seedSystemTenantAdminRole(fourthTenant);
+    User fourth = seedActiveUser(fourthTenant, "similar-identical");
+
+    int used = runCli(targets[0].getId().toString(), prefix + "-12");
+    int prefixOfUsed = runCli(targets[1].getId().toString(), prefix + "-1");
+    int supersetOfUsed = runCli(targets[2].getId().toString(), prefix + "-123");
+    int identical = runCli(fourth.getId().toString(), prefix + "-12");
+
+    assertThat(List.of(used, prefixOfUsed, supersetOfUsed, identical)).containsExactly(0, 0, 0, 6);
+  }
+
+  /** The zero-admin check is per tenant: another tenant's administrator never blocks the grant. */
+  @Test
+  void should_grantInTenantB_when_onlyTenantAHasAnAdministrator() {
+    UUID tenantA = uuidGenerator.newId();
+    Role adminRoleA = seedSystemTenantAdminRole(tenantA);
+    User adminA = seedActiveUser(tenantA, "tenant-a-admin");
+    seedAssignment(tenantA, adminRoleA.getId(), adminA.getId());
+    UUID tenantB = uuidGenerator.newId();
+    Role adminRoleB = seedSystemTenantAdminRole(tenantB);
+    User targetB = seedActiveUser(tenantB, "tenant-b-target");
+
+    int exitCode = runCli(targetB.getId().toString(), freshChangeRef());
+
+    assertThat(exitCode).isZero();
+    assertThat(countActive(tenantB, adminRoleB.getId())).isEqualTo(1);
+    assertThat(countActive(tenantA, adminRoleA.getId())).isEqualTo(1);
+  }
+
+  /**
+   * ADR-0018 caller-qualifying population against real data: a holder of a custom role carrying
+   * all three dangerous permissions IS an administrator, so break-glass refuses (exit 5).
+   */
+  @Test
+  void should_refuseWithExit5_when_aCustomRoleCarryingAllThreeDangerousPermissionsIsHeld() {
+    UUID tenantId = uuidGenerator.newId();
+    Role tenantAdmin = seedSystemTenantAdminRole(tenantId);
+    Role custom =
+        seedCustomRole(tenantId, "qa-full-admin", "role:write", "user:write", "tenant:write");
+    User holder = seedActiveUser(tenantId, "custom-admin");
+    seedAssignment(tenantId, custom.getId(), holder.getId());
+    User target = seedActiveUser(tenantId, "custom-admin-target");
+
+    int exitCode = runCli(target.getId().toString(), freshChangeRef());
+
+    assertThat(exitCode).isEqualTo(5);
+    assertThat(countActive(tenantId, tenantAdmin.getId())).isZero();
+  }
+
+  /** The converse: a role with only two of the three is not an administrator; the grant goes. */
+  @Test
+  void should_grant_when_theOnlyHeldCustomRoleCarriesTwoOfTheThreeDangerousPermissions() {
+    UUID tenantId = uuidGenerator.newId();
+    Role tenantAdmin = seedSystemTenantAdminRole(tenantId);
+    Role custom = seedCustomRole(tenantId, "qa-partial-admin", "role:write", "user:write");
+    User holder = seedActiveUser(tenantId, "partial-admin");
+    seedAssignment(tenantId, custom.getId(), holder.getId());
+    User target = seedActiveUser(tenantId, "partial-admin-target");
+
+    int exitCode = runCli(target.getId().toString(), freshChangeRef());
+
+    assertThat(exitCode).isZero();
+    assertThat(countActive(tenantId, tenantAdmin.getId())).isEqualTo(1);
+  }
+
+  /** A tenant-created role named {@code TENANT_ADMIN} is not the system role: exit 4, no grant. */
+  @Test
+  void should_refuseWithExit4_when_theTenantAdminRoleIsNotASystemRole() {
+    UUID tenantId = uuidGenerator.newId();
+    Role lookalike = seedCustomRole(tenantId, "TENANT_ADMIN");
+    User target = seedActiveUser(tenantId, "lookalike-target");
+
+    int exitCode = runCli(target.getId().toString(), freshChangeRef());
+
+    assertThat(exitCode).isEqualTo(4);
+    assertThat(countActive(tenantId, lookalike.getId())).isZero();
+  }
+
+  /** A temporarily LOCKED sole administrator still counts as an administrator (M-1 option b keeps this). */
+  @Test
+  void should_refuseWithExit5_when_theSoleAdministratorIsLocked() {
+    UUID tenantId = uuidGenerator.newId();
+    Role tenantAdmin = seedSystemTenantAdminRole(tenantId);
+    User admin = seedActiveUser(tenantId, "locked-admin");
+    seedAssignment(tenantId, tenantAdmin.getId(), admin.getId());
+    setUserStatus(admin.getId(), "LOCKED");
+    User target = seedActiveUser(tenantId, "locked-admin-target");
+
+    int exitCode = runCli(target.getId().toString(), freshChangeRef());
+
+    assertThat(exitCode).isEqualTo(5);
+  }
+
+  /**
+   * CHARACTERIZATION of open finding M-1 / O-7 (07-security-review-M5.md), not an endorsement: a
+   * DISABLED sole administrator still counts, so break-glass refuses and the tenant cannot be
+   * recovered with the audited tool. If the owner decides option (b) (administrator = not
+   * DISABLED), this test is meant to flip to exit 0; change it then, deliberately, with the
+   * decision recorded.
+   */
+  @Test
+  void should_refuseWithExit5_when_theSoleAdministratorIsDisabled_pendingO7Decision() {
+    UUID tenantId = uuidGenerator.newId();
+    Role tenantAdmin = seedSystemTenantAdminRole(tenantId);
+    User admin = seedActiveUser(tenantId, "disabled-admin");
+    seedAssignment(tenantId, tenantAdmin.getId(), admin.getId());
+    setUserStatus(admin.getId(), "DISABLED");
+    User target = seedActiveUser(tenantId, "disabled-admin-target");
+
+    int exitCode = runCli(target.getId().toString(), freshChangeRef());
+
+    assertThat(exitCode).isEqualTo(5);
+    assertThat(countActiveForUser(target.getId())).isZero();
+  }
+
+  /**
+   * A refusal whose FAILURE row cannot be written is lost with a signal, never thrown, and never
+   * hides the page or the exit code (design §7.2; RBAC_AUDIT_WRITE_LOST). Real MySQL, via a
+   * test-only trigger that rejects FAILURE break-glass rows.
+   */
+  @Test
+  void should_keepExitCodeAndPage_andLogWriteLost_when_theRefusalRowCannotBeWritten() {
+    UUID unknownUserId = uuidGenerator.newId();
+    jdbc.execute(
+        "CREATE TRIGGER trg_qa_block_break_glass_failure BEFORE INSERT ON auth_events FOR EACH ROW"
+            + " BEGIN IF NEW.event_type = 'ROLE_BREAK_GLASS_GRANT' AND NEW.outcome = 'FAILURE'"
+            + " THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'QA test-only block'; END IF;"
+            + " END");
+
+    int exitCode = runCli(unknownUserId.toString(), freshChangeRef());
+
+    assertThat(exitCode).isEqualTo(3);
+    assertThat(auditRows(unknownUserId)).isEmpty();
+    assertThat(singleAlert())
+        .containsEntry("outcome", "REFUSED")
+        .containsEntry("reason", "TARGET_USER_NOT_FOUND");
+    assertThat(logs.list)
+        .anySatisfy(
+            e -> assertThat(keyValues(e)).containsEntry("event", "RBAC_AUDIT_WRITE_LOST"));
+  }
+
+  // ── Process boundary: NexusApplication.main, as nexus_app ────────────────────────────────
+
+  /**
+   * The whole chain in a real JVM, as {@code java -jar} runs it, connecting as the least-privilege
+   * runtime user {@code nexus_app} (every other IT connects as the container user, which would
+   * hide a missing grant): profile config, Flyway off, runner, M10/M11 locking reads, grant,
+   * SUCCESS row, and {@code main}'s {@code System.exit(SpringApplication.exit(...))}. Takes
+   * seconds (a full application boot), which is the point of the test.
+   */
+  @Test
+  void should_exitProcessWith0_andGrant_when_mainRunsBreakGlassAsNexusApp(@TempDir Path tmp)
+      throws Exception {
+    UUID tenantId = uuidGenerator.newId();
+    Role tenantAdmin = seedSystemTenantAdminRole(tenantId);
+    User target = seedActiveUser(tenantId, "main-exit0");
+    String changeRef = freshChangeRef();
+    Path output = tmp.resolve("child.log");
+
+    int exitCode =
+        runMainInChildJvm(
+            output,
+            "nexus_app",
+            "nexus_app_test_only",
+            "--target-user-id=" + target.getId(),
+            "--change-ref=" + changeRef);
+
+    assertThat(exitCode).as("child JVM output tail:%n%s", tail(output)).isZero();
+    assertThat(countActive(tenantId, tenantAdmin.getId())).isEqualTo(1);
+    assertThat(auditRows(target.getId()))
+        .extracting(r -> r.get("outcome") + "/" + r.get("change_ref"))
+        .containsExactly("SUCCESS/" + changeRef);
+  }
+
+  /** A refusal's exit code survives {@code main} and the JVM: a replayed reference is exit 6. */
+  @Test
+  void should_exitProcessWithTheRefusalCode_when_mainRunsAReplayedChangeRef(@TempDir Path tmp)
+      throws Exception {
+    UUID tenantId = uuidGenerator.newId();
+    seedSystemTenantAdminRole(tenantId);
+    User target = seedActiveUser(tenantId, "main-exit6");
+    String changeRef = freshChangeRef();
+    assertThat(runCli(target.getId().toString(), changeRef)).isZero();
+    Path output = tmp.resolve("child.log");
+
+    int exitCode =
+        runMainInChildJvm(
+            output,
+            "nexus_app",
+            "nexus_app_test_only",
+            "--target-user-id=" + target.getId(),
+            "--change-ref=" + changeRef);
+
+    assertThat(exitCode).as("child JVM output tail:%n%s", tail(output)).isEqualTo(6);
+  }
+
+  /**
+   * RC-37.6 end to end: the profile forced onto a servlet context kills the process (exit 1) and
+   * leaves no grant behind.
+   */
+  @Test
+  void should_exitProcessWith1_andGrantNothing_when_mainRunsBreakGlassWithServletWebType(
+      @TempDir Path tmp) throws Exception {
+    UUID tenantId = uuidGenerator.newId();
+    Role tenantAdmin = seedSystemTenantAdminRole(tenantId);
+    User target = seedActiveUser(tenantId, "main-servlet");
+    Path output = tmp.resolve("child.log");
+
+    int exitCode =
+        runMainInChildJvm(
+            output,
+            "nexus_app",
+            "nexus_app_test_only",
+            "--spring.main.web-application-type=servlet",
+            "--server.port=0",
+            "--target-user-id=" + target.getId(),
+            "--change-ref=" + freshChangeRef());
+
+    assertThat(exitCode).as("child JVM output tail:%n%s", tail(output)).isEqualTo(1);
+    assertThat(Files.readString(output)).contains("refusing to start");
+    assertThat(countActive(tenantId, tenantAdmin.getId())).isZero();
+  }
+
   // ── Concurrency ───────────────────────────────────────────────────────────────────────────
 
   /**
@@ -642,17 +909,7 @@ class BreakGlassAdminIT {
   private ConfigurableApplicationContext runBreakGlassApplication(
       AtomicBoolean webServerInitialized, String... extraArgs) {
     List<String> args =
-        new ArrayList<>(
-            List.of(
-                "--spring.datasource.url=" + mysqlContainer.getJdbcUrl(),
-                "--spring.datasource.username=" + mysqlContainer.getUsername(),
-                "--spring.datasource.password=" + mysqlContainer.getPassword(),
-                "--spring.data.redis.host=" + redisContainer.getHost(),
-                "--spring.data.redis.port=" + redisContainer.getMappedPort(6379),
-                "--spring.mail.host=127.0.0.1",
-                "--nexus.mail.from-address=test@nexus.test",
-                "--nexus.frontend.base-url=http://localhost:2000",
-                "--nexus.rbac.break-glass.log-flush-wait=0s"));
+        new ArrayList<>(containerArgs(mysqlContainer.getUsername(), mysqlContainer.getPassword()));
     args.addAll(List.of(extraArgs));
     String previous = System.getProperty(LoggingSystem.SYSTEM_PROPERTY);
     System.setProperty(LoggingSystem.SYSTEM_PROPERTY, LoggingSystem.NONE);
@@ -678,6 +935,59 @@ class BreakGlassAdminIT {
         System.setProperty(LoggingSystem.SYSTEM_PROPERTY, previous);
       }
     }
+  }
+
+  /** The datasource, Redis and mandatory-property arguments that let the app boot on the containers. */
+  private List<String> containerArgs(String dbUser, String dbPassword) {
+    return List.of(
+        "--spring.datasource.url=" + mysqlContainer.getJdbcUrl(),
+        "--spring.datasource.username=" + dbUser,
+        "--spring.datasource.password=" + dbPassword,
+        "--spring.data.redis.host=" + redisContainer.getHost(),
+        "--spring.data.redis.port=" + redisContainer.getMappedPort(6379),
+        "--spring.mail.host=127.0.0.1",
+        "--nexus.mail.from-address=test@nexus.test",
+        "--nexus.frontend.base-url=http://localhost:2000",
+        "--nexus.rbac.break-glass.log-flush-wait=0s");
+  }
+
+  /**
+   * Boots {@code NexusApplication.main} in a separate JVM exactly as {@code java -jar} would
+   * (profiles {@code test,break-glass}, test classes off the classpath) and returns the PROCESS
+   * exit code, so {@code main}'s {@code System.exit(SpringApplication.exit(context))} is exercised
+   * for real. Output goes to a file kept for the failure message.
+   */
+  private int runMainInChildJvm(Path logFile, String dbUser, String dbPassword, String... extraArgs)
+      throws Exception {
+    String classpath =
+        String.join(
+            File.pathSeparator,
+            List.of(System.getProperty("java.class.path").split(File.pathSeparator)).stream()
+                .filter(entry -> !entry.replace('\\', '/').endsWith("/test-classes"))
+                .toList());
+    List<String> command = new ArrayList<>();
+    command.add(Path.of(System.getProperty("java.home"), "bin", "java").toString());
+    command.add("-cp");
+    command.add(classpath);
+    command.add(NexusApplication.class.getName());
+    command.add("--spring.profiles.active=test,break-glass");
+    command.addAll(containerArgs(dbUser, dbPassword));
+    command.addAll(List.of(extraArgs));
+    Process process =
+        new ProcessBuilder(command)
+            .redirectErrorStream(true)
+            .redirectOutput(logFile.toFile())
+            .start();
+    if (!process.waitFor(180, TimeUnit.SECONDS)) {
+      process.destroyForcibly();
+      throw new AssertionError("child JVM did not exit within 180 s:\n" + tail(logFile));
+    }
+    return process.exitValue();
+  }
+
+  private static String tail(Path logFile) throws IOException {
+    List<String> lines = Files.readAllLines(logFile);
+    return String.join("\n", lines.subList(Math.max(0, lines.size() - 40), lines.size()));
   }
 
   /** Excludes every class compiled from the test sources, as in the packaged jar. */
@@ -827,6 +1137,25 @@ class BreakGlassAdminIT {
             + "SELECT UUID_TO_BIN(?), id FROM permissions",
         role.getId().toString());
     return role;
+  }
+
+  /** A tenant-scoped, non-system custom role carrying exactly the named permissions. */
+  private Role seedCustomRole(UUID tenantId, String name, String... permissionNames) {
+    Role role =
+        roleRepository.save(
+            new Role(uuidGenerator.newId(), tenantId, name, "BreakGlassAdminIT", false));
+    for (String permissionName : permissionNames) {
+      jdbc.update(
+          "INSERT INTO role_permissions (role_id, permission_id) "
+              + "SELECT UUID_TO_BIN(?), id FROM permissions WHERE name = ?",
+          role.getId().toString(),
+          permissionName);
+    }
+    return role;
+  }
+
+  private void setUserStatus(UUID userId, String status) {
+    jdbc.update("UPDATE users SET status = ? WHERE id = ?", status, toBytes(userId));
   }
 
   private UserRole seedAssignment(UUID tenantId, UUID roleId, UUID userId) {

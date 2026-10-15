@@ -455,6 +455,15 @@ class HexagonalArchitectureTest {
     static final ArchRule cli_beans_are_break_glass_profile_only =
             ArchitectureRules.CLI_BEANS_ARE_BREAK_GLASS_PROFILE_ONLY;
 
+    // US-018 M5 security review L-3: the allowlisted global replay lookup stays break-glass-only.
+    @ArchTest
+    static final ArchRule break_glass_grant_lookup_port_is_contained =
+            ArchitectureRules.BREAK_GLASS_GRANT_LOOKUP_PORT_IS_CONTAINED;
+
+    @ArchTest
+    static final ArchRule global_break_glass_replay_query_is_called_only_by_its_adapter =
+            ArchitectureRules.GLOBAL_BREAK_GLASS_REPLAY_QUERY_IS_CALLED_ONLY_BY_ITS_ADAPTER;
+
     @ArchTest
     static final ArchRule no_field_injection =
             GeneralCodingRules.NO_CLASSES_SHOULD_USE_FIELD_INJECTION;
