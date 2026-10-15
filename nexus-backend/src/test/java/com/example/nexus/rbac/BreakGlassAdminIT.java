@@ -31,6 +31,11 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -597,7 +602,10 @@ class BreakGlassAdminIT {
     assertThat(countActive(tenantId, lookalike.getId())).isZero();
   }
 
-  /** A temporarily LOCKED sole administrator still counts as an administrator (M-1 option b keeps this). */
+  /**
+   * O-7 decision (2026-10-15): a temporarily LOCKED sole administrator still counts as an
+   * administrator for break-glass; a lockout recovers by itself.
+   */
   @Test
   void should_refuseWithExit5_when_theSoleAdministratorIsLocked() {
     UUID tenantId = uuidGenerator.newId();
@@ -613,25 +621,108 @@ class BreakGlassAdminIT {
   }
 
   /**
-   * CHARACTERIZATION of open finding M-1 / O-7 (07-security-review-M5.md), not an endorsement: a
-   * DISABLED sole administrator still counts, so break-glass refuses and the tenant cannot be
-   * recovered with the audited tool. If the owner decides option (b) (administrator = not
-   * DISABLED), this test is meant to flip to exit 0; change it then, deliberately, with the
-   * decision recorded.
+   * O-7 decision (2026-10-15; security review M-1): for break-glass only, a holder whose user is
+   * DISABLED is not an administrator. A tenant whose sole administrator is DISABLED is recoverable:
+   * the target gets TENANT_ADMIN, one SUCCESS row is written and the grant is paged. The DISABLED
+   * holder's assignment is left as it is.
    */
   @Test
-  void should_refuseWithExit5_when_theSoleAdministratorIsDisabled_pendingO7Decision() {
+  void should_grantExit0_writeSuccessRow_andPage_when_theSoleAdministratorIsDisabled() {
     UUID tenantId = uuidGenerator.newId();
     Role tenantAdmin = seedSystemTenantAdminRole(tenantId);
     User admin = seedActiveUser(tenantId, "disabled-admin");
-    seedAssignment(tenantId, tenantAdmin.getId(), admin.getId());
+    UserRole disabledAdminRow = seedAssignment(tenantId, tenantAdmin.getId(), admin.getId());
     setUserStatus(admin.getId(), "DISABLED");
     User target = seedActiveUser(tenantId, "disabled-admin-target");
+    String changeRef = freshChangeRef();
 
-    int exitCode = runCli(target.getId().toString(), freshChangeRef());
+    int exitCode = runCli(target.getId().toString(), changeRef);
+
+    assertThat(exitCode).isZero();
+    assertThat(countActive(tenantId, tenantAdmin.getId())).isEqualTo(2);
+    assertThat(countActiveForUser(target.getId())).isEqualTo(1);
+    assertThat(isActive(disabledAdminRow.getId())).isTrue();
+    List<Map<String, Object>> rows = auditRows(target.getId());
+    assertThat(rows)
+        .extracting(r -> r.get("outcome") + "/" + r.get("change_ref") + "/" + r.get("reason"))
+        .containsExactly("SUCCESS/" + changeRef + "/null");
+    assertThat(toUuid((byte[]) rows.get(0).get("tenant_id"))).isEqualTo(tenantId);
+    assertThat(singleAlert())
+        .containsEntry("event", "RBAC_BREAK_GLASS_USED")
+        .containsEntry("outcome", "GRANTED")
+        .containsEntry("tenantId", tenantId)
+        .containsEntry("targetUserId", target.getId())
+        .containsEntry("changeRef", changeRef);
+  }
+
+  /** O-7: one DISABLED administrator does not hide an ACTIVE one; break-glass refuses (exit 5). */
+  @Test
+  void should_refuseWithExit5_andGrantNothing_when_oneAdministratorIsDisabledAndAnotherIsActive() {
+    UUID tenantId = uuidGenerator.newId();
+    Role tenantAdmin = seedSystemTenantAdminRole(tenantId);
+    User disabledAdmin = seedActiveUser(tenantId, "mixed-disabled-admin");
+    seedAssignment(tenantId, tenantAdmin.getId(), disabledAdmin.getId());
+    setUserStatus(disabledAdmin.getId(), "DISABLED");
+    User activeAdmin = seedActiveUser(tenantId, "mixed-active-admin");
+    seedAssignment(tenantId, tenantAdmin.getId(), activeAdmin.getId());
+    User target = seedActiveUser(tenantId, "mixed-target");
+
+    BreakGlassOutcome outcome =
+        bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef(freshChangeRef()));
+
+    assertRefused(outcome, BreakGlassRefusalReason.TENANT_HAS_ADMIN, 5, target.getId(), tenantId);
+    assertThat(countActive(tenantId, tenantAdmin.getId())).isEqualTo(2);
+    assertThat(countActiveForUser(target.getId())).isZero();
+  }
+
+  /**
+   * O-7, no stale read: the DISABLED sole administrator is re-enabled by a transaction that is
+   * still open when the CLI reaches the status read. The CLI's locking read waits for it and sees
+   * the committed ACTIVE status, so it refuses (exit 5). A plain snapshot read would have seen
+   * DISABLED and granted.
+   */
+  @Test
+  void should_refuseWithExit5_when_theDisabledSoleAdministratorIsReEnabledConcurrently()
+      throws Exception {
+    UUID tenantId = uuidGenerator.newId();
+    Role tenantAdmin = seedSystemTenantAdminRole(tenantId);
+    User admin = seedActiveUser(tenantId, "re-enabled-admin");
+    seedAssignment(tenantId, tenantAdmin.getId(), admin.getId());
+    setUserStatus(admin.getId(), "DISABLED");
+    User target = seedActiveUser(tenantId, "re-enabled-target");
+
+    int exitCode = runCliWhileAnotherTransactionSetsStatus(admin.getId(), "ACTIVE", target.getId());
 
     assertThat(exitCode).isEqualTo(5);
+    assertThat(countActive(tenantId, tenantAdmin.getId())).isEqualTo(1);
     assertThat(countActiveForUser(target.getId())).isZero();
+    assertThat(auditRows(target.getId()))
+        .extracting(r -> r.get("outcome") + "/" + r.get("reason"))
+        .containsExactly("FAILURE/TENANT_HAS_ADMIN");
+  }
+
+  /**
+   * L-2: the target is ACTIVE when the CLI resolves it, then DISABLED by a transaction that is
+   * still open when the CLI reaches the status read inside the grant transaction. The CLI waits
+   * for it, sees DISABLED and refuses (exit 3, audited with the tenant); nothing is granted.
+   */
+  @Test
+  void should_refuseWithExit3_andGrantNothing_when_theTargetIsDisabledConcurrently()
+      throws Exception {
+    UUID tenantId = uuidGenerator.newId();
+    Role tenantAdmin = seedSystemTenantAdminRole(tenantId);
+    User target = seedActiveUser(tenantId, "disabled-concurrently");
+
+    int exitCode =
+        runCliWhileAnotherTransactionSetsStatus(target.getId(), "DISABLED", target.getId());
+
+    assertThat(exitCode).isEqualTo(3);
+    assertThat(countActive(tenantId, tenantAdmin.getId())).isZero();
+    List<Map<String, Object>> rows = auditRows(target.getId());
+    assertThat(rows)
+        .extracting(r -> r.get("outcome") + "/" + r.get("reason"))
+        .containsExactly("FAILURE/TARGET_USER_NOT_ACTIVE");
+    assertThat(toUuid((byte[]) rows.get(0).get("tenant_id"))).isEqualTo(tenantId);
   }
 
   /**
@@ -875,6 +966,72 @@ class BreakGlassAdminIT {
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────────────────────
+
+  /**
+   * Sets {@code userId}'s status in a transaction on its own connection and keeps it open, runs
+   * the CLI for {@code targetUserId} on another thread, waits until the CLI is blocked on a lock
+   * held by that transaction, then commits it and returns the CLI's exit code. The lock wait is
+   * observed in {@code performance_schema} (as root), so the test never relies on a sleep.
+   */
+  private int runCliWhileAnotherTransactionSetsStatus(
+      UUID userId, String status, UUID targetUserId) throws Exception {
+    ExecutorService executor = Executors.newSingleThreadExecutor();
+    try (Connection writer =
+            DriverManager.getConnection(
+                mysqlContainer.getJdbcUrl(),
+                mysqlContainer.getUsername(),
+                mysqlContainer.getPassword());
+        Connection monitor =
+            DriverManager.getConnection(
+                mysqlContainer.getJdbcUrl(), "root", mysqlContainer.getPassword())) {
+      writer.setAutoCommit(false);
+      try (PreparedStatement update =
+          writer.prepareStatement("UPDATE users SET status = ? WHERE id = ?")) {
+        update.setString(1, status);
+        update.setBytes(2, toBytes(userId));
+        assertThat(update.executeUpdate()).isEqualTo(1);
+      }
+      long writerConnectionId;
+      try (Statement statement = writer.createStatement();
+          ResultSet rs = statement.executeQuery("SELECT CONNECTION_ID()")) {
+        rs.next();
+        writerConnectionId = rs.getLong(1);
+      }
+
+      Future<Integer> cli =
+          executor.submit(() -> runCli(targetUserId.toString(), freshChangeRef()));
+      awaitLockWaitBlockedBy(monitor, writerConnectionId, cli);
+      writer.commit();
+      return cli.get(30, TimeUnit.SECONDS);
+    } finally {
+      executor.shutdownNow();
+    }
+  }
+
+  private static void awaitLockWaitBlockedBy(
+      Connection monitor, long blockingConnectionId, Future<Integer> cli) throws Exception {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+    try (PreparedStatement waits =
+        monitor.prepareStatement(
+            "SELECT COUNT(*) FROM performance_schema.data_lock_waits w"
+                + " JOIN performance_schema.threads t ON w.BLOCKING_THREAD_ID = t.THREAD_ID"
+                + " WHERE t.PROCESSLIST_ID = ?")) {
+      waits.setLong(1, blockingConnectionId);
+      while (System.nanoTime() < deadline) {
+        assertThat(cli.isDone())
+            .as("the CLI finished without waiting for the open status change")
+            .isFalse();
+        try (ResultSet rs = waits.executeQuery()) {
+          rs.next();
+          if (rs.getInt(1) > 0) {
+            return;
+          }
+        }
+        Thread.sleep(25);
+      }
+    }
+    throw new AssertionError("the CLI never waited on the open status change");
+  }
 
   private Future<Integer> submitCli(
       ExecutorService executor, CyclicBarrier barrier, UUID targetUserId, String changeRef) {

@@ -14,12 +14,13 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 - Exit codes: 0 granted; 1 unexpected error; 2 invalid argument; 3 target not found or not ACTIVE; 4 no system `TENANT_ADMIN` role; 5 tenant already has an administrator; 6 change reference already used on a SUCCESS grant in any tenant; 7 concurrent invocation (lock failure).
 - The change reference admits only `^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]{0,7}$`; a reference used for a grant in any tenant is refused. Every invocation writes a `ROLE_BREAK_GLASS_GRANT` audit row (SUCCESS atomically with the grant; refusals independently, with no argument value) and emits the ERROR `RBAC_BREAK_GLASS_USED`, which is meant to page via a log-based alert.
 - The `break-glass` profile has no web server, Flyway off, a Hikari pool of 4 and a log-flush wait before exit (`NEXUS_RBAC_BREAK_GLASS_LOG_FLUSH_WAIT`, default 15 s). A guard fails startup if the profile is activated in a web context. `SecurityConfig` and `PublicEndpointRequestMatcher` are now `@ConditionalOnWebApplication(SERVLET)`; `DevDataInitializer` is excluded under `break-glass`. The serving app is otherwise unchanged.
-- **Known limitation (O-7, owner decision pending):** a tenant whose only administrator is DISABLED gets exit 5 and cannot be recovered with the CLI. Operators escalate; no manual SQL.
-- **Not yet done (merge conditions):** O-7 decision, Kubernetes audit-logging sign-off, page-capture drill, daily reconciliation alert, RES-6 retention sign-off, CI dependency-check.
+- **O-7 decided (2026-10-15):** for break-glass only, an administrator whose user is DISABLED does not count, so a tenant whose only administrators are DISABLED is recoverable with the CLI (exit 0). LOCKED, PENDING and ACTIVE administrators still count (exit 5). The holders' and the target's statuses are read with a `FOR SHARE` locking read inside the grant transaction, after the set lock. The last-admin guard, assign/revoke and the zero-admin health indicator are unchanged.
+- The target's ACTIVE check is repeated under that lock, so a user disabled while the CLI runs is refused (exit 3), never granted (security review L-2). A failed refusal page is logged as ERROR `RBAC_BREAK_GLASS_ALERT_FAILED` and no longer replaces the refusal's exit code with 1 (L-1).
+- **Not yet done (merge conditions):** Kubernetes audit-logging sign-off, page-capture drill, daily reconciliation alert, RES-6 retention sign-off, CI dependency-check.
 
 **Tests and docs**
-- `BreakGlassAdminIT` (29), `BreakGlassGrantLookupIT` (5), `BreakGlassProfileConfigTest` (3), `BreakGlassLookupContainmentRuleTest` (6) and further unit and ArchUnit tests; full `verify` 2032 unit and 497 integration tests, 0 failures.
-- Docs: `docs/features/US-018/runbook.md` (11), `deployment.md` (11), `monitoring.md` (7), `rollback.md` (8), `09-technical.md` (13); ADR-0025 (Revision 4, still Proposed); `docs/features/US-012/runbook.md` step 4 points to the CLI.
+- `BreakGlassAdminIT` (32), `BreakGlassGrantLookupIT` (5), `BreakGlassProfileConfigTest` (3), `BreakGlassLookupContainmentRuleTest` (6) and further unit and ArchUnit tests; full `verify` 2057 unit and 500 integration tests, 0 failures (after the O-7, L-1 and L-2 change).
+- Docs: `docs/features/US-018/runbook.md` (11), `deployment.md` (11), `monitoring.md` (7), `rollback.md` (8), `09-technical.md` (13); ADR-0025 (Revision 5, still Proposed); `docs/features/US-012/runbook.md` step 4 points to the CLI.
 
 ### Changed — US-018 Milestone 7b (drop v2 token acceptance; T-015)
 

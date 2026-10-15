@@ -49,7 +49,7 @@ Legend: U = unit, A = ArchUnit, IT = integration, **new** = added by this audit.
 - [MED] Zero-admin precondition against real rows: only unit-mocked for custom roles; no IT for cross-tenant isolation, partial dangerous-permission role, LOCKED holder, non-system look-alike role. Added 6 ITs.
 - [MED] Resolved profile configuration (flush-wait default and env override, no leakage into other profiles) was only a raw-YAML pin. Added `BreakGlassProfileConfigTest` (3).
 - [MED] Refusal-row write failure (`RBAC_AUDIT_WRITE_LOST`) only unit-mocked. Added an IT on real MySQL.
-- [MED] M-1 / O-7 (DISABLED sole administrator) had no test of the current behaviour. Added a characterization IT, clearly named `..._pendingO7Decision`.
+- [MED] M-1 / O-7 (DISABLED sole administrator) had no test of the current behaviour. A characterization IT (`..._pendingO7Decision`, exit 5) was added here; **it was replaced on 2026-10-15** when O-7 was decided (break-glass ignores DISABLED holders): `should_grantExit0_writeSuccessRow_andPage_when_theSoleAdministratorIsDisabled` now asserts the grant, the SUCCESS row and the page, next to `should_refuseWithExit5_andGrantNothing_when_oneAdministratorIsDisabledAndAnotherIsActive` and `should_refuseWithExit5_when_theDisabledSoleAdministratorIsReEnabledConcurrently`.
 - [LOW] ITs lacked a LOCKED-holder case (stays counted under either O-7 option). Added.
 
 ## Tests added
@@ -60,7 +60,7 @@ Legend: U = unit, A = ArchUnit, IT = integration, **new** = added by this audit.
 
 `identity/infrastructure/persistence/BreakGlassGrantLookupIT` (5): `should_findTheReference_when_aSuccessGrantRowInAnyTenantCarriesIt`, `should_notFindTheReference_when_onlyAFailureRowCarriesIt`, `should_notFindTheReference_when_anotherEventTypeCarriesItInMetadata`, `should_matchExactly_notByPrefixSuperstringOrCase`, `should_treatTheReferenceAsDataOnly_when_itCarriesSqlOrJsonSyntax`.
 
-`rbac/BreakGlassAdminIT` (+12, now 29): `should_grantWithTheSameChangeRef_when_theEarlierAttemptLeftOnlyAFailureRow`, `should_grantOtherReferences_andRefuseOnlyTheIdenticalOne_when_similarReferenceWasUsed`, `should_grantInTenantB_when_onlyTenantAHasAnAdministrator`, `should_refuseWithExit5_when_aCustomRoleCarryingAllThreeDangerousPermissionsIsHeld`, `should_grant_when_theOnlyHeldCustomRoleCarriesTwoOfTheThreeDangerousPermissions`, `should_refuseWithExit4_when_theTenantAdminRoleIsNotASystemRole`, `should_refuseWithExit5_when_theSoleAdministratorIsLocked`, `should_refuseWithExit5_when_theSoleAdministratorIsDisabled_pendingO7Decision`, `should_keepExitCodeAndPage_andLogWriteLost_when_theRefusalRowCannotBeWritten`, `should_exitProcessWith0_andGrant_when_mainRunsBreakGlassAsNexusApp`, `should_exitProcessWithTheRefusalCode_when_mainRunsAReplayedChangeRef`, `should_exitProcessWith1_andGrantNothing_when_mainRunsBreakGlassWithServletWebType`. Helper changes: shared `containerArgs`, `runMainInChildJvm`, `seedCustomRole`, `setUserStatus`, extra trigger drop in `@AfterEach`.
+`rbac/BreakGlassAdminIT` (+12, now 29): `should_grantWithTheSameChangeRef_when_theEarlierAttemptLeftOnlyAFailureRow`, `should_grantOtherReferences_andRefuseOnlyTheIdenticalOne_when_similarReferenceWasUsed`, `should_grantInTenantB_when_onlyTenantAHasAnAdministrator`, `should_refuseWithExit5_when_aCustomRoleCarryingAllThreeDangerousPermissionsIsHeld`, `should_grant_when_theOnlyHeldCustomRoleCarriesTwoOfTheThreeDangerousPermissions`, `should_refuseWithExit4_when_theTenantAdminRoleIsNotASystemRole`, `should_refuseWithExit5_when_theSoleAdministratorIsLocked`, `should_refuseWithExit5_when_theSoleAdministratorIsDisabled_pendingO7Decision` (replaced 2026-10-15, see the O-7 finding above), `should_keepExitCodeAndPage_andLogWriteLost_when_theRefusalRowCannotBeWritten`, `should_exitProcessWith0_andGrant_when_mainRunsBreakGlassAsNexusApp`, `should_exitProcessWithTheRefusalCode_when_mainRunsAReplayedChangeRef`, `should_exitProcessWith1_andGrantNothing_when_mainRunsBreakGlassWithServletWebType`. Helper changes: shared `containerArgs`, `runMainInChildJvm`, `seedCustomRole`, `setUserStatus`, extra trigger drop in `@AfterEach`.
 
 ## L-3 implementation (security finding)
 
@@ -92,12 +92,12 @@ None found in the M5 set. Notes:
 
 ## Residual gaps (not closed, with reason)
 
-1. **O-7 / M-1 (DISABLED sole administrator) remains an owner decision.** The characterization IT pins exit 5 and will need a deliberate flip if option (b) is chosen. The pin is in the suite so the decision cannot be changed silently.
+1. **O-7 / M-1 (DISABLED sole administrator): closed 2026-10-15.** Decided for A7 only (DISABLED holders do not count; LOCKED ones do); the characterization IT was deliberately replaced by tests of the new behaviour (see the O-7 finding above).
 2. **Production bug candidates: none found.** Specifically verified against MySQL: lookup is case-sensitive and exact; SUCCESS-only; FAILURE rows do not block a retry.
 3. `main`'s non-break-glass branch (the serving app must not call `System.exit`) is not tested: it cannot be asserted without starting a long-lived server in a child JVM, which would need a timing-based wait. It is exercised by every other boot, and the branch is a single `matchesProfiles` guard.
 4. T-R15 page capture end to end (log shipper, `--rm`), RC-37.3 Kubernetes audit logging, the daily reconciliation alert, RES-6 retention, and the zero-admin recovery drill are operational merge-checklist items, not testable here.
 5. T-S11's accepted race (two concurrent runs, one reference, two different zero-admin tenants) is accepted by Security and has no test by design.
-6. Review findings L-1 (refusal page not best effort) and L-2 (target ACTIVE check outside the transaction) are open in production code; no test pins either, because a test would assert behaviour the reviewers asked to change.
+6. Review findings L-1 (refusal page not best effort) and L-2 (target ACTIVE check outside the transaction): **fixed 2026-10-15**, with a unit test over every refusal reason for L-1 and `BreakGlassAdminIT.should_refuseWithExit3_andGrantNothing_when_theTargetIsDisabledConcurrently` for L-2.
 7. A06 (OWASP dependency-check) is left to CI; not runnable offline.
 
 ## Files touched

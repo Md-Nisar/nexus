@@ -1,4 +1,4 @@
-# US-018 pending items (backlog): M7 (P-1, P-2) and M5 (O-7, merge conditions, L-1, L-2)
+# US-018 pending items (backlog): M7 (P-1, P-2) and M5 (merge conditions; O-7, L-1, L-2 closed)
 
 **Recorded:** 2026-10-11. Open decisions from the pre-PR security re-review (`13-security-review-pre-PR-rereview.md`) that were not closed on branch `ccr-4e9e7cbe-4vl9v6`. They are tracked here for later; they do not block opening the M7 PR as a draft, but each is a decision needed before the M7 PR merges unless the PR author or approver explicitly defers it.
 
@@ -29,7 +29,7 @@ By decision on 2026-10-11, the repeat `/security-review` and the Docker-only che
 
 ## Merge conditions
 
-- **M5-C1 O-7 / security review M-1: owner decision.** A DISABLED sole administrator gets exit 5 (`TENANT_HAS_ADMIN`), so break-glass cannot recover that tenant and in-app recovery is blocked too. Owners: Architect + Platform Security Owner. Either (a) a named residual with an owner and a documented, audited manual procedure, or (b) define "administrator" as holders whose user is not DISABLED, consistently in the last-admin lockout, `RbacZeroActiveAdminsHealthIndicator` and A7 (read holder status under the lock, keep LOCKED holders counted, add an IT). Do not add a CLI override flag. **Not decided; must be recorded before the M5 PR merges.** Interim operator guidance (runbook 11.5): escalate, no manual SQL. `BreakGlassAdminIT.should_refuseWithExit5_when_theSoleAdministratorIsDisabled_pendingO7Decision` pins today's behaviour.
+- **M5-C1 O-7 / security review M-1: CLOSED 2026-10-15 (decision by the user).** For break-glass only, an administrator holder whose user is DISABLED does not count, so a tenant whose only administrators are DISABLED is recoverable by the CLI (grants `TENANT_ADMIN`, exit 0). LOCKED holders still count (a lockout recovers by itself), as do ACTIVE and PENDING ones. The statuses are read under the set lock, in the grant transaction (one `FOR SHARE` statement on the `users` rows). Scoped to A7: the last-admin lockout, the assign and revoke guards and `RbacZeroActiveAdminsHealthIndicator` are unchanged. No CLI override flag. Recorded in ADR-0025 Revision 5, `03-design.md` §7 and runbook 11.5. Tests: `BreakGlassAdminIT.should_grantExit0_writeSuccessRow_andPage_when_theSoleAdministratorIsDisabled` (replaces the characterization IT `..._pendingO7Decision`), `..._when_theSoleAdministratorIsLocked` (exit 5, kept), `..._when_oneAdministratorIsDisabledAndAnotherIsActive` (exit 5), `..._when_theDisabledSoleAdministratorIsReEnabledConcurrently` (exit 5, locking read), and unit tests in `BootstrapAdminServiceTest`.
 - **M5-C2 Kubernetes API audit logging (RC-37.3):** Ops sign-off that pod create and exec, with user identity, is logged and retained for at least 1 year.
 - **M5-C3 Page-capture drill (RC-37.4):** a zero-admin tenant recovered in staging, with the page received from a Job run exactly as the runbook specifies (no `--rm`).
 - **M5-C4 Daily reconciliation alert:** ticket-severity alert on new `ROLE_BREAK_GLASS_GRANT` rows live (backstop for a lost page). Also needs a decision on alerting an unpaged exit 1 (monitoring.md 7.1).
@@ -39,9 +39,8 @@ By decision on 2026-10-11, the repeat `/security-review` and the Docker-only che
 
 No environment exists (STATUS.md, decision 2026-10-05), so C2 to C5 can only be completed at the first deployment. Each therefore needs the PR author and approver to either defer it explicitly or hold the merge.
 
-## Open, optional
+## Closed since the security review
 
-- **L-1:** the refusal page is not best effort; if `BreakGlassAlertPort.alert` threw, the specific refusal exit code would be hidden behind exit 1. Fix: wrap it like the GRANTED page (`RBAC_BREAK_GLASS_ALERT_FAILED`), or record the asymmetry in the Javadoc and design 7.1. Very low probability (the only implementation is a Logback call).
-- **L-2:** the target's ACTIVE check is outside the grant transaction (TOCTOU). Accept and note in design 7.1, or re-read the status under the lock and refuse `TARGET_USER_NOT_ACTIVE`; do it as part of M5-C1 option (b).
-- Closed since the security review: L-3 (global lookup port and query are now ArchUnit-contained, `08-test-audit-M5.md`).
-
+- **L-1: CLOSED 2026-10-15.** A throwing refusal page is now best effort, like the GRANTED page: ERROR `RBAC_BREAK_GLASS_ALERT_FAILED` (tenant and reason, no argument value), and the refusal keeps its own exit code. Unit test over every refusal reason in `BootstrapAdminServiceTest`.
+- **L-2: CLOSED 2026-10-15.** The target's ACTIVE check is repeated inside the grant transaction, after the set lock, on the same locking read as O-7; a target disabled concurrently is refused (exit 3). IT `BreakGlassAdminIT.should_refuseWithExit3_andGrantNothing_when_theTargetIsDisabledConcurrently` and unit tests.
+- **L-3:** global lookup port and query are now ArchUnit-contained (`08-test-audit-M5.md`).

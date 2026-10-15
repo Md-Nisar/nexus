@@ -96,7 +96,7 @@ GROUP BY ur.role_id
 HAVING COUNT(DISTINCT rp.permission_id) = (SELECT COUNT(*) FROM permissions);
 ```
 
-Zero-administrator tenants after a deploy: use the `rbacZeroActiveAdmins` health indicator and the US-017 runbook. Restoring an administrator in a tenant with none is done with the break-glass CLI, section 11. Do not use a manual `INSERT`. If the CLI cannot be used (for example exit 5 for a DISABLED sole administrator, O-7), escalate; see section 11.5.
+Zero-administrator tenants after a deploy: use the `rbacZeroActiveAdmins` health indicator and the US-017 runbook. Restoring an administrator in a tenant with none is done with the break-glass CLI, section 11. Do not use a manual `INSERT`. A tenant whose only administrators are DISABLED is recoverable with the CLI too (O-7, section 11.5).
 
 ## 6. Kill switch
 
@@ -185,13 +185,15 @@ The reason below is the `reason` in the audit row and in the page. Exit codes ar
 | 0 | (granted) | The system `TENANT_ADMIN` role was granted to the target. SUCCESS row written in the same transaction; the GRANTED page is sent after commit | Verify (11.4) |
 | 1 | `UNEXPECTED_ERROR` | See 11.3.1. Ambiguous | Follow the two lines in 11.3.1 |
 | 2 | `INVALID_ARGUMENT` | A missing, repeated or malformed option. The row and the page carry **no argument value**, by design | Correct the options and re-run with the same reference (nothing was used up) |
-| 3 | `TARGET_USER_NOT_FOUND` / `TARGET_USER_NOT_ACTIVE` | The user does not exist, or is not ACTIVE | Check the user id and the user's status through the normal process; do not edit the user by SQL |
+| 3 | `TARGET_USER_NOT_FOUND` / `TARGET_USER_NOT_ACTIVE` | The user does not exist, or is not ACTIVE. The status is checked again inside the grant transaction, under the lock, so a user disabled while the tool runs is refused, never granted (L-2) | Check the user id and the user's status through the normal process; do not edit the user by SQL |
 | 4 | `NO_SYSTEM_ADMIN_ROLE` | The tenant has no seeded system `TENANT_ADMIN` role. The tool does not create roles (per-tenant seeding is Epic 3) | Escalate to the Architect; there is no supported fix with this tool |
-| 5 | `TENANT_HAS_ADMIN` | The tenant already has an administrator (including after a successful earlier run, so a re-run is safe). Break-glass is not a general admin-granting path | Recover through that tenant's own administration. For a DISABLED sole administrator see 11.5 |
+| 5 | `TENANT_HAS_ADMIN` | The tenant already has an administrator whose user is not DISABLED: ACTIVE, PENDING or LOCKED (including after a successful earlier run, so a re-run is safe). Holders whose user is DISABLED do not count (11.5). Break-glass is not a general admin-granting path | Recover through that tenant's own administration. A LOCKED administrator recovers when the lockout expires |
 | 6 | `CHANGE_REF_REUSED` | The reference is already on a SUCCESS grant row in any tenant | Obtain a new reference and a new second approval. Never reuse an old one |
 | 7 | `CONCURRENT_INVOCATION` | The grant transaction lost a lock race (deadlock or lock wait timeout) and rolled back. No grant, no SUCCESS row | Make sure no other run is in progress for the tenant, then re-run with the same reference (it was not used) |
 
 Each non-zero code except the crash case in 11.3.1 is written to `auth_events` as a FAILURE row and paged. Rows for exits 2 and 6 carry a null tenant id (no user has been resolved yet); the other refusal rows carry the target's tenant id once it is known.
+
+If the pod log has an ERROR `RBAC_BREAK_GLASS_ALERT_FAILED` for a refusal, the refusal page was not sent. The exit code and the FAILURE row are unaffected (security review L-1): act on the exit code as above and **page Platform Security manually**.
 
 #### 11.3.1 Exit 1 is ambiguous
 
@@ -220,12 +222,17 @@ If the page was received but the process shows a start failure with reason `WEB_
 - [ ] Join the change reference to the infra access log (Kubernetes API audit: pod create and exec with user identity) and record the result on the ticket.
 - [ ] The daily reconciliation (monitoring.md section 7) matches this SUCCESS row to its ticket.
 
-### 11.5 Open owner decision O-7: a DISABLED sole administrator (exit 5)
+### 11.5 A DISABLED sole administrator (O-7, decided 2026-10-15)
 
-**Behaviour today.** The zero-administrator check counts every active administrator-equivalent assignment whatever the holder's user status. A tenant whose only administrator is **DISABLED** therefore gets **exit 5** (`TENANT_HAS_ADMIN`), and in-app recovery is blocked too: revoking that assignment needs an administrator caller, and the last-administrator guard refuses to revoke the last holder. This is the same definition as ADR-0018 and `RbacZeroActiveAdminsHealthIndicator`. A LOCKED (lockout) sole administrator also gets exit 5 and stays counted whichever way O-7 is decided. An automated test pins the DISABLED case (`..._pendingO7Decision`).
+**Behaviour.** For break-glass only, an administrator whose user is **DISABLED** does not count. A tenant whose only administrators (holders of `TENANT_ADMIN` or of a role carrying all three dangerous permissions) are all DISABLED is treated as having none: the CLI grants `TENANT_ADMIN` to the target (exit 0), writes the SUCCESS row and pages, like any other grant. Disabling a compromised or departed sole administrator is the most likely reason to need break-glass, so this case is recoverable with the audited tool and needs no manual SQL.
 
-**Why it matters.** Disabling a compromised or departed sole administrator is the most likely reason to need break-glass.
+- An administrator whose user is ACTIVE, PENDING or **LOCKED** still counts, so the CLI refuses with exit 5. A LOCKED account is a temporary lockout that recovers by itself.
+- One ACTIVE administrator next to DISABLED ones is enough to refuse with exit 5.
+- The statuses are read inside the grant transaction, under the lock, so a concurrent re-enable or disable is either seen or waits for the grant to finish.
+- The rule applies to break-glass only. The last-administrator guard on revoke, the assign and revoke checks and the `rbacZeroActiveAdmins` health indicator still count every holder whatever the user's status. In particular, the health indicator does **not** report a tenant whose only administrators are DISABLED; the request comes through the normal recovery channel (11.1).
 
-**Status.** Security review M-1, tracked as O-7 in `04-tasks.md`. The Architect and the Platform Security Owner must either record it as a residual with an owner and a documented procedure, or define "administrator" as holders whose user is not DISABLED, consistently in the last-administrator lockout, the health indicator and A7. **No decision is recorded yet**, and it must be recorded before the M5 PR merges. Do not add a CLI override flag.
+**Before running.** Confirm through the normal process that each existing administrator account is DISABLED (not LOCKED) and should stay so, and record that on the change reference with the approval (11.1). Do not re-enable or disable accounts to steer the outcome.
 
-**Interim operator guidance.** If a recovery request hits exit 5 and the sole administrator is DISABLED: stop, keep the failure row, and **escalate to Platform Security and the Architect** with the ticket, the tenant id and the user ids. **Do not write `user_roles` or `auth_events` by hand**, and do not re-enable the account to get around it without the same approval. The manual `INSERT` is exactly what this procedure replaced; it is unaudited and unpaged. Any exception is a decision for the owners above, not for the operator.
+**After the grant.** The DISABLED holder keeps its `TENANT_ADMIN` assignment; the grant does not touch it. Once the new administrator has logged in, they revoke the DISABLED holder's assignment through the normal API (the last-administrator guard allows it, because the new administrator is now a holder too), so a later re-enable of that account does not silently restore its administrator rights. Record the revoke on the ticket.
+
+Do not add or use any CLI override flag; none exists.

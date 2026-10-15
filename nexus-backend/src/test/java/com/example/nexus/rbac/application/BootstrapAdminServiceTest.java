@@ -19,7 +19,12 @@ import com.example.nexus.rbac.application.port.out.BreakGlassAlert;
 import com.example.nexus.rbac.application.port.out.BreakGlassAlertPort;
 import com.example.nexus.rbac.application.port.out.BreakGlassAuditEvent;
 import com.example.nexus.rbac.application.port.out.BreakGlassGrantLookupPort;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.example.nexus.rbac.application.port.out.DirectoryUser;
+import com.example.nexus.rbac.application.port.out.DirectoryUserStatus;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.UserDirectoryPort;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
@@ -29,11 +34,17 @@ import com.example.nexus.rbac.domain.RolePermissionName;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.stream.Stream;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.slf4j.LoggerFactory;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -77,6 +88,7 @@ class BootstrapAdminServiceTest {
   private BreakGlassGrantLookupPort grantLookupPort;
   private PlatformTransactionManager transactionManager;
   private BootstrapAdminService service;
+  private ListAppender<ILoggingEvent> serviceLog;
 
   @BeforeEach
   void setUp() {
@@ -109,6 +121,12 @@ class BootstrapAdminServiceTest {
         .thenReturn(List.of());
     when(userRoleAssignmentPort.assign(targetUserId, tenantAdminRoleId, tenantId, targetUserId))
         .thenReturn(newAssignmentId);
+    when(userDirectoryPort.lockUserStatuses(eq(tenantId), any()))
+        .thenReturn(Map.of(targetUserId, DirectoryUserStatus.ACTIVE));
+
+    serviceLog = new ListAppender<>();
+    serviceLog.start();
+    serviceLogger().addAppender(serviceLog);
   }
 
   @AfterEach
@@ -116,6 +134,8 @@ class BootstrapAdminServiceTest {
     if (TransactionSynchronizationManager.isSynchronizationActive()) {
       TransactionSynchronizationManager.clearSynchronization();
     }
+    serviceLogger().detachAppender(serviceLog);
+    serviceLog.stop();
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -225,6 +245,7 @@ class BootstrapAdminServiceTest {
 
     verify(userRoleAssignmentPort, never()).findPermissionNamesForTenantRoles(any());
     verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
+    verify(userDirectoryPort, never()).lockUserStatuses(any(), any());
     verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
     verify(rbacAuditPort, never()).recordBreakGlassGrant(any());
     verify(transactionManager, never()).rollback(any());
@@ -699,6 +720,241 @@ class BootstrapAdminServiceTest {
   }
 
   // ---------------------------------------------------------------------------------------------
+  // O-7 (security review M-1, owner decision 2026-10-15): for A7 only, a holder whose user is
+  // DISABLED is not an administrator. Statuses are read under the set lock (locking read).
+  // ---------------------------------------------------------------------------------------------
+
+  @Test
+  void should_grantExit0_andWriteSuccessRow_when_theSoleAdministratorIsDisabled() {
+    UUID disabledAdmin = UUID.randomUUID();
+    lockedHolders(holder(disabledAdmin, tenantAdminRoleId));
+    lockedStatuses(Map.of(targetUserId, DirectoryUserStatus.ACTIVE, disabledAdmin, DirectoryUserStatus.DISABLED));
+
+    BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    assertThat(outcome)
+        .isEqualTo(new BreakGlassOutcome.Granted(tenantId, targetUserId, tenantAdminRoleId));
+    assertThat(outcome.exitCode()).isZero();
+    verify(userRoleAssignmentPort).assign(targetUserId, tenantAdminRoleId, tenantId, targetUserId);
+    verify(rbacAuditPort)
+        .recordBreakGlassGrant(new BreakGlassAuditEvent(tenantId, targetUserId, CHANGE_REF.value()));
+    verify(rbacAuditPort, never()).recordBreakGlassRefusal(any(), anyString());
+  }
+
+  @Test
+  void should_grant_when_everyAdministratorIncludingAFullyAdminEquivalentCustomRoleHolderIsDisabled() {
+    UUID customRoleId = UUID.randomUUID();
+    List<RolePermissionName> permissions = new ArrayList<>(allDangerous(tenantAdminRoleId));
+    permissions.addAll(allDangerous(customRoleId));
+    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId)).thenReturn(permissions);
+    UUID disabledNamed = UUID.randomUUID();
+    UUID disabledCustom = UUID.randomUUID();
+    lockedHolders(holder(disabledNamed, tenantAdminRoleId), holder(disabledCustom, customRoleId));
+    lockedStatuses(
+        Map.of(
+            targetUserId, DirectoryUserStatus.ACTIVE,
+            disabledNamed, DirectoryUserStatus.DISABLED,
+            disabledCustom, DirectoryUserStatus.DISABLED));
+
+    BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    assertThat(outcome.exitCode()).isZero();
+  }
+
+  /** LOCKED (self-recovering lockout), PENDING and ACTIVE holders still count: exit 5. */
+  @ParameterizedTest(name = "{0}")
+  @EnumSource(value = DirectoryUserStatus.class, names = "DISABLED", mode = EnumSource.Mode.EXCLUDE)
+  void should_refuseWithExit5_andInsertNothing_when_theSoleAdministratorIsNotDisabled(
+      DirectoryUserStatus status) {
+    UUID admin = UUID.randomUUID();
+    lockedHolders(holder(admin, tenantAdminRoleId));
+    lockedStatuses(Map.of(targetUserId, DirectoryUserStatus.ACTIVE, admin, status));
+
+    BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    assertRefused(outcome, BreakGlassRefusalReason.TENANT_HAS_ADMIN, 5, tenantId);
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+  }
+
+  @Test
+  void should_refuseWithExit5_when_oneAdministratorIsDisabledAndAnotherIsActive() {
+    UUID disabledAdmin = UUID.randomUUID();
+    UUID activeAdmin = UUID.randomUUID();
+    lockedHolders(holder(disabledAdmin, tenantAdminRoleId), holder(activeAdmin, tenantAdminRoleId));
+    lockedStatuses(
+        Map.of(
+            targetUserId, DirectoryUserStatus.ACTIVE,
+            disabledAdmin, DirectoryUserStatus.DISABLED,
+            activeAdmin, DirectoryUserStatus.ACTIVE));
+
+    BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    assertRefused(outcome, BreakGlassRefusalReason.TENANT_HAS_ADMIN, 5, tenantId);
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+  }
+
+  /** Fail closed: a holder whose status the locking read did not return still counts. */
+  @Test
+  void should_refuseWithExit5_when_aHoldersStatusIsNotReturnedByTheLockingRead() {
+    lockedHolders(holder(UUID.randomUUID(), tenantAdminRoleId));
+    lockedStatuses(Map.of(targetUserId, DirectoryUserStatus.ACTIVE));
+
+    BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    assertRefused(outcome, BreakGlassRefusalReason.TENANT_HAS_ADMIN, 5, tenantId);
+  }
+
+  /**
+   * The statuses are read by a locking read of the target and the caller-qualifying holders only
+   * (a holder of a single-dangerous-permission role is not an administrator and is not read), in
+   * the target's tenant, after the set lock and before the insert.
+   */
+  @Test
+  void should_lockStatusesOfTargetAndCallerQualifyingHolders_afterTheSetLock_beforeTheInsert() {
+    UUID partialRoleId = UUID.randomUUID();
+    List<RolePermissionName> permissions = new ArrayList<>(allDangerous(tenantAdminRoleId));
+    permissions.add(new RolePermissionName(partialRoleId, "tenant:write"));
+    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId)).thenReturn(permissions);
+    UUID disabledAdmin = UUID.randomUUID();
+    UUID partialHolder = UUID.randomUUID();
+    lockedHolders(holder(disabledAdmin, tenantAdminRoleId), holder(partialHolder, partialRoleId));
+    lockedStatuses(Map.of(targetUserId, DirectoryUserStatus.ACTIVE, disabledAdmin, DirectoryUserStatus.DISABLED));
+
+    service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<Collection<UUID>> userIds = ArgumentCaptor.forClass(Collection.class);
+    InOrder inOrder = inOrder(transactionManager, userRoleAssignmentPort, userDirectoryPort);
+    inOrder.verify(transactionManager).getTransaction(any());
+    inOrder.verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), anyList());
+    inOrder.verify(userDirectoryPort).lockUserStatuses(eq(tenantId), userIds.capture());
+    inOrder.verify(userRoleAssignmentPort).assign(targetUserId, tenantAdminRoleId, tenantId, targetUserId);
+    inOrder.verify(transactionManager).commit(any());
+    assertThat(userIds.getValue()).containsExactlyInAnyOrder(targetUserId, disabledAdmin);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // L-2: the target's ACTIVE check is repeated inside the grant transaction, after the set lock,
+  // on the locking read, so a target disabled concurrently is never granted.
+  // ---------------------------------------------------------------------------------------------
+
+  static Stream<Arguments> targetStatusesUnderTheLock() {
+    return Stream.of(
+        Arguments.of("PENDING", DirectoryUserStatus.PENDING),
+        Arguments.of("LOCKED", DirectoryUserStatus.LOCKED),
+        Arguments.of("DISABLED", DirectoryUserStatus.DISABLED),
+        Arguments.of("not returned", null));
+  }
+
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("targetStatusesUnderTheLock")
+  void should_refuseWithExit3_afterTheTransaction_andInsertNothing_when_targetIsNotActiveUnderTheLock(
+      String label, DirectoryUserStatus lockedStatus) {
+    Map<UUID, DirectoryUserStatus> statuses = new HashMap<>();
+    if (lockedStatus != null) {
+      statuses.put(targetUserId, lockedStatus);
+    }
+    lockedStatuses(statuses);
+
+    BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    assertRefused(outcome, BreakGlassRefusalReason.TARGET_USER_NOT_ACTIVE, 3, tenantId);
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+    InOrder inOrder = inOrder(userDirectoryPort, transactionManager, rbacAuditPort);
+    inOrder.verify(userDirectoryPort).lockUserStatuses(eq(tenantId), any());
+    inOrder.verify(transactionManager).commit(any());
+    inOrder.verify(rbacAuditPort).recordBreakGlassRefusal(any(), eq("TARGET_USER_NOT_ACTIVE"));
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // L-1: a refusal page is best effort, like the GRANTED page. A throwing alert port never changes
+  // the refusal's exit code; it is logged as RBAC_BREAK_GLASS_ALERT_FAILED with no argument value.
+  // ---------------------------------------------------------------------------------------------
+
+  static Stream<Arguments> refusalsWithAThrowingPage() {
+    return Stream.of(
+        Arguments.of(
+            BreakGlassRefusalReason.INVALID_ARGUMENT,
+            (Function<BootstrapAdminServiceTest, BreakGlassOutcome>)
+                t -> t.service.recordInvalidArgument()),
+        Arguments.of(
+            BreakGlassRefusalReason.CHANGE_REF_REUSED,
+            (Function<BootstrapAdminServiceTest, BreakGlassOutcome>)
+                t -> {
+                  when(t.grantLookupPort.existsSuccessfulGrantWithChangeRef(CHANGE_REF.value()))
+                      .thenReturn(true);
+                  return t.service.grantFirstAdmin(t.targetUserId, CHANGE_REF);
+                }),
+        Arguments.of(
+            BreakGlassRefusalReason.TARGET_USER_NOT_FOUND,
+            (Function<BootstrapAdminServiceTest, BreakGlassOutcome>)
+                t -> {
+                  when(t.userDirectoryPort.findUser(t.targetUserId)).thenReturn(Optional.empty());
+                  return t.service.grantFirstAdmin(t.targetUserId, CHANGE_REF);
+                }),
+        Arguments.of(
+            BreakGlassRefusalReason.NO_SYSTEM_ADMIN_ROLE,
+            (Function<BootstrapAdminServiceTest, BreakGlassOutcome>)
+                t -> {
+                  when(t.userRoleAssignmentPort.findRoleIdByName(t.tenantId, "TENANT_ADMIN"))
+                      .thenReturn(Optional.empty());
+                  return t.service.grantFirstAdmin(t.targetUserId, CHANGE_REF);
+                }),
+        Arguments.of(
+            BreakGlassRefusalReason.TENANT_HAS_ADMIN,
+            (Function<BootstrapAdminServiceTest, BreakGlassOutcome>)
+                t -> {
+                  t.lockedHolders(t.holder(UUID.randomUUID(), t.tenantAdminRoleId));
+                  return t.service.grantFirstAdmin(t.targetUserId, CHANGE_REF);
+                }),
+        Arguments.of(
+            BreakGlassRefusalReason.CONCURRENT_INVOCATION,
+            (Function<BootstrapAdminServiceTest, BreakGlassOutcome>)
+                t -> {
+                  when(t.userRoleAssignmentPort.assign(
+                          t.targetUserId, t.tenantAdminRoleId, t.tenantId, t.targetUserId))
+                      .thenThrow(new CannotAcquireLockException("Deadlock found"));
+                  return t.service.grantFirstAdmin(t.targetUserId, CHANGE_REF);
+                }),
+        Arguments.of(
+            BreakGlassRefusalReason.UNEXPECTED_ERROR,
+            (Function<BootstrapAdminServiceTest, BreakGlassOutcome>)
+                t -> {
+                  when(t.userDirectoryPort.lockUserStatuses(eq(t.tenantId), any()))
+                      .thenThrow(new DataAccessResourceFailureException("connection lost"));
+                  return t.service.grantFirstAdmin(t.targetUserId, CHANGE_REF);
+                }));
+  }
+
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("refusalsWithAThrowingPage")
+  void should_keepTheRefusalExitCode_writeOneFailureRow_andLogAlertFailed_when_refusalPageThrows(
+      BreakGlassRefusalReason reason, Function<BootstrapAdminServiceTest, BreakGlassOutcome> act) {
+    doThrow(new IllegalStateException("appender down")).when(breakGlassAlertPort).alert(any());
+
+    BreakGlassOutcome outcome = act.apply(this);
+
+    assertThat(outcome).isEqualTo(new BreakGlassOutcome.Refused(reason));
+    assertThat(outcome.exitCode()).isEqualTo(reason.exitCode());
+    verify(rbacAuditPort).recordBreakGlassRefusal(any(), eq(reason.name()));
+    verify(rbacAuditPort, never()).recordBreakGlassGrant(any());
+    verify(breakGlassAlertPort).alert(any());
+    List<ILoggingEvent> failures =
+        serviceLog.list.stream()
+            .filter(e -> "RBAC_BREAK_GLASS_ALERT_FAILED".equals(keyValues(e).get("event")))
+            .toList();
+    assertThat(failures).hasSize(1);
+    ILoggingEvent failure = failures.get(0);
+    assertThat(failure.getLevel()).isEqualTo(Level.ERROR);
+    assertThat(keyValues(failure)).containsEntry("reason", reason.name());
+    assertThat(failure.getThrowableProxy().getMessage()).isEqualTo("appender down");
+    for (ILoggingEvent event : serviceLog.list) {
+      assertThat(event.getFormattedMessage() + "|" + event.getKeyValuePairs())
+          .doesNotContain(targetUserId.toString(), CHANGE_REF.value());
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
   // Arguments (finding 2): a missing target or change reference is a programming error, never a
   // grant without attribution.
   // ---------------------------------------------------------------------------------------------
@@ -769,6 +1025,31 @@ class BootstrapAdminServiceTest {
       verify(rbacAuditPort, never()).recordBreakGlassGrant(any());
     }
     verify(breakGlassAlertPort).alert(any());
+  }
+
+  private ActiveAssignmentHolder holder(UUID userId, UUID roleId) {
+    return new ActiveAssignmentHolder(UUID.randomUUID(), userId, roleId);
+  }
+
+  private void lockedHolders(ActiveAssignmentHolder... holders) {
+    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), anyList()))
+        .thenReturn(List.of(holders));
+  }
+
+  private void lockedStatuses(Map<UUID, DirectoryUserStatus> statuses) {
+    when(userDirectoryPort.lockUserStatuses(eq(tenantId), any())).thenReturn(statuses);
+  }
+
+  private static Map<String, Object> keyValues(ILoggingEvent event) {
+    Map<String, Object> map = new HashMap<>();
+    if (event.getKeyValuePairs() != null) {
+      event.getKeyValuePairs().forEach(kv -> map.put(kv.key, kv.value));
+    }
+    return map;
+  }
+
+  private static Logger serviceLogger() {
+    return (Logger) LoggerFactory.getLogger(BootstrapAdminService.class);
   }
 
   private Role role(UUID id, String name, boolean systemRole) {

@@ -1,6 +1,8 @@
 package com.example.nexus.identity.infrastructure.persistence;
 
 import com.example.nexus.identity.domain.User;
+import java.util.Collection;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -40,4 +42,36 @@ public interface JpaUserRepository extends JpaRepository<User, UUID> {
   @Modifying(clearAutomatically = true)
   @Query("UPDATE User u SET u.failedAttemptCount = 0, u.lockedUntil = null WHERE u.id = :userId")
   int resetFailedAttemptsDirect(@Param("userId") UUID userId);
+
+  /**
+   * US-018 A7 (O-7, L-2): the id and status of each listed user of one tenant, as a locking read
+   * ({@code FOR SHARE}) for the break-glass grant transaction. Backs {@code
+   * UserDirectoryPort#lockUserStatuses}.
+   *
+   * <p>Native, so the lock is rendered directly (Spring Data JPA does not combine {@code @Lock}
+   * with {@code nativeQuery = true}) and the plan is pinned: {@code FORCE INDEX (PRIMARY)} keeps
+   * the scan, and therefore the locks, on the listed primary keys in ascending order, never on
+   * {@code idx_users_tenant_id_status} (which would lock the tenant's whole status range). {@code
+   * tenant_id} is a residual predicate. A projection, not an entity, so no managed {@link User}
+   * from an earlier read in the same persistence context can hide the locked row's current status.
+   * Bind parameters are {@code byte[]}, like the other native locking reads.
+   */
+  @Query(
+      value =
+          """
+          SELECT id, status FROM users FORCE INDEX (PRIMARY)
+          WHERE id IN (:userIds) AND tenant_id = :tenantId
+          ORDER BY id
+          FOR SHARE
+          """,
+      nativeQuery = true)
+  List<UserStatusRow> lockStatusesByIds(
+      @Param("userIds") Collection<byte[]> userIds, @Param("tenantId") byte[] tenantId);
+
+  /** Row of {@link #lockStatusesByIds}: the user id as {@code BINARY(16)} and the status name. */
+  interface UserStatusRow {
+    byte[] getId();
+
+    String getStatus();
+  }
 }

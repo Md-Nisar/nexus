@@ -209,3 +209,13 @@ Fix: Add an ArchUnit rule: no class other than BootstrapAdminService (and its ad
 - RES-35 (social engineering anchored in infra access, Low) is unchanged. It depends on the RC-37.1 runbook content and RC-37.3 Ops sign-off on the merge checklist.
 - M-1 / O-7 remains until the owner decision.
 - A06 is unverified locally and left to CI.
+
+---
+
+## Resolution (2026-10-15, appended; the findings above are unchanged)
+
+- **M-1 / O-7: decided by the user, implemented.** A narrowed form of option (b), scoped to A7 only: for break-glass, an administrator is a caller-qualifying holder whose user status is not DISABLED. A tenant whose only administrators are DISABLED is recoverable (grant, exit 0, SUCCESS row, page). LOCKED holders still count, as do ACTIVE and PENDING ones and any holder whose status is not returned (fail closed). The last-admin lockout, the assign and revoke guards and `RbacZeroActiveAdminsHealthIndicator` are deliberately **not** changed, so the platform now has two definitions; the runbook (11.5) notes that the health indicator does not flag an all-DISABLED tenant and has the new administrator revoke the DISABLED holder's assignment. The statuses are read as the fix suggested: one `FOR SHARE` statement on the `users` rows of the target and of every caller-qualifying holder, in ascending primary-key order, after the set lock inside the grant transaction (`UserDirectoryPort.lockUserStatuses`; native query `JpaUserRepository.lockStatusesByIds`, tenant-scoped, so no allowlist entry). No CLI override flag. Recorded in ADR-0025 Revision 5, `03-design.md` §7.1 and §7.2, runbook 11.5.
+- **L-1: fixed.** `refuse()` now catches a failure of the alert port, logs ERROR `RBAC_BREAK_GLASS_ALERT_FAILED` with the tenant and the reason (no target id, no change reference), and returns the refusal with its own exit code.
+- **L-2: fixed, as part of M-1.** The target's ACTIVE check is repeated on the same locking read and refuses `TARGET_USER_NOT_ACTIVE` (exit 3); the non-locking check before the transaction remains as a pre-filter.
+- **Tests:** `BreakGlassAdminIT` (DISABLED sole admin leads to a grant; LOCKED sole admin exit 5; DISABLED plus ACTIVE exit 5; a still-open re-enable of the DISABLED admin makes the CLI wait and refuse with exit 5; a still-open disable of the target makes it wait and refuse with exit 3), `BootstrapAdminServiceTest` and `JpaUserDirectoryAdapterTest`. A temporary run of the new ITs against the previous service showed the grant, the re-enable and the target-disable cases failing, so they discriminate.
+- This resolution was not re-reviewed by `/security-review`.
