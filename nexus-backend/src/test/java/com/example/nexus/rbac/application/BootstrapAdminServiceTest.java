@@ -52,7 +52,6 @@ import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.TransactionSystemException;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.SimpleTransactionStatus;
-import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
@@ -373,12 +372,11 @@ class BootstrapAdminServiceTest {
 
   @Test
   void should_writeSuccessAuditWithChangeRefInsideTransaction_beforeReturn() throws Exception {
-    TransactionSynchronizationManager.initSynchronization();
-
     service.grantFirstAdmin(targetUserId, CHANGE_REF);
 
-    // Written inside the grant transaction, i.e. before its commit and any commit callback.
-    InOrder inOrder = inOrder(transactionManager, userRoleAssignmentPort, rbacAuditPort);
+    // Written inside the grant transaction, i.e. before its commit; the page only after it.
+    InOrder inOrder =
+        inOrder(transactionManager, userRoleAssignmentPort, rbacAuditPort, breakGlassAlertPort);
     ArgumentCaptor<TransactionDefinition> definition =
         ArgumentCaptor.forClass(TransactionDefinition.class);
     inOrder.verify(transactionManager).getTransaction(definition.capture());
@@ -387,8 +385,8 @@ class BootstrapAdminServiceTest {
         .verify(rbacAuditPort)
         .recordBreakGlassGrant(new BreakGlassAuditEvent(tenantId, targetUserId, CHANGE_REF.value()));
     inOrder.verify(transactionManager).commit(any());
+    inOrder.verify(breakGlassAlertPort).alert(any());
     verify(transactionManager, never()).rollback(any());
-    verifyNoInteractions(breakGlassAlertPort);
     assertThat(definition.getValue().getPropagationBehavior())
         .isEqualTo(TransactionDefinition.PROPAGATION_REQUIRED);
     assertThat(definition.getValue().isReadOnly()).isFalse();
@@ -454,30 +452,100 @@ class BootstrapAdminServiceTest {
     assertThat(lockSet.getValue()).containsExactly(lowPartial, midFull, highBitAdmin);
   }
 
+  /**
+   * T-008 review Low 1: the GRANTED page is sent after {@code execute} returned, so after the
+   * commit by construction; the callback registers no commit hook.
+   */
   @Test
-  void should_alertGrantedOnlyAfterCommit_when_synchronizationActive() {
+  void should_alertGrantedOnceAfterCommit_andRegisterNoCommitHook_when_granted() {
     TransactionSynchronizationManager.initSynchronization();
 
     service.grantFirstAdmin(targetUserId, CHANGE_REF);
 
-    verifyNoInteractions(breakGlassAlertPort);
-    TransactionSynchronizationManager.getSynchronizations()
-        .forEach(TransactionSynchronization::afterCommit);
-    verify(breakGlassAlertPort)
+    assertThat(TransactionSynchronizationManager.getSynchronizations()).isEmpty();
+    InOrder inOrder = inOrder(transactionManager, breakGlassAlertPort);
+    inOrder.verify(transactionManager).commit(any());
+    inOrder
+        .verify(breakGlassAlertPort)
         .alert(
             new BreakGlassAlert(
                 tenantId, targetUserId, BreakGlassAlert.Outcome.GRANTED, null, CHANGE_REF.value()));
+    verifyNoMoreInteractions(breakGlassAlertPort);
+  }
+
+  /**
+   * T-008 review Low 1 (a): a failed GRANTED page after the commit is logged, best effort; the
+   * committed grant stays a grant (exit 0) and no UNEXPECTED_ERROR FAILURE row or page follows.
+   */
+  @Test
+  void should_returnGrantedExit0_andWriteNoFailureRowNorRefusalPage_when_grantedAlertThrowsAfterCommit() {
+    doThrow(new IllegalStateException("appender down"))
+        .when(breakGlassAlertPort)
+        .alert(
+            new BreakGlassAlert(
+                tenantId, targetUserId, BreakGlassAlert.Outcome.GRANTED, null, CHANGE_REF.value()));
+
+    BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    assertThat(outcome)
+        .isEqualTo(new BreakGlassOutcome.Granted(tenantId, targetUserId, tenantAdminRoleId));
+    assertThat(outcome.exitCode()).isZero();
+    verify(rbacAuditPort, never()).recordBreakGlassRefusal(any(), anyString());
+    verify(breakGlassAlertPort).alert(any());
+    verify(transactionManager).commit(any());
+    verify(transactionManager, never()).rollback(any());
+  }
+
+  /**
+   * T-008 review Low 1 (b): a TENANT_HAS_ADMIN refusal decided under the lock is audited and paged
+   * exactly once, after the grant transaction has ended, and exits 5.
+   */
+  @Test
+  void should_writeExactlyOneFailureRowAndPageAfterCommit_andExit5_when_tenantHasAdmin() {
+    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), anyList()))
+        .thenReturn(
+            List.of(new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), tenantAdminRoleId)));
+
+    BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    assertThat(outcome.exitCode()).isEqualTo(5);
+    InOrder inOrder = inOrder(transactionManager, rbacAuditPort, breakGlassAlertPort);
+    inOrder.verify(transactionManager).commit(any());
+    inOrder
+        .verify(rbacAuditPort)
+        .recordBreakGlassRefusal(
+            new BreakGlassAuditEvent(tenantId, targetUserId, CHANGE_REF.value()), "TENANT_HAS_ADMIN");
+    inOrder.verify(breakGlassAlertPort).alert(any());
+    verifyNoMoreInteractions(rbacAuditPort, breakGlassAlertPort);
   }
 
   @Test
-  void should_notAlertGranted_when_transactionDoesNotCommit() {
-    TransactionSynchronizationManager.initSynchronization();
+  void should_writeFailureRowAfterCommit_when_noSystemAdminRole() {
+    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
+        .thenReturn(Optional.empty());
 
     service.grantFirstAdmin(targetUserId, CHANGE_REF);
 
-    TransactionSynchronizationManager.getSynchronizations()
-        .forEach(s -> s.afterCompletion(TransactionSynchronization.STATUS_ROLLED_BACK));
-    verifyNoInteractions(breakGlassAlertPort);
+    InOrder inOrder = inOrder(transactionManager, rbacAuditPort, breakGlassAlertPort);
+    inOrder.verify(transactionManager).commit(any());
+    inOrder.verify(rbacAuditPort).recordBreakGlassRefusal(any(), eq("NO_SYSTEM_ADMIN_ROLE"));
+    inOrder.verify(breakGlassAlertPort).alert(any());
+  }
+
+  /**
+   * T-008 review Low 1 (b): when the transaction that decided TENANT_HAS_ADMIN then fails to
+   * commit, only the UNEXPECTED_ERROR refusal is written and paged, never both.
+   */
+  @Test
+  void should_writeOnlyOneUnexpectedErrorRowAndPage_when_tenantHasAdminAndCommitFails() {
+    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), anyList()))
+        .thenReturn(
+            List.of(new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), tenantAdminRoleId)));
+    doThrow(new TransactionSystemException("commit failed")).when(transactionManager).commit(any());
+
+    BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    assertRefused(outcome, BreakGlassRefusalReason.UNEXPECTED_ERROR, 1, tenantId);
   }
 
   // ---------------------------------------------------------------------------------------------

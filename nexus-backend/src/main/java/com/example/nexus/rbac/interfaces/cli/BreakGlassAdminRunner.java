@@ -31,9 +31,9 @@ import org.springframework.web.context.WebApplicationContext;
  *
  * <ul>
  *   <li><b>Web-context guard</b> (RC-37.6, RC-50(d)): unless the context is non-web, bean
- *       initialization logs the paging ERROR {@code RBAC_BREAK_GLASS_USED {reason=WEB_CONTEXT}}
- *       and throws, failing the context refresh before the embedded server starts. Log only: no
- *       audit row.
+ *       initialization logs the paging ERROR {@code RBAC_BREAK_GLASS_USED {reason=WEB_CONTEXT}},
+ *       waits one log-shipper flush interval and throws, failing the context refresh before the
+ *       embedded server starts. Log only: no audit row.
  *   <li><b>Arguments</b> (RC-47, RC-54(a), L-6): each option exactly once; the target a UUID in
  *       canonical form, the change reference a {@link ChangeRef}. Anything else is refused through
  *       {@link BootstrapAdminService#recordInvalidArgument()} (exit 2), which takes no argument
@@ -57,7 +57,7 @@ public class BreakGlassAdminRunner
   private final WebApplicationType webApplicationType;
   private final Duration logFlushWait;
 
-  /** Never 0 before a run completes, so a failed run cannot report success. */
+  /** Reset to 1 at the start of every run, so a failed run cannot report success. */
   private int exitCode = BreakGlassRefusalReason.UNEXPECTED_ERROR.exitCode();
 
   /**
@@ -92,6 +92,8 @@ public class BreakGlassAdminRunner
         .addKeyValue("reason", "WEB_CONTEXT")
         .log("Break-glass profile active in a {} web context; refusing to start",
             webApplicationType);
+    // RC-37.4: the WEB_CONTEXT page needs the same capture window as every other page.
+    waitForLogFlush();
     throw new IllegalStateException(
         "The break-glass profile requires spring.main.web-application-type=none, but the context"
             + " is "
@@ -101,6 +103,7 @@ public class BreakGlassAdminRunner
 
   @Override
   public void run(ApplicationArguments args) {
+    exitCode = BreakGlassRefusalReason.UNEXPECTED_ERROR.exitCode();
     try {
       exitCode = dispatch(args);
     } finally {

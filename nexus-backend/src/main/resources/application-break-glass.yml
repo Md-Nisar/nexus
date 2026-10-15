@@ -13,10 +13,9 @@ spring:
     enabled: false
   datasource:
     hikari:
-      # Must be >= 2: a refusal under the set lock (TENANT_HAS_ADMIN) writes its FAILURE row in a
-      # REQUIRES_NEW transaction while the grant transaction still holds the lock and its
-      # connection; with one connection that write waits for the connection timeout. The rest is
-      # headroom for the background jobs that also run in this process.
+      # 4 is a user decision (T-008 review). The break-glass flow itself needs one connection at a
+      # time: every FAILURE row (REQUIRES_NEW) is written after the grant transaction has ended.
+      # The rest is headroom for the background jobs that also run in this process.
       maximum-pool-size: 4
 
 nexus:

@@ -61,7 +61,7 @@ class BreakGlassAdminRunnerTest {
   private static final String VALID_TARGET = "0195f3a0-1c2d-7e8f-9a0b-1c2d3e4f5a6b";
   private static final String VALID_REF = "ABC-1";
 
-  /** Pinned exit codes (03-design.md §7.1; 7 and 1 added by T-008, Architect to confirm). */
+  /** Pinned exit codes (03-design.md §7.1; 7 and 1 added by T-008, confirmed by the user). */
   private static final Map<BreakGlassRefusalReason, Integer> EXPECTED_EXIT_CODES =
       new EnumMap<>(
           Map.of(
@@ -142,6 +142,24 @@ class BreakGlassAdminRunnerTest {
     assertThatThrownBy(
             () -> runner.run(args("--target-user-id=" + VALID_TARGET, "--change-ref=" + VALID_REF)))
         .isSameAs(down);
+
+    assertThat(runner.getExitCode()).isEqualTo(1);
+  }
+
+  /** T-008 review Nit 2: a reused runner never reports a previous run's code for a failed run. */
+  @Test
+  void should_reportExit1_when_runThrowsAfterAnEarlierSuccessfulRunOnTheSameInstance()
+      throws Exception {
+    UUID target = UUID.fromString(VALID_TARGET);
+    when(service.grantFirstAdmin(target, new ChangeRef(VALID_REF)))
+        .thenReturn(new BreakGlassOutcome.Granted(UUID.randomUUID(), target, UUID.randomUUID()))
+        .thenThrow(new IllegalStateException("db down"));
+    runner.run(args("--target-user-id=" + VALID_TARGET, "--change-ref=" + VALID_REF));
+    assertThat(runner.getExitCode()).isZero();
+
+    assertThatThrownBy(
+            () -> runner.run(args("--target-user-id=" + VALID_TARGET, "--change-ref=" + VALID_REF)))
+        .isInstanceOf(IllegalStateException.class);
 
     assertThat(runner.getExitCode()).isEqualTo(1);
   }
@@ -326,6 +344,20 @@ class BreakGlassAdminRunnerTest {
     assertThat(keyValues(runnerLog.list.get(0))).containsEntry("reason", "WEB_CONTEXT");
   }
 
+  /** T-008 review Low 2: the WEB_CONTEXT page gets the same capture window as every other page. */
+  @Test
+  void should_waitConfiguredFlushInterval_beforeThrowing_when_contextIsServletWeb() {
+    BreakGlassAdminRunner webRunner =
+        new BreakGlassAdminRunner(
+            service, new GenericWebApplicationContext(), Duration.ofMillis(50));
+
+    long start = System.nanoTime();
+    assertThatThrownBy(webRunner::afterPropertiesSet).isInstanceOf(IllegalStateException.class);
+    long elapsed = System.nanoTime() - start;
+
+    assertThat(Duration.ofNanos(elapsed)).isGreaterThanOrEqualTo(Duration.ofMillis(50));
+  }
+
   @Test
   void should_passGuard_when_contextIsNotWeb() {
     assertThatCode(runner::afterPropertiesSet).doesNotThrowAnyException();
@@ -381,8 +413,8 @@ class BreakGlassAdminRunnerTest {
     assertThat(value(config, "spring.flyway.enabled")).isEqualTo("false");
     assertThat(value(config, "nexus.rbac.break-glass.log-flush-wait"))
         .isEqualTo("${NEXUS_RBAC_BREAK_GLASS_LOG_FLUSH_WAIT:15s}");
-    assertThat(Integer.parseInt(value(config, "spring.datasource.hikari.maximum-pool-size")))
-        .isGreaterThanOrEqualTo(2);
+    // Pool size 4 is a user decision (T-008 review); no longer a correctness minimum.
+    assertThat(value(config, "spring.datasource.hikari.maximum-pool-size")).isEqualTo("4");
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────────────────────

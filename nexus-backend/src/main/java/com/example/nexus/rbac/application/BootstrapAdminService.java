@@ -21,8 +21,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
@@ -33,7 +31,9 @@ import org.springframework.transaction.support.TransactionTemplate;
  * <p><b>Order.</b> {@link #grantFirstAdmin} is a non-transactional orchestrator: the replay lookup
  * (exit 6) and the target lookup (exit 3) run first, outside any transaction; then one grant
  * transaction ({@link TransactionTemplate}, {@code REQUIRED}) resolves the role (exit 4), takes
- * the lock, checks for an administrator (exit 5), inserts and writes SUCCESS (exit 0).
+ * the lock, checks for an administrator (exit 5), inserts and writes SUCCESS (exit 0). The
+ * transaction callback has no other side effect: it returns its decision, and every page and
+ * every FAILURE row is written only after the transaction has ended (T-008 review Low 1).
  *
  * <p><b>Locking.</b> The zero-admin check runs under the SAME single-statement ascending M11 set
  * lock that {@code assign()}/{@code revoke()} take, built from the same M10 + M8 resolution
@@ -46,14 +46,22 @@ import org.springframework.transaction.support.TransactionTemplate;
  * <p><b>Audit.</b> A grant writes {@code ROLE_BREAK_GLASS_GRANT} SUCCESS inside the grant's
  * transaction (Group A), so a lost audit row rolls the grant back. A refusal writes FAILURE in its
  * own transaction (Group B) so the row survives, then pages; that write is never buffered for
- * retry, and a failed one is logged as {@code RBAC_AUDIT_WRITE_LOST}. A refusal never follows a
- * committed SUCCESS write. The grant's page is sent after commit only.
+ * retry, and a failed one is logged as {@code RBAC_AUDIT_WRITE_LOST}. A refusal decided inside
+ * the grant transaction (exit 4 or 5) is written only after that transaction has ended, so no
+ * {@code REQUIRES_NEW} write ever runs while the set lock is held. An invocation commits at most
+ * one row, SUCCESS or FAILURE, never both: a FAILURE row is attempted only when {@code execute()}
+ * threw (nothing committed) or its callback returned a refusal (nothing inserted).
+ *
+ * <p><b>Pages.</b> One page per invocation. The grant's page is sent after {@code execute()}
+ * returned, so after the commit by construction; it is best effort: if it fails the failure is
+ * logged as {@code RBAC_BREAK_GLASS_ALERT_FAILED} and the outcome stays a grant (exit 0).
  *
  * <p><b>Failed grant transaction (T-008).</b> Any {@link RuntimeException} out of the grant
  * transaction (a deadlock on the insert, a failed SUCCESS write, a lost connection, a failed
  * commit) is mapped, after the rollback, to an audited and paged refusal: {@code
  * CONCURRENT_INVOCATION} (exit 7) for a {@link PessimisticLockingFailureException} (MySQL 1213
- * and 1205), {@code UNEXPECTED_ERROR} (exit 1) for anything else. An {@link Error} propagates.
+ * and 1205), {@code UNEXPECTED_ERROR} (exit 1) for anything else. This replaces any refusal the
+ * failed transaction had decided. An {@link Error} propagates.
  */
 @Service
 public class BootstrapAdminService {
@@ -111,8 +119,13 @@ public class BootstrapAdminService {
           tenantId, targetUserId, changeRef, BreakGlassRefusalReason.TARGET_USER_NOT_ACTIVE);
     }
 
+    // The callback has no side effect beyond its own transaction: every page and every FAILURE row
+    // is written after execute() returns, so it can be neither duplicated nor contradicted by a
+    // failure of the commit (T-008 review Low 1).
+    BreakGlassOutcome decided;
     try {
-      return grantTransaction.execute(status -> grantUnderLock(tenantId, targetUserId, changeRef));
+      decided =
+          grantTransaction.execute(status -> grantUnderLock(tenantId, targetUserId, changeRef));
     } catch (PessimisticLockingFailureException e) {
       // The grant has rolled back. No retry and no extra lock (ADR-0018); the runbook allows one
       // invocation per tenant at a time.
@@ -130,6 +143,11 @@ public class BootstrapAdminService {
           .log("Break-glass grant failed and rolled back: tenantId={}", tenantId);
       return refuse(tenantId, targetUserId, changeRef, BreakGlassRefusalReason.UNEXPECTED_ERROR);
     }
+    return switch (Objects.requireNonNull(decided, "grant transaction returned no outcome")) {
+      case BreakGlassOutcome.Granted granted -> alertGranted(granted, changeRef);
+      case BreakGlassOutcome.Refused(BreakGlassRefusalReason reason) ->
+          refuse(tenantId, targetUserId, changeRef, reason);
+    };
   }
 
   /**
@@ -143,7 +161,12 @@ public class BootstrapAdminService {
     return refuse(null, null, null, BreakGlassRefusalReason.INVALID_ARGUMENT);
   }
 
-  /** The body of the grant transaction: role, lock, zero-admin check, insert, SUCCESS row. */
+  /**
+   * The body of the grant transaction: role, lock, zero-admin check, insert, SUCCESS row. Writes
+   * nothing outside that transaction and pages nothing: a {@code Refused} returned from here is
+   * not yet audited or paged, and a {@code Granted} not yet paged; the caller does both once the
+   * transaction has ended.
+   */
   private BreakGlassOutcome grantUnderLock(UUID tenantId, UUID targetUserId, ChangeRef changeRef) {
     Optional<UUID> tenantAdminRoleId =
         userRoleAssignmentPort
@@ -152,8 +175,7 @@ public class BootstrapAdminService {
                 roleId ->
                     userRoleAssignmentPort.findRole(roleId).map(Role::isSystemRole).orElse(false));
     if (tenantAdminRoleId.isEmpty()) {
-      return refuse(
-          tenantId, targetUserId, changeRef, BreakGlassRefusalReason.NO_SYSTEM_ADMIN_ROLE);
+      return new BreakGlassOutcome.Refused(BreakGlassRefusalReason.NO_SYSTEM_ADMIN_ROLE);
     }
 
     AdminEquivalentRoles roles =
@@ -165,18 +187,38 @@ public class BootstrapAdminService {
 
     if (!RoleAssignmentService.wouldLeaveTenantWithoutCallerQualifyingHolder(
         lockedHolders, null, roles.callerQualifyingIds())) {
-      return refuse(tenantId, targetUserId, changeRef, BreakGlassRefusalReason.TENANT_HAS_ADMIN);
+      return new BreakGlassOutcome.Refused(BreakGlassRefusalReason.TENANT_HAS_ADMIN);
     }
 
     userRoleAssignmentPort.assign(targetUserId, tenantAdminRoleId.get(), tenantId, targetUserId);
     rbacAuditPort.recordBreakGlassGrant(
         new BreakGlassAuditEvent(tenantId, targetUserId, changeRef.value()));
-
-    BreakGlassAlert alert =
-        new BreakGlassAlert(
-            tenantId, targetUserId, BreakGlassAlert.Outcome.GRANTED, null, changeRef.value());
-    runAfterCommit(() -> breakGlassAlertPort.alert(alert));
     return new BreakGlassOutcome.Granted(tenantId, targetUserId, tenantAdminRoleId.get());
+  }
+
+  /**
+   * Pages a committed grant. Best effort: the grant and its SUCCESS row are already committed, so
+   * a failed page is logged and the outcome stays a grant (exit 0); the daily reconciliation on
+   * SUCCESS rows (03-design.md §7.2) is the backstop. Never turns into a FAILURE row.
+   */
+  private BreakGlassOutcome alertGranted(BreakGlassOutcome.Granted granted, ChangeRef changeRef) {
+    try {
+      breakGlassAlertPort.alert(
+          new BreakGlassAlert(
+              granted.tenantId(),
+              granted.targetUserId(),
+              BreakGlassAlert.Outcome.GRANTED,
+              null,
+              changeRef.value()));
+    } catch (RuntimeException e) {
+      log.atError()
+          .addKeyValue("event", "RBAC_BREAK_GLASS_ALERT_FAILED")
+          .addKeyValue("tenantId", granted.tenantId())
+          .setCause(e)
+          .log(
+              "Break-glass grant committed but its page failed: tenantId={}", granted.tenantId());
+    }
+    return granted;
   }
 
   /**
@@ -198,24 +240,5 @@ public class BootstrapAdminService {
             reason.name(),
             changeRefValue));
     return new BreakGlassOutcome.Refused(reason);
-  }
-
-  /**
-   * Runs {@code action} after the enclosing transaction commits; inline when no synchronization
-   * is active (a plain unit test), the same fallback as {@code
-   * RoleAssignmentService#registerPostCommitSideEffects}.
-   */
-  private static void runAfterCommit(Runnable action) {
-    if (TransactionSynchronizationManager.isSynchronizationActive()) {
-      TransactionSynchronizationManager.registerSynchronization(
-          new TransactionSynchronization() {
-            @Override
-            public void afterCommit() {
-              action.run();
-            }
-          });
-    } else {
-      action.run();
-    }
   }
 }

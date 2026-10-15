@@ -7,7 +7,8 @@ package com.example.nexus.rbac.application;
  *
  * <p>Exit codes: 0 is a grant; 2 to 7 are refusals; 1 is an unexpected failure of the grant
  * transaction, the same code Spring Boot and the JVM report for a failed start or an uncaught
- * exception (T-008; 7 and 1 are Architect to confirm, 03-design.md §7.1).
+ * exception (T-008; 7 and 1 confirmed by the user, 03-design.md §7.1). Exit 1 is therefore
+ * ambiguous; the runbook tells the two cases apart by the {@code RBAC_BREAK_GLASS_USED} page.
  */
 public enum BreakGlassRefusalReason {
   /** A missing, repeated or malformed argument (RC-54(a)); no argument value is recorded. */

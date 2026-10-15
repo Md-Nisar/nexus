@@ -131,9 +131,10 @@ class BreakGlassAdminIT {
     UUID tenantId = uuidGenerator.newId();
     Role tenantAdmin = seedSystemTenantAdminRole(tenantId);
     User target = seedActiveUser(tenantId, "grant");
+    String changeRef = freshChangeRef();
 
     BreakGlassOutcome outcome =
-        bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef("OPS-100"));
+        bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef(changeRef));
 
     assertThat(outcome)
         .isEqualTo(new BreakGlassOutcome.Granted(tenantId, target.getId(), tenantAdmin.getId()));
@@ -152,7 +153,7 @@ class BreakGlassAdminIT {
     assertThat(rows.get(0))
         .containsEntry("outcome", "SUCCESS")
         .containsEntry("actor_type", "BREAK_GLASS_CLI")
-        .containsEntry("change_ref", "OPS-100");
+        .containsEntry("change_ref", changeRef);
     assertThat(rows.get(0).get("reason")).isNull();
     assertThat(toUuid((byte[]) rows.get(0).get("tenant_id"))).isEqualTo(tenantId);
 
@@ -161,7 +162,7 @@ class BreakGlassAdminIT {
         .containsEntry("outcome", "GRANTED")
         .containsEntry("tenantId", tenantId)
         .containsEntry("targetUserId", target.getId())
-        .containsEntry("changeRef", "OPS-100");
+        .containsEntry("changeRef", changeRef);
   }
 
   // ── Refusals ──────────────────────────────────────────────────────────────────────────────
@@ -175,7 +176,7 @@ class BreakGlassAdminIT {
     User target = seedActiveUser(tenantId, "target");
 
     BreakGlassOutcome outcome =
-        bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef("OPS-101"));
+        bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef(freshChangeRef()));
 
     assertRefused(outcome, BreakGlassRefusalReason.TENANT_HAS_ADMIN, 5, target.getId(), tenantId);
     assertThat(countActive(tenantId, tenantAdmin.getId())).isEqualTo(1);
@@ -188,7 +189,7 @@ class BreakGlassAdminIT {
     User target = seedActiveUser(tenantId, "no-role");
 
     BreakGlassOutcome outcome =
-        bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef("OPS-102"));
+        bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef(freshChangeRef()));
 
     assertRefused(
         outcome, BreakGlassRefusalReason.NO_SYSTEM_ADMIN_ROLE, 4, target.getId(), tenantId);
@@ -204,7 +205,7 @@ class BreakGlassAdminIT {
     jdbc.update("UPDATE users SET status = ? WHERE id = ?", status, toBytes(target.getId()));
 
     BreakGlassOutcome outcome =
-        bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef("OPS-103"));
+        bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef(freshChangeRef()));
 
     assertRefused(
         outcome, BreakGlassRefusalReason.TARGET_USER_NOT_ACTIVE, 3, target.getId(), tenantId);
@@ -216,7 +217,7 @@ class BreakGlassAdminIT {
     UUID unknownUserId = uuidGenerator.newId();
 
     BreakGlassOutcome outcome =
-        bootstrapAdminService.grantFirstAdmin(unknownUserId, new ChangeRef("OPS-104"));
+        bootstrapAdminService.grantFirstAdmin(unknownUserId, new ChangeRef(freshChangeRef()));
 
     assertRefused(outcome, BreakGlassRefusalReason.TARGET_USER_NOT_FOUND, 3, unknownUserId, null);
   }
@@ -226,19 +227,21 @@ class BreakGlassAdminIT {
     UUID tenantId = uuidGenerator.newId();
     Role tenantAdmin = seedSystemTenantAdminRole(tenantId);
     User target = seedActiveUser(tenantId, "rerun");
+    String firstRef = freshChangeRef();
+    String rerunRef = freshChangeRef();
     assertThat(
-            bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef("OPS-105")).exitCode())
+            bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef(firstRef)).exitCode())
         .isZero();
 
     BreakGlassOutcome rerun =
-        bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef("OPS-106"));
+        bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef(rerunRef));
 
     assertThat(rerun).isEqualTo(new BreakGlassOutcome.Refused(BreakGlassRefusalReason.TENANT_HAS_ADMIN));
     assertThat(rerun.exitCode()).isEqualTo(5);
     assertThat(countActive(tenantId, tenantAdmin.getId())).isEqualTo(1);
     assertThat(auditRows(target.getId()))
         .extracting(r -> r.get("outcome") + "/" + r.get("change_ref"))
-        .containsExactly("SUCCESS/OPS-105", "FAILURE/OPS-106");
+        .containsExactly("SUCCESS/" + firstRef, "FAILURE/" + rerunRef);
   }
 
   // ── Atomicity (TS-5 style) ────────────────────────────────────────────────────────────────
@@ -259,7 +262,7 @@ class BreakGlassAdminIT {
             + " END");
 
     BreakGlassOutcome outcome =
-        bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef("OPS-107"));
+        bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef(freshChangeRef()));
 
     assertRefused(
         outcome, BreakGlassRefusalReason.UNEXPECTED_ERROR, 1, target.getId(), tenantId);
@@ -325,7 +328,8 @@ class BreakGlassAdminIT {
   }
 
   /**
-   * RC-47 padded replay and RC-54(a)/L-6: {@code ABC-0001} after {@code ABC-1} fails argument
+   * RC-47 padded replay and RC-54(a)/L-6: {@code ABC-0001} after {@code ABC-1} (with a random
+   * prefix in place of {@code ABC}, so a reused container never already holds it) fails argument
    * validation (exit 2), grants nothing, writes exactly one FAILURE row with no tenant, no user
    * and metadata {actorType, reason} only, and neither the padded value nor the target id appears
    * in that row or in any captured log event.
@@ -335,14 +339,17 @@ class BreakGlassAdminIT {
     UUID tenantA = uuidGenerator.newId();
     seedSystemTenantAdminRole(tenantA);
     User first = seedActiveUser(tenantA, "padded-first");
-    assertThat(runCli(first.getId().toString(), "ABC-1")).isZero();
+    String prefix = randomTicketPrefix();
+    String used = prefix + "-1";
+    String padded = prefix + "-0001";
+    assertThat(runCli(first.getId().toString(), used)).isZero();
     UUID tenantB = uuidGenerator.newId();
     Role adminB = seedSystemTenantAdminRole(tenantB);
     User target = seedActiveUser(tenantB, "padded-target");
     Set<String> idsBefore = authEventIds();
     logs.list.clear();
 
-    int exitCode = runCli(target.getId().toString(), "ABC-0001");
+    int exitCode = runCli(target.getId().toString(), padded);
 
     assertThat(exitCode).isEqualTo(2);
     assertThat(countActive(tenantB, adminB.getId())).isZero();
@@ -363,7 +370,7 @@ class BreakGlassAdminIT {
     assertThat(row.get("user_id")).isNull();
     assertThat(((Number) row.get("exact_metadata")).intValue()).isEqualTo(1);
     assertThat((String) row.get("metadata"))
-        .doesNotContain("ABC-0001", target.getId().toString());
+        .doesNotContain(padded, target.getId().toString());
 
     assertThat(singleAlert())
         .containsEntry("outcome", "REFUSED")
@@ -373,7 +380,7 @@ class BreakGlassAdminIT {
     for (ILoggingEvent event : logs.list) {
       assertThat(renderEverything(event))
           .as("log event from %s", event.getLoggerName())
-          .doesNotContain("ABC-0001", target.getId().toString());
+          .doesNotContain(padded, target.getId().toString());
     }
   }
 
@@ -512,7 +519,7 @@ class BreakGlassAdminIT {
                     barrier.await(5, TimeUnit.SECONDS);
                     return "exit"
                         + bootstrapAdminService
-                            .grantFirstAdmin(target.getId(), new ChangeRef("OPS-108"))
+                            .grantFirstAdmin(target.getId(), new ChangeRef(freshChangeRef()))
                             .exitCode();
                   });
 
@@ -595,6 +602,9 @@ class BreakGlassAdminIT {
     assertThat(logs.list)
         .noneSatisfy(
             e -> assertThat(keyValues(e)).containsEntry("event", "RBAC_AUDIT_WRITE_FAILED"));
+    assertThat(logs.list)
+        .noneSatisfy(
+            e -> assertThat(keyValues(e)).containsEntry("event", "RBAC_AUDIT_WRITE_LOST"));
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────────────────────
@@ -692,6 +702,18 @@ class BreakGlassAdminIT {
 
   private static String freshChangeRef() {
     return "BGIT-" + ThreadLocalRandom.current().nextInt(1, 100_000_000);
+  }
+
+  /**
+   * A random RC-47 ticket prefix ({@code Z} plus 9 letters), so the padded-replay pair differs per
+   * run and a reused container never already holds it.
+   */
+  private static String randomTicketPrefix() {
+    StringBuilder prefix = new StringBuilder("Z");
+    for (int i = 0; i < 9; i++) {
+      prefix.append((char) ('A' + ThreadLocalRandom.current().nextInt(26)));
+    }
+    return prefix.toString();
   }
 
   private Set<String> authEventIds() {
