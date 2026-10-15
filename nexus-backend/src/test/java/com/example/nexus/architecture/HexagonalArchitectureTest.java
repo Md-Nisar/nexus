@@ -450,6 +450,11 @@ class HexagonalArchitectureTest {
     static final ArchRule break_glass_never_calls_role_assignment_assign_or_revoke =
             ArchitectureRules.BREAK_GLASS_NEVER_CALLS_ROLE_ASSIGNMENT_ASSIGN_OR_REVOKE;
 
+    // US-018 T-008 (03-design.md §7.2 Containment): every CLI bean loads only under break-glass.
+    @ArchTest
+    static final ArchRule cli_beans_are_break_glass_profile_only =
+            ArchitectureRules.CLI_BEANS_ARE_BREAK_GLASS_PROFILE_ONLY;
+
     @ArchTest
     static final ArchRule no_field_injection =
             GeneralCodingRules.NO_CLASSES_SHOULD_USE_FIELD_INJECTION;

@@ -10,6 +10,7 @@ import com.example.nexus.rbac.application.PermissionFreshnessService;
 import java.util.List;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.security.autoconfigure.actuate.web.servlet.EndpointRequest;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
@@ -47,6 +48,7 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
  * {@link FilterRegistrationBean#setEnabled(boolean) setEnabled(false)} to prevent Spring Boot
  * from also registering them as standalone servlet filters outside the security chain.
  */
+@ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {

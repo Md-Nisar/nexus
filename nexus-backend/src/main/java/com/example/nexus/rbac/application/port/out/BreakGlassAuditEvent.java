@@ -10,8 +10,15 @@ import java.util.UUID;
  * request and the operator's identity never enters tenant data (Decision 10). {@code changeRef}
  * is the only operator attribution.
  *
- * @param tenantId the target user's tenant; {@code null} when the target user does not exist
- * @param targetUserId the user the grant was (or would have been) made to
- * @param changeRef the operator-supplied change reference
+ * <p>On {@code INVALID_ARGUMENT} (RC-54(a), L-6) all three fields are {@code null}, so the row's
+ * metadata is exactly {@code {actorType, reason}} and carries no rejected argument value.
+ *
+ * @param tenantId the target user's tenant; {@code null} when the target user does not exist,
+ *     on {@code CHANGE_REF_REUSED} (checked before the user lookup) and on {@code
+ *     INVALID_ARGUMENT}
+ * @param targetUserId the user the grant was (or would have been) made to; {@code null} on {@code
+ *     INVALID_ARGUMENT}
+ * @param changeRef the operator-supplied change reference; {@code null} on {@code
+ *     INVALID_ARGUMENT}
  */
 public record BreakGlassAuditEvent(UUID tenantId, UUID targetUserId, String changeRef) {}

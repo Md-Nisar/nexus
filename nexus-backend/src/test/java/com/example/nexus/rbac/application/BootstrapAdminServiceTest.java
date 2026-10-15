@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -17,6 +18,7 @@ import static org.mockito.Mockito.when;
 import com.example.nexus.rbac.application.port.out.BreakGlassAlert;
 import com.example.nexus.rbac.application.port.out.BreakGlassAlertPort;
 import com.example.nexus.rbac.application.port.out.BreakGlassAuditEvent;
+import com.example.nexus.rbac.application.port.out.BreakGlassGrantLookupPort;
 import com.example.nexus.rbac.application.port.out.DirectoryUser;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.UserDirectoryPort;
@@ -25,6 +27,7 @@ import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermissionName;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -41,14 +44,22 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.springframework.dao.CannotAcquireLockException;
-import org.springframework.transaction.annotation.Propagation;
+import org.springframework.dao.DataAccessResourceFailureException;
+import org.springframework.dao.DeadlockLoserDataAccessException;
+import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionSystemException;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
- * US-018 T-007 (03-design.md §7.1, §7.2): the break-glass first-administrator grant. Plain
- * Mockito, no Spring context.
+ * US-018 T-007 and T-008 (03-design.md §7.1, §7.2): the break-glass first-administrator grant,
+ * the replay and invalid-argument refusals, and the mapping of a failed grant transaction to an
+ * audited, paged refusal. Plain Mockito, no Spring context: the transaction manager is a mock, so
+ * the commit and rollback calls are observable.
  */
 @Tag("UnitTest")
 class BootstrapAdminServiceTest {
@@ -64,6 +75,8 @@ class BootstrapAdminServiceTest {
   private UserRoleAssignmentPort userRoleAssignmentPort;
   private RbacAuditPort rbacAuditPort;
   private BreakGlassAlertPort breakGlassAlertPort;
+  private BreakGlassGrantLookupPort grantLookupPort;
+  private PlatformTransactionManager transactionManager;
   private BootstrapAdminService service;
 
   @BeforeEach
@@ -72,9 +85,18 @@ class BootstrapAdminServiceTest {
     userRoleAssignmentPort = mock(UserRoleAssignmentPort.class);
     rbacAuditPort = mock(RbacAuditPort.class);
     breakGlassAlertPort = mock(BreakGlassAlertPort.class);
+    grantLookupPort = mock(BreakGlassGrantLookupPort.class);
+    transactionManager = mock(PlatformTransactionManager.class);
     service =
         new BootstrapAdminService(
-            userDirectoryPort, userRoleAssignmentPort, rbacAuditPort, breakGlassAlertPort);
+            userDirectoryPort,
+            userRoleAssignmentPort,
+            rbacAuditPort,
+            breakGlassAlertPort,
+            grantLookupPort,
+            transactionManager);
+
+    when(transactionManager.getTransaction(any())).thenReturn(new SimpleTransactionStatus());
 
     when(userDirectoryPort.findUser(targetUserId))
         .thenReturn(Optional.of(new DirectoryUser(tenantId, true)));
@@ -206,6 +228,111 @@ class BootstrapAdminServiceTest {
     verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
     verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
     verify(rbacAuditPort, never()).recordBreakGlassGrant(any());
+    verify(transactionManager, never()).rollback(any());
+  }
+
+  /**
+   * T-008: the target lookup runs before the grant transaction, so a refusal for a missing or
+   * non-ACTIVE target never opens it.
+   */
+  @Test
+  void should_notOpenGrantTransaction_when_targetIsNotActive() {
+    when(userDirectoryPort.findUser(targetUserId))
+        .thenReturn(Optional.of(new DirectoryUser(tenantId, false)));
+
+    service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    verifyNoInteractions(transactionManager);
+  }
+
+  @Test
+  void should_notOpenGrantTransaction_when_targetDoesNotExist() {
+    when(userDirectoryPort.findUser(targetUserId)).thenReturn(Optional.empty());
+
+    service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    verifyNoInteractions(transactionManager);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // T-008 (a): invalid argument. No argument value reaches the row or the page (L-6).
+  // ---------------------------------------------------------------------------------------------
+
+  @Test
+  void should_refuseWithExit2_writeRowAndAlertWithoutTenantTargetOrChangeRef_when_recordInvalidArgument() {
+    BreakGlassOutcome outcome = service.recordInvalidArgument();
+
+    assertThat(outcome).isEqualTo(new BreakGlassOutcome.Refused(BreakGlassRefusalReason.INVALID_ARGUMENT));
+    assertThat(outcome.exitCode()).isEqualTo(2);
+    InOrder inOrder = inOrder(rbacAuditPort, breakGlassAlertPort);
+    inOrder
+        .verify(rbacAuditPort)
+        .recordBreakGlassRefusal(new BreakGlassAuditEvent(null, null, null), "INVALID_ARGUMENT");
+    inOrder
+        .verify(breakGlassAlertPort)
+        .alert(
+            new BreakGlassAlert(null, null, BreakGlassAlert.Outcome.REFUSED, "INVALID_ARGUMENT", null));
+    verifyNoMoreInteractions(rbacAuditPort, breakGlassAlertPort);
+    verifyNoInteractions(
+        grantLookupPort, userDirectoryPort, userRoleAssignmentPort, transactionManager);
+  }
+
+  @Test
+  void should_takeNoParameters_when_recordingAnInvalidArgument() throws Exception {
+    Method method = BootstrapAdminService.class.getMethod("recordInvalidArgument");
+
+    assertThat(method.getParameterCount()).isZero();
+    assertThat(Modifier.isPublic(method.getModifiers())).isTrue();
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // T-008 (b): replay refusal (RC-37.2, RC-47)
+  // ---------------------------------------------------------------------------------------------
+
+  @Test
+  void should_refuseWithExit6_auditAndAlert_beforeUserLookup_when_changeRefAlreadyUsed() {
+    when(grantLookupPort.existsSuccessfulGrantWithChangeRef(CHANGE_REF.value())).thenReturn(true);
+
+    BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    assertRefused(outcome, BreakGlassRefusalReason.CHANGE_REF_REUSED, 6, null);
+    InOrder inOrder = inOrder(grantLookupPort, rbacAuditPort, breakGlassAlertPort);
+    inOrder.verify(grantLookupPort).existsSuccessfulGrantWithChangeRef(CHANGE_REF.value());
+    inOrder.verify(rbacAuditPort).recordBreakGlassRefusal(any(), eq("CHANGE_REF_REUSED"));
+    inOrder.verify(breakGlassAlertPort).alert(any());
+    verifyNoInteractions(userDirectoryPort, userRoleAssignmentPort, transactionManager);
+  }
+
+  @Test
+  void should_queryLookupWithExactChangeRef() {
+    ChangeRef longest = new ChangeRef("ABCDEFGHIJ-12345678");
+
+    service.grantFirstAdmin(targetUserId, longest);
+
+    verify(grantLookupPort).existsSuccessfulGrantWithChangeRef("ABCDEFGHIJ-12345678");
+    verifyNoMoreInteractions(grantLookupPort);
+  }
+
+  @Test
+  void should_lookUpChangeRefBeforeTheTarget_when_changeRefIsUnused() {
+    service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    InOrder inOrder = inOrder(grantLookupPort, userDirectoryPort, transactionManager);
+    inOrder.verify(grantLookupPort).existsSuccessfulGrantWithChangeRef(CHANGE_REF.value());
+    inOrder.verify(userDirectoryPort).findUser(targetUserId);
+    inOrder.verify(transactionManager).getTransaction(any());
+  }
+
+  /** Fail closed: a lookup that cannot answer never grants and is not mapped to a refusal. */
+  @Test
+  void should_propagate_andTouchNothingElse_when_lookupThrows() {
+    DataAccessResourceFailureException down = new DataAccessResourceFailureException("db down");
+    when(grantLookupPort.existsSuccessfulGrantWithChangeRef(CHANGE_REF.value())).thenThrow(down);
+
+    assertThatThrownBy(() -> service.grantFirstAdmin(targetUserId, CHANGE_REF)).isSameAs(down);
+
+    verifyNoInteractions(
+        userDirectoryPort, userRoleAssignmentPort, rbacAuditPort, breakGlassAlertPort, transactionManager);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -250,16 +377,37 @@ class BootstrapAdminServiceTest {
 
     service.grantFirstAdmin(targetUserId, CHANGE_REF);
 
-    // Written before the method returned, i.e. before any commit callback has run.
-    verify(rbacAuditPort)
+    // Written inside the grant transaction, i.e. before its commit and any commit callback.
+    InOrder inOrder = inOrder(transactionManager, userRoleAssignmentPort, rbacAuditPort);
+    ArgumentCaptor<TransactionDefinition> definition =
+        ArgumentCaptor.forClass(TransactionDefinition.class);
+    inOrder.verify(transactionManager).getTransaction(definition.capture());
+    inOrder.verify(userRoleAssignmentPort).assign(targetUserId, tenantAdminRoleId, tenantId, targetUserId);
+    inOrder
+        .verify(rbacAuditPort)
         .recordBreakGlassGrant(new BreakGlassAuditEvent(tenantId, targetUserId, CHANGE_REF.value()));
+    inOrder.verify(transactionManager).commit(any());
+    verify(transactionManager, never()).rollback(any());
     verifyNoInteractions(breakGlassAlertPort);
+    assertThat(definition.getValue().getPropagationBehavior())
+        .isEqualTo(TransactionDefinition.PROPAGATION_REQUIRED);
+    assertThat(definition.getValue().isReadOnly()).isFalse();
+    // The orchestrator itself is not transactional: the refusal after a failed grant must be
+    // written after the grant transaction has rolled back.
     Method method =
         BootstrapAdminService.class.getMethod("grantFirstAdmin", UUID.class, ChangeRef.class);
-    Transactional transactional = method.getAnnotation(Transactional.class);
-    assertThat(transactional).isNotNull();
-    assertThat(transactional.propagation()).isEqualTo(Propagation.REQUIRED);
-    assertThat(transactional.readOnly()).isFalse();
+    assertThat(method.getAnnotation(Transactional.class)).isNull();
+    assertThat(BootstrapAdminService.class.getAnnotation(Transactional.class)).isNull();
+  }
+
+  @Test
+  void should_resolveTargetBeforeOpeningTheGrantTransaction() {
+    service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    InOrder inOrder = inOrder(userDirectoryPort, transactionManager, userRoleAssignmentPort);
+    inOrder.verify(userDirectoryPort).findUser(targetUserId);
+    inOrder.verify(transactionManager).getTransaction(any());
+    inOrder.verify(userRoleAssignmentPort).findRoleIdByName(tenantId, "TENANT_ADMIN");
   }
 
   @Test
@@ -332,50 +480,153 @@ class BootstrapAdminServiceTest {
     verifyNoInteractions(breakGlassAlertPort);
   }
 
-  @Test
-  void should_propagate_andNotAlertGranted_when_successAuditWriteThrows() {
-    RuntimeException auditFailure = new RuntimeException("audit insert failed");
-    doThrow(auditFailure).when(rbacAuditPort).recordBreakGlassGrant(any());
+  // ---------------------------------------------------------------------------------------------
+  // T-008: a failed grant transaction becomes an audited, paged refusal written after the rollback
+  // (04-tasks.md T-008 risks; T-007 review finding 3).
+  // ---------------------------------------------------------------------------------------------
 
-    assertThatThrownBy(() -> service.grantFirstAdmin(targetUserId, CHANGE_REF))
-        .isSameAs(auditFailure);
-
-    verifyNoInteractions(breakGlassAlertPort);
+  static Stream<Arguments> lockFailures() {
+    return Stream.of(
+        Arguments.of(new CannotAcquireLockException("Deadlock found (1213)")),
+        Arguments.of(new DeadlockLoserDataAccessException("deadlock loser", null)),
+        Arguments.of(new PessimisticLockingFailureException("Lock wait timeout exceeded (1205)")));
   }
 
-  /** RC-40.5: once the insert ran, a failed SUCCESS write is never followed by a FAILURE row. */
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("lockFailures")
+  void should_refuseWithExit7_writeFailureRowWithTenant_andAlert_when_assignThrowsALockFailure(
+      PessimisticLockingFailureException lockFailure) {
+    when(userRoleAssignmentPort.assign(targetUserId, tenantAdminRoleId, tenantId, targetUserId))
+        .thenThrow(lockFailure);
+
+    BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    assertRefused(outcome, BreakGlassRefusalReason.CONCURRENT_INVOCATION, 7, tenantId);
+  }
+
   @Test
-  void should_writeNoFailureRow_when_successAuditWriteThrowsAfterTheInsert() {
+  void should_refuseWithExit7_writeFailureRowWithTenant_andAlert_when_assignThrowsCannotAcquireLock() {
+    when(userRoleAssignmentPort.assign(targetUserId, tenantAdminRoleId, tenantId, targetUserId))
+        .thenThrow(new CannotAcquireLockException("Deadlock found"));
+
+    BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    assertRefused(outcome, BreakGlassRefusalReason.CONCURRENT_INVOCATION, 7, tenantId);
+    verify(rbacAuditPort, never()).recordBreakGlassGrant(any());
+  }
+
+  @Test
+  void should_writeRefusalOnlyAfterGrantTransactionRolledBack() {
+    when(userRoleAssignmentPort.assign(targetUserId, tenantAdminRoleId, tenantId, targetUserId))
+        .thenThrow(new CannotAcquireLockException("Deadlock found"));
+
+    service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    InOrder inOrder = inOrder(transactionManager, rbacAuditPort, breakGlassAlertPort);
+    inOrder.verify(transactionManager).getTransaction(any());
+    inOrder.verify(transactionManager).rollback(any());
+    inOrder.verify(rbacAuditPort).recordBreakGlassRefusal(any(), eq("CONCURRENT_INVOCATION"));
+    inOrder.verify(breakGlassAlertPort).alert(any());
+    verify(transactionManager, never()).commit(any());
+  }
+
+  @Test
+  void should_notAlertGranted_when_deadlockRollsBackGrant() {
+    when(userRoleAssignmentPort.assign(targetUserId, tenantAdminRoleId, tenantId, targetUserId))
+        .thenThrow(new CannotAcquireLockException("Deadlock found"));
+    TransactionSynchronizationManager.initSynchronization();
+
+    service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    assertThat(TransactionSynchronizationManager.getSynchronizations()).isEmpty();
+    ArgumentCaptor<BreakGlassAlert> alerts = ArgumentCaptor.forClass(BreakGlassAlert.class);
+    verify(breakGlassAlertPort).alert(alerts.capture());
+    assertThat(alerts.getAllValues())
+        .extracting(BreakGlassAlert::outcome)
+        .containsExactly(BreakGlassAlert.Outcome.REFUSED);
+  }
+
+  @Test
+  void should_refuseWithExit1_UNEXPECTED_ERROR_withTenant_andAlert_when_grantFailsWithNonLockingException() {
     doThrow(new RuntimeException("audit insert failed"))
         .when(rbacAuditPort)
         .recordBreakGlassGrant(any());
 
-    assertThatThrownBy(() -> service.grantFirstAdmin(targetUserId, CHANGE_REF))
-        .isInstanceOf(RuntimeException.class);
+    BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
 
-    InOrder inOrder = inOrder(userRoleAssignmentPort, rbacAuditPort);
-    inOrder.verify(userRoleAssignmentPort).assign(targetUserId, tenantAdminRoleId, tenantId, targetUserId);
-    inOrder.verify(rbacAuditPort).recordBreakGlassGrant(any());
-    verify(rbacAuditPort, never()).recordBreakGlassRefusal(any(), anyString());
+    assertRefused(outcome, BreakGlassRefusalReason.UNEXPECTED_ERROR, 1, tenantId, true);
   }
 
   /**
-   * A lock failure on the {@code user_roles} insert (the zero-admin race, see the disabled race IT)
-   * propagates unchanged in T-007: no refusal row, no SUCCESS row and no page. T-008's runner maps
-   * it to an audited, paged refusal after the rollback.
+   * RC-40.5: once the insert ran, a failed SUCCESS write rolls the grant back; the FAILURE row
+   * that follows is written only after that rollback, so a SUCCESS and a FAILURE row never commit
+   * for one invocation.
    */
   @Test
-  void should_propagate_withNoRefusalRowAndNoAlert_when_insertThrowsLockFailure() {
-    CannotAcquireLockException lockFailure = new CannotAcquireLockException("Deadlock found");
-    when(userRoleAssignmentPort.assign(targetUserId, tenantAdminRoleId, tenantId, targetUserId))
-        .thenThrow(lockFailure);
+  void should_writeFailureRowOnlyAfterRollback_when_successAuditWriteThrowsAfterTheInsert() {
+    doThrow(new RuntimeException("audit insert failed"))
+        .when(rbacAuditPort)
+        .recordBreakGlassGrant(any());
+
+    service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    InOrder inOrder = inOrder(userRoleAssignmentPort, rbacAuditPort, transactionManager);
+    inOrder.verify(userRoleAssignmentPort).assign(targetUserId, tenantAdminRoleId, tenantId, targetUserId);
+    inOrder.verify(rbacAuditPort).recordBreakGlassGrant(any());
+    inOrder.verify(transactionManager).rollback(any());
+    inOrder.verify(rbacAuditPort).recordBreakGlassRefusal(any(), eq("UNEXPECTED_ERROR"));
+    verify(transactionManager, never()).commit(any());
+  }
+
+  /** A commit failure (after the SUCCESS write) is still a refusal, and the grant is never paged. */
+  @Test
+  void should_refuseWithExit1_andNeverAlertGranted_when_commitFails() {
+    doThrow(new TransactionSystemException("commit failed")).when(transactionManager).commit(any());
     TransactionSynchronizationManager.initSynchronization();
 
-    assertThatThrownBy(() -> service.grantFirstAdmin(targetUserId, CHANGE_REF)).isSameAs(lockFailure);
+    BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
 
-    verify(rbacAuditPort, never()).recordBreakGlassGrant(any());
+    assertThat(outcome)
+        .isEqualTo(new BreakGlassOutcome.Refused(BreakGlassRefusalReason.UNEXPECTED_ERROR));
+    verify(rbacAuditPort)
+        .recordBreakGlassRefusal(
+            new BreakGlassAuditEvent(tenantId, targetUserId, CHANGE_REF.value()), "UNEXPECTED_ERROR");
+    ArgumentCaptor<BreakGlassAlert> alerts = ArgumentCaptor.forClass(BreakGlassAlert.class);
+    verify(breakGlassAlertPort).alert(alerts.capture());
+    assertThat(alerts.getValue().outcome()).isEqualTo(BreakGlassAlert.Outcome.REFUSED);
+  }
+
+  /** The refusal write never throws (Group B); if it loses the row, the page still goes out. */
+  @Test
+  void should_stillAlert_when_refusalWriteLosesTheRow() {
+    when(userRoleAssignmentPort.assign(targetUserId, tenantAdminRoleId, tenantId, targetUserId))
+        .thenThrow(new CannotAcquireLockException("Deadlock found"));
+    // The port contract is never-throw: a lost row is logged inside the adapter and swallowed,
+    // which a mock models as doing nothing.
+
+    service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    verify(breakGlassAlertPort)
+        .alert(
+            new BreakGlassAlert(
+                tenantId,
+                targetUserId,
+                BreakGlassAlert.Outcome.REFUSED,
+                "CONCURRENT_INVOCATION",
+                CHANGE_REF.value()));
+  }
+
+  /** Errors are not refusals: they propagate after the rollback with no row and no page. */
+  @Test
+  void should_propagate_withNoRefusalRowAndNoAlert_when_grantThrowsAnError() {
+    AssertionError error = new AssertionError("not a RuntimeException");
+    when(userRoleAssignmentPort.assign(targetUserId, tenantAdminRoleId, tenantId, targetUserId))
+        .thenThrow(error);
+
+    assertThatThrownBy(() -> service.grantFirstAdmin(targetUserId, CHANGE_REF)).isSameAs(error);
+
+    verify(transactionManager).rollback(any());
     verify(rbacAuditPort, never()).recordBreakGlassRefusal(any(), anyString());
-    assertThat(TransactionSynchronizationManager.getSynchronizations()).isEmpty();
     verifyNoInteractions(breakGlassAlertPort);
   }
 
@@ -390,7 +641,13 @@ class BootstrapAdminServiceTest {
         .isInstanceOf(NullPointerException.class)
         .hasMessage("targetUserId must not be null");
 
-    verifyNoInteractions(userDirectoryPort, userRoleAssignmentPort, rbacAuditPort, breakGlassAlertPort);
+    verifyNoInteractions(
+        userDirectoryPort,
+        userRoleAssignmentPort,
+        rbacAuditPort,
+        breakGlassAlertPort,
+        grantLookupPort,
+        transactionManager);
   }
 
   @Test
@@ -399,7 +656,13 @@ class BootstrapAdminServiceTest {
         .isInstanceOf(NullPointerException.class)
         .hasMessage("changeRef must not be null");
 
-    verifyNoInteractions(userDirectoryPort, userRoleAssignmentPort, rbacAuditPort, breakGlassAlertPort);
+    verifyNoInteractions(
+        userDirectoryPort,
+        userRoleAssignmentPort,
+        rbacAuditPort,
+        breakGlassAlertPort,
+        grantLookupPort,
+        transactionManager);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -408,6 +671,15 @@ class BootstrapAdminServiceTest {
 
   private void assertRefused(
       BreakGlassOutcome outcome, BreakGlassRefusalReason reason, int exitCode, UUID expectedTenant) {
+    assertRefused(outcome, reason, exitCode, expectedTenant, false);
+  }
+
+  private void assertRefused(
+      BreakGlassOutcome outcome,
+      BreakGlassRefusalReason reason,
+      int exitCode,
+      UUID expectedTenant,
+      boolean successWriteAttempted) {
     assertThat(outcome).isEqualTo(new BreakGlassOutcome.Refused(reason));
     assertThat(outcome.exitCode()).isEqualTo(exitCode);
     InOrder inOrder = inOrder(rbacAuditPort, breakGlassAlertPort);
@@ -425,7 +697,9 @@ class BootstrapAdminServiceTest {
                 reason.name(),
                 CHANGE_REF.value()));
     verify(rbacAuditPort).recordBreakGlassRefusal(any(), anyString());
-    verify(rbacAuditPort, never()).recordBreakGlassGrant(any());
+    if (!successWriteAttempted) {
+      verify(rbacAuditPort, never()).recordBreakGlassGrant(any());
+    }
     verify(breakGlassAlertPort).alert(any());
   }
 

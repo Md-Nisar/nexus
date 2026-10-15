@@ -1,0 +1,26 @@
+# Break-glass first-administrator CLI (US-018 A7, ADR-0025, 03-design.md §7.2).
+# Run as: java -jar nexus-backend.jar --spring.profiles.active=<env>,break-glass \
+#           --target-user-id=<uuid> --change-ref=<TICKET-123>
+spring:
+  config:
+    activate:
+      on-profile: break-glass
+  main:
+    # No embedded server. BreakGlassAdminRunner's guard fails the start for any other value.
+    web-application-type: none
+  flyway:
+    # Break-glass never migrates a schema; ddl-auto=validate still checks it.
+    enabled: false
+  datasource:
+    hikari:
+      # Must be >= 2: a refusal under the set lock (TENANT_HAS_ADMIN) writes its FAILURE row in a
+      # REQUIRES_NEW transaction while the grant transaction still holds the lock and its
+      # connection; with one connection that write waits for the connection timeout. The rest is
+      # headroom for the background jobs that also run in this process.
+      maximum-pool-size: 4
+
+nexus:
+  rbac:
+    break-glass:
+      # RC-37.4: wait one log-shipper flush interval before exiting, so the page is shipped.
+      log-flush-wait: ${NEXUS_RBAC_BREAK_GLASS_LOG_FLUSH_WAIT:15s}

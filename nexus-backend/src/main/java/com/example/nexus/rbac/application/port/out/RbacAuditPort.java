@@ -22,7 +22,7 @@ import com.example.nexus.common.security.DenialReason;
  *       only the audit write itself moved inline.
  *   <li><b>Group B (best-effort):</b> {@link #recordRoleAssignmentDenied}, {@link
  *       #recordBreakGlassRefusal} — called INLINE, pre-throw, from a transaction that is about
- *       to roll back (or, for a break-glass refusal, before any mutation). Durability rests
+ *       to roll back (or, for a break-glass refusal, before any mutation, or after a rolled-back grant transaction). Durability rests
  *       entirely on an independent ({@code REQUIRES_NEW}) transaction: {@code
  *       SecureEventService#recordEvent} for a denial, {@code
  *       SecureEventService#recordEventOrThrowInNewTransaction} (never buffered) for a break-glass
