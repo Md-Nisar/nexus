@@ -1,5 +1,6 @@
 package com.example.nexus.rbac.interfaces.cli;
 
+import com.example.nexus.common.Profiles;
 import com.example.nexus.rbac.application.BootstrapAdminService;
 import com.example.nexus.rbac.application.BreakGlassOutcome;
 import com.example.nexus.rbac.application.port.out.BreakGlassAlert;
@@ -32,7 +33,7 @@ import org.springframework.stereotype.Component;
  * the rejected value.
  */
 @Component
-@Profile("break-glass")
+@Profile(Profiles.BREAK_GLASS)
 public class BreakGlassAdminRunner implements ApplicationRunner {
 
   private static final Logger log = LoggerFactory.getLogger(BreakGlassAdminRunner.class);

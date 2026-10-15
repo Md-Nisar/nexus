@@ -2,6 +2,8 @@ package com.example.nexus.rbac;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -24,6 +26,8 @@ import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.UserRole;
 import com.example.nexus.rbac.application.port.out.BreakGlassAlertPort;
+import com.example.nexus.rbac.application.port.out.BreakGlassGrantLookupPort;
+import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.interfaces.cli.BreakGlassAdminRunner;
 import com.example.nexus.rbac.interfaces.cli.BreakGlassExit;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
@@ -47,14 +51,17 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
 /**
  * US-018 A7 (T-007, test scenario TS-6): the break-glass first-administrator grant against a real
@@ -84,6 +91,9 @@ class BreakGlassAdminIT {
   // Replaces the production exit (System.exit): the profile's own runner fires once at startup.
   @MockitoBean private BreakGlassExit startupExit;
 
+  // Calls the real adapter unless a test stubs it to fail the atomic SUCCESS write.
+  @MockitoSpyBean private RbacAuditPort rbacAuditPort;
+
   /** Audit rows persist across tests, and a used reference is refused (exit 6): one per call. */
   private static String uniqueRef() {
     return "IT-" + ThreadLocalRandom.current().nextInt(1, 99_999_999);
@@ -96,6 +106,7 @@ class BreakGlassAdminIT {
   @Autowired private JpaRoleRepository roleRepository;
   @Autowired private JpaUserRoleRepository userRoleRepository;
   @Autowired private BreakGlassAlertPort alertPort;
+  @Autowired private BreakGlassGrantLookupPort grantLookup;
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private JdbcTemplate jdbc;
 
@@ -104,6 +115,8 @@ class BreakGlassAdminIT {
 
   @BeforeEach
   void captureAlertLog() {
+    // The context is cached across tests, so a stub must not bleed into the next one.
+    Mockito.reset(rbacAuditPort);
     changeRef = uniqueRef();
     alertLog = new ListAppender<>();
     alertLog.start();
@@ -146,6 +159,28 @@ class BreakGlassAdminIT {
                     .contains("tenantId=" + tenantId)
                     .contains("targetUserId=" + target.getId())
                     .contains("changeRef=" + changeRef));
+  }
+
+  @Test
+  void should_leaveNoAdministratorAndNoPage_when_theAtomicSuccessAuditWriteFails() {
+    UUID tenantId = uuidGenerator.newId();
+    seedSystemTenantAdminRole(tenantId);
+    User target = seedUser(tenantId, true);
+    doThrow(new DataAccessResourceFailureException("audit store down"))
+        .when(rbacAuditPort)
+        .recordBreakGlassGranted(any());
+
+    assertThatThrownBy(() -> bootstrapAdminService.grantFirstAdmin(target.getId(), changeRef))
+        .isInstanceOf(DataAccessResourceFailureException.class);
+
+    assertThat(activeAdminHolderCount(tenantId))
+        .as("the assignment rolls back with its audit row (A6, T-007)")
+        .isZero();
+    assertThat(auditRows(tenantId)).isEmpty();
+    assertThat(pagedMessages()).as("no GRANTED page for a rolled-back grant").isEmpty();
+    assertThat(grantLookup.existsSuccessfulGrantWithChangeRef(changeRef))
+        .as("a rolled-back grant does not burn the reference")
+        .isFalse();
   }
 
   @Test
@@ -297,6 +332,34 @@ class BreakGlassAdminIT {
   }
 
   @Test
+  void should_grantWithTheSameChangeRef_when_itWasOnlyOnRefusedAttempts() {
+    UUID tenantId = uuidGenerator.newId();
+    User target = seedUser(tenantId, true);
+    String ref = uniqueRef();
+    assertThat(runCli("--target-user-id=" + target.getId(), "--change-ref=" + ref)).isEqualTo(4);
+    seedSystemTenantAdminRole(tenantId);
+
+    int code = runCli("--target-user-id=" + target.getId(), "--change-ref=" + ref);
+
+    assertThat(code).as("only a SUCCESS row burns a reference").isZero();
+    assertThat(activeAdminHolderCount(tenantId)).isEqualTo(1);
+  }
+
+  @Test
+  void should_matchOnlyTheExactChangeRef_when_lookupGetsWildcardOrQuoteCharacters() {
+    UUID tenantId = uuidGenerator.newId();
+    seedSystemTenantAdminRole(tenantId);
+    User target = seedUser(tenantId, true);
+    String used = uniqueRef();
+    assertThat(runCli("--target-user-id=" + target.getId(), "--change-ref=" + used)).isZero();
+
+    assertThat(grantLookup.existsSuccessfulGrantWithChangeRef(used)).isTrue();
+    assertThat(grantLookup.existsSuccessfulGrantWithChangeRef("IT-%")).isFalse();
+    assertThat(grantLookup.existsSuccessfulGrantWithChangeRef(used + "' OR '1'='1")).isFalse();
+    assertThat(grantLookup.existsSuccessfulGrantWithChangeRef(used.toLowerCase())).isFalse();
+  }
+
+  @Test
   void should_refuseWithExit2WithoutEchoingTheValue_when_changeRefIsPaddedAfterTheCanonicalOne() {
     UUID tenantId = uuidGenerator.newId();
     seedSystemTenantAdminRole(tenantId);
@@ -351,9 +414,12 @@ class BreakGlassAdminIT {
    * A revoke of the tenant's last administrator racing the CLI. The revoke is blocked by the
    * last-admin lockout and the CLI refuses on the administrator it finds, whichever takes the set
    * lock first: exactly one administrator holds the tenant afterwards, never zero and never two.
+   * This proves neither side deadlocks or hangs; it passes whatever the interleaving, so the set
+   * lock itself is proven by the two-invocation race test below
+   * ({@code should_grantExactlyOnce_when_twoInvocationsRaceOnAZeroAdministratorTenant}).
    */
   @Test
-  void should_serializeOnTheSetLock_when_revokeOfLastAdminRacesTheCli() throws Exception {
+  void should_neitherDeadlockNorHang_when_revokeOfLastAdminRacesTheCli() throws Exception {
     UUID tenantId = uuidGenerator.newId();
     Role adminRole = seedSystemTenantAdminRole(tenantId);
     User admin = seedUser(tenantId, true);

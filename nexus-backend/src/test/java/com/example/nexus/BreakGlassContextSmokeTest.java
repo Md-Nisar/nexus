@@ -10,6 +10,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.test.context.ActiveProfiles;
@@ -46,10 +48,12 @@ class BreakGlassContextSmokeTest {
     assertThatThrownBy(
             () -> {
               try (ConfigurableApplicationContext ignored =
-                  new SpringApplicationBuilder(NexusApplication.class)
+                  new SpringApplicationBuilder(NexusApplication.class, NoExit.class)
                       .profiles("smoke", "break-glass")
                       .properties(
-                          "server.port=0", "spring.datasource.url=jdbc:h2:mem:break-glass-servlet")
+                          "server.port=0",
+                          "spring.datasource.url=jdbc:h2:mem:break-glass-servlet",
+                          "nexus.rbac.break-glass.log-flush-interval=0s")
                       // A command-line argument outranks the profile's web-application-type=none,
                       // which is exactly how an operator could try to override it.
                       .run("--spring.main.web-application-type=servlet")) {
@@ -67,10 +71,12 @@ class BreakGlassContextSmokeTest {
     assertThatThrownBy(
             () -> {
               try (ConfigurableApplicationContext ignored =
-                  new SpringApplicationBuilder(NexusApplication.class)
+                  new SpringApplicationBuilder(NexusApplication.class, NoExit.class)
                       .profiles("smoke", "break-glass")
                       .properties(
-                          "server.port=0", "spring.datasource.url=jdbc:h2:mem:break-glass-lazy")
+                          "server.port=0",
+                          "spring.datasource.url=jdbc:h2:mem:break-glass-lazy",
+                          "nexus.rbac.break-glass.log-flush-interval=0s")
                       .run(
                           "--spring.main.lazy-initialization=true",
                           "--spring.main.web-application-type=servlet")) {
@@ -80,5 +86,20 @@ class BreakGlassContextSmokeTest {
         .hasRootCauseInstanceOf(IllegalStateException.class)
         .rootCause()
         .hasMessageContaining("spring.main.web-application-type=none");
+  }
+
+  /**
+   * Added to the builder-started contexts, which the class-level {@code @MockitoBean} does not
+   * reach: if the guard ever stops failing the refresh, the runner's exit is a no-op and the
+   * assertion fails, instead of {@code System.exit} crashing the Surefire fork. Deliberately not a
+   * {@code @Configuration}, so {@code @SpringBootTest} does not take it as this test's config.
+   */
+  static class NoExit {
+
+    @Bean
+    @Primary
+    BreakGlassExit noExit() {
+      return exitCode -> {};
+    }
   }
 }

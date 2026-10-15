@@ -1,5 +1,6 @@
 package com.example.nexus.rbac.interfaces.cli;
 
+import com.example.nexus.common.Profiles;
 import org.springframework.boot.SpringApplication;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Profile;
@@ -10,7 +11,7 @@ import org.springframework.stereotype.Component;
  * ExitCodeGenerator} runs) before the JVM ends with the code (ADR-0025 1).
  */
 @Component
-@Profile("break-glass")
+@Profile(Profiles.BREAK_GLASS)
 class SpringBreakGlassExit implements BreakGlassExit {
 
   private final ConfigurableApplicationContext context;

@@ -379,10 +379,15 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
     try {
       secureEventService.recordEventInNewTransactionOrThrow(breakGlassEvent(event, OUTCOME_FAILURE));
     } catch (RuntimeException e) {
+      // The identifiers are null on an invalid-argument refusal, so nothing rejected is echoed.
       log.atError()
+          .setCause(e)
           .addKeyValue("event", "RBAC_AUDIT_WRITE_LOST")
           .addKeyValue("tenantId", event.tenantId())
-          .log("RBAC audit write lost: operation=breakGlassRefused");
+          .addKeyValue("targetUserId", event.targetUserId())
+          .addKeyValue("changeRef", event.changeRef())
+          .addKeyValue("reason", event.reason())
+          .log("RBAC audit write lost: operation=breakGlassRefused reason={}", event.reason());
       Counter.builder("nexus.rbac.audit_write_failed")
           .tag("operation", "breakGlassRefused")
           .tag("mode", "best_effort")

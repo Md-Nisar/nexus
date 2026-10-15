@@ -247,7 +247,7 @@ class BreakGlassAdminRunnerTest {
   }
 
   @Test
-  void should_decideBeforeWaitingAndWaitBeforeExit() {
+  void should_decideBeforeExiting() {
     when(service.grantFirstAdmin(TARGET, "OPS-12")).thenReturn(BreakGlassOutcome.GRANTED);
 
     runner(Duration.ofMillis(5)).run(validArgs());

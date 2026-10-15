@@ -1,5 +1,6 @@
 package com.example.nexus.rbac.interfaces.cli;
 
+import com.example.nexus.common.Profiles;
 import com.example.nexus.rbac.application.port.out.BreakGlassAlert;
 import com.example.nexus.rbac.application.port.out.BreakGlassAlertPort;
 import org.slf4j.Logger;
@@ -29,7 +30,7 @@ import org.springframework.web.context.WebApplicationContext;
  * identifiers, then throws.
  */
 @Component
-@Profile("break-glass")
+@Profile(Profiles.BREAK_GLASS)
 @Lazy(false)
 public class BreakGlassWebContextGuard implements InitializingBean {
 

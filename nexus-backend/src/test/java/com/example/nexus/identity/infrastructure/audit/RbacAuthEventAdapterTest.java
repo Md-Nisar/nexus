@@ -1087,6 +1087,39 @@ class RbacAuthEventAdapterTest {
   }
 
 
+  @Test
+  void should_logCauseAndIdentifiers_when_refusalWriteFails() {
+    Logger logger = (Logger) LoggerFactory.getLogger(RbacAuthEventAdapter.class);
+    ListAppender<ILoggingEvent> appender = new ListAppender<>();
+    appender.start();
+    logger.addAppender(appender);
+    try {
+      doThrow(new RuntimeException("db down"))
+          .when(secureEventService)
+          .recordEventInNewTransactionOrThrow(any());
+
+      adapter.recordBreakGlassRefused(
+          new BreakGlassAuditEvent(TENANT_ID, TARGET_USER_ID, "OPS-12", "TENANT_HAS_ADMIN"));
+
+      assertThat(appender.list)
+          .singleElement()
+          .satisfies(
+              e -> {
+                assertThat(e.getThrowableProxy()).isNotNull();
+                assertThat(e.getThrowableProxy().getMessage()).isEqualTo("db down");
+                assertThat(e.getKeyValuePairs())
+                    .extracting(kv -> kv.key + "=" + kv.value)
+                    .contains(
+                        "tenantId=" + TENANT_ID,
+                        "targetUserId=" + TARGET_USER_ID,
+                        "changeRef=OPS-12",
+                        "reason=TENANT_HAS_ADMIN");
+              });
+    } finally {
+      logger.detachAppender(appender);
+    }
+  }
+
   /** Break-glass refusal capture (US-018 M5 L-3): REQUIRES_NEW + flush, never the buffered path. */
   private AuthEvent captureRefusalEvent() {
     ArgumentCaptor<AuthEvent> captor = ArgumentCaptor.forClass(AuthEvent.class);
