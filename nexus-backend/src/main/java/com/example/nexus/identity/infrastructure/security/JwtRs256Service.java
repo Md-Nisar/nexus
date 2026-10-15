@@ -154,8 +154,8 @@ public class JwtRs256Service implements JwtPort {
    * long. A v2 token is rejected with reason {@code schema_version} (design §9.6, M7b).
    *
    * <p>Every rejection is the same 401 {@code AUTH_003}, counted as {@code
-   * nexus.auth.token_rejected{reason}} and logged at DEBUG only, so an M7 rolling deploy cannot
-   * flood the logs.
+   * nexus.auth.token_rejected{reason}} and logged at DEBUG only, so a burst of rejected tokens
+   * cannot flood the logs.
    *
    * @param rawJwt the signed JWT string
    * @return extracted and validated claims

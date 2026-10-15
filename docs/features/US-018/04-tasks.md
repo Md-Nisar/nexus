@@ -814,7 +814,7 @@ US-018 (one story, 12 PRs)
 **PR boundary.** T-015 alone. Deployed only after M7 is on **every** instance **and** at least 900 s (the access-token TTL; skew is 0) have passed (design §9.6). May merge while M3 is in flight (A-4).
 
 **Merge checklist (M7b):**
-- [ ] M7 confirmed on every instance for ≥ 900 s.
+- [ ] M7 confirmed on every instance for ≥ the configured access-token TTL (`nexus.jwt.access-token-ttl-seconds`, 900 s today) plus clock skew (0 today); re-check if an environment overrides the TTL (M7b security review, 2026-10-15).
 - [ ] Exit criterion: `token_rejected{reason=schema_version}` = 0 after deploy (design §14). Rollback is redeploying M7 (accepts {2, 3}).
 
 ### T-015 — Only v3 tokens are accepted once M7 is fully rolled out (A9 contract step)
