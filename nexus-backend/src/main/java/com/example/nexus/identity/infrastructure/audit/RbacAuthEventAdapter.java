@@ -5,6 +5,7 @@ import com.example.nexus.identity.application.service.SecureEventService;
 import com.example.nexus.identity.domain.AuthEvent;
 import com.example.nexus.identity.domain.AuthEventType;
 import com.example.nexus.identity.domain.UuidGenerator;
+import com.example.nexus.rbac.application.port.out.BreakGlassAuditEvent;
 import com.example.nexus.rbac.application.port.out.RbacAuditEvent;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.RoleAuditEvent;
@@ -60,6 +61,11 @@ import tools.jackson.databind.ObjectMapper;
 public class RbacAuthEventAdapter implements RbacAuditPort {
 
   private static final Logger log = LoggerFactory.getLogger(RbacAuthEventAdapter.class);
+
+  /** US-018 A7 (03-design.md §7.2): the fixed {@code actorType} of every break-glass row. */
+  private static final String BREAK_GLASS_ACTOR_TYPE = "BREAK_GLASS_CLI";
+  private static final String OPERATION_BREAK_GLASS_GRANT = "breakGlassGrant";
+  private static final String OPERATION_BREAK_GLASS_REFUSAL = "breakGlassRefusal";
 
   private final SecureEventService secureEventService;
   private final UuidGenerator uuidGenerator;
@@ -282,6 +288,77 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
           .register(meterRegistry)
           .increment();
     }
+  }
+
+  /**
+   * US-018 A7 (03-design.md §7.2): {@code ROLE_BREAK_GLASS_GRANT} SUCCESS (Group A — atomic).
+   * Joins the grant's transaction via {@link
+   * SecureEventService#recordEventInCurrentTransaction(AuthEvent)} and RETHROWS on failure, so a
+   * lost audit row rolls the grant back. {@code user_id} is the target (the subject).
+   */
+  @Override
+  public void recordBreakGlassGrant(BreakGlassAuditEvent event) {
+    try {
+      AuthEvent authEvent =
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.ROLE_BREAK_GLASS_GRANT, "SUCCESS")
+              .withUserId(event.targetUserId())
+              .withTenantId(event.tenantId())
+              .withMetadata(buildBreakGlassMetadataJson(event, null));
+
+      secureEventService.recordEventInCurrentTransaction(authEvent);
+    } catch (RuntimeException e) {
+      logAtomicAuditWriteFailed(event.tenantId(), null, null, OPERATION_BREAK_GLASS_GRANT, e);
+      throw e;
+    }
+  }
+
+  /**
+   * US-018 A7 (03-design.md §7.2): {@code ROLE_BREAK_GLASS_GRANT} FAILURE for a refusal (Group B
+   * — best-effort). Delegates to {@link SecureEventService#recordEvent(AuthEvent)} ({@code
+   * REQUIRES_NEW}) and never throws — on failure it logs {@code event=RBAC_AUDIT_WRITE_LOST},
+   * increments {@code nexus.rbac.audit_write_failed{operation="breakGlassRefusal",
+   * mode="best_effort"}}, and swallows. {@code tenantId} may be {@code null} (unknown target).
+   */
+  @Override
+  public void recordBreakGlassRefusal(BreakGlassAuditEvent event, String reason) {
+    try {
+      AuthEvent authEvent =
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.ROLE_BREAK_GLASS_GRANT, "FAILURE")
+              .withUserId(event.targetUserId())
+              .withTenantId(event.tenantId())
+              .withMetadata(buildBreakGlassMetadataJson(event, reason));
+
+      secureEventService.recordEvent(authEvent);
+    } catch (RuntimeException e) {
+      log.atError()
+          .addKeyValue("event", "RBAC_AUDIT_WRITE_LOST")
+          .addKeyValue("tenantId", event.tenantId())
+          .addKeyValue("targetUserId", event.targetUserId())
+          .addKeyValue("operation", OPERATION_BREAK_GLASS_REFUSAL)
+          .log("RBAC audit write lost: operation={} tenantId={} targetUserId={}",
+              OPERATION_BREAK_GLASS_REFUSAL, event.tenantId(), event.targetUserId(), e);
+      Counter.builder("nexus.rbac.audit_write_failed")
+          .tag("operation", OPERATION_BREAK_GLASS_REFUSAL)
+          .tag("mode", "best_effort")
+          .register(meterRegistry)
+          .increment();
+    }
+  }
+
+  /**
+   * Break-glass metadata: exactly {@code actorType}, {@code changeRef}, {@code reason}, in that
+   * order, with {@code null} values omitted (never a JSON {@code null}).
+   */
+  private String buildBreakGlassMetadataJson(BreakGlassAuditEvent event, String reason) {
+    Map<String, Object> metadata = new LinkedHashMap<>();
+    metadata.put("actorType", BREAK_GLASS_ACTOR_TYPE);
+    if (event.changeRef() != null) {
+      metadata.put("changeRef", event.changeRef());
+    }
+    if (reason != null) {
+      metadata.put("reason", reason);
+    }
+    return objectMapper.writeValueAsString(metadata);
   }
 
   /**

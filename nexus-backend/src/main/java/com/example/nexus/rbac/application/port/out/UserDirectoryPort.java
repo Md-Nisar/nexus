@@ -15,4 +15,10 @@ public interface UserDirectoryPort {
    * non-matching value (versus the caller's own tenant) maps to a 403.
    */
   Optional<UUID> findTenantId(UUID userId);
+
+  /**
+   * The user's tenant and {@code ACTIVE}-ness, or empty when no such user exists (US-018 A7, the
+   * break-glass target lookup). A plain, non-locking read.
+   */
+  Optional<DirectoryUser> findUser(UUID userId);
 }

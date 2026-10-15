@@ -745,6 +745,16 @@ public class RoleAssignmentService {
    */
   private AdminEquivalentRoles resolveAdminEquivalentRoles(
       UUID tenantId, Role targetRole, boolean nameMatch) {
+    return resolveAdminEquivalentRoles(userRoleAssignmentPort, tenantId);
+  }
+
+  /**
+   * The body of {@link #resolveAdminEquivalentRoles(UUID, Role, boolean)}, package-private and
+   * static so {@code BootstrapAdminService} (US-018 A7, 03-design.md §7.1) primes M10 and M8
+   * exactly as {@code assign()}/{@code revoke()} do, never a second copy that could drift.
+   */
+  static AdminEquivalentRoles resolveAdminEquivalentRoles(
+      UserRoleAssignmentPort userRoleAssignmentPort, UUID tenantId) {
     List<RolePermissionName> tenantRolePermissions =
         userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId);
 
@@ -780,7 +790,7 @@ public class RoleAssignmentService {
    * M7/M10 disagreement). "Ascending" is {@link #UNSIGNED_BYTEWISE_UUID_ORDER}, a port contract
    * of {@link UserRoleAssignmentPort#lockActiveAssignmentHolders}, not a caller convention.
    */
-  private static List<UUID> buildAscendingAdminEquivalentLockSet(
+  static List<UUID> buildAscendingAdminEquivalentLockSet(
       AdminEquivalentRoles roles, UUID targetRoleId) {
     Set<UUID> lockSet = new TreeSet<>(UNSIGNED_BYTEWISE_UUID_ORDER);
     lockSet.addAll(roles.adminEquivalentIds());

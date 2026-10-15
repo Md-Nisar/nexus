@@ -514,6 +514,7 @@ US-018 (one story, 12 PRs)
 - **PII / log injection.** Echoing a rejected argument lets free text reach audit metadata and logs through the refusal path; the IT must prove absence in both.
 - **Availability of the page.** Exiting before the shipper reads the pod's logs loses the page (T-R15); the flush wait and the drill are the controls.
 - **Concurrency (accepted, T-S11).** Two concurrent runs with one reference can both pass the non-locking lookup; the set lock limits that to two different zero-admin tenants. Runbook-only control.
+- **Deadlock on a zero-admin tenant (found in T-007, decision 2026-10-15).** With no administrator the M11 set lock finds no rows and takes only gap locks, so two concurrent runs on one tenant (any references) both pass the zero-admin check and one dies with MySQL 1213 on the `user_roles` insert (6 of 10 probe runs; exactly one grant and one SUCCESS audit row held every time). T-008 must map this deadlock on the break-glass path to an audited, paged refusal (FAILURE row, `RBAC_BREAK_GLASS_USED`, a defined exit code) and re-enable `BreakGlassAdminIT.should_grantExactlyOnce_when_twoCliRunsRaceOnTheSameZeroAdminTenant` (`@Disabled` in T-007). No retry and no extra lock (ADR-0018). The runbook adds: one invocation per tenant at a time. Architect to confirm.
 
 **Tests (written first):**
 - Unit `BreakGlassAdminRunnerTest`: exit-code mapping for every outcome; non-UUID target → 2; `ABC-0`, `ABC-01`, lowercase and free text (`"fix tenant"`) → 2; no raw argument reaches the alert port (argument captor).

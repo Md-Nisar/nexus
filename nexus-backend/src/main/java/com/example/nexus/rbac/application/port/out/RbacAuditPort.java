@@ -13,20 +13,23 @@ import com.example.nexus.common.security.DenialReason;
  * <ul>
  *   <li><b>Group A (atomic):</b> {@link #recordRoleAssigned}, {@link #recordRoleRevoked}, {@link
  *       #recordRoleCreated}, {@link #recordRolePermissionGranted}, {@link
- *       #recordRolePermissionRevoked} — called INLINE, inside the caller's own mutation
- *       transaction, after the mutation and before the method returns. These join that
+ *       #recordRolePermissionRevoked}, {@link #recordBreakGlassGrant} — called INLINE, inside
+ *       the caller's own mutation transaction, after the mutation and before the method returns.
+ *       These join that
  *       transaction ({@code SecureEventService#recordEventInCurrentTransaction}, {@code MANDATORY})
  *       and <b>MUST THROW</b> on failure, so a lost audit write rolls back the mutation it was
  *       meant to record (design §6.2). Cache eviction, INFO logs and timers remain post-commit;
  *       only the audit write itself moved inline.
- *   <li><b>Group B (best-effort):</b> {@link #recordRoleAssignmentDenied} — called INLINE,
- *       pre-throw, from a transaction that is about to roll back. Durability rests entirely on
- *       {@code SecureEventService#recordEvent}'s independent ({@code REQUIRES_NEW}) transaction.
+ *   <li><b>Group B (best-effort):</b> {@link #recordRoleAssignmentDenied}, {@link
+ *       #recordBreakGlassRefusal} — called INLINE, pre-throw, from a transaction that is about
+ *       to roll back (or, for a break-glass refusal, before any mutation). Durability rests
+ *       entirely on {@code SecureEventService#recordEvent}'s independent ({@code REQUIRES_NEW})
+ *       transaction.
  *       <b>MUST NEVER throw and MUST NOT block</b> — on failure it must swallow its own failure
  *       (buffering for bounded backed-off retry, or logging and continuing) and never propagate.
  * </ul>
  *
- * No caller handles exceptions from the five Group B overload calls; Group A's five methods are
+ * No caller handles exceptions from the Group B calls; Group A's role-change methods are
  * called from within a {@code try}/{@code catch (RuntimeException)} that exists for other reasons
  * (timer/outcome bookkeeping) and simply rethrows.
  */
@@ -99,4 +102,20 @@ public interface RbacAuditPort {
    * caller's transaction and MUST THROW on failure.
    */
   void recordRolePermissionRevoked(RoleAuditEvent event);
+
+  /**
+   * Records a successful break-glass first-administrator grant ({@code ROLE_BREAK_GLASS_GRANT}
+   * SUCCESS, US-018 A7, 03-design.md §7.2; Group A — atomic). Joins the caller's grant
+   * transaction and MUST THROW on failure, so a lost audit row rolls the grant back.
+   */
+  void recordBreakGlassGrant(BreakGlassAuditEvent event);
+
+  /**
+   * Records a refused break-glass invocation ({@code ROLE_BREAK_GLASS_GRANT} FAILURE, US-018 A7;
+   * Group B — best-effort). Commits in its own ({@code REQUIRES_NEW}) transaction so the row
+   * survives the refusal. MUST NEVER throw.
+   *
+   * @param reason the refusal reason name, persisted as {@code reason} in the audit metadata
+   */
+  void recordBreakGlassRefusal(BreakGlassAuditEvent event, String reason);
 }
