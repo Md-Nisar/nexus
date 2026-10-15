@@ -421,6 +421,9 @@ US-018 (one story, 12 PRs)
 **Threats owned:** T-S9 (RC-37.1, RC-37.2), T-R14 (RC-37.3), T-R15 (RC-37.4), T-S11 (RC-47), RC-37.5, RC-37.6 / RC-50(d), RC-54(a), L-6; EC2 (structural, with T-002).
 
 **Merge checklist (M5):**
+
+*Status (2026-10-15): the Ops, alerting and drill items below (RC-37.3, RC-37.4, the daily reconciliation alert, RES-6, the operational drill) need an environment and are deferred to the first deployment (Decision at the top), owned by the story owner and tracked as P-3 to P-7 in [14-pending-items.md](14-pending-items.md). The runbook content is in `runbook.md` §11.*
+
 - [ ] **RC-37.3:** Ops sign-off that Kubernetes API audit logging (pod create and exec, with user identity) is on and retained ≥ 1 year. Without it `--change-ref` joins to nothing.
 - [ ] **RC-37.4 staging drill:** a zero-admin tenant recovered, **and the page received from a Job run exactly as the runbook specifies**. The runbook forbids `--rm` unless the drill proves capture without it.
 - [ ] **Daily reconciliation alert** (ticket) on new `ROLE_BREAK_GLASS_GRANT` rows is live (backstop for a lost page).

@@ -173,11 +173,11 @@ Do **not** use it:
 ### 11.2 Before you run it: verify, approve, record
 
 1. **Verify the requester against the tenant's contractual contact of record**, through the contact details held in the contract system, not the ones in the request and **never the target account's own email or phone**. Record the date and method on the ticket, using user, tenant and role UUIDs only (no emails, names or tokens).
-2. **A second person from Platform Security approves**, in writing, on the same ticket, before the Job is created. The operator and the approver are different people. Record the approver's role and the approval time. TODO(owner): name the exact approver group (for example the Platform Security on-call rota).
+2. **The Platform Security on-call engineer approves**, in writing, on the same ticket, before the Job is created: whoever is on the Platform Security on-call rota at that time. The operator and the approver are different people; if the operator is on that rota, the approver is the next person on it. Record the approver's name, role and the approval time.
 3. **Change reference.** `--change-ref` is the ticket id, in one canonical form: `[A-Z][A-Z0-9]{1,9}-[1-9][0-9]{0,7}` (for example `OPS-1234`). No leading zero in the number (`OPS-01234` is rejected), ASCII only, no free text. The same ticket id carries the approvals in step 2.
 4. **Never reuse a reference.** A reference that already appears on a successful grant is refused (exit 6), in any tenant. A second recovery needs a new ticket and a new approval.
 5. **One invocation at a time per reference.** Do not start a second Job for the same reference until the first has finished and its outcome is recorded. The replay check is a non-locking read, so two concurrent runs of one reference can both pass it. Creating the Job with a name derived from the reference (11.3) makes Kubernetes reject a duplicate name.
-6. **Confirm the infra audit is on**: Kubernetes API audit logging (pod create and exec, with user identity) retained for at least 1 year. Without it the change reference joins to nothing. TODO(owner): Ops names the audit-log location and confirms retention (RC-37.3, merge checklist).
+6. **Confirm the infra audit is on**: Kubernetes API audit logging (pod create and exec, with user identity) retained for at least 1 year. Without it the change reference joins to nothing. No environment exists yet: Ops names the audit-log location and confirms retention before the first deployment (RC-37.3; tracked as P-3 in `14-pending-items.md`).
 
 ### 11.3 Run it as a Kubernetes Job
 
@@ -195,7 +195,7 @@ metadata:
 spec:
   backoffLimit: 0                            # never retry automatically (see exit 1)
   activeDeadlineSeconds: 600
-  ttlSecondsAfterFinished: <TTL>             # TODO(owner): long enough for the log shipper and the post-run checks; see below
+  ttlSecondsAfterFinished: 3600              # 1 h: time for the log shipper and the checks in 11.5; see below
   template:
     spec:
       restartPolicy: Never
@@ -213,9 +213,9 @@ spec:
 Rules:
 - [ ] `--spring.profiles.active=<env>,break-glass`: the environment profile first, then `break-glass`. The profile sets `spring.main.web-application-type=none` and `spring.flyway.enabled=false`. A servlet context, or a lazy-initialisation override, fails the start (exit 1, page `reason=WEB_CONTEXT`).
 - [ ] **No `kubectl run --rm`, and no short Job TTL**, unless the staging drill proved the page and logs are captured without it (RC-37.4). Keep the finished Job and pod until the checks in 11.5 are done.
-- [ ] The runner waits `nexus.rbac.break-glass.log-flush-interval` (default 15 s) before exiting so the node's log shipper can read the page. It must be at least the shipper's flush interval. TODO(owner): SRE states the shipper's flush interval and confirms the default.
+- [ ] The runner waits `nexus.rbac.break-glass.log-flush-interval` (default 15 s) before exiting so the node's log shipper can read the page. It must be at least the shipper's flush interval. Keep the 15 s default; SRE confirms it against the real shipper's flush interval at the first deployment (P-4).
 
-**Confirm the page arrived.** Every invocation, including a refusal, logs an ERROR line beginning `RBAC_BREAK_GLASS_USED outcome=<GRANTED|REFUSED|ERROR>`, with `reason`, `tenantId`, `targetUserId` and `changeRef` where known. Confirm it **in the paging/alerting system**, not only in `kubectl logs`. If it did not arrive, treat the run as unrecorded in the alert channel, tell Platform Security, and rely on the audit row and the daily reconciliation (11.6). TODO(owner): name the alert channel and the on-call rota that receives `RBAC_BREAK_GLASS_USED`, and the log retention for it (RES-6).
+**Confirm the page arrived.** Every invocation, including a refusal, logs an ERROR line beginning `RBAC_BREAK_GLASS_USED outcome=<GRANTED|REFUSED|ERROR>`, with `reason`, `tenantId`, `targetUserId` and `changeRef` where known. Confirm it **in the paging/alerting system**, not only in `kubectl logs`. If it did not arrive, treat the run as unrecorded in the alert channel, tell Platform Security, and rely on the audit row and the daily reconciliation (11.6). The alert channel, the on-call rota that receives `RBAC_BREAK_GLASS_USED`, and its log retention (RES-6) are set up with the first deployment (P-5).
 
 ### 11.4 Exit codes
 
@@ -273,8 +273,8 @@ WHERE ae.event_type = 'ROLE_BREAK_GLASS_GRANT' AND ae.created_at >= NOW(6) - INT
 ORDER BY ae.created_at;
 ```
 
-A row with no ticket, or a ticket with no second approval, is a security incident: tell Platform Security, and check the Kubernetes audit log for who created the Job (11.2 step 6). A `FAILURE` row with `reason=INVALID_ARGUMENT` has a null tenant and user by design. TODO(owner): the alerting platform, the exact alert rule, and who owns the daily review. This alert is live before merge (merge checklist).
+A row with no ticket, or a ticket with no second approval, is a security incident: tell Platform Security, and check the Kubernetes audit log for who created the Job (11.2 step 6). A `FAILURE` row with `reason=INVALID_ARGUMENT` has a null tenant and user by design. The alerting platform, the exact alert rule and who owns the daily review are set up with the first deployment (P-6); the alert must be live before any production traffic.
 
 ### 11.7 Drill and open items
 
-The staging drill must recover a zero-administrator tenant from a Job run **exactly as written above** and receive the page (RC-37.4); until then 11.3 is unproven, including the command override and the "no `--rm`" rule. TODO(owner): record the drill result and date here.
+The staging drill must recover a zero-administrator tenant from a Job run **exactly as written above** and receive the page (RC-37.4); until then 11.3 is unproven, including the command override and the "no `--rm`" rule. Not run yet: no environment exists. Record the drill result and date here when it runs (P-7).
