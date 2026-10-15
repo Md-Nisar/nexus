@@ -1,6 +1,6 @@
-# US-018 M2: Runbook
+# US-018: Runbook
 
-**Scope:** Milestone 2 (A1 to A4, M-1, L-1, L-2, L-5). **Audience:** on-call engineer with no prior context. Companions: [monitoring.md](monitoring.md), [rollback.md](rollback.md), [09-technical.md](09-technical.md), and the US-016 and US-017 runbooks for the legacy gate, the denial throttle and the zero-administrator procedure.
+**Scope:** Milestone 2 (A1 to A4, M-1, L-1, L-2, L-5) in sections 1 to 10, and Milestone 5 (A7 break-glass first-administrator CLI) in section 11. **Audience:** on-call engineer with no prior context. Companions: [monitoring.md](monitoring.md), [rollback.md](rollback.md), [09-technical.md](09-technical.md), and the US-016 and US-017 runbooks for the legacy gate, the denial throttle and the zero-administrator procedure.
 Never paste emails, names or tokens into tickets: use user, role, permission and tenant UUIDs only. SQL below uses `UNHEX(REPLACE(?, '-', ''))` for UUID parameters.
 
 ## 1. A legitimate administrator gets 403 `RBAC_001`
@@ -77,7 +77,7 @@ Never paste emails, names or tokens into tickets: use user, role, permission and
 After M2, `RoleAssignmentService` and `RoleManagementService` check the database, not only the token. A caller who has the permission only in a JWT, or whose role was removed after the token was issued, is denied with `PERMISSION_ABSENT`. For operations and tooling:
 
 - **Any script, job or test fixture that creates an actor** must give that actor a real role carrying `user:role:assign` (assign and revoke) or `role:write` (attach) in the `user_roles` and `role_permissions` tables. A claim in a hand-minted token is not enough. This matters for the M7 work (epoch freshness, load and k6 fixtures) and for integration seeds.
-- **Break-glass CLI (M5, designed, not on this branch).** The design routes it through `BootstrapAdminService`, which never calls `assign()`, so A2 and A4 do not apply to it. If a future change makes it call `assign()`, the target-is-self and A2 checks would deny it. Check the M5 documents when that milestone lands.
+- **Break-glass CLI (M5, section 11).** It goes through `BootstrapAdminService`, which never calls `assign()`, so A2 and A4 do not apply to it. If a future change makes it call `assign()`, the target-is-self and A2 checks would deny it.
 - **Dev seed.** `DevDataInitializer` assigns through `UserRoleAssignmentPort`, not through the services; unaffected.
 - A revoked delegate keeps a working token for up to the access-token lifetime for every other endpoint; M2 closes that window only for assign, revoke and attach. M7 is the systemic fix.
 
@@ -96,7 +96,7 @@ GROUP BY ur.role_id
 HAVING COUNT(DISTINCT rp.permission_id) = (SELECT COUNT(*) FROM permissions);
 ```
 
-Zero-administrator tenants after a deploy: use the `rbacZeroActiveAdmins` health indicator and the US-017 runbook. Until M5 (break-glass) ships, restoring an administrator in a tenant with none is an approved direct database change by the DBA with two-person sign-off.
+Zero-administrator tenants after a deploy: use the `rbacZeroActiveAdmins` health indicator and the US-017 runbook. Restoring an administrator in a tenant with none is done only with the break-glass procedure in section 11. Manual SQL is not a supported path.
 
 ## 6. Kill switch
 
@@ -148,3 +148,133 @@ Redis answered a read or a mint below an epoch this instance already knows. A re
 - **403 for everyone:** the token is not set on the instance, which closes both endpoints. Set `NEXUS_MANAGEMENT_SCRAPE_TOKEN` (at least 32 random characters, from a secret) and restart; a shorter value fails startup.
 - **401 from the scraper:** the scraper's token differs from the backend's, or it sends something else in the header. Rotate by changing the secret on both sides.
 - The token is never logged. Treat it like a password: it can read the degraded state, drop counters and tenant ids in the tags.
+
+## 11. Break-glass: restore the first administrator of a zero-administrator tenant (M5, A7)
+
+**Why this section exists.** Self-registration makes it easy to hold an ACTIVE account in a tenant, and the realistic abuse is social ("our only admin left; make my account admin"). The controls that make the tool safe are procedural and live here: who may ask, who must approve, how the Job is run, and how the result is checked. The code only grants when the tenant has zero administrators, the user is ACTIVE and the tenant has a seeded system `TENANT_ADMIN`. References: ADR-0025, threat model RC-37.x, RC-47, RC-54(a), [09-technical.md](09-technical.md) section 13.
+
+**Manual SQL is no longer a supported path.** The `INSERT` in `docs/features/US-012/runbook.md` section 2 step 4 is retired and points here. Do not insert into `user_roles` by hand, even in an incident.
+
+### 11.1 When it applies, and when it does not
+
+Use it only when **all** hold:
+- [ ] The tenant has **zero administrators**: `rbacZeroActiveAdmins` is DOWN for it and the confirmation query in the US-012 runbook section 2 step 2 returns no row for the tenant.
+- [ ] The tenant has a seeded system `TENANT_ADMIN` role (the CLI never creates roles; per-tenant seeding is Epic 3).
+- [ ] The person to be made administrator (the target) has an ACTIVE account in that tenant.
+- [ ] A ticket exists, with the approvals in 11.2 recorded on it.
+
+Do **not** use it:
+- when the tenant still has an administrator (exit 5). Ask that administrator to assign roles through the API;
+- to add a second or later administrator, to repair a role, or to grant any role other than `TENANT_ADMIN`;
+- to fix a locked, unverified or forgotten-password account. Use the normal account flows;
+- for a tenant with no seeded `TENANT_ADMIN` (exit 4). Escalate to engineering; do not work around it with SQL;
+- to re-run a grant that already committed (see exit 1 and exit 6).
+
+### 11.2 Before you run it: verify, approve, record
+
+1. **Verify the requester against the tenant's contractual contact of record**, through the contact details held in the contract system, not the ones in the request and **never the target account's own email or phone**. Record the date and method on the ticket, using user, tenant and role UUIDs only (no emails, names or tokens).
+2. **A second person from Platform Security approves**, in writing, on the same ticket, before the Job is created. The operator and the approver are different people. Record the approver's role and the approval time. TODO(owner): name the exact approver group (for example the Platform Security on-call rota).
+3. **Change reference.** `--change-ref` is the ticket id, in one canonical form: `[A-Z][A-Z0-9]{1,9}-[1-9][0-9]{0,7}` (for example `OPS-1234`). No leading zero in the number (`OPS-01234` is rejected), ASCII only, no free text. The same ticket id carries the approvals in step 2.
+4. **Never reuse a reference.** A reference that already appears on a successful grant is refused (exit 6), in any tenant. A second recovery needs a new ticket and a new approval.
+5. **One invocation at a time per reference.** Do not start a second Job for the same reference until the first has finished and its outcome is recorded. The replay check is a non-locking read, so two concurrent runs of one reference can both pass it. Creating the Job with a name derived from the reference (11.3) makes Kubernetes reject a duplicate name.
+6. **Confirm the infra audit is on**: Kubernetes API audit logging (pod create and exec, with user identity) retained for at least 1 year. Without it the change reference joins to nothing. TODO(owner): Ops names the audit-log location and confirms retention (RC-37.3, merge checklist).
+
+### 11.3 Run it as a Kubernetes Job
+
+Use a Job in the same namespace as the serving Deployment, with **the same image** and the **same environment and secret references** as the serving pods (database URL and the `nexus_app` credentials, crypto keys and the rest). Do not copy ports or probes; the profile starts no web server and runs no Flyway.
+
+The image's entrypoint is `sh -c "java $JAVA_OPTS -jar app.jar"`, which ignores container `args`, so the Job overrides the command. The arguments follow the script name and reach `java` as `"$@"`.
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: break-glass-<ref-lowercase>          # for example break-glass-ops-1234; a duplicate name is rejected
+  namespace: <namespace>
+  labels: { app: nexus-break-glass, change-ref: <ref-lowercase> }
+spec:
+  backoffLimit: 0                            # never retry automatically (see exit 1)
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: <TTL>             # TODO(owner): long enough for the log shipper and the post-run checks; see below
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: break-glass
+          image: <same image as the serving Deployment>
+          command: ["sh", "-c", "exec java $JAVA_OPTS -jar app.jar \"$@\"", "break-glass"]
+          args:
+            - --spring.profiles.active=<env>,break-glass
+            - --target-user-id=<uuid>
+            - --change-ref=<ref>
+          envFrom: [ <same configMapRef and secretRef as the serving Deployment> ]
+```
+
+Rules:
+- [ ] `--spring.profiles.active=<env>,break-glass`: the environment profile first, then `break-glass`. The profile sets `spring.main.web-application-type=none` and `spring.flyway.enabled=false`. A servlet context, or a lazy-initialisation override, fails the start (exit 1, page `reason=WEB_CONTEXT`).
+- [ ] **No `kubectl run --rm`, and no short Job TTL**, unless the staging drill proved the page and logs are captured without it (RC-37.4). Keep the finished Job and pod until the checks in 11.5 are done.
+- [ ] The runner waits `nexus.rbac.break-glass.log-flush-interval` (default 15 s) before exiting so the node's log shipper can read the page. It must be at least the shipper's flush interval. TODO(owner): SRE states the shipper's flush interval and confirms the default.
+
+**Confirm the page arrived.** Every invocation, including a refusal, logs an ERROR line beginning `RBAC_BREAK_GLASS_USED outcome=<GRANTED|REFUSED|ERROR>`, with `reason`, `tenantId`, `targetUserId` and `changeRef` where known. Confirm it **in the paging/alerting system**, not only in `kubectl logs`. If it did not arrive, treat the run as unrecorded in the alert channel, tell Platform Security, and rely on the audit row and the daily reconciliation (11.6). TODO(owner): name the alert channel and the on-call rota that receives `RBAC_BREAK_GLASS_USED`, and the log retention for it (RES-6).
+
+### 11.4 Exit codes
+
+Read the exit code with `kubectl get pod -l job-name=<job> -o jsonpath='{.items[0].status.containerStatuses[0].state.terminated.exitCode}'`.
+
+| Exit | Meaning | Page | What to do |
+|---|---|---|---|
+| 0 | Granted. The target now holds the tenant's `TENANT_ADMIN` | `outcome=GRANTED` | Run 11.5. Close the ticket with the result |
+| 1 | Unexpected error. A database or audit failure, a deadlock (two concurrent first grants: one loses and rolls back), a failed context start (including `reason=WEB_CONTEXT`) | `outcome=ERROR reason=UNEXPECTED_ERROR` (carries `targetUserId` and `changeRef` when they passed validation), or no page if the context never started | **Do not re-run yet.** The grant may have committed with its acknowledgement lost. First check the audit table for the reference (query below). A `SUCCESS` row means it worked: go to 11.5. No row, and the tenant still has no administrator: read the pod logs, fix the cause (database reachable, schema version matches the image, profile and arguments right), and only then re-run with a **new reference and a new ticket approval**. Tell Platform Security |
+| 2 | Invalid argument: missing, repeated, or not a canonical UUID or reference | `outcome=REFUSED reason=INVALID_ARGUMENT`, with no identifiers by design | Correct the Job. The rejected value is never echoed, so compare with the ticket. The reference was not used, but a refusal row was written |
+| 3 | Target user not found, or not ACTIVE (`reason=USER_NOT_FOUND` or `USER_NOT_ACTIVE`) | `outcome=REFUSED` | Check the UUID against the ticket. Do not activate or create the account as part of this procedure; that needs its own approval |
+| 4 | No system `TENANT_ADMIN` role in the tenant (`NO_SYSTEM_ADMIN_ROLE`) | `outcome=REFUSED` | Stop. Escalate to engineering. Do not create the role by hand |
+| 5 | The tenant already has an administrator (`TENANT_HAS_ADMIN`) | `outcome=REFUSED` | Stop. The tenant is not a zero-admin tenant (or a previous run already succeeded). Tell the requester to use the administrator; check whether an earlier run of this ticket granted (query below) |
+| 6 | The change reference was already used on a successful grant (`CHANGE_REF_REUSED`) | `outcome=REFUSED` | Do not re-run with the same reference. Find the earlier grant (query below). If the earlier grant is the one wanted, treat the work as done. If not, this is a possible replay of an old approval: tell Platform Security, and use a new ticket with new approvals only after they agree |
+
+**Look up a reference (ids and counts only, parameters bound, read-only).** A reference is global across tenants:
+
+```sql
+SELECT BIN_TO_UUID(ae.id) AS event_id, ae.created_at, ae.outcome,
+       BIN_TO_UUID(ae.tenant_id) AS tenant_id, BIN_TO_UUID(ae.user_id) AS target_user_id,
+       JSON_UNQUOTE(JSON_EXTRACT(ae.metadata, '$.reason')) AS reason
+FROM auth_events ae
+WHERE ae.event_type = 'ROLE_BREAK_GLASS_GRANT'
+  AND JSON_UNQUOTE(JSON_EXTRACT(ae.metadata, '$.changeRef')) = ?
+ORDER BY ae.created_at;
+```
+
+A refusal row can be missing even though the Job refused (a lost audit write is logged as `RBAC_AUDIT_WRITE_LOST`); the page and the Job's exit code are the other evidence.
+
+### 11.5 After a successful run (exit 0)
+
+- [ ] **Audit row.** The query above returns one `SUCCESS` row for the reference, with the right `tenant_id` and `target_user_id`. Its `metadata` has `actorType` `BREAK_GLASS_CLI` and `changeRef`.
+- [ ] **Assignment.** The target holds an active `TENANT_ADMIN` assignment in the tenant, and `assigned_by` equals the target's own id (by design, ADR-0025 5):
+  ```sql
+  SELECT BIN_TO_UUID(ur.user_id) AS user_id, BIN_TO_UUID(ur.assigned_by) AS assigned_by, ur.revoked_at
+  FROM user_roles ur JOIN roles r ON r.id = ur.role_id AND r.tenant_id = ur.tenant_id
+  WHERE ur.tenant_id = UUID_TO_BIN(?) AND ur.user_id = UUID_TO_BIN(?)
+    AND r.name = 'TENANT_ADMIN' AND r.is_system_role = TRUE;
+  ```
+- [ ] **Health.** `rbacZeroActiveAdmins` returns to UP for the tenant.
+- [ ] **The new administrator can log in** and perform a `user:write` action. Ask the requester's contact of record to confirm, not the target by an unverified channel. The permission cache is evicted by the grant; if the user still sees 403, ask them to log in again.
+- [ ] **Record on the ticket**: Job name, exit code, page received (yes or no), audit `event_id`, approver, verifier, date. Then delete the Job.
+- [ ] **Access reviewers** will see this grant as `assigned_by = target` in the assignment list and the holders view. Tell them to join it to `ROLE_BREAK_GLASS_GRANT` before raising a finding (the join is on tenant, user and time; the reference is in the row metadata).
+
+### 11.6 Daily reconciliation (backstop for a lost page)
+
+A daily ticket-level alert fires on any new `ROLE_BREAK_GLASS_GRANT` row (SUCCESS or FAILURE) in the last 24 hours. Each row it reports must match a ticket with the verification and the second approval recorded. Review it the next working day:
+
+```sql
+SELECT ae.created_at, ae.outcome, BIN_TO_UUID(ae.tenant_id) AS tenant_id, BIN_TO_UUID(ae.user_id) AS user_id,
+       JSON_UNQUOTE(JSON_EXTRACT(ae.metadata, '$.changeRef')) AS change_ref,
+       JSON_UNQUOTE(JSON_EXTRACT(ae.metadata, '$.reason')) AS reason
+FROM auth_events ae
+WHERE ae.event_type = 'ROLE_BREAK_GLASS_GRANT' AND ae.created_at >= NOW(6) - INTERVAL 1 DAY
+ORDER BY ae.created_at;
+```
+
+A row with no ticket, or a ticket with no second approval, is a security incident: tell Platform Security, and check the Kubernetes audit log for who created the Job (11.2 step 6). A `FAILURE` row with `reason=INVALID_ARGUMENT` has a null tenant and user by design. TODO(owner): the alerting platform, the exact alert rule, and who owns the daily review. This alert is live before merge (merge checklist).
+
+### 11.7 Drill and open items
+
+The staging drill must recover a zero-administrator tenant from a Job run **exactly as written above** and receive the page (RC-37.4); until then 11.3 is unproven, including the command override and the "no `--rm`" rule. TODO(owner): record the drill result and date here.
