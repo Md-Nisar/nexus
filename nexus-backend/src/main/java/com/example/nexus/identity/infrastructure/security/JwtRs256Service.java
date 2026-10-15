@@ -49,7 +49,6 @@ public class JwtRs256Service implements JwtPort {
   private static final String CLAIM_SCHEMA_VERSION = "schema_version";
   private static final String CLAIM_TENANT_ID = "tenant_id";
   private static final String CLAIM_PERM_EPOCH = "perm_epoch";
-  private static final int SCHEMA_VERSION_WITH_PERM_EPOCH = 3;
 
   private final KeyPair keyPair;
   private final String kid;
@@ -151,9 +150,8 @@ public class JwtRs256Service implements JwtPort {
    * Enforces algorithm RS256 (no alg=none or HS256 confusion — T-3.1, T-3.2), then validates the
    * claims (US-018 A11, ADR-0022 D7): {@code schema_version} in {@link
    * JwtClaims#ACCEPTED_VERSIONS}; iat, exp, jti, roles, permissions and token_version present;
-   * {@code sub} and {@code tenant_id} canonical UUIDs; and, for v3 only, {@code perm_epoch} a
-   * non-negative long. A v2 token has no {@code perm_epoch} and is returned with epoch 0, so a
-   * user with a recent revocation gets the v2 token rejected (design §9.6).
+   * {@code sub} and {@code tenant_id} canonical UUIDs; and {@code perm_epoch} a non-negative
+   * long. A v2 token is rejected with reason {@code schema_version} (design §9.6, M7b).
    *
    * <p>Every rejection is the same 401 {@code AUTH_003}, counted as {@code
    * nexus.auth.token_rejected{reason}} and logged at DEBUG only, so an M7 rolling deploy cannot
@@ -223,15 +221,12 @@ public class JwtRs256Service implements JwtPort {
           || !isCanonicalUuid(tenantId)) {
         throw reject(RejectionReason.TENANT_ID);
       }
-      // v3 is frozen as v2 + perm_epoch (ADR-0022 D7). A v2 token is epoch 0 (design §9.6).
-      long permEpoch = 0L;
-      if (schemaVersion == SCHEMA_VERSION_WITH_PERM_EPOCH) {
-        Object rawPermEpoch = payload.get(CLAIM_PERM_EPOCH);
-        if (!isNonNegativeLong(rawPermEpoch)) {
-          throw reject(RejectionReason.PERM_EPOCH);
-        }
-        permEpoch = ((Number) rawPermEpoch).longValue();
+      // v3 is frozen as v2 + perm_epoch (ADR-0022 D7).
+      Object rawPermEpoch = payload.get(CLAIM_PERM_EPOCH);
+      if (!isNonNegativeLong(rawPermEpoch)) {
+        throw reject(RejectionReason.PERM_EPOCH);
       }
+      long permEpoch = ((Number) rawPermEpoch).longValue();
 
       return new JwtClaims(
           sub,

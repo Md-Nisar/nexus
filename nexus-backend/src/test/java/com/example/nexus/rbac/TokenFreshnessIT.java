@@ -206,9 +206,8 @@ class TokenFreshnessIT {
   }
 
   @Test
-  void should_return401_when_v2TokenForRecentlyRevokedUser() {
+  void should_return401_when_v2Token() {
     Holder holder = seedHolder("v2");
-    revoke(holder);
     Instant now = Instant.now();
     String v2 = token(holder.user().getId(), 2, null, now, now.plusSeconds(900));
 

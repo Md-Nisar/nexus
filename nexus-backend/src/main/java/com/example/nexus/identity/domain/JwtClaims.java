@@ -14,7 +14,7 @@ import java.util.Set;
  *
  * <p>{@code permEpoch} ({@code perm_epoch} claim, v3) is the per-user permission epoch read at
  * mint time (US-018 A9, design §9.2). A request is rejected when it is lower than the user's
- * current epoch. A v2 token carries no such claim and is treated as epoch 0.
+ * current epoch. A v2 token carries no such claim and is rejected (schema version policy, M7b).
  *
  * <p>Contains no PII — {@code sub} is a UUID, {@code email} is intentionally absent.
  */
@@ -37,10 +37,10 @@ public record JwtClaims(
   /**
    * Schema versions {@code verify()} accepts (US-018 Decision 18, ADR-0022 D7). Widened one
    * release ahead of minting, then contracted, so a rolling deploy never 401s a token minted by
-   * the other version. M7 mints v3 and still accepts v2 (as epoch 0) until M7b contracts the set
-   * to {3}; v3 is frozen as v2 plus {@code perm_epoch}, and any other claim change is v4.
+   * the other version. M7b contracted the set to {3}; v3 is frozen as v2 plus {@code perm_epoch},
+   * and any other claim change is v4.
    */
-  public static final Set<Integer> ACCEPTED_VERSIONS = Set.of(2, 3);
+  public static final Set<Integer> ACCEPTED_VERSIONS = Set.of(3);
 
   /** Defensive copies prevent callers from mutating the roles/permissions lists after construction. */
   public JwtClaims {

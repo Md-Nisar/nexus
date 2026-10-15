@@ -1,6 +1,6 @@
 # US-018 — Progress and handoff
 
-**Updated:** 2026-10-14 · **Source of truth for scope:** `04-tasks.md` (Gate 3 approved). This file only tracks where we are.
+**Updated:** 2026-10-15 · **Source of truth for scope:** `04-tasks.md` (Gate 3 approved). This file only tracks where we are.
 
 **Decision 2026-10-05 — no staging, no deployment.** The app is not deployed and no environment exists; work starts without one. The same decision is recorded at the top of `04-tasks.md`. In short: M3's staging-soak gate is waived for starting M3 and its soak moves to the first staging deployment; rollout-order waits become "merged earlier"; environment-dependent checklist items are deferred to the first deployment and stay required before production (see "Deferred to the first deployment" below).
 
@@ -15,7 +15,8 @@
 | **M5** A7 break-glass CLI | T-007, T-008 | **Implemented** on `feature/US-018/M5`, not merged; separate PR. Full `verify` green on JDK 25 with Docker (2026-10-15, after the security-review fixes): 2005 unit (1 skipped), 475 IT, 0 failures, SpotBugs 0; `BreakGlassAdminIT` 13/13. Deviations D-15..D-37 in `09-technical.md` §13; story owner accepted D-28 and D-30 and added D-31 (cache eviction on grant). `/security-review` (2026-10-15): APPROVED, no Critical/High; M-1 (service and adapters profile-gated), L-1..L-4 fixed in `4efdcd7`; M-2 runbook drafted in `runbook.md` §11 with US-012 step 4 retired (`99ff85a`), its `TODO(owner):` items still open. Not run: `/pre-pr-check`. Open before first use: the runbook TODOs, the Job entrypoint override (untested until the drill), and the environment-bound checklist items (RC-37.3, RC-37.4 drill, reconciliation alert, RES-6). |
 | M3 | T-016..T-019 | **Unblocked** now that M7 is merged (2026-10-14). The staging-soak gate is waived (no environment); M3 still needs its own threat-model re-pass before merge. |
 | **M7** A9 revocation epoch, A10 holder fan-out | T-009..T-014 | **Merged to `main`** as PR #88 (`803e33e`, 2026-10-14), one PR containing T-009..T-014 as required. H-3 is done on `main`: `application-prod.yml` sets `nexus.rbac.redis.require-auth: true` and `RedisAuthStartupAssertionTest` is no longer `@Disabled`. Whether P-1 (RES-46) and P-2 (RR-M3) in `14-pending-items.md` were decided at merge is not recorded there. |
-| M5, M7b, M8, M9, M9-contract | see `04-tasks.md` | Not started. M5 (T-007, T-008) is unblocked (it needed M4). M7b is unblocked: M7 is merged, and with no environment its "≥ 900 s on every instance" wait becomes "merged earlier" (2026-10-05 decision); it is still a separate PR. M9-contract follows M9 with no wait. |
+| **M7b** drop v2 token acceptance | T-015 | **Merged to `main`** as PR #90 (`66a9a30`, 2026-10-15), a separate PR as required. Only `schema_version` 3 is accepted; v2 gets 401 `AUTH_003` with `token_rejected{reason=schema_version}`. `/security-review` (2026-10-15): APPROVED, no Critical/High/Medium; its two Low test gaps and wording nits were fixed after #90 merged, in a follow-up PR from `ccr-047fcb60-fqvz6w`. |
+| M8, M9, M9-contract | see `04-tasks.md` | Not started. M9-contract follows M9 with no wait. |
 
 *The M7 notes below were written before the merge and say "not merged"; all of them shipped in PR #88.*
 
@@ -33,7 +34,7 @@
 
 **M7 part 2 security review fixes (`10-security-review-M7-part2.md`): implemented on `ccr-4e9e7cbe-4vl9v6`, not merged. H-1 stays open (human action).** M-1: filter Javadoc, RES-40, design and ADR amended (junk counts against `REFRESH_IP`; the SPA keeps the session on a refresh 429), new k6 case `refresh-junk-flood.js` (not run, no dev stack). M-2: role-level replay of a failed detach holder read (`RoleReplayQueue`, 1 s tick, 1 s read timeout). L-1: one valid epoch range for the Lua script and the Java parser. L-2: rate-limited `RBAC_EPOCH_UNPARSEABLE` WARN and `epoch.check{outcome=unparseable}`. L-3: per-tenant last-seen cap, own bumps in a separate per-tenant pool, `last_seen_dropped{reason}`. See A-22 in `04-tasks.md`, runbook §8 and `monitoring.md` §6.
 
-Next in delivery order now that M1, M2, M4, M6 and M7 are merged: M5 (T-007, T-008), M7b (T-015) and M3 (T-016..T-019), none depending on another. M3 needs its threat-model re-pass first.
+Next in delivery order now that M1, M2, M4, M6, M7 and M7b are merged: M5 (T-007, T-008) and M3 (T-016..T-019), neither depending on the other. M3 needs its threat-model re-pass first.
 
 **M7 pending items (backlog):** RES-46 acceptance and RR-M3 (client IP handling) are open decisions, recorded in `14-pending-items.md`.
 
