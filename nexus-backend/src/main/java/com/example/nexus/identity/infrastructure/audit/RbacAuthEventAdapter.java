@@ -30,8 +30,11 @@ import tools.jackson.databind.ObjectMapper;
  *       SecureEventService#recordEventInCurrentTransaction(AuthEvent)} ({@code MANDATORY}: joins
  *       the caller's own mutation transaction) and propagates any failure, including a metadata
  *       JSON-serialization failure.
- *   <li><b>Group B (best-effort)</b> — {@link #recordRoleAssignmentDenied} — delegates to {@link
- *       SecureEventService#recordEvent(AuthEvent)} ({@code REQUIRES_NEW}) and never throws.
+ *   <li><b>Group B (best-effort)</b> — {@link #recordRoleAssignmentDenied} delegates to {@link
+ *       SecureEventService#recordEvent(AuthEvent)} ({@code REQUIRES_NEW}); {@link
+ *       #recordBreakGlassRefusal} delegates to {@link
+ *       SecureEventService#recordEventOrThrowInNewTransaction(AuthEvent)} ({@code REQUIRES_NEW},
+ *       never buffered) and catches the failure itself. Neither ever throws.
  * </ul>
  *
  * <p>Sits beside {@link AuthEventRetryBuffer} / {@link LoggingAuditAlertAdapter} /
@@ -273,20 +276,14 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
       secureEventService.recordEvent(authEvent);
     } catch (Exception e) {
       String traceId = event.requestContext() != null ? event.requestContext().traceId() : null;
-      log.atError()
-          .addKeyValue("event", "RBAC_AUDIT_WRITE_LOST")
-          .addKeyValue("tenantId", event.tenantId())
-          .addKeyValue("targetUserId", event.targetUserId())
-          .addKeyValue("roleId", event.roleId())
-          .addKeyValue("actorUserId", event.actorUserId())
-          .addKeyValue("traceId", traceId)
-          .log("RBAC audit write lost: operation=deny tenantId={} targetUserId={} roleId={}",
-              event.tenantId(), event.targetUserId(), event.roleId(), e);
-      Counter.builder("nexus.rbac.audit_write_failed")
-          .tag("operation", "deny")
-          .tag("mode", "best_effort")
-          .register(meterRegistry)
-          .increment();
+      logBestEffortAuditWriteLost(
+          "deny",
+          event.tenantId(),
+          event.targetUserId(),
+          event.roleId(),
+          event.actorUserId(),
+          traceId,
+          e);
     }
   }
 
@@ -314,10 +311,15 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
 
   /**
    * US-018 A7 (03-design.md §7.2): {@code ROLE_BREAK_GLASS_GRANT} FAILURE for a refusal (Group B
-   * — best-effort). Delegates to {@link SecureEventService#recordEvent(AuthEvent)} ({@code
-   * REQUIRES_NEW}) and never throws — on failure it logs {@code event=RBAC_AUDIT_WRITE_LOST},
-   * increments {@code nexus.rbac.audit_write_failed{operation="breakGlassRefusal",
-   * mode="best_effort"}}, and swallows. {@code tenantId} may be {@code null} (unknown target).
+   * — best-effort). Delegates to {@link
+   * SecureEventService#recordEventOrThrowInNewTransaction(AuthEvent)} ({@code REQUIRES_NEW},
+   * throwing), never to {@link SecureEventService#recordEvent(AuthEvent)}: that path's port
+   * enqueues a failed write to the retry buffer, which the short-lived break-glass process never
+   * drains, so the row would be lost with no signal. Here a failure (including a metadata
+   * serialization failure) logs {@code event=RBAC_AUDIT_WRITE_LOST}, increments {@code
+   * nexus.rbac.audit_write_failed{operation="breakGlassRefusal", mode="best_effort"}}, and is
+   * swallowed — this method never throws. {@code changeRef} is not logged on that line. {@code
+   * tenantId} may be {@code null} (unknown target).
    */
   @Override
   public void recordBreakGlassRefusal(BreakGlassAuditEvent event, String reason) {
@@ -328,20 +330,10 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
               .withTenantId(event.tenantId())
               .withMetadata(buildBreakGlassMetadataJson(event, reason));
 
-      secureEventService.recordEvent(authEvent);
+      secureEventService.recordEventOrThrowInNewTransaction(authEvent);
     } catch (RuntimeException e) {
-      log.atError()
-          .addKeyValue("event", "RBAC_AUDIT_WRITE_LOST")
-          .addKeyValue("tenantId", event.tenantId())
-          .addKeyValue("targetUserId", event.targetUserId())
-          .addKeyValue("operation", OPERATION_BREAK_GLASS_REFUSAL)
-          .log("RBAC audit write lost: operation={} tenantId={} targetUserId={}",
-              OPERATION_BREAK_GLASS_REFUSAL, event.tenantId(), event.targetUserId(), e);
-      Counter.builder("nexus.rbac.audit_write_failed")
-          .tag("operation", OPERATION_BREAK_GLASS_REFUSAL)
-          .tag("mode", "best_effort")
-          .register(meterRegistry)
-          .increment();
+      logBestEffortAuditWriteLost(
+          OPERATION_BREAK_GLASS_REFUSAL, event.tenantId(), event.targetUserId(), null, null, null, e);
     }
   }
 
@@ -359,6 +351,37 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
       metadata.put("reason", reason);
     }
     return objectMapper.writeValueAsString(metadata);
+  }
+
+  /**
+   * The Group B (best-effort) failure marker, shared by {@link #recordDenied} and {@link
+   * #recordBreakGlassRefusal}: ERROR {@code event=RBAC_AUDIT_WRITE_LOST} with ids only, plus
+   * {@code nexus.rbac.audit_write_failed{operation, mode="best_effort"}}. The row is lost; the
+   * caller carries on.
+   */
+  private void logBestEffortAuditWriteLost(
+      String operation,
+      UUID tenantId,
+      UUID targetUserId,
+      UUID roleId,
+      UUID actorUserId,
+      String traceId,
+      Exception e) {
+    log.atError()
+        .addKeyValue("event", "RBAC_AUDIT_WRITE_LOST")
+        .addKeyValue("tenantId", tenantId)
+        .addKeyValue("targetUserId", targetUserId)
+        .addKeyValue("roleId", roleId)
+        .addKeyValue("actorUserId", actorUserId)
+        .addKeyValue("traceId", traceId)
+        .addKeyValue("operation", operation)
+        .log("RBAC audit write lost: operation={} tenantId={} targetUserId={} roleId={}",
+            operation, tenantId, targetUserId, roleId, e);
+    Counter.builder("nexus.rbac.audit_write_failed")
+        .tag("operation", operation)
+        .tag("mode", "best_effort")
+        .register(meterRegistry)
+        .increment();
   }
 
   /**

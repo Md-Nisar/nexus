@@ -73,6 +73,7 @@ Still open, not tied to a deployment:
 - EPIC-002 must report RES-1(b) as **"self path closed; transformed into RES-26"** (T-E32), never "fully closed".
 - Move ADR-0021 from Proposed to Accepted (still **Proposed** on `main`).
 - Tidy `DenialReason.NOT_TENANT_ADMIN` when B8 lands in M8 (throttled actors get it today; pre-existing).
+- **O-7 (`04-tasks.md`):** break-glass refuses (exit 5) a tenant whose only administrator is DISABLED, because the admin count ignores user status; Architect + Platform Security Owner to decide residual vs "administrator = ACTIVE holders" across lockout, health indicator and A7.
 - The earlier question whether the Claude settings trim commit belonged in the M2 PR is moot: the squash merge removed that commit hash, so it cannot be checked from here.
 
 ## Deferred to the first deployment

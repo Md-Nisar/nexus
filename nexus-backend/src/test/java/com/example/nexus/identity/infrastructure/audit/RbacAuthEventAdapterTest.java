@@ -494,6 +494,37 @@ class RbacAuthEventAdapterTest {
         .doesNotThrowAnyException();
   }
 
+  /** Pins the {@code RBAC_AUDIT_WRITE_LOST} line a lost denial row emits. */
+  @Test
+  void should_logWriteLostWithDenyOperationAndIds_when_secureEventServiceThrowsOnDenied() {
+    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-fail", "agent");
+    RbacAuditEvent event =
+        new RbacAuditEvent(TENANT_ID, TARGET_USER_ID, ROLE_ID, "TENANT_ADMIN", ACTOR_USER_ID, ctx);
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      adapter.recordRoleAssignmentDenied(event, DenialReason.CROSS_TENANT_TARGET, "assign");
+
+      var errorEvents =
+          appender.list.stream().filter(e -> e.getLevel() == Level.ERROR).toList();
+      assertThat(errorEvents).hasSize(1);
+      assertThat(keyValueMap(errorEvents.get(0)))
+          .containsEntry("event", "RBAC_AUDIT_WRITE_LOST")
+          .containsEntry("tenantId", TENANT_ID)
+          .containsEntry("targetUserId", TARGET_USER_ID)
+          .containsEntry("roleId", ROLE_ID)
+          .containsEntry("actorUserId", ACTOR_USER_ID)
+          .containsEntry("traceId", "trace-fail");
+      assertThat(errorEvents.get(0).getFormattedMessage())
+          .isEqualTo(
+              "RBAC audit write lost: operation=deny tenantId=" + TENANT_ID
+                  + " targetUserId=" + TARGET_USER_ID + " roleId=" + ROLE_ID);
+    } finally {
+      stopLogCapture(appender);
+    }
+  }
+
   /**
    * Proves the metric tag stays fixed at {@code "deny"} regardless of which verb was denied
    * (03-design.md §12.2 item 11) — the metric tag and the {@code operation} metadata field are
@@ -1019,12 +1050,18 @@ class RbacAuthEventAdapterTest {
     verifyNoInteractions(secureEventService);
   }
 
+  /**
+   * Finding 1 (06-code-review-M5-T007.md): a refusal is written through the throwing
+   * {@code REQUIRES_NEW} path, never {@link SecureEventService#recordEvent} — whose port catches
+   * the failure and enqueues it to the retry buffer, which a short-lived CLI never drains.
+   */
   @Test
-  void should_writeBreakGlassFailureViaRecordEvent_withReason_when_refused() {
+  void should_writeBreakGlassFailureInNewThrowingTransaction_neverOnTheBufferedPath_when_refused() {
     adapter.recordBreakGlassRefusal(
         new BreakGlassAuditEvent(TENANT_ID, TARGET_USER_ID, "OPS-123"), "TENANT_HAS_ADMIN");
 
-    AuthEvent captured = captureRecordedEvent();
+    AuthEvent captured = captureRecordedEventOrThrowInNewTransaction();
+    verify(secureEventService, never()).recordEvent(any());
     verify(secureEventService, never()).recordEventInCurrentTransaction(any());
     assertThat(captured.getEventType()).isEqualTo("ROLE_BREAK_GLASS_GRANT");
     assertThat(captured.getOutcome()).isEqualTo("FAILURE");
@@ -1042,15 +1079,17 @@ class RbacAuthEventAdapterTest {
     adapter.recordBreakGlassRefusal(
         new BreakGlassAuditEvent(null, TARGET_USER_ID, "OPS-123"), "TARGET_USER_NOT_FOUND");
 
-    AuthEvent captured = captureRecordedEvent();
+    AuthEvent captured = captureRecordedEventOrThrowInNewTransaction();
     assertThat(captured.getTenantId()).isNull();
     assertThat(captured.getUserId()).isEqualTo(TARGET_USER_ID);
     assertThat(captured.getMetadata()).doesNotContain("null");
   }
 
   @Test
-  void should_swallowAndCountBestEffort_when_breakGlassRefusalWriteFails() {
-    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+  void should_logWriteLost_countBestEffort_andSwallow_when_breakGlassRefusalWriteFails() {
+    doThrow(new RuntimeException("db down"))
+        .when(secureEventService)
+        .recordEventOrThrowInNewTransaction(any());
     BreakGlassAuditEvent event = new BreakGlassAuditEvent(TENANT_ID, TARGET_USER_ID, "OPS-123");
 
     ListAppender<ILoggingEvent> appender = startLogCapture();
@@ -1065,10 +1104,35 @@ class RbacAuthEventAdapterTest {
           .containsEntry("event", "RBAC_AUDIT_WRITE_LOST")
           .containsEntry("tenantId", TENANT_ID)
           .containsEntry("targetUserId", TARGET_USER_ID)
-          .containsEntry("operation", "breakGlassRefusal");
+          .containsEntry("operation", "breakGlassRefusal")
+          .doesNotContainKey("changeRef");
+      assertThat(errorEvents.get(0).getFormattedMessage()).doesNotContain("OPS-123");
     } finally {
       stopLogCapture(appender);
     }
+    double count =
+        meterRegistry
+            .get("nexus.rbac.audit_write_failed")
+            .tag("operation", "breakGlassRefusal")
+            .tag("mode", "best_effort")
+            .counter()
+            .count();
+    assertThat(count).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_logWriteLost_andSwallow_withoutTouchingSecureEventService_when_breakGlassRefusalMetadataFails() {
+    ObjectMapper throwingMapper = mock(ObjectMapper.class);
+    when(throwingMapper.writeValueAsString(any()))
+        .thenThrow(new RuntimeException("serialization broke"));
+    RbacAuthEventAdapter throwingAdapter =
+        new RbacAuthEventAdapter(secureEventService, uuidGenerator, throwingMapper, meterRegistry);
+    BreakGlassAuditEvent event = new BreakGlassAuditEvent(TENANT_ID, TARGET_USER_ID, "OPS-123");
+
+    assertThatCode(() -> throwingAdapter.recordBreakGlassRefusal(event, "TENANT_HAS_ADMIN"))
+        .doesNotThrowAnyException();
+
+    verifyNoInteractions(secureEventService);
     double count =
         meterRegistry
             .get("nexus.rbac.audit_write_failed")
@@ -1087,6 +1151,13 @@ class RbacAuthEventAdapterTest {
   private AuthEvent captureRecordedEvent() {
     ArgumentCaptor<AuthEvent> captor = ArgumentCaptor.forClass(AuthEvent.class);
     verify(secureEventService).recordEvent(captor.capture());
+    return captor.getValue();
+  }
+
+  /** Break-glass refusal capture ({@code REQUIRES_NEW}, throwing, never buffered). */
+  private AuthEvent captureRecordedEventOrThrowInNewTransaction() {
+    ArgumentCaptor<AuthEvent> captor = ArgumentCaptor.forClass(AuthEvent.class);
+    verify(secureEventService).recordEventOrThrowInNewTransaction(captor.capture());
     return captor.getValue();
   }
 

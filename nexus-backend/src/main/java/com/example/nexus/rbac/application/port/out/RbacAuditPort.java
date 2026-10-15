@@ -23,8 +23,10 @@ import com.example.nexus.common.security.DenialReason;
  *   <li><b>Group B (best-effort):</b> {@link #recordRoleAssignmentDenied}, {@link
  *       #recordBreakGlassRefusal} — called INLINE, pre-throw, from a transaction that is about
  *       to roll back (or, for a break-glass refusal, before any mutation). Durability rests
- *       entirely on {@code SecureEventService#recordEvent}'s independent ({@code REQUIRES_NEW})
- *       transaction.
+ *       entirely on an independent ({@code REQUIRES_NEW}) transaction: {@code
+ *       SecureEventService#recordEvent} for a denial, {@code
+ *       SecureEventService#recordEventOrThrowInNewTransaction} (never buffered) for a break-glass
+ *       refusal.
  *       <b>MUST NEVER throw and MUST NOT block</b> — on failure it must swallow its own failure
  *       (buffering for bounded backed-off retry, or logging and continuing) and never propagate.
  * </ul>
@@ -113,7 +115,9 @@ public interface RbacAuditPort {
   /**
    * Records a refused break-glass invocation ({@code ROLE_BREAK_GLASS_GRANT} FAILURE, US-018 A7;
    * Group B — best-effort). Commits in its own ({@code REQUIRES_NEW}) transaction so the row
-   * survives the refusal. MUST NEVER throw.
+   * survives the refusal. The write is never buffered for retry (the short-lived CLI would never
+   * drain the buffer): a failed write is logged as {@code RBAC_AUDIT_WRITE_LOST} and swallowed.
+   * MUST NEVER throw.
    *
    * @param reason the refusal reason name, persisted as {@code reason} in the audit metadata
    */

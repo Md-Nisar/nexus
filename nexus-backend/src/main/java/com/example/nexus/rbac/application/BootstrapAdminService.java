@@ -12,8 +12,8 @@ import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.RbacRoleNames;
 import com.example.nexus.rbac.domain.Role;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -27,20 +27,20 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  *
  * <p><b>Locking.</b> The zero-admin check runs under the SAME single-statement ascending M11 set
  * lock that {@code assign()}/{@code revoke()} take, built from the same M10 + M8 resolution
- * ({@link RoleAssignmentService#resolveAdminEquivalentRoles(UserRoleAssignmentPort, UUID)} and
- * {@link RoleAssignmentService#buildAscendingAdminEquivalentLockSet}). No other lock is taken
+ * ({@link RoleAssignmentService#resolveAdminEquivalentRolesFor(UserRoleAssignmentPort, UUID)}
+ * and {@link RoleAssignmentService#buildAscendingAdminEquivalentLockSet}), and decides "zero
+ * administrators" with the revoke guard's own predicate ({@link
+ * RoleAssignmentService#wouldLeaveTenantWithoutCallerQualifyingHolder}). No other lock is taken
  * (ADR-0018 D6).
  *
  * <p><b>Audit.</b> A grant writes {@code ROLE_BREAK_GLASS_GRANT} SUCCESS inside the grant's
  * transaction (Group A), so a lost audit row rolls the grant back. A refusal writes FAILURE in its
- * own transaction (Group B) so the row survives, then pages. A refusal never follows a SUCCESS
- * write. The grant's page is sent after commit.
+ * own transaction (Group B) so the row survives, then pages; that write is never buffered for
+ * retry, and a failed one is logged as {@code RBAC_AUDIT_WRITE_LOST}. A refusal never follows a
+ * SUCCESS write. The grant's page is sent after commit.
  */
 @Service
 public class BootstrapAdminService {
-
-  private static final String OUTCOME_GRANTED = "GRANTED";
-  private static final String OUTCOME_REFUSED = "REFUSED";
 
   private final UserDirectoryPort userDirectoryPort;
   private final UserRoleAssignmentPort userRoleAssignmentPort;
@@ -62,10 +62,19 @@ public class BootstrapAdminService {
    * Grants the target user its tenant's system {@code TENANT_ADMIN} role iff the tenant has zero
    * administrators (the ADR-0018 caller-qualifying population, A-6) under the set lock. {@code
    * assigned_by} is the target itself (Decision 10). Refusals are returned, not thrown; an
-   * unexpected failure (including a failed SUCCESS audit write) propagates and rolls back.
+   * unexpected failure (including a failed SUCCESS audit write or a lock failure on the insert)
+   * propagates and rolls back, with no FAILURE row and no page; mapping it to an audited refusal is
+   * the caller's job (T-008).
+   *
+   * @param targetUserId the user to grant; must not be {@code null}
+   * @param changeRef the validated change reference (RC-47); must not be {@code null}
+   * @throws NullPointerException if either argument is {@code null}, before anything is read or
+   *     written
    */
   @Transactional
-  public BreakGlassOutcome grantFirstAdmin(UUID targetUserId, String changeRef) {
+  public BreakGlassOutcome grantFirstAdmin(UUID targetUserId, ChangeRef changeRef) {
+    Objects.requireNonNull(targetUserId, "targetUserId must not be null");
+    Objects.requireNonNull(changeRef, "changeRef must not be null");
     Optional<DirectoryUser> target = userDirectoryPort.findUser(targetUserId);
     if (target.isEmpty()) {
       return refuse(null, targetUserId, changeRef, BreakGlassRefusalReason.TARGET_USER_NOT_FOUND);
@@ -88,37 +97,44 @@ public class BootstrapAdminService {
     }
 
     AdminEquivalentRoles roles =
-        RoleAssignmentService.resolveAdminEquivalentRoles(userRoleAssignmentPort, tenantId);
+        RoleAssignmentService.resolveAdminEquivalentRolesFor(userRoleAssignmentPort, tenantId);
     List<UUID> lockSet =
         RoleAssignmentService.buildAscendingAdminEquivalentLockSet(roles, tenantAdminRoleId.get());
     List<ActiveAssignmentHolder> lockedHolders =
         userRoleAssignmentPort.lockActiveAssignmentHolders(tenantId, lockSet);
 
-    Set<UUID> callerQualifyingIds = roles.callerQualifyingIds();
-    if (lockedHolders.stream().anyMatch(holder -> callerQualifyingIds.contains(holder.roleId()))) {
+    if (!RoleAssignmentService.wouldLeaveTenantWithoutCallerQualifyingHolder(
+        lockedHolders, null, roles.callerQualifyingIds())) {
       return refuse(tenantId, targetUserId, changeRef, BreakGlassRefusalReason.TENANT_HAS_ADMIN);
     }
 
     userRoleAssignmentPort.assign(targetUserId, tenantAdminRoleId.get(), tenantId, targetUserId);
     rbacAuditPort.recordBreakGlassGrant(
-        new BreakGlassAuditEvent(tenantId, targetUserId, changeRef));
+        new BreakGlassAuditEvent(tenantId, targetUserId, changeRef.value()));
 
     BreakGlassAlert alert =
-        new BreakGlassAlert(tenantId, targetUserId, OUTCOME_GRANTED, null, changeRef);
+        new BreakGlassAlert(
+            tenantId, targetUserId, BreakGlassAlert.Outcome.GRANTED, null, changeRef.value());
     runAfterCommit(() -> breakGlassAlertPort.alert(alert));
     return new BreakGlassOutcome.Granted(tenantId, targetUserId, tenantAdminRoleId.get());
   }
 
   /**
-   * Writes the FAILURE row (own {@code REQUIRES_NEW} transaction, never throws) and pages right
-   * after it. Nothing has been written to {@code user_roles} on any path that reaches here.
+   * Writes the FAILURE row (own {@code REQUIRES_NEW} transaction, never buffered, never throws)
+   * and pages right after it. Nothing has been written to {@code user_roles} on any path that
+   * reaches here.
    */
   private BreakGlassOutcome refuse(
-      UUID tenantId, UUID targetUserId, String changeRef, BreakGlassRefusalReason reason) {
+      UUID tenantId, UUID targetUserId, ChangeRef changeRef, BreakGlassRefusalReason reason) {
     rbacAuditPort.recordBreakGlassRefusal(
-        new BreakGlassAuditEvent(tenantId, targetUserId, changeRef), reason.name());
+        new BreakGlassAuditEvent(tenantId, targetUserId, changeRef.value()), reason.name());
     breakGlassAlertPort.alert(
-        new BreakGlassAlert(tenantId, targetUserId, OUTCOME_REFUSED, reason.name(), changeRef));
+        new BreakGlassAlert(
+            tenantId,
+            targetUserId,
+            BreakGlassAlert.Outcome.REFUSED,
+            reason.name(),
+            changeRef.value()));
     return new BreakGlassOutcome.Refused(reason);
   }
 

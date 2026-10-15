@@ -72,6 +72,20 @@ public class SecureEventService {
   }
 
   /**
+   * Records {@code event} in its OWN transaction ({@code REQUIRES_NEW}) and propagates any failure
+   * (US-018 A7). Used only for a break-glass refusal's {@code ROLE_BREAK_GLASS_GRANT} FAILURE row:
+   * the short-lived CLI never drains the retry buffer that {@link #recordEvent(AuthEvent)}'s port
+   * enqueues to on failure, so a buffered refusal row would be lost silently. Here the failure
+   * reaches the caller, which logs it as {@code RBAC_AUDIT_WRITE_LOST} instead.
+   *
+   * <p>Delegates to {@link AuthEventPort#recordOrThrow(AuthEvent)}, which flushes immediately.
+   */
+  @Transactional(propagation = Propagation.REQUIRES_NEW)
+  public void recordEventOrThrowInNewTransaction(AuthEvent event) {
+    authEventPort.recordOrThrow(event);
+  }
+
+  /**
    * Revokes every unrevoked token in the family in an independent transaction and returns how many
    * rows it revoked. The count is read from the committed update (US-018 L-3), so the caller acts
    * on what this transaction actually changed, not on what it read earlier.

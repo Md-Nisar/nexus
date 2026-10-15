@@ -16,6 +16,7 @@ import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
 import com.example.nexus.rbac.application.BootstrapAdminService;
 import com.example.nexus.rbac.application.BreakGlassOutcome;
 import com.example.nexus.rbac.application.BreakGlassRefusalReason;
+import com.example.nexus.rbac.application.ChangeRef;
 import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.domain.LastAdminRoleException;
 import com.example.nexus.rbac.domain.Role;
@@ -98,7 +99,8 @@ class BreakGlassAdminIT {
     Role tenantAdmin = seedSystemTenantAdminRole(tenantId);
     User target = seedActiveUser(tenantId, "grant");
 
-    BreakGlassOutcome outcome = bootstrapAdminService.grantFirstAdmin(target.getId(), "OPS-100");
+    BreakGlassOutcome outcome =
+        bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef("OPS-100"));
 
     assertThat(outcome)
         .isEqualTo(new BreakGlassOutcome.Granted(tenantId, target.getId(), tenantAdmin.getId()));
@@ -139,7 +141,8 @@ class BreakGlassAdminIT {
     seedAssignment(tenantId, tenantAdmin.getId(), admin.getId());
     User target = seedActiveUser(tenantId, "target");
 
-    BreakGlassOutcome outcome = bootstrapAdminService.grantFirstAdmin(target.getId(), "OPS-101");
+    BreakGlassOutcome outcome =
+        bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef("OPS-101"));
 
     assertRefused(outcome, BreakGlassRefusalReason.TENANT_HAS_ADMIN, 5, target.getId(), tenantId);
     assertThat(countActive(tenantId, tenantAdmin.getId())).isEqualTo(1);
@@ -151,7 +154,8 @@ class BreakGlassAdminIT {
     UUID tenantId = uuidGenerator.newId();
     User target = seedActiveUser(tenantId, "no-role");
 
-    BreakGlassOutcome outcome = bootstrapAdminService.grantFirstAdmin(target.getId(), "OPS-102");
+    BreakGlassOutcome outcome =
+        bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef("OPS-102"));
 
     assertRefused(
         outcome, BreakGlassRefusalReason.NO_SYSTEM_ADMIN_ROLE, 4, target.getId(), tenantId);
@@ -166,7 +170,8 @@ class BreakGlassAdminIT {
     User target = seedActiveUser(tenantId, "inactive");
     jdbc.update("UPDATE users SET status = ? WHERE id = ?", status, toBytes(target.getId()));
 
-    BreakGlassOutcome outcome = bootstrapAdminService.grantFirstAdmin(target.getId(), "OPS-103");
+    BreakGlassOutcome outcome =
+        bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef("OPS-103"));
 
     assertRefused(
         outcome, BreakGlassRefusalReason.TARGET_USER_NOT_ACTIVE, 3, target.getId(), tenantId);
@@ -177,7 +182,8 @@ class BreakGlassAdminIT {
   void should_refuseWithExit3_withNullTenant_when_targetUserDoesNotExist() {
     UUID unknownUserId = uuidGenerator.newId();
 
-    BreakGlassOutcome outcome = bootstrapAdminService.grantFirstAdmin(unknownUserId, "OPS-104");
+    BreakGlassOutcome outcome =
+        bootstrapAdminService.grantFirstAdmin(unknownUserId, new ChangeRef("OPS-104"));
 
     assertRefused(outcome, BreakGlassRefusalReason.TARGET_USER_NOT_FOUND, 3, unknownUserId, null);
   }
@@ -187,10 +193,12 @@ class BreakGlassAdminIT {
     UUID tenantId = uuidGenerator.newId();
     Role tenantAdmin = seedSystemTenantAdminRole(tenantId);
     User target = seedActiveUser(tenantId, "rerun");
-    assertThat(bootstrapAdminService.grantFirstAdmin(target.getId(), "OPS-105").exitCode())
+    assertThat(
+            bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef("OPS-105")).exitCode())
         .isZero();
 
-    BreakGlassOutcome rerun = bootstrapAdminService.grantFirstAdmin(target.getId(), "OPS-106");
+    BreakGlassOutcome rerun =
+        bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef("OPS-106"));
 
     assertThat(rerun).isEqualTo(new BreakGlassOutcome.Refused(BreakGlassRefusalReason.TENANT_HAS_ADMIN));
     assertThat(rerun.exitCode()).isEqualTo(5);
@@ -213,7 +221,8 @@ class BreakGlassAdminIT {
             + " THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'TS-6 test-only block'; END IF;"
             + " END");
 
-    assertThatThrownBy(() -> bootstrapAdminService.grantFirstAdmin(target.getId(), "OPS-107"))
+    assertThatThrownBy(
+            () -> bootstrapAdminService.grantFirstAdmin(target.getId(), new ChangeRef("OPS-107")))
         .isInstanceOf(RuntimeException.class);
 
     assertThat(countActive(tenantId, tenantAdmin.getId())).isZero();
@@ -224,13 +233,17 @@ class BreakGlassAdminIT {
   // ── Concurrency ───────────────────────────────────────────────────────────────────────────
 
   /**
-   * The tenant's last administrator self-revokes while the CLI runs against another user. Both
-   * take the same M11 set lock, so they serialise: under either order the revoke is refused (409,
-   * last admin) and the CLI is refused (exit 5, one administrator exists). No deadlock, no 500,
-   * and exactly one active administrator row.
+   * The tenant's last administrator self-revokes while the CLI runs against another user. Proves
+   * the race ends cleanly: no deadlock, no 500, the revoke refused (409, last admin), the CLI
+   * refused (exit 5) and exactly one active administrator row. It does NOT prove the zero-admin
+   * check runs under the set lock: the outcome is the same in either lock order (the revoke is
+   * always 409 and the CLI always sees one administrator), so it cannot tell a locked check from
+   * an unlocked one. The unit test {@code
+   * BootstrapAdminServiceTest#should_takeSetLockBeforeZeroAdminCheckBeforeInsert} covers ordering.
    */
   @Test
-  void should_serializeOnSetLock_when_lastAdminSelfRevokeRacesCli() throws Exception {
+  void should_endWithoutDeadlockOr500_andKeepOneAdminRow_when_lastAdminSelfRevokeRacesCli()
+      throws Exception {
     UUID tenantId = uuidGenerator.newId();
     Role tenantAdmin = seedSystemTenantAdminRole(tenantId);
     User admin = seedActiveUser(tenantId, "last-admin");
@@ -260,7 +273,9 @@ class BreakGlassAdminIT {
                   () -> {
                     barrier.await(5, TimeUnit.SECONDS);
                     return "exit"
-                        + bootstrapAdminService.grantFirstAdmin(target.getId(), "OPS-108").exitCode();
+                        + bootstrapAdminService
+                            .grantFirstAdmin(target.getId(), new ChangeRef("OPS-108"))
+                            .exitCode();
                   });
 
       assertThat(List.of(revoke.get(30, TimeUnit.SECONDS), cli.get(30, TimeUnit.SECONDS)))
@@ -274,13 +289,21 @@ class BreakGlassAdminIT {
   }
 
   /**
-   * Two CLI runs race on one zero-admin tenant for two different users. The set lock must let
-   * exactly one grant through; the other sees one administrator and refuses with exit 5.
+   * Two CLI runs race on one zero-admin tenant for two different users. Exactly one grant goes
+   * through. The loser either sees one administrator (exit 5) or, because the set lock finds no
+   * rows and takes only gap locks, dies with a deadlock on the {@code user_roles} insert, which
+   * T-008's runner maps to an audited, paged {@code CONCURRENT_RUN} refusal written after the
+   * rollback. When T-008 re-enables this test it must accept the exit-code set {0, 5} or {0,
+   * <the CONCURRENT_RUN exit code>}, assert exactly one active administrator row, and drive the
+   * runs through the runner rather than this service (see 04-tasks.md T-008 risks).
    */
   @Disabled(
       "Known deadlock (MySQL 1213 on the user_roles insert) when two runs race on one zero-admin"
           + " tenant: the set lock finds no rows and takes only gap locks. Decision 2026-10-15:"
-          + " T-008 maps the deadlock on this path to an audited, paged refusal; re-enable then.")
+          + " T-008's runner maps any RuntimeException from grantFirstAdmin to an audited, paged"
+          + " refusal written after the rollback (CONCURRENT_RUN for a lock failure). Re-enable"
+          + " then, through the runner, accepting exit codes {0,5} or {0,<CONCURRENT_RUN code>}"
+          + " plus exactly one active administrator row.")
   @Test
   void should_grantExactlyOnce_when_twoCliRunsRaceOnTheSameZeroAdminTenant() throws Exception {
     UUID tenantId = uuidGenerator.newId();
@@ -311,7 +334,9 @@ class BreakGlassAdminIT {
     return executor.submit(
         () -> {
           barrier.await(5, TimeUnit.SECONDS);
-          return bootstrapAdminService.grantFirstAdmin(targetUserId, changeRef).exitCode();
+          return bootstrapAdminService
+              .grantFirstAdmin(targetUserId, new ChangeRef(changeRef))
+              .exitCode();
         });
   }
 

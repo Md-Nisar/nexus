@@ -173,7 +173,10 @@ class AuthEventTypeTest {
   /**
    * US-018 T-007 (03-design.md §7.2): {@code ROLE_BREAK_GLASS_GRANT} is deliberately NOT priority
    * — it is never written on the buffered path. Its SUCCESS row is atomic (written inside the
-   * grant's own transaction) and its FAILURE row is an independent best-effort write.
+   * grant's own transaction) and its FAILURE row is an independent best-effort write through
+   * {@code SecureEventService#recordEventOrThrowInNewTransaction}; both go through {@code
+   * AuthEventPort#recordOrThrow}, which never enqueues to the retry buffer, and a lost FAILURE row
+   * is logged as {@code RBAC_AUDIT_WRITE_LOST}.
    */
   @Test
   void should_returnFalse_when_isPriorityCheckedOnRoleBreakGlassGrant() {

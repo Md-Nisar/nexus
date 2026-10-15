@@ -56,7 +56,10 @@ public enum AuthEventType {
   ROLE_PERMISSION_REVOKED("ROLE_PERMISSION_REVOKED"),
 
   // US-018 A7 (03-design.md §7.2): break-glass first-administrator grant, SUCCESS or FAILURE.
-  // Deliberately NOT in PRIORITY below — it is never written on the buffered path.
+  // Deliberately NOT in PRIORITY below — it is never written on the buffered path: SUCCESS joins
+  // the grant transaction and a refusal's FAILURE row commits in its own transaction, both through
+  // AuthEventPort#recordOrThrow, so a failed write propagates (rolling the grant back, or logged as
+  // RBAC_AUDIT_WRITE_LOST for a refusal) and is never enqueued to the retry buffer.
   ROLE_BREAK_GLASS_GRANT("ROLE_BREAK_GLASS_GRANT");
 
   // ROLE_ASSIGNED/ROLE_REVOKED are PRIORITY (T-R4, reversing the original US-012 D10 decision):

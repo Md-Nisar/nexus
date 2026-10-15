@@ -26,11 +26,11 @@ public class BreakGlassAlertAdapter implements BreakGlassAlertPort {
     LoggingEventBuilder builder = log.atError().addKeyValue("event", "RBAC_BREAK_GLASS_USED");
     builder = addIfPresent(builder, "tenantId", alert.tenantId());
     builder = addIfPresent(builder, "targetUserId", alert.targetUserId());
-    builder = addIfPresent(builder, "outcome", alert.outcome());
+    String outcome = alert.outcome() == null ? null : alert.outcome().name();
+    builder = addIfPresent(builder, "outcome", outcome);
     builder = addIfPresent(builder, "reason", alert.reason());
     builder = addIfPresent(builder, "changeRef", alert.changeRef());
-    builder.log(
-        "Break-glass admin tool used: outcome={} reason={}", alert.outcome(), alert.reason());
+    builder.log("Break-glass admin tool used: outcome={} reason={}", outcome, alert.reason());
   }
 
   private static LoggingEventBuilder addIfPresent(

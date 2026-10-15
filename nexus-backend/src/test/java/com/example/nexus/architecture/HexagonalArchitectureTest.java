@@ -10,15 +10,12 @@ import com.example.nexus.common.security.AuthenticatedEndpoint;
 import com.example.nexus.common.security.PublicEndpoint;
 import com.example.nexus.common.security.RequiresPermission;
 import com.example.nexus.identity.infrastructure.web.JwtAuthenticationFilter;
-import com.example.nexus.rbac.application.BootstrapAdminService;
-import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaCodeUnit;
 import com.tngtech.archunit.core.domain.JavaCodeUnitAccess;
 import com.tngtech.archunit.core.domain.JavaMethod;
-import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.core.domain.JavaModifier;
 import com.tngtech.archunit.core.domain.JavaParameter;
 import com.tngtech.archunit.core.importer.ImportOption;
@@ -68,7 +65,7 @@ import org.junit.jupiter.api.Tag;
         packages = "com.example.nexus",
         importOptions = ImportOption.DoNotIncludeTests.class)
 @Tag("UnitTest")
-public class HexagonalArchitectureTest {
+class HexagonalArchitectureTest {
 
     @ArchTest
     static final ArchRule domain_must_not_depend_on_outer_layers =
@@ -443,33 +440,15 @@ public class HexagonalArchitectureTest {
                             + "endpoint that takes an identifier must use @RequiresPermission.")
                     .allowEmptyShould(true);
 
-    // US-018 T-007 (03-design.md §7.2, EC2): the break-glass grant has no caller to authorize,
-    // so REST must never reach it. Public so BootstrapAdminContainmentRuleTest, whose failing
-    // fixture must reside in rbac.interfaces.rest, can prove the rule fires.
+    // US-018 T-007 (03-design.md §7.2, EC2). Defined in ArchitectureRules so the fixture tests
+    // that prove each rule fires can reach them while this class stays package-private.
     @ArchTest
-    public static final ArchRule bootstrap_admin_service_is_reachable_only_from_the_cli =
-            noClasses()
-                    .that().resideOutsideOfPackage("..rbac.interfaces.cli..")
-                    .and().doNotBelongToAnyOf(BootstrapAdminService.class)
-                    .should().dependOnClassesThat().belongToAnyOf(BootstrapAdminService.class)
-                    .because("US-018 A7/EC2: BootstrapAdminService grants TENANT_ADMIN without an "
-                            + "authorized caller; only the break-glass CLI in rbac.interfaces.cli "
-                            + "may reach it, never a REST controller or another service.")
-                    .allowEmptyShould(true);
+    static final ArchRule bootstrap_admin_service_is_reachable_only_from_the_cli =
+            ArchitectureRules.BOOTSTRAP_ADMIN_SERVICE_IS_REACHABLE_ONLY_FROM_THE_CLI;
 
-    // US-018 T-007 (EC2): break-glass must never route through the request-path grant, whose
-    // caller gate, grant-subset check and post-commit side effects assume an authenticated actor.
     @ArchTest
-    static final ArchRule bootstrap_admin_service_never_calls_role_assignment_assign_or_revoke =
-            noClasses()
-                    .that().belongToAnyOf(BootstrapAdminService.class)
-                    .should().callMethodWhere(DescribedPredicate.describe(
-                            "target is RoleAssignmentService.assign or RoleAssignmentService.revoke",
-                            (JavaMethodCall call) ->
-                                    call.getTargetOwner().isEquivalentTo(RoleAssignmentService.class)
-                                            && Set.of("assign", "revoke").contains(call.getName())))
-                    .because("US-018 A7/EC2: the break-glass grant reuses only the M10/M11 lock "
-                            + "helpers, never RoleAssignmentService.assign()/revoke().");
+    static final ArchRule break_glass_never_calls_role_assignment_assign_or_revoke =
+            ArchitectureRules.BREAK_GLASS_NEVER_CALLS_ROLE_ASSIGNMENT_ASSIGN_OR_REVOKE;
 
     @ArchTest
     static final ArchRule no_field_injection =

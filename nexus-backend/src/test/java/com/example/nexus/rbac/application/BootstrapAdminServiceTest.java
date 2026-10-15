@@ -40,6 +40,7 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
+import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -52,7 +53,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 @Tag("UnitTest")
 class BootstrapAdminServiceTest {
 
-  private static final String CHANGE_REF = "OPS-42";
+  private static final ChangeRef CHANGE_REF = new ChangeRef("OPS-42");
 
   private final UUID tenantId = UUID.randomUUID();
   private final UUID targetUserId = UUID.randomUUID();
@@ -251,10 +252,10 @@ class BootstrapAdminServiceTest {
 
     // Written before the method returned, i.e. before any commit callback has run.
     verify(rbacAuditPort)
-        .recordBreakGlassGrant(new BreakGlassAuditEvent(tenantId, targetUserId, CHANGE_REF));
+        .recordBreakGlassGrant(new BreakGlassAuditEvent(tenantId, targetUserId, CHANGE_REF.value()));
     verifyNoInteractions(breakGlassAlertPort);
     Method method =
-        BootstrapAdminService.class.getMethod("grantFirstAdmin", UUID.class, String.class);
+        BootstrapAdminService.class.getMethod("grantFirstAdmin", UUID.class, ChangeRef.class);
     Transactional transactional = method.getAnnotation(Transactional.class);
     assertThat(transactional).isNotNull();
     assertThat(transactional.propagation()).isEqualTo(Propagation.REQUIRED);
@@ -315,7 +316,9 @@ class BootstrapAdminServiceTest {
     TransactionSynchronizationManager.getSynchronizations()
         .forEach(TransactionSynchronization::afterCommit);
     verify(breakGlassAlertPort)
-        .alert(new BreakGlassAlert(tenantId, targetUserId, "GRANTED", null, CHANGE_REF));
+        .alert(
+            new BreakGlassAlert(
+                tenantId, targetUserId, BreakGlassAlert.Outcome.GRANTED, null, CHANGE_REF.value()));
   }
 
   @Test
@@ -340,16 +343,63 @@ class BootstrapAdminServiceTest {
     verifyNoInteractions(breakGlassAlertPort);
   }
 
+  /** RC-40.5: once the insert ran, a failed SUCCESS write is never followed by a FAILURE row. */
   @Test
-  void should_neverWriteAFailureRowAfterASuccessRow() {
-    service.grantFirstAdmin(targetUserId, CHANGE_REF);
+  void should_writeNoFailureRow_when_successAuditWriteThrowsAfterTheInsert() {
     doThrow(new RuntimeException("audit insert failed"))
         .when(rbacAuditPort)
         .recordBreakGlassGrant(any());
+
     assertThatThrownBy(() -> service.grantFirstAdmin(targetUserId, CHANGE_REF))
         .isInstanceOf(RuntimeException.class);
 
+    InOrder inOrder = inOrder(userRoleAssignmentPort, rbacAuditPort);
+    inOrder.verify(userRoleAssignmentPort).assign(targetUserId, tenantAdminRoleId, tenantId, targetUserId);
+    inOrder.verify(rbacAuditPort).recordBreakGlassGrant(any());
     verify(rbacAuditPort, never()).recordBreakGlassRefusal(any(), anyString());
+  }
+
+  /**
+   * A lock failure on the {@code user_roles} insert (the zero-admin race, see the disabled race IT)
+   * propagates unchanged in T-007: no refusal row, no SUCCESS row and no page. T-008's runner maps
+   * it to an audited, paged refusal after the rollback.
+   */
+  @Test
+  void should_propagate_withNoRefusalRowAndNoAlert_when_insertThrowsLockFailure() {
+    CannotAcquireLockException lockFailure = new CannotAcquireLockException("Deadlock found");
+    when(userRoleAssignmentPort.assign(targetUserId, tenantAdminRoleId, tenantId, targetUserId))
+        .thenThrow(lockFailure);
+    TransactionSynchronizationManager.initSynchronization();
+
+    assertThatThrownBy(() -> service.grantFirstAdmin(targetUserId, CHANGE_REF)).isSameAs(lockFailure);
+
+    verify(rbacAuditPort, never()).recordBreakGlassGrant(any());
+    verify(rbacAuditPort, never()).recordBreakGlassRefusal(any(), anyString());
+    assertThat(TransactionSynchronizationManager.getSynchronizations()).isEmpty();
+    verifyNoInteractions(breakGlassAlertPort);
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // Arguments (finding 2): a missing target or change reference is a programming error, never a
+  // grant without attribution.
+  // ---------------------------------------------------------------------------------------------
+
+  @Test
+  void should_throwNullPointerWithClearMessage_andTouchNothing_when_targetUserIdIsNull() {
+    assertThatThrownBy(() -> service.grantFirstAdmin(null, CHANGE_REF))
+        .isInstanceOf(NullPointerException.class)
+        .hasMessage("targetUserId must not be null");
+
+    verifyNoInteractions(userDirectoryPort, userRoleAssignmentPort, rbacAuditPort, breakGlassAlertPort);
+  }
+
+  @Test
+  void should_throwNullPointerWithClearMessage_andTouchNothing_when_changeRefIsNull() {
+    assertThatThrownBy(() -> service.grantFirstAdmin(targetUserId, null))
+        .isInstanceOf(NullPointerException.class)
+        .hasMessage("changeRef must not be null");
+
+    verifyNoInteractions(userDirectoryPort, userRoleAssignmentPort, rbacAuditPort, breakGlassAlertPort);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -364,11 +414,16 @@ class BootstrapAdminServiceTest {
     inOrder
         .verify(rbacAuditPort)
         .recordBreakGlassRefusal(
-            new BreakGlassAuditEvent(expectedTenant, targetUserId, CHANGE_REF), reason.name());
+            new BreakGlassAuditEvent(expectedTenant, targetUserId, CHANGE_REF.value()), reason.name());
     inOrder
         .verify(breakGlassAlertPort)
         .alert(
-            new BreakGlassAlert(expectedTenant, targetUserId, "REFUSED", reason.name(), CHANGE_REF));
+            new BreakGlassAlert(
+                expectedTenant,
+                targetUserId,
+                BreakGlassAlert.Outcome.REFUSED,
+                reason.name(),
+                CHANGE_REF.value()));
     verify(rbacAuditPort).recordBreakGlassRefusal(any(), anyString());
     verify(rbacAuditPort, never()).recordBreakGlassGrant(any());
     verify(breakGlassAlertPort).alert(any());

@@ -339,6 +339,44 @@ class SecureEventServiceTest {
   }
 
   // ---------------------------------------------------------------------------
+  // US-018 A7 (06-code-review-M5-T007.md finding 1): recordEventOrThrowInNewTransaction —
+  // REQUIRES_NEW, delegates to AuthEventPort#recordOrThrow, never to the buffered #record
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void should_delegateToRecordOrThrow_andNeverEnqueueOnTheBufferedPath_when_recordEventOrThrowInNewTransactionCalled() {
+    AuthEvent event = new AuthEvent(UUID.randomUUID(), "ROLE_BREAK_GLASS_GRANT", "FAILURE");
+
+    service.recordEventOrThrowInNewTransaction(event);
+
+    verify(authEventPort).recordOrThrow(event);
+    verify(authEventPort, never()).record(any());
+  }
+
+  @Test
+  void should_propagateException_when_recordOrThrowFailsInNewTransaction() {
+    AuthEvent event = new AuthEvent(UUID.randomUUID(), "ROLE_BREAK_GLASS_GRANT", "FAILURE");
+    doThrow(new RuntimeException("db down")).when(authEventPort).recordOrThrow(event);
+
+    assertThatThrownBy(() -> service.recordEventOrThrowInNewTransaction(event))
+        .isInstanceOf(RuntimeException.class)
+        .hasMessage("db down");
+    verify(authEventPort, never()).record(any());
+  }
+
+  @Test
+  void should_beAnnotatedRequiresNew_when_recordEventOrThrowInNewTransactionDeclared()
+      throws NoSuchMethodException {
+    Method method =
+        SecureEventService.class.getMethod("recordEventOrThrowInNewTransaction", AuthEvent.class);
+
+    Transactional annotation = method.getAnnotation(Transactional.class);
+
+    assertThat(annotation).isNotNull();
+    assertThat(annotation.propagation()).isEqualTo(Propagation.REQUIRES_NEW);
+  }
+
+  // ---------------------------------------------------------------------------
   // T-018: M-7 ACCOUNT_LOCKED rate signal — mass-lockout campaign detection (T-LCK-3)
   // ---------------------------------------------------------------------------
 

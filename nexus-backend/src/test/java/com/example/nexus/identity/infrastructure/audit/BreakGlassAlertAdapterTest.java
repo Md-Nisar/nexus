@@ -8,6 +8,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.example.nexus.rbac.application.port.out.BreakGlassAlert;
+import com.example.nexus.rbac.application.port.out.BreakGlassAlert.Outcome;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -46,7 +47,7 @@ class BreakGlassAlertAdapterTest {
 
   @Test
   void should_logErrorWithRbacBreakGlassUsedMarkerAndAllFields_when_granted() {
-    adapter.alert(new BreakGlassAlert(TENANT_ID, TARGET_USER_ID, "GRANTED", null, "OPS-1"));
+    adapter.alert(new BreakGlassAlert(TENANT_ID, TARGET_USER_ID, Outcome.GRANTED, null, "OPS-1"));
 
     ILoggingEvent event = singleErrorEvent();
     assertThat(keyValueMap(event))
@@ -61,7 +62,7 @@ class BreakGlassAlertAdapterTest {
   @Test
   void should_logErrorWithReason_when_refused() {
     adapter.alert(
-        new BreakGlassAlert(TENANT_ID, TARGET_USER_ID, "REFUSED", "TENANT_HAS_ADMIN", "OPS-1"));
+        new BreakGlassAlert(TENANT_ID, TARGET_USER_ID, Outcome.REFUSED, "TENANT_HAS_ADMIN", "OPS-1"));
 
     assertThat(keyValueMap(singleErrorEvent()))
         .containsEntry("event", "RBAC_BREAK_GLASS_USED")
@@ -71,7 +72,7 @@ class BreakGlassAlertAdapterTest {
 
   @Test
   void should_omitNullFields_when_tenantOrTargetUnknown() {
-    adapter.alert(new BreakGlassAlert(null, null, "REFUSED", "TARGET_USER_NOT_FOUND", null));
+    adapter.alert(new BreakGlassAlert(null, null, Outcome.REFUSED, "TARGET_USER_NOT_FOUND", null));
 
     Map<String, Object> keyValues = keyValueMap(singleErrorEvent());
     assertThat(keyValues)

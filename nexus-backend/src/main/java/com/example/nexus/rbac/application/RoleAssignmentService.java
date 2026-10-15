@@ -745,7 +745,7 @@ public class RoleAssignmentService {
    */
   private AdminEquivalentRoles resolveAdminEquivalentRoles(
       UUID tenantId, Role targetRole, boolean nameMatch) {
-    return resolveAdminEquivalentRoles(userRoleAssignmentPort, tenantId);
+    return resolveAdminEquivalentRolesFor(userRoleAssignmentPort, tenantId);
   }
 
   /**
@@ -753,7 +753,7 @@ public class RoleAssignmentService {
    * static so {@code BootstrapAdminService} (US-018 A7, 03-design.md §7.1) primes M10 and M8
    * exactly as {@code assign()}/{@code revoke()} do, never a second copy that could drift.
    */
-  static AdminEquivalentRoles resolveAdminEquivalentRoles(
+  static AdminEquivalentRoles resolveAdminEquivalentRolesFor(
       UserRoleAssignmentPort userRoleAssignmentPort, UUID tenantId) {
     List<RolePermissionName> tenantRolePermissions =
         userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId);
@@ -817,8 +817,12 @@ public class RoleAssignmentService {
    * deadlock-freedom (D6/D7) and for making M11 fail toward more locking on any M7/M10
    * disagreement — but only the caller-qualifying subset of what it locked is what this specific
    * guard must never zero out.
+   *
+   * <p>Package-private so {@code BootstrapAdminService} (US-018 A7) decides "the tenant has zero
+   * administrators" with this same predicate, passing {@code null} for {@code
+   * revokedAssignmentId}: nothing is being revoked there, and {@code null} excludes no row.
    */
-  private static boolean wouldLeaveTenantWithoutCallerQualifyingHolder(
+  static boolean wouldLeaveTenantWithoutCallerQualifyingHolder(
       List<ActiveAssignmentHolder> lockedHolders,
       UUID revokedAssignmentId,
       Set<UUID> callerQualifyingRoleIds) {

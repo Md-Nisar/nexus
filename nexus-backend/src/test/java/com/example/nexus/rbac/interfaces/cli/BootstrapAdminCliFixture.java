@@ -2,6 +2,7 @@ package com.example.nexus.rbac.interfaces.cli;
 
 import com.example.nexus.rbac.application.BootstrapAdminService;
 import com.example.nexus.rbac.application.BreakGlassOutcome;
+import com.example.nexus.rbac.application.ChangeRef;
 import java.util.UUID;
 
 /**
@@ -16,7 +17,7 @@ public class BootstrapAdminCliFixture {
     this.bootstrapAdminService = bootstrapAdminService;
   }
 
-  public BreakGlassOutcome run(UUID targetUserId, String changeRef) {
+  public BreakGlassOutcome run(UUID targetUserId, ChangeRef changeRef) {
     return bootstrapAdminService.grantFirstAdmin(targetUserId, changeRef);
   }
 }

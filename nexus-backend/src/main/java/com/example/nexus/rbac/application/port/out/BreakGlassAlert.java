@@ -8,9 +8,16 @@ import java.util.UUID;
  *
  * @param tenantId the target user's tenant, {@code null} when the target user does not exist
  * @param targetUserId the target user
- * @param outcome {@code GRANTED} or {@code REFUSED}
+ * @param outcome whether the invocation granted or was refused
  * @param reason the refusal reason name, {@code null} on a grant
  * @param changeRef the operator-supplied change reference
  */
 public record BreakGlassAlert(
-    UUID tenantId, UUID targetUserId, String outcome, String reason, String changeRef) {}
+    UUID tenantId, UUID targetUserId, Outcome outcome, String reason, String changeRef) {
+
+  /** The two outcomes of a break-glass invocation; the constant name is the logged value. */
+  public enum Outcome {
+    GRANTED,
+    REFUSED
+  }
+}
