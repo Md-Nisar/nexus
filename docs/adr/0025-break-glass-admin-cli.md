@@ -1,6 +1,6 @@
 # ADR 0025 — Break-Glass First-Administrator CLI
 
-**Status:** Proposed (Revision 1: threat-model RC-37 folded in, 2026-09-26; Revision 2: delta review RC-47 and RC-50(d) folded in, 2026-09-30; Revision 3: spot-check RC-54(a) folded in, 2026-10-01)
+**Status:** Proposed (Revision 1: threat-model RC-37 folded in, 2026-09-26; Revision 2: delta review RC-47 and RC-50(d) folded in, 2026-09-30; Revision 3: spot-check RC-54(a) folded in, 2026-10-01; Revision 4: M5 implementation facts and open O-7 recorded, 2026-10-15)
 **Date:** 2026-09-26
 **Feature:** EPIC-002 (RBAC Foundation), US-018 A7 (Gate 1 OQ4: operator-run CLI)
 **Related:** ADR-0014 (bootstrap tenant, `nexus_app` grants), ADR-0021 D3/D4, ADR-0024, `docs/features/US-018/03-design.md` §7
@@ -39,7 +39,7 @@ A tenant with zero administrators can be recovered today only by a manual produc
 6. **Audit and alert.**
    - Every invocation writes `ROLE_BREAK_GLASS_GRANT` (SUCCESS atomically with the grant, per ADR-0024; FAILURE independently), including an argument-validation refusal (1 above), whose row carries no argument values.
    - Every invocation emits ERROR `RBAC_BREAK_GLASS_USED`, which triggers a **page through a log-based alert**. The process is too short-lived to be scraped, so a metric would never reach Prometheus.
-   - **Page capture (Revision 1, RC-37.4).** A pod removed by `kubectl run --rm`, or a Job with a short TTL, can disappear before the node's log shipper reads it. The runner waits one log-shipper flush interval before exiting, and the runbook forbids `--rm` unless the drill proves capture without it. The M5 staging drill passes only when **the page is received from a Job run exactly as the runbook specifies**. Backstop: a daily reconciliation alert on new `ROLE_BREAK_GLASS_GRANT` rows, so a lost page is found from the durable row within a day.
+   - **Page capture (Revision 1, RC-37.4).** A pod removed by `kubectl run --rm`, or a Job with a short TTL, can disappear before the node's log shipper reads it. The runner waits one log-shipper flush interval (configured, default 15 s) before exiting, and before the web-context guard throws, and the runbook forbids `--rm` unless the drill proves capture without it. The M5 staging drill passes only when **the page is received from a Job run exactly as the runbook specifies**. Backstop: a daily reconciliation alert on new `ROLE_BREAK_GLASS_GRANT` rows, so a lost page is found from the durable row within a day.
 
 ## Consequences
 
@@ -54,5 +54,7 @@ A tenant with zero administrators can be recovered today only by a manual produc
 - An `assigned_by` that points at the target user looks like a self-assignment unless it is read together with the break-glass audit row (reviewer note under 5).
 - Every use needs two people (the operator and a Platform Security approver) and a contact-of-record check, which slows recovery by design.
 - Residual social engineering remains, anchored in infra access (RES-35, Low).
+- **Open (O-7, security review M-1).** The zero-administrator check counts every active administrator-equivalent assignment whatever the holder's user status, as ADR-0018 and `RbacZeroActiveAdminsHealthIndicator` do. A tenant whose only administrator is DISABLED is therefore refused with exit 5 and cannot be recovered with this tool. The Architect and the Platform Security Owner must either record this as a residual with an owner or redefine "administrator" as holders whose user is not DISABLED (consistently in the last-admin lockout, the health indicator and A7). No decision is recorded; no CLI override flag is to be added. Until decided, operators escalate and do not use manual SQL (runbook section 11.5).
+- **Implementation facts (T-007, T-008).** Every refusal row and page is written after the grant transaction has ended, which commits at most one row per invocation; the break-glass Hikari pool is 4; a failed GRANTED page is logged as `RBAC_BREAK_GLASS_ALERT_FAILED` and the exit stays 0. The refusal page itself is not guarded (security review L-1, optional). The target's ACTIVE check is outside the grant transaction (L-2, optional, very low risk).
 
 **Follow-on rule:** any future non-HTTP privileged entry point follows this pattern (profile-gated, callers restricted by ArchUnit, audited on every invocation including refusals, log-based paging) or supersedes this ADR.

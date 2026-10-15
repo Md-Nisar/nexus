@@ -174,3 +174,23 @@ Design: `03-design.md` §9; threat model: `03b-threat-model.md`; decision record
 
 **API surface.** No new endpoint. Refresh answers 429 `RATE_001`; authenticated endpoints can answer 503 `AUTH_005`; `perm_epoch` is a new token claim.
 
+---
+
+## 13. M5: break-glass first-administrator CLI (A7, T-007, T-008)
+
+Design: `03-design.md` section 7 (final behaviour; nothing there was stale for this pass). Decision record: [ADR-0025](../../adr/0025-break-glass-admin-cli.md) (Proposed, Revision 4 adds the implementation facts and O-7). Reviews: `06-code-review-M5-T007.md`, `06-code-review-M5-T008.md`, `07-security-review-M5.md` (APPROVED with conditions), `08-test-audit-M5.md`. Operational companions: runbook section 11, deployment section 11, monitoring section 7, rollback section 8.
+
+**What it does.** An operator runs the service jar with the `break-glass` profile and two options (`--target-user-id`, `--change-ref`). `BootstrapAdminService` grants the tenant's system `TENANT_ADMIN` role to the ACTIVE target in a tenant that has no administrator, under the same ascending set lock as assign and revoke, with `assigned_by` set to the target, and writes the SUCCESS `ROLE_BREAK_GLASS_GRANT` row in the grant transaction. It is reachable only from `rbac.interfaces.cli` (ArchUnit), never calls `assign()` or `revoke()`, and the CLI beans exist only under `break-glass`.
+
+**Exit codes** (`BreakGlassRefusalReason`): 0 granted; 1 `UNEXPECTED_ERROR`; 2 `INVALID_ARGUMENT`; 3 target not found or not ACTIVE; 4 no system `TENANT_ADMIN` role; 5 `TENANT_HAS_ADMIN`; 6 `CHANGE_REF_REUSED`; 7 `CONCURRENT_INVOCATION`. 7 and 1 were confirmed by the user on 2026-10-15. Exit 1 is ambiguous (audited and paged, or a crash with neither); the runbook splits it by the presence of `RBAC_BREAK_GLASS_USED` in the pod log.
+
+**Final behaviour worth knowing** (where it goes beyond the first design text; all in design section 7.1):
+- The grant transaction only decides; every FAILURE row and every page is written after it ends (T-008 review Low 1), so one invocation commits at most one row and a refusal never follows a committed SUCCESS write. A failed GRANTED page is best effort (`RBAC_BREAK_GLASS_ALERT_FAILED`, exit 0).
+- A refusal row is written through `recordEventOrThrowInNewTransaction`, never the retry buffer (the process would never drain it). A failed refusal write is `RBAC_AUDIT_WRITE_LOST`, counted, and swallowed.
+- The replay lookup is global, SUCCESS-only, exact and case-sensitive, a bound parameter, non-locking. It is an allowlist entry in `TenantIsolationArchitectureTest` (signed off by the security review) and, since the test audit, is ArchUnit-contained to `BootstrapAdminService` and its adapter (L-3 closed).
+- `application-break-glass.yml`: no web server, Flyway off, Hikari pool 4, `log-flush-wait` 15 s with an env override. The flush wait also runs before the web-context guard throws (T-008 review Low 2).
+- `SecurityConfig` and `PublicEndpointRequestMatcher` are `@ConditionalOnWebApplication(SERVLET)`; `DevDataInitializer` is `@Profile("dev & !break-glass")`. `NexusApplication.main` exits through `SpringApplication.exit` only under `break-glass`.
+
+**Open.** O-7 (a DISABLED sole administrator gets exit 5; owner decision required before merge, characterised by `..._pendingO7Decision` in `BreakGlassAdminIT`), optional L-1 (the refusal page is not wrapped, so a throwing page hides the refusal code behind exit 1) and L-2 (the target's ACTIVE check is outside the grant transaction). See STATUS.md and `14-pending-items.md`.
+
+**Tests.** Test audit run: surefire 2032 run, 0 failures, 0 errors, 1 skipped (pre-existing); failsafe 497 run, 0 failures; JaCoCo, SpotBugs and Checkstyle green. `BreakGlassAdminIT` has 29 tests, including real child-JVM runs as `nexus_app`.

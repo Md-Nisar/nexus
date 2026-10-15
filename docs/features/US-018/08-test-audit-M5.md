@@ -1,6 +1,6 @@
 # Coverage audit for Tasks T-007 and T-008 (US-018, M5: A7 break-glass CLI)
 
-Branch `ccr-047fcb60-fqvz6w`, commits `e43b347`, `4dee024`, `d5b50c8`, `70ea2f1`. Audited against `03-design.md` §7, `04-tasks.md` T-007/T-008, the A7 rows of `03b-threat-model.md`, `06-code-review-M5-T007.md`, `06-code-review-M5-T008.md` and `07-security-review-M5.md`. Production code was not changed; only tests and this document. Nothing is committed.
+Branch `ccr-047fcb60-fqvz6w`, commits `e43b347`, `4dee024`, `d5b50c8`, `70ea2f1`. Audited against `03-design.md` §7, `04-tasks.md` T-007/T-008, the A7 rows of `03b-threat-model.md`, `06-code-review-M5-T007.md`, `06-code-review-M5-T008.md` and `07-security-review-M5.md`. Production code was not changed; only tests and this document. Committed as `0c66f99`.
 
 ## Existing tests (before this audit)
 

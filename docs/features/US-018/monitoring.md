@@ -98,3 +98,40 @@ All suggestions; the full table is design §9.9, the response steps are in the r
 | `nexus_rbac_epoch_store_regressed` | `increase(nexus_rbac_epoch_store_regressed_total[5m]) > 0` | page | Redis answered a read or a mint below an epoch this instance already knows (a refused or lost bump, a key lost to failover or FLUSH). The local bound is enforced meanwhile, and the replay retries each second. Check Redis `maxmemory` and `noeviction` first, then `bump_failed` (pre-PR security review M-1). No tenant or user tag |
 | `nexus_rbac_epoch_unparseable` | `increase(nexus_rbac_epoch_check_total{outcome="unparseable"}[15m]) > 0` | ticket | Corrupt or foreign epoch keys in Redis (RES-32); the WARN is limited to one per tenant per minute, so the counter is the full signal |
 | `nexus_rbac_epoch_skipped_error_rate_panel` | per-instance request rate next to `outcome="skipped_error"` | dashboard panel | Review 07 M-1 (b): shows whether reads are being pushed past 50 ms |
+
+## 7. Break-glass CLI (US-018 M5, A7)
+
+Source: `BreakGlassAlertAdapter`, `BootstrapAdminService`, `BreakGlassAdminRunner`, `RbacAuthEventAdapter`. Everything here is a log marker or an audit row: the CLI lives for seconds and is never scraped, so a metric it increments would not reach Prometheus (design section 7.2). Thresholds and severities are suggestions, as above. All fields are UUIDs, a bounded enum or a ticket id; no argument value is logged on `INVALID_ARGUMENT`.
+
+### 7.1 Alerts
+
+| Alert | Source | Suggested severity | Why |
+|---|---|---|---|
+| `rbac_break_glass_used` | Log-based: any ERROR with `event=RBAC_BREAK_GLASS_USED` | **page** (Platform Security on-call), every occurrence | Every invocation emits it: granted, refused (with `reason`), failed, and the web-context guard (`reason=WEB_CONTEXT`). Fields: `tenantId`, `targetUserId`, `outcome`, `reason`, `changeRef`. `tenantId`, `targetUserId` and `changeRef` are omitted on `INVALID_ARGUMENT`. Must route to a human outside business hours. Expected volume: a handful a year |
+| `rbac_break_glass_alert_failed` | Log-based: ERROR `event=RBAC_BREAK_GLASS_ALERT_FAILED` (`tenantId`, `reason`) | page | The GRANTED page failed to send after a committed grant (exit stays 0). The grant is real and unpaged: contact Platform Security manually and check the SUCCESS row |
+| `rbac_audit_write_lost` | Log-based: ERROR `event=RBAC_AUDIT_WRITE_LOST` (ids only, no `changeRef`); counter `nexus.rbac.audit_write_failed{operation="breakGlassRefusal", mode="best_effort"}` (the counter is only visible if the process is scraped, so the log is the signal) | ticket (page if it accompanies an unexplained refusal) | A refusal's FAILURE row could not be written. The exit code and the page survive; the durable record of that refusal is missing |
+| `rbac_audit_write_failed` | Log-based: ERROR `event=RBAC_AUDIT_WRITE_FAILED` (`operation`, `tenantId`, `roleId`, `actorUserId`) | page if `operation` is the break-glass grant | The atomic (Group A) audit write failed and the surrounding mutation is rolled back. For a break-glass grant it means no grant (exit 1, `UNEXPECTED_ERROR`); runbook 11.3.1 |
+| `rbac_break_glass_unpaged_failure` | Job status: a break-glass Job ended with exit 1 and its pod log has no `RBAC_BREAK_GLASS_USED` | page | The one case that is neither audited nor paged (a crash before or outside the grant transaction). Needs a Job-failure alert or a manual page by the operator (runbook 11.3.1). **No such alert is specified in the repository yet** |
+
+### 7.2 Log queries
+
+- All uses, newest first: `event="RBAC_BREAK_GLASS_USED"` (level ERROR), shown with `outcome`, `reason`, `tenantId`, `changeRef`.
+- Lost or failed audit writes: `event IN ("RBAC_AUDIT_WRITE_LOST", "RBAC_AUDIT_WRITE_FAILED")`.
+- Page not sent after a grant: `event="RBAC_BREAK_GLASS_ALERT_FAILED"`.
+- Also present: `RBAC_BREAK_GLASS_FLUSH_WAIT_INTERRUPTED` (the flush wait was interrupted, so the page may not have been shipped) and `RBAC_BREAK_GLASS_CONFLICT` / `RBAC_BREAK_GLASS_GRANT_FAILED` (a failed grant transaction, with `tenantId` and the cause only). The exact fields of these three were not re-verified for this document.
+
+### 7.3 Durable record and daily reconciliation
+
+Rows: `auth_events`, `event_type = 'ROLE_BREAK_GLASS_GRANT'`, `outcome` `SUCCESS` (written in the grant transaction) or `FAILURE` (written on its own after the refusal). Metadata keys: `actorType` (`BREAK_GLASS_CLI`), `reason`, `changeRef` (omitted on `INVALID_ARGUMENT`). `user_roles.assigned_by` equals the target user for these grants.
+
+```sql
+SELECT HEX(id) AS event_id, created_at, outcome, HEX(tenant_id) AS tenant_id, HEX(user_id) AS target_user_id,
+       JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.changeRef')) AS change_ref,
+       JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.reason'))    AS reason
+FROM auth_events
+WHERE event_type = 'ROLE_BREAK_GLASS_GRANT'
+  AND created_at >= NOW() - INTERVAL 1 DAY
+ORDER BY created_at DESC;
+```
+
+**Daily reconciliation (deferred; an Ops deliverable, RC-37.4 backstop).** A ticket-severity alert on new `ROLE_BREAK_GLASS_GRANT` rows in `auth_events` so that a lost page is found from the durable row within a day. Design: it covers `SUCCESS` rows (an unpaged crash writes no row, hence the Job-failure alert above). Each SUCCESS row is matched to a ticket under its `changeRef` that records the contact-of-record check and the second approver. **This alert is not implemented in this repository and no environment exists; it is a merge condition and stays open until the first deployment** (STATUS.md). `auth_events` is append-only (BEFORE UPDATE and DELETE triggers), so the rows cannot be altered after the fact.

@@ -12,6 +12,7 @@
 | **M1** A8 deny-by-default | T-004 | **Merged to `main`** as PR #82 (squash, `0da1597`, 2026-10-06). Review, security review and test-validate done (below). |
 | **M6** A11 token claim validation | T-005 | **Merged to `main`** as PR #84 (`b11dbde`, 2026-10-07). Code review (APPROVE WITH NITS), security review (APPROVED, 2 Low) and test audit are in `06/07/08-*-M6.md`. The OWASP dependency-check could not run locally (NVD 403) and was left to CI. |
 | **M4** A6 atomic RBAC audit | T-006 | **Merged to `main`** as `25ceeed` (2026-10-06 commit; its title carries no PR number). No `*-M4.md` review, security or test-audit file exists in this folder, so whether those phases ran is not recorded here. |
+| **M5** A7 break-glass CLI | T-007, T-008 | **Implemented on `ccr-047fcb60-fqvz6w`, not merged; merge conditions open.** Code review (`06-code-review-M5-T007.md`: CHANGES REQUESTED, then fixed in `4dee024`; `06-code-review-M5-T008.md`: APPROVE WITH NITS, fixed in `70ea2f1`; no second review of the fixes is recorded), security review (`07-security-review-M5.md`: **APPROVED with conditions**, 0 Blocker/High, 1 Medium, 3 Low) and test validation (`08-test-audit-M5.md`: surefire 2032 run, failsafe 497 run, 0 failures, `BUILD SUCCESS`) are done. Docs pass (Phase 9) done: `runbook.md` 11, `deployment.md` 11, `monitoring.md` 7, `rollback.md` 8, `09-technical.md` 13, ADR-0025 Revision 4, CHANGELOG. Merge conditions below. |
 | M3 | T-016..T-019 | **Unblocked** now that M7 is merged (2026-10-14). The staging-soak gate is waived (no environment); M3 still needs its own threat-model re-pass before merge. |
 | **M7** A9 revocation epoch, A10 holder fan-out | T-009..T-014 | **Merged to `main`** as PR #88 (`803e33e`, 2026-10-14), one PR containing T-009..T-014 as required. H-3 is done on `main`: `application-prod.yml` sets `nexus.rbac.redis.require-auth: true` and `RedisAuthStartupAssertionTest` is no longer `@Disabled`. Whether P-1 (RES-46) and P-2 (RR-M3) in `14-pending-items.md` were decided at merge is not recorded there. |
 | **M7b** drop v2 token acceptance | T-015 | **Merged to `main`** as PR #90 (`66a9a30`, 2026-10-15), a separate PR as required. Only `schema_version` 3 is accepted; v2 gets 401 `AUTH_003` with `token_rejected{reason=schema_version}`. `/security-review` (2026-10-15): APPROVED, no Critical/High/Medium; its two Low test gaps and wording nits were fixed after #90 merged, in a follow-up PR from `ccr-047fcb60-fqvz6w`. |
@@ -33,7 +34,16 @@
 
 **M7 part 2 security review fixes (`10-security-review-M7-part2.md`): implemented on `ccr-4e9e7cbe-4vl9v6`, merged in PR #88. H-1 stays open (human action).** M-1: filter Javadoc, RES-40, design and ADR amended (junk counts against `REFRESH_IP`; the SPA keeps the session on a refresh 429), new k6 case `refresh-junk-flood.js` (not run, no dev stack). M-2: role-level replay of a failed detach holder read (`RoleReplayQueue`, 1 s tick, 1 s read timeout). L-1: one valid epoch range for the Lua script and the Java parser. L-2: rate-limited `RBAC_EPOCH_UNPARSEABLE` WARN and `epoch.check{outcome=unparseable}`. L-3: per-tenant last-seen cap, own bumps in a separate per-tenant pool, `last_seen_dropped{reason}`. See A-22 in `04-tasks.md`, runbook §8 and `monitoring.md` §6.
 
-Next in delivery order now that M1, M2, M4, M6, M7 and M7b are merged: M5 (T-007, T-008) and M3 (T-016..T-019), neither depending on the other. M3 needs its threat-model re-pass first.
+Next in delivery order now that M1, M2, M4, M6, M7 and M7b are merged: M5 (T-007, T-008, implemented, see below) and M3 (T-016..T-019), neither depending on the other. M3 needs its threat-model re-pass first.
+
+**M5 (A7 break-glass CLI): implemented, reviewed, security-reviewed (APPROVED with conditions), test-validated; docs done; not merged.** Commits `e43b347` (T-007), `4dee024` (T-007 fixes), `d5b50c8` (T-008), `70ea2f1` (T-008 review fixes), plus the test-audit additions (L-3 containment rules, new ITs) and these docs, which are not committed at the time of writing. The security review's three sign-offs (the `TenantIsolationArchitectureTest` allowlist entry for the global replay lookup, `@ConditionalOnWebApplication(SERVLET)`, authorization/locking/audit integrity) are granted. L-3 (global lookup port not ArchUnit-contained) was closed by the test audit. The OWASP dependency-check could not run offline.
+
+**Conditions for the M5 PR to merge** (security review; the first two items are the ones the PR author cannot close alone):
+1. **O-7 / M-1 owner decision recorded** (Architect + Platform Security Owner): a DISABLED sole administrator gets exit 5. Either a named residual with an owner and a documented audited procedure, or redefine "administrator" as non-DISABLED holders across the last-admin lockout, the health indicator and A7. Interim runbook guidance: escalate, no manual SQL. A characterization IT (`..._pendingO7Decision`) will need a deliberate change if the definition changes.
+2. **Every unticked M5 merge-checklist item in `04-tasks.md` closed:** RC-37.3 Kubernetes API audit logging sign-off (Ops); RC-37.4 page-capture drill (staging, Job run exactly as the runbook specifies); daily reconciliation alert on `ROLE_BREAK_GLASS_GRANT` SUCCESS rows; RES-6 retention sign-off for `RBAC_BREAK_GLASS_USED`; zero-admin recovery drill. The runbook-content item is done in `runbook.md` section 11 and the US-012 runbook step 4 note, pending review. Without an environment the drill, the audit-logging sign-off, the reconciliation alert and the retention sign-off can only be done at the first deployment, so the PR author and approver must either defer them explicitly or hold the merge.
+3. **CI dependency-check (A06) passes.** The M5 diff changes no `pom.xml`.
+
+**Open, optional (security review Low):** **L-1** the refusal page is not best effort (if it threw, exit 1 would hide the refusal code; wrap like the GRANTED page or note the asymmetry in design 7.1). **L-2** the target's ACTIVE check is outside the grant transaction (TOCTOU; accept and note in design 7.1, or re-read under the lock, and do so as part of O-7 option b). No test pins either. Residual: RES-35 unchanged.
 
 **M7 pending items (backlog):** two open decisions, still undecided as of 2026-10-15 (`14-pending-items.md`): P-1 RES-46, acceptance of the write-refusal residual (owner: M7 PR author, SRE input on Redis capacity; alternative is a per-instance write canary, an SRE/PM availability call), and P-2 RR-M3, client IP handling behind the proxy (`forward-headers-strategy` `none` vs `native` with pinned `internal-proxies`; owner: DF-1 owner). Also open: the k6 "NAT refresh gate" and `refresh-junk-flood.js` were never run, and M7 part 2 H-1 (human action).
 
@@ -73,7 +83,7 @@ Still open, not tied to a deployment:
 - EPIC-002 must report RES-1(b) as **"self path closed; transformed into RES-26"** (T-E32), never "fully closed".
 - Move ADR-0021 from Proposed to Accepted (still **Proposed** on `main`).
 - Tidy `DenialReason.NOT_TENANT_ADMIN` when B8 lands in M8 (throttled actors get it today; pre-existing).
-- **O-7 (`04-tasks.md`):** break-glass refuses (exit 5) a tenant whose only administrator is DISABLED, because the admin count ignores user status; Architect + Platform Security Owner to decide residual vs "administrator = ACTIVE holders" across lockout, health indicator and A7.
+- **O-7 (`04-tasks.md`; a merge condition for M5, see above):** break-glass refuses (exit 5) a tenant whose only administrator is DISABLED, because the admin count ignores user status; Architect + Platform Security Owner to decide residual vs "administrator = ACTIVE holders" across lockout, health indicator and A7.
 - The earlier question whether the Claude settings trim commit belonged in the M2 PR is moot: the squash merge removed that commit hash, so it cannot be checked from here.
 
 ## Deferred to the first deployment
@@ -82,7 +92,7 @@ No environment exists, so none of these can run now. They stay **required before
 
 - **M2:** RES-6 log-retention sign-off; the A1 detection query per environment where the US-012 flag was ever `true`; the custom-admin exposure check (before and after deploy); permset cache flush (`SCAN`/`DEL nexus:rbac:permset:*`) after V6 applies; V6 version number confirmed at deploy; Ops confirms `application-prod.yml` / env vars do not override `feature.nexus-us012-rbac-role-assignment.enabled` and `feature.nexus-us015-rbac-role-management.enabled`.
 - **The M3 soak (moved here):** M2, M1, M4 and M7 run in the first staging environment for at least one sprint with no `RbacAdministrators` anomalies, and the zero-admin sweep under the new definition is done, before production traffic.
-- **M5:** Kubernetes API audit logging sign-off (RC-37.3), the staging drill that recovers a zero-admin tenant and receives the page (RC-37.4), the daily reconciliation alert, RES-6 retention for `RBAC_BREAK_GLASS_USED`.
+- **M5:** Kubernetes API audit logging sign-off (RC-37.3), the staging drill that recovers a zero-admin tenant and receives the page (RC-37.4), the daily reconciliation alert, RES-6 retention for `RBAC_BREAK_GLASS_USED`. These are also merge conditions for the M5 PR (see above).
 - **M7:** Ops confirms production activates the `prod` profile (A-3); SRE and PM confirmation of the A9 availability consequence (RES-30).
 - **M8 / M9:** V8 pre-flight and maintenance windows for V8 and V9; Ops items listed on their checklists.
 
@@ -92,7 +102,7 @@ Decide before the PR that needs them (the story owner, not silently waived):
 
 ## Facts a new session needs (M2)
 
-- Behaviour change: service-level callers must now hold the permission in the DB, not only in the JWT. Affects M7 load/seed fixtures; the break-glass CLI (M5) is not built yet.
+- Behaviour change: service-level callers must now hold the permission in the DB, not only in the JWT. Affects M7 load/seed fixtures; the break-glass CLI (M5) is exempt by design (it never calls `assign()`).
 - Order of checks in `assign()`: tenant checks → throttle → legacy gate → M13 → A4 → A2 → duplicate 409 → insert. `revoke()` runs the grant-subset check before the last-admin 409.
 - One denial metric (`nexus.rbac.permission_denied{permission,reason}`) emitted centrally in `GlobalExceptionHandler`; one `ROLE_ASSIGNMENT_DENIED` audit row per denied request.
 - Recorded design deviations D-1..D-3 (M14 signature, M15 host class, adapter constructor) are in `09-technical.md`.
