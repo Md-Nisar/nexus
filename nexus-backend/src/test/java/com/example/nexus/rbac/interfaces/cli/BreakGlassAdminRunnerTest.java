@@ -89,7 +89,7 @@ class BreakGlassAdminRunnerTest {
   }
 
   @Test
-  void should_exit1AndPageWithoutIdentifiers_when_theServiceThrows() {
+  void should_exit1AndPageWithTheValidatedIdentifiers_when_theGrantFailsAfterValidation() {
     when(service.grantFirstAdmin(TARGET, "OPS-12")).thenThrow(new IllegalStateException("db down"));
 
     runner(Duration.ZERO).run(validArgs());
@@ -97,6 +97,23 @@ class BreakGlassAdminRunnerTest {
     verify(exit).exit(1);
     ArgumentCaptor<BreakGlassAlert> captor = ArgumentCaptor.forClass(BreakGlassAlert.class);
     verify(alertPort).raise(captor.capture());
+    // M5 L-4: both values passed validation, so a grant whose COMMIT ack was lost is traceable.
+    assertThat(captor.getValue())
+        .isEqualTo(
+            new BreakGlassAlert(
+                null, TARGET, BreakGlassAlert.OUTCOME_ERROR, "UNEXPECTED_ERROR", "OPS-12"));
+  }
+
+  @Test
+  void should_exit1AndPageWithoutIdentifiers_when_theFailureHappensBeforeValidationSucceeds() {
+    when(service.refuseInvalidArgument()).thenThrow(new IllegalStateException("db down"));
+
+    runner(Duration.ZERO).run(args("--target-user-id=not-a-uuid", "--change-ref=OPS-12"));
+
+    verify(exit).exit(1);
+    ArgumentCaptor<BreakGlassAlert> captor = ArgumentCaptor.forClass(BreakGlassAlert.class);
+    verify(alertPort).raise(captor.capture());
+    // RC-54(a) / L-6: a rejected value is never echoed, and the valid half is withheld with it.
     assertThat(captor.getValue())
         .isEqualTo(new BreakGlassAlert(null, null, BreakGlassAlert.OUTCOME_ERROR, "UNEXPECTED_ERROR", null));
   }

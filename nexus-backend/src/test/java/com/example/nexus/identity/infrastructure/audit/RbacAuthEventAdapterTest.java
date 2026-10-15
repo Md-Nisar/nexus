@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -999,7 +1000,7 @@ class RbacAuthEventAdapterTest {
     adapter.recordBreakGlassRefused(
         new BreakGlassAuditEvent(TENANT_ID, TARGET_USER_ID, "OPS-12", "TENANT_HAS_ADMIN"));
 
-    AuthEvent captured = captureRecordedEvent();
+    AuthEvent captured = captureRefusalEvent();
     assertThat(captured.getEventType()).isEqualTo("ROLE_BREAK_GLASS_GRANT");
     assertThat(captured.getOutcome()).isEqualTo("FAILURE");
     assertThat(captured.getUserId()).isEqualTo(TARGET_USER_ID);
@@ -1015,7 +1016,7 @@ class RbacAuthEventAdapterTest {
     adapter.recordBreakGlassRefused(
         new BreakGlassAuditEvent(null, null, null, "INVALID_ARGUMENT"));
 
-    AuthEvent captured = captureRecordedEvent();
+    AuthEvent captured = captureRefusalEvent();
     assertThat(captured.getOutcome()).isEqualTo("FAILURE");
     assertThat(captured.getTenantId()).isNull();
     assertThat(captured.getUserId()).isNull();
@@ -1026,7 +1027,9 @@ class RbacAuthEventAdapterTest {
 
   @Test
   void should_notThrowAndCount_when_refusalWriteFails() {
-    doThrow(new RuntimeException("db down")).when(secureEventService).recordEvent(any());
+    doThrow(new RuntimeException("db down"))
+        .when(secureEventService)
+        .recordEventInNewTransactionOrThrow(any());
 
     assertThatCode(
             () ->
@@ -1044,6 +1047,52 @@ class RbacAuthEventAdapterTest {
         .isEqualTo(1.0);
   }
 
+  @Test
+  void should_neverUseTheBufferedRecordPath_when_refusalWriteFails() {
+    doThrow(new RuntimeException("db down"))
+        .when(secureEventService)
+        .recordEventInNewTransactionOrThrow(any());
+
+    adapter.recordBreakGlassRefused(new BreakGlassAuditEvent(null, null, null, "INVALID_ARGUMENT"));
+
+    // recordEvent -> AuthEventPort.record is the path that enqueues on the in-memory retry buffer,
+    // which the CLI's exit would discard (US-018 M5 L-3).
+    verify(secureEventService, never()).recordEvent(any());
+  }
+
+  @Test
+  void should_logAuditWriteLost_when_refusalWriteFails() {
+    Logger logger = (Logger) LoggerFactory.getLogger(RbacAuthEventAdapter.class);
+    ListAppender<ILoggingEvent> appender = new ListAppender<>();
+    appender.start();
+    logger.addAppender(appender);
+    try {
+      doThrow(new RuntimeException("db down"))
+          .when(secureEventService)
+          .recordEventInNewTransactionOrThrow(any());
+
+      adapter.recordBreakGlassRefused(
+          new BreakGlassAuditEvent(null, null, null, "INVALID_ARGUMENT"));
+
+      assertThat(appender.list)
+          .anySatisfy(
+              e -> {
+                assertThat(e.getLevel()).isEqualTo(Level.ERROR);
+                assertThat(e.getKeyValuePairs())
+                    .anyMatch(kv -> kv.key.equals("event") && "RBAC_AUDIT_WRITE_LOST".equals(kv.value));
+              });
+    } finally {
+      logger.detachAppender(appender);
+    }
+  }
+
+
+  /** Break-glass refusal capture (US-018 M5 L-3): REQUIRES_NEW + flush, never the buffered path. */
+  private AuthEvent captureRefusalEvent() {
+    ArgumentCaptor<AuthEvent> captor = ArgumentCaptor.forClass(AuthEvent.class);
+    verify(secureEventService).recordEventInNewTransactionOrThrow(captor.capture());
+    return captor.getValue();
+  }
 
   /** Group B (best-effort, {@code REQUIRES_NEW}) capture — {@link #recordRoleAssignmentDenied}. */
   private AuthEvent captureRecordedEvent() {

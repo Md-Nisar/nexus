@@ -78,21 +78,28 @@ public class BreakGlassAdminRunner implements ApplicationRunner {
   }
 
   private int execute(ApplicationArguments args) {
+    // Set only once BOTH arguments have passed validation; they alone may appear in an error page.
+    UUID targetUserId = null;
+    String changeRef = null;
     try {
-      UUID targetUserId = parseTargetUserId(args);
-      String changeRef = parseChangeRef(args);
-      if (targetUserId == null || changeRef == null) {
+      UUID parsedTarget = parseTargetUserId(args);
+      String parsedRef = parseChangeRef(args);
+      if (parsedTarget == null || parsedRef == null) {
         return bootstrapAdminService.refuseInvalidArgument().exitCode();
       }
+      targetUserId = parsedTarget;
+      changeRef = parsedRef;
       BreakGlassOutcome outcome = bootstrapAdminService.grantFirstAdmin(targetUserId, changeRef);
       return outcome.exitCode();
     } catch (RuntimeException e) {
-      // A database or audit failure: nothing in the invocation is known to have been recorded, so
-      // page without identifiers and exit with the generic code rather than a refusal code.
+      // A database or audit failure. The grant may or may not have committed (a lost COMMIT ack), so
+      // when both arguments had passed validation the page carries them (M5 L-4, D-26): an
+      // operator can then find the outcome in the audit table. A failure before validation
+      // succeeded pages without identifiers (RC-54(a), L-6).
       log.error("break-glass invocation failed unexpectedly", e);
       alertPort.raise(
           new BreakGlassAlert(
-              null, null, BreakGlassAlert.OUTCOME_ERROR, "UNEXPECTED_ERROR", null));
+              null, targetUserId, BreakGlassAlert.OUTCOME_ERROR, "UNEXPECTED_ERROR", changeRef));
       return EXIT_UNEXPECTED_ERROR;
     }
   }

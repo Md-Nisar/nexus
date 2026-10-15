@@ -1,5 +1,6 @@
 package com.example.nexus.rbac.application;
 
+import com.example.nexus.common.Profiles;
 import com.example.nexus.rbac.application.RoleAssignmentService.AdminEquivalentRoles;
 import com.example.nexus.rbac.application.port.out.BreakGlassAlert;
 import com.example.nexus.rbac.application.port.out.BreakGlassAlertPort;
@@ -17,6 +18,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -28,7 +30,8 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  * to a target user, and only when the tenant has <b>zero</b> administrators.
  *
  * <p><b>Containment.</b> Callable only from {@code rbac.interfaces.cli} (ArchUnit), so REST can
- * never reach it. It never calls {@link RoleAssignmentService#assign}, so the no-self-assignment
+ * never reach it. The bean itself exists only under the {@code break-glass} profile (ArchUnit), so
+ * a serving JVM does not even hold the admin-granting service (US-018 M5 M-1). It never calls {@link RoleAssignmentService#assign}, so the no-self-assignment
  * rule (A4) needs no exemption.
  *
  * <p><b>Locking.</b> The zero-administrator check runs under the same single-statement, ascending
@@ -44,6 +47,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  * <p>Before US-018 M3 "administrator" is the shipped ADR-0018 caller-qualifying population (A-6).
  */
 @Service
+@Profile(Profiles.BREAK_GLASS)
 public class BootstrapAdminService {
 
   private final UserRoleAssignmentPort userRoleAssignmentPort;

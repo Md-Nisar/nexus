@@ -3,6 +3,9 @@ package com.example.nexus;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.example.nexus.common.Profiles;
+import com.example.nexus.rbac.application.BootstrapAdminService;
+import com.example.nexus.rbac.application.port.out.BreakGlassAlertPort;
+import com.example.nexus.rbac.application.port.out.BreakGlassGrantLookupPort;
 import com.example.nexus.rbac.interfaces.rest.PermissionController;
 import com.example.nexus.rbac.interfaces.rest.RoleController;
 import org.junit.jupiter.api.Test;
@@ -34,5 +37,14 @@ class NexusSmokeTest {
     void should_notRegisterRbacRoleManagementControllers_when_smokeProfileActive() {
         assertThat(applicationContext.getBeansOfType(RoleController.class)).isEmpty();
         assertThat(applicationContext.getBeansOfType(PermissionController.class)).isEmpty();
+    }
+
+    // US-018 M5 M-1: the admin-granting service and its break-glass-only ports exist only under the
+    // break-glass profile, so a normal serving (servlet) context holds none of them.
+    @Test
+    void should_notRegisterBreakGlassBeans_when_servingContextRuns() {
+        assertThat(applicationContext.getBeansOfType(BootstrapAdminService.class)).isEmpty();
+        assertThat(applicationContext.getBeansOfType(BreakGlassAlertPort.class)).isEmpty();
+        assertThat(applicationContext.getBeansOfType(BreakGlassGrantLookupPort.class)).isEmpty();
     }
 }

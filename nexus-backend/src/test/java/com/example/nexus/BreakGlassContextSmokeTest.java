@@ -60,4 +60,25 @@ class BreakGlassContextSmokeTest {
         .rootCause()
         .hasMessageContaining("spring.main.web-application-type=none");
   }
+
+  // M5 L-1: global lazy initialisation must not let the (otherwise unreferenced) guard be skipped.
+  @Test
+  void should_failTheContextRefresh_when_lazyInitialisationIsOnAndTheApplicationIsAServlet() {
+    assertThatThrownBy(
+            () -> {
+              try (ConfigurableApplicationContext ignored =
+                  new SpringApplicationBuilder(NexusApplication.class)
+                      .profiles("smoke", "break-glass")
+                      .properties(
+                          "server.port=0", "spring.datasource.url=jdbc:h2:mem:break-glass-lazy")
+                      .run(
+                          "--spring.main.lazy-initialization=true",
+                          "--spring.main.web-application-type=servlet")) {
+                // never reached: the guard must have failed the refresh
+              }
+            })
+        .hasRootCauseInstanceOf(IllegalStateException.class)
+        .rootCause()
+        .hasMessageContaining("spring.main.web-application-type=none");
+  }
 }

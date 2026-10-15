@@ -15,7 +15,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
+import org.springframework.boot.web.server.context.WebServerApplicationContext;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.context.support.GenericApplicationContext;
 import org.springframework.mock.env.MockEnvironment;
+import org.springframework.web.context.support.GenericWebApplicationContext;
 
 /** Unit tests for {@link BreakGlassWebContextGuard} (US-018 A7, RC-37.6, RC-50(d)). */
 @Tag("UnitTest")
@@ -24,11 +29,16 @@ class BreakGlassWebContextGuardTest {
   private final BreakGlassAlertPort alertPort = mock(BreakGlassAlertPort.class);
 
   private BreakGlassWebContextGuard guardFor(String webApplicationType) {
+    return guardFor(webApplicationType, new GenericApplicationContext());
+  }
+
+  private BreakGlassWebContextGuard guardFor(
+      String webApplicationType, ApplicationContext applicationContext) {
     MockEnvironment environment = new MockEnvironment();
     if (webApplicationType != null) {
       environment.setProperty("spring.main.web-application-type", webApplicationType);
     }
-    return new BreakGlassWebContextGuard(environment, alertPort);
+    return new BreakGlassWebContextGuard(environment, applicationContext, alertPort);
   }
 
   @ParameterizedTest
@@ -57,5 +67,30 @@ class BreakGlassWebContextGuardTest {
     assertThatCode(guardFor(type)::afterPropertiesSet).doesNotThrowAnyException();
 
     verifyNoInteractions(alertPort);
+  }
+
+  // M5 L-1: the property alone is not enough; the actual context must not be a web context.
+  @Test
+  void should_throwAndPage_when_contextIsAServletWebApplicationContextDespiteNoneProperty() {
+    BreakGlassWebContextGuard guard = guardFor("none", new GenericWebApplicationContext());
+
+    assertThatThrownBy(guard::afterPropertiesSet).isInstanceOf(IllegalStateException.class);
+
+    verify(alertPort).raise(any());
+  }
+
+  @Test
+  void should_throwAndPage_when_contextIsAWebServerApplicationContextDespiteNoneProperty() {
+    BreakGlassWebContextGuard guard = guardFor("none", mock(WebServerApplicationContext.class));
+
+    assertThatThrownBy(guard::afterPropertiesSet).isInstanceOf(IllegalStateException.class);
+
+    verify(alertPort).raise(any());
+  }
+
+  @Test
+  void should_notBeLazy_when_guardIsDeclared() {
+    assertThat(BreakGlassWebContextGuard.class.getAnnotation(Lazy.class)).isNotNull();
+    assertThat(BreakGlassWebContextGuard.class.getAnnotation(Lazy.class).value()).isFalse();
   }
 }

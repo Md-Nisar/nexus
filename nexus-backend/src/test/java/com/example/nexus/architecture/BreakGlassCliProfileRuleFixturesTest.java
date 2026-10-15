@@ -3,6 +3,9 @@ package com.example.nexus.architecture;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.example.nexus.rbac.application.BootstrapAdminService;
+import com.example.nexus.rbac.application.port.out.BreakGlassAlert;
+import com.example.nexus.rbac.application.port.out.BreakGlassAlertPort;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.lang.ArchRule;
@@ -58,6 +61,55 @@ class BreakGlassCliProfileRuleFixturesTest {
   @Test
   void should_pass_when_cliBeanIsGatedToBreakGlassOnly() {
     assertThatCode(() -> RULE.check(fixture(GatedBean.class))).doesNotThrowAnyException();
+  }
+
+  // M5 M-1: the service and the break-glass-only ports must be gated to break-glass exactly.
+  private static final ArchRule SERVICE_RULE =
+      HexagonalArchitectureTest.break_glass_only_beans_must_be_profile_gated_to_break_glass;
+
+  @Test
+  void should_passServiceProfileRule_when_bootstrapAdminServiceCarriesTheBreakGlassProfile() {
+    assertThatCode(() -> SERVICE_RULE.check(fixture(BootstrapAdminService.class)))
+        .doesNotThrowAnyException();
+  }
+
+  @Test
+  void should_failServiceProfileRule_when_aBootstrapAdminServiceSubclassHasNoProfile() {
+    assertThatThrownBy(() -> SERVICE_RULE.check(fixture(UnprofiledServiceSubclass.class)))
+        .isInstanceOf(AssertionError.class)
+        .hasMessageContaining(UnprofiledServiceSubclass.class.getName());
+  }
+
+  @Test
+  void should_failServiceProfileRule_when_aBreakGlassPortImplementationHasNoProfile() {
+    assertThatThrownBy(() -> SERVICE_RULE.check(fixture(UnprofiledAlertAdapter.class)))
+        .isInstanceOf(AssertionError.class)
+        .hasMessageContaining(UnprofiledAlertAdapter.class.getName());
+  }
+
+  @Test
+  void should_passServiceProfileRule_when_aBreakGlassPortImplementationIsGated() {
+    assertThatCode(() -> SERVICE_RULE.check(fixture(GatedAlertAdapter.class)))
+        .doesNotThrowAnyException();
+  }
+
+  static class UnprofiledServiceSubclass extends BootstrapAdminService {
+    UnprofiledServiceSubclass() {
+      super(null, null, null, null, null, null);
+    }
+  }
+
+  @Component
+  static class UnprofiledAlertAdapter implements BreakGlassAlertPort {
+    @Override
+    public void raise(BreakGlassAlert alert) {}
+  }
+
+  @Component
+  @Profile("break-glass")
+  static class GatedAlertAdapter implements BreakGlassAlertPort {
+    @Override
+    public void raise(BreakGlassAlert alert) {}
   }
 
   @Component

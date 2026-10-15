@@ -203,9 +203,9 @@ Legend: ✅ addressed as designed · ⚠️ partially addressed, gap · ❌ chan
 | **R** | Operator attribution depends on an infra audit log the design does not require | ❌ **T-R14 (Medium)** |
 | **R** | The page never fires (short-lived pod, log not shipped) | ❌ **T-R15 (Medium)** |
 | **I** | The operator's identity is linked into tenant data | ✅ Correctly avoided (`assigned_by = target`) |
-| **D** | The `break-glass` profile is activated in a serving pod | ⚠️ Folded into RC-37: the runner must refuse unless the web application type is `none` |
+| **D** | The `break-glass` profile is activated in a serving pod | ⚠️ Folded into RC-37: the runner must refuse unless the web application type is `none`. The guard also checks the actual context (a servlet or reactive context fails even if the property reads `none`) and is `@Lazy(false)`, so `spring.main.lazy-initialization=true` cannot skip it (M5 L-1, D-33) |
 | **E** | Break-glass becomes a general backdoor | ✅ Zero-admin precondition under the set lock; a re-run refuses. **But** after T-E35's demotion, tenants with live custom administrators satisfy "zero administrators" |
-| **E** | REST reaches `BootstrapAdminService` | ✅ ArchUnit containment plus profile gating |
+| **E** | REST reaches `BootstrapAdminService` | ✅ ArchUnit containment (exact-class exemption, and nothing outside `rbac.interfaces.cli` may depend on it) plus profile gating that now covers the service itself: `BootstrapAdminService` and the break-glass-only adapters carry `@Profile("break-glass")`, so a serving JVM has no such bean (M5 M-1, L-2; D-32, D-34) |
 
 ### M6 — A11 claim validation
 

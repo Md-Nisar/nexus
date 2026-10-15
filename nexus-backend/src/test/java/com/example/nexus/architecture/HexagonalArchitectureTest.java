@@ -11,6 +11,8 @@ import com.example.nexus.common.security.PublicEndpoint;
 import com.example.nexus.common.security.RequiresPermission;
 import com.example.nexus.identity.infrastructure.web.JwtAuthenticationFilter;
 import com.example.nexus.rbac.application.BootstrapAdminService;
+import com.example.nexus.rbac.application.port.out.BreakGlassAlertPort;
+import com.example.nexus.rbac.application.port.out.BreakGlassGrantLookupPort;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.domain.JavaClass;
@@ -286,12 +288,53 @@ class HexagonalArchitectureTest {
     static final ArchRule bootstrap_admin_service_is_callable_only_from_the_cli =
             noClasses()
                     .that().resideOutsideOfPackage("..rbac.interfaces.cli..")
-                    .and().areNotAssignableTo(BootstrapAdminService.class)
+                    // Exactly this class, by name: areNotAssignableTo would also exempt a subclass
+                    // declared anywhere (US-018 M5 L-2).
+                    .and().doNotHaveFullyQualifiedName(BootstrapAdminService.class.getName())
                     .should().dependOnClassesThat().areAssignableTo(BootstrapAdminService.class)
                     .because("US-018 A7 / ADR-0025 3: BootstrapAdminService grants administration "
                             + "without the grant-subset checks, so only the profile-gated "
                             + "rbac.interfaces.cli runner may call it. A second caller makes "
                             + "break-glass a general admin-granting path and needs an ADR.");
+
+    // US-018 M5 L-2: the rule above lets rbac.interfaces.cli reference the service, so a non-bean
+    // helper declared there could launder access for a REST class. Nothing outside the cli package
+    // may depend on anything inside it (Spring discovers the beans by scanning, not by reference).
+    @ArchTest
+    static final ArchRule nothing_outside_the_cli_may_depend_on_it =
+            nothingOutsideMayDependOn("..rbac.interfaces.cli..");
+
+    /** The rule above, over {@code cliPackage}, so the fixtures can point it at themselves. */
+    static ArchRule nothingOutsideMayDependOn(String cliPackage) {
+        return noClasses()
+                .that().resideOutsideOfPackage(cliPackage)
+                .should().dependOnClassesThat().resideInAPackage(cliPackage)
+                .because("US-018 M5 L-2: a class outside rbac.interfaces.cli that references one "
+                        + "inside it can launder access to BootstrapAdminService past the "
+                        + "containment rule.");
+    }
+
+    // US-018 M5 M-1: the admin-granting service, and the ports only the CLI uses, must exist only
+    // under the break-glass profile, so no serving JVM holds a BootstrapAdminService bean.
+    @ArchTest
+    static final ArchRule break_glass_only_beans_must_be_profile_gated_to_break_glass =
+            classes()
+                    .that(breakGlassOnlyBeans())
+                    .should(beProfileGatedToBreakGlassOnly())
+                    .because("US-018 M5 M-1: BootstrapAdminService and its break-glass-only "
+                            + "adapters must carry @Profile(\"break-glass\") exactly; a plain "
+                            + "@Service/@Component puts the admin-granting service in every "
+                            + "serving JVM.");
+
+    /** Concrete classes that are, or implement, a break-glass-only type (subclasses included). */
+    static DescribedPredicate<JavaClass> breakGlassOnlyBeans() {
+        return DescribedPredicate.describe(
+                "are BootstrapAdminService or implement a break-glass-only port",
+                javaClass -> !javaClass.isInterface()
+                        && (javaClass.isAssignableTo(BootstrapAdminService.class)
+                                || javaClass.isAssignableTo(BreakGlassAlertPort.class)
+                                || javaClass.isAssignableTo(BreakGlassGrantLookupPort.class)));
+    }
 
     // US-018 A7 (03-design.md §7.2, ADR-0025 3): every Spring bean in rbac.interfaces.cli must be
     // active ONLY under the break-glass profile, so the privileged runner can never start in a
@@ -321,7 +364,7 @@ class HexagonalArchitectureTest {
                         .orElse(false);
                 if (!gated) {
                     events.add(SimpleConditionEvent.violated(javaClass, javaClass.getName()
-                            + " is a bean in rbac.interfaces.cli but is not annotated"
+                            + " is a break-glass-only bean but is not annotated"
                             + " @Profile(\"break-glass\") exactly"));
                 }
             }

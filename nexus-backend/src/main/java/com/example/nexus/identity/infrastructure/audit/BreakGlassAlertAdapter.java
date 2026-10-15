@@ -1,9 +1,11 @@
 package com.example.nexus.identity.infrastructure.audit;
 
+import com.example.nexus.common.Profiles;
 import com.example.nexus.rbac.application.port.out.BreakGlassAlert;
 import com.example.nexus.rbac.application.port.out.BreakGlassAlertPort;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 /**
@@ -17,6 +19,7 @@ import org.springframework.stereotype.Component;
  * attached as key-values for structured appenders.
  */
 @Component
+@Profile(Profiles.BREAK_GLASS)
 public class BreakGlassAlertAdapter implements BreakGlassAlertPort {
 
   static final String MARKER = "RBAC_BREAK_GLASS_USED";

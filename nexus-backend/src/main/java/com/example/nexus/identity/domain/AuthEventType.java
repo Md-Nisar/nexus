@@ -57,7 +57,8 @@ public enum AuthEventType {
 
   // US-018 A7 (03-design.md §7.2): the break-glass CLI's first-administrator grant, and every
   // refusal of it (outcome FAILURE). Deliberately NOT in PRIORITY: it is never written on the
-  // buffered path (success is atomic with the grant, a refusal is its own REQUIRES_NEW write).
+  // buffered path (success is atomic with the grant, a refusal is its own REQUIRES_NEW
+  // saveAndFlush that never enqueues on the retry buffer).
   ROLE_BREAK_GLASS_GRANT("ROLE_BREAK_GLASS_GRANT");
 
   // ROLE_ASSIGNED/ROLE_REVOKED are PRIORITY (T-R4, reversing the original US-012 D10 decision):

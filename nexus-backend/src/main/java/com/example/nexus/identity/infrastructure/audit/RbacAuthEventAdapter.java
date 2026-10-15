@@ -366,14 +366,18 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
   }
 
   /**
-   * US-018 A7 (Group B — best effort): a refusal row in its own {@code REQUIRES_NEW} transaction.
-   * Never throws; a lost write logs {@code RBAC_AUDIT_WRITE_LOST} and counts, like {@link
-   * #recordDenied}. The paging ERROR is raised separately, so a lost row never hides the page.
+   * US-018 A7 (Group B — best effort): a refusal row in its own {@code REQUIRES_NEW} transaction,
+   * flushed immediately. It goes through {@link
+   * SecureEventService#recordEventInNewTransactionOrThrow(AuthEvent)}, never {@link
+   * SecureEventService#recordEvent(AuthEvent)}: the latter enqueues a failed write on the in-memory
+   * retry buffer, which the CLI's exit discards before it drains (M5 L-3). Never throws; a lost
+   * write logs {@code RBAC_AUDIT_WRITE_LOST} and counts, like {@link #recordDenied}. The paging
+   * ERROR is raised separately, so a lost row never hides the page.
    */
   @Override
   public void recordBreakGlassRefused(BreakGlassAuditEvent event) {
     try {
-      secureEventService.recordEvent(breakGlassEvent(event, OUTCOME_FAILURE));
+      secureEventService.recordEventInNewTransactionOrThrow(breakGlassEvent(event, OUTCOME_FAILURE));
     } catch (RuntimeException e) {
       log.atError()
           .addKeyValue("event", "RBAC_AUDIT_WRITE_LOST")

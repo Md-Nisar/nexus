@@ -3,6 +3,7 @@ package com.example.nexus.architecture;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.example.nexus.architecture.clifixture.CliHelperFixture;
 import com.example.nexus.rbac.application.BootstrapAdminService;
 import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
@@ -51,6 +52,66 @@ class BreakGlassContainmentRuleFixturesTest {
             () -> HexagonalArchitectureTest.bootstrap_admin_service_is_callable_only_from_the_cli
                 .check(fixture))
         .doesNotThrowAnyException();
+  }
+
+  // M5 L-2: a subclass is not "the class itself", wherever it is declared.
+  @Test
+  void should_failContainmentRule_when_aSubclassOfBootstrapAdminServiceIsDeclaredOutsideTheCli() {
+    JavaClasses fixture = new ClassFileImporter().importClasses(SubclassFixture.class);
+
+    assertThatThrownBy(
+            () -> HexagonalArchitectureTest.bootstrap_admin_service_is_callable_only_from_the_cli
+                .check(fixture))
+        .isInstanceOf(AssertionError.class)
+        .hasMessageContaining(SubclassFixture.class.getName());
+  }
+
+  @Test
+  void should_passContainmentRule_when_theClassIsBootstrapAdminServiceItself() {
+    // With an unrelated class so the rule has something to check besides the exempted class.
+    JavaClasses real =
+        new ClassFileImporter().importClasses(BootstrapAdminService.class, UnrelatedFixture.class);
+
+    assertThatCode(
+            () -> HexagonalArchitectureTest.bootstrap_admin_service_is_callable_only_from_the_cli
+                .check(real))
+        .doesNotThrowAnyException();
+  }
+
+  // M5 L-2: a class outside the cli package reaching a (non-bean) helper inside it.
+  @Test
+  void should_failCliIsolationRule_when_aClassOutsideTheCliDependsOnAClassInside() {
+    JavaClasses fixture =
+        new ClassFileImporter().importClasses(LaunderingCallerFixture.class, CliHelperFixture.class);
+
+    assertThatThrownBy(
+            () -> HexagonalArchitectureTest.nothingOutsideMayDependOn("..architecture.clifixture..")
+                .check(fixture))
+        .isInstanceOf(AssertionError.class)
+        .hasMessageContaining(LaunderingCallerFixture.class.getName());
+  }
+
+  @Test
+  void should_passCliIsolationRule_when_noClassOutsideTheCliDependsOnIt() {
+    JavaClasses fixture =
+        new ClassFileImporter().importClasses(UnrelatedFixture.class, CliHelperFixture.class);
+
+    assertThatCode(
+            () -> HexagonalArchitectureTest.nothingOutsideMayDependOn("..architecture.clifixture..")
+                .check(fixture))
+        .doesNotThrowAnyException();
+  }
+
+  static class SubclassFixture extends BootstrapAdminService {
+    SubclassFixture() {
+      super(null, null, null, null, null, null);
+    }
+  }
+
+  static class LaunderingCallerFixture {
+    void handle() {
+      new CliHelperFixture().helperCall();
+    }
   }
 
   static class RestCallerFixture {

@@ -322,6 +322,38 @@ class SecureEventServiceTest {
         .hasMessage("db down");
   }
 
+  // US-018 M5 L-3: recordEventInNewTransactionOrThrow — REQUIRES_NEW + flush, never the buffered path
+
+  @Test
+  void should_delegateToRecordOrThrowAndNeverRecord_when_recordEventInNewTransactionOrThrowCalled() {
+    AuthEvent event = new AuthEvent(UUID.randomUUID(), "ROLE_BREAK_GLASS_GRANT", "FAILURE");
+
+    service.recordEventInNewTransactionOrThrow(event);
+
+    verify(authEventPort).recordOrThrow(event);
+    verify(authEventPort, never()).record(any());
+  }
+
+  @Test
+  void should_propagateException_when_recordEventInNewTransactionOrThrowFails() {
+    AuthEvent event = new AuthEvent(UUID.randomUUID(), "ROLE_BREAK_GLASS_GRANT", "FAILURE");
+    doThrow(new RuntimeException("db down")).when(authEventPort).recordOrThrow(event);
+
+    assertThatThrownBy(() -> service.recordEventInNewTransactionOrThrow(event))
+        .isInstanceOf(RuntimeException.class)
+        .hasMessage("db down");
+  }
+
+  @Test
+  void should_beAnnotatedRequiresNew_when_recordEventInNewTransactionOrThrowDeclared()
+      throws NoSuchMethodException {
+    Method method =
+        SecureEventService.class.getMethod("recordEventInNewTransactionOrThrow", AuthEvent.class);
+
+    assertThat(method.getAnnotation(Transactional.class).propagation())
+        .isEqualTo(Propagation.REQUIRES_NEW);
+  }
+
   /**
    * MC-4: {@code recordEventInCurrentTransaction} must be annotated {@code MANDATORY} — it joins
    * the caller's existing transaction rather than starting one ({@code REQUIRED}) or suspending it

@@ -72,6 +72,17 @@ public class SecureEventService {
   }
 
   /**
+   * Records {@code event} in its own {@code REQUIRES_NEW} transaction with an immediate flush, and
+   * propagates any failure (US-018 M5 L-3). Unlike {@link #recordEvent(AuthEvent)} it never reaches
+   * the in-memory retry buffer: a short-lived process such as the break-glass CLI exits before the
+   * buffer drains, so a buffered row would vanish silently. The caller owns the failure handling.
+   */
+  @Transactional(propagation = Propagation.REQUIRES_NEW)
+  public void recordEventInNewTransactionOrThrow(AuthEvent event) {
+    authEventPort.recordOrThrow(event);
+  }
+
+  /**
    * Revokes every unrevoked token in the family in an independent transaction and returns how many
    * rows it revoked. The count is read from the committed update (US-018 L-3), so the caller acts
    * on what this transaction actually changed, not on what it read earlier.

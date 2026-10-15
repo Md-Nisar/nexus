@@ -8,6 +8,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.example.nexus.TestcontainersConfiguration;
+import com.example.nexus.common.Profiles;
 import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.identity.domain.EmailCipher;
 import com.example.nexus.identity.domain.User;
@@ -24,6 +25,7 @@ import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.UserRole;
 import com.example.nexus.rbac.application.port.out.BreakGlassAlertPort;
 import com.example.nexus.rbac.interfaces.cli.BreakGlassAdminRunner;
+import com.example.nexus.rbac.interfaces.cli.BreakGlassExit;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import java.nio.ByteBuffer;
@@ -52,6 +54,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 /**
  * US-018 A7 (T-007, test scenario TS-6): the break-glass first-administrator grant against a real
@@ -65,12 +68,21 @@ import org.springframework.test.context.ActiveProfiles;
 @SpringBootTest(
     properties = {
       "nexus.rbac.denial-throttle.max-denials=100",
-      "spring.datasource.hikari.maximum-pool-size=15"
+      "spring.datasource.hikari.maximum-pool-size=15",
+      // The real CLI shape (M5 M-1): the service only exists under the break-glass profile, which
+      // runs with no web application. Flyway is switched back on only to build the Testcontainers
+      // schema; the real profile disables it.
+      "spring.main.web-application-type=none",
+      "spring.flyway.enabled=true",
+      "nexus.rbac.break-glass.log-flush-interval=0s"
     })
 @Import(TestcontainersConfiguration.class)
-@ActiveProfiles("test")
+@ActiveProfiles({"test", Profiles.BREAK_GLASS})
 @Tag("IT")
 class BreakGlassAdminIT {
+
+  // Replaces the production exit (System.exit): the profile's own runner fires once at startup.
+  @MockitoBean private BreakGlassExit startupExit;
 
   /** Audit rows persist across tests, and a used reference is refused (exit 6): one per call. */
   private static String uniqueRef() {
