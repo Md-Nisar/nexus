@@ -101,9 +101,9 @@ class RbacMetricCardinalityTest {
             Optional.of(new RoleView(foreignRoleId, otherTenantId, "X", "d", false, Instant.now())));
     assertThatThrownBy(() -> managementService.listRolePermissions(actor, foreignRoleId))
         .isInstanceOf(ResourceNotFoundException.class);
-    // Throttled path.
+    // Throttled path (a throttled actor is blocked on a self-target).
     when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
-    assertThatThrownBy(() -> assignmentService.assign(actor, targetId, roleId, RequestContext.UNKNOWN))
+    assertThatThrownBy(() -> assignmentService.assign(actor, actorId, roleId, RequestContext.UNKNOWN))
         .isInstanceOf(InsufficientPermissionException.class);
 
     assertThat(registry.getMeters()).as("the paths above must have emitted meters").isNotEmpty();

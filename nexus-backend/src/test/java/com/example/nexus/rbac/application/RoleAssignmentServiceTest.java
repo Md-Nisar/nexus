@@ -2174,88 +2174,93 @@ class RoleAssignmentServiceTest {
   }
 
   // ---------------------------------------------------------------------------------------
-  // The denial throttle (D14, MC-7): after the 404s, before every authorization read
+  // The denial throttle (D14, MC-7; US-018 B8): after the 404s and the classification, before the
+  // caller's own authorization reads. Blocks only set-lock and self-target requests.
   // ---------------------------------------------------------------------------------------
 
-  @Test
-  void should_throwWithNoAuthorizationReadsAndIncrementCounter_when_throttled_assign() {
+  private double deniedThrottledCount(String operation) {
+    Counter counter =
+        meterRegistry.find("nexus.rbac.denial_throttled").tags("operation", operation).counter();
+    return counter == null ? 0.0 : counter.count();
+  }
+
+  /** A benign target the caller cannot grant: the role carries P2, the caller holds P1 only. */
+  private void stubBenignAssignTargetCallerLacksIt() {
     stubBenignAssignTarget();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(Set.of(P2)));
+    stubCallerHoldsP1Only();
+  }
+
+  @Test
+  void should_assignNormally_when_throttledAndTargetIsBenign() {
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
+
+    ActiveRoleAssignment result = service.assign(actor, targetUserId, roleId, ctx);
+
+    assertThat(result.roleId()).isEqualTo(roleId);
+    assertThat(deniedThrottledCount("assign")).isZero();
+    verify(rbacAuditPort)
+        .recordRoleAssigned(new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx));
+  }
+
+  @Test
+  void should_revokeNormally_when_throttledAndTargetIsBenign() {
+    stubHappyPathRevoke();
+    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
+
+    service.revoke(actor, targetUserId, roleId, ctx);
+
+    assertThat(deniedThrottledCount("revoke")).isZero();
+    verify(rbacAuditPort)
+        .recordRoleRevoked(new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx));
+  }
+
+  @Test
+  void should_blockBeforeTheSetLockWithNoAuditRow_when_throttledAndTargetIsAdminDefining_assign() {
+    stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(CATALOGUE));
     when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
 
     assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
         .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
+        .satisfies(
+            e -> {
+              assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN);
+              assertThat(((InsufficientPermissionException) e).getRequiredPermission())
+                  .isEqualTo("user:role:assign");
+            });
 
-    verify(userRoleAssignmentPort, never()).findPermissionIdsForRole(any(), any());
-    verify(userRoleAssignmentPort, never()).findCatalogueIds();
-    verify(userRoleAssignmentPort, never()).findHeldRolePermissionIdsForAuthorization(any(), any());
-    verify(userRoleAssignmentPort, never()).findRolePermissionIdsForTenantRoles(any());
     verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
-    verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
+    verify(userRoleAssignmentPort, never()).findHeldRolePermissionIdsForAuthorization(any(), any());
     verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
     verify(throttlePort, never()).recordDenial(any(), any());
     verifyNoInteractions(rbacAuditPort, permissionCachePort);
-    Counter counter =
-        meterRegistry.find("nexus.rbac.denial_throttled").tags("operation", "assign").counter();
-    assertThat(counter).isNotNull();
-    assertThat(counter.count()).isEqualTo(1.0);
+    assertThat(deniedThrottledCount("assign")).isEqualTo(1.0);
   }
 
   @Test
-  void should_throwWithNoAuthorizationReadsAndIncrementCounter_when_throttled_revoke() {
-    stubBenignRevokeTarget();
+  void should_blockBeforeTheSetLockWithNoAuditRow_when_throttledAndTargetIsAdminDefining_revoke() {
+    stubRevokeTarget(role("ADMIN_LIKE"));
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(CATALOGUE));
     when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
 
     assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
         .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
 
     verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
-    verify(userRoleAssignmentPort, never()).findPermissionIdsForRole(any(), any());
-    verify(userRoleAssignmentPort, never()).findHeldRolePermissionIdsForAuthorization(any(), any());
     verify(userRoleAssignmentPort, never()).revoke(any(), any());
     verifyNoInteractions(rbacAuditPort, permissionCachePort);
-    Counter counter =
-        meterRegistry.find("nexus.rbac.denial_throttled").tags("operation", "revoke").counter();
-    assertThat(counter).isNotNull();
-    assertThat(counter.count()).isEqualTo(1.0);
+    assertThat(deniedThrottledCount("revoke")).isEqualTo(1.0);
     assertThat(meterRegistry.find("nexus.rbac.privileged_revoke_lock_hold").timers()).isEmpty();
   }
 
   @Test
-  void should_reportUserRoleAssignAsRequiredPermission_when_throttled() {
-    stubBenignAssignTarget();
-    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getRequiredPermission())
-                    .isEqualTo("user:role:assign"));
-  }
-
-  /** EC8: throttle timing must not be usable to probe role contents. */
-  @Test
-  void should_checkThrottleBeforeEveryAuthorizationRead_when_assigning() {
-    stubBenignAssignTarget();
-    stubSuccessfulInsert();
-
-    service.assign(actor, targetUserId, roleId, ctx);
-
-    InOrder targetRead = Mockito.inOrder(throttlePort, userRoleAssignmentPort);
-    targetRead.verify(throttlePort).isThrottled(tenantId, actorId);
-    targetRead.verify(userRoleAssignmentPort).findPermissionIdsForRole(roleId, tenantId);
-    targetRead.verify(userRoleAssignmentPort).hasActiveAssignment(targetUserId, roleId);
-    InOrder callerRead = Mockito.inOrder(throttlePort, userRoleAssignmentPort);
-    callerRead.verify(throttlePort).isThrottled(tenantId, actorId);
-    callerRead
-        .verify(userRoleAssignmentPort)
-        .findHeldRolePermissionIdsForAuthorization(actorId, tenantId);
-    callerRead.verify(userRoleAssignmentPort).hasActiveAssignment(targetUserId, roleId);
-  }
-
-  @Test
-  void should_reportThrottleWithNoAuditAndNoReads_when_throttledAndSelfNonAdmin() {
+  void should_blockWithNoAuditAndNoCallerReads_when_throttledAndSelfTargetNonAdmin() {
     stubBenignSelfAssignTarget();
     when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
 
@@ -2265,20 +2270,126 @@ class RoleAssignmentServiceTest {
     verifyNoInteractions(rbacAuditPort);
     verify(throttlePort, never()).recordDenial(any(), any());
     verify(userRoleAssignmentPort, never()).findHeldRolePermissionIdsForAuthorization(any(), any());
-    verify(userRoleAssignmentPort, never()).findCatalogueIds();
+    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
+    assertThat(deniedThrottledCount("assign")).isEqualTo(1.0);
   }
 
   @Test
-  void should_return403_when_actorThrottledAndTheAdministratorRequirementWouldAlsoHaveDenied() {
-    stubRevokeTarget(role("ADMIN_LIKE"));
+  void should_blockSelfTargetRevoke_when_throttled() {
+    stubRevokeTargetFor(actorId, memberRole());
+    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
+
+    assertThatThrownBy(() -> service.revoke(actor, actorId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
+
+    verify(userRoleAssignmentPort, never()).revoke(any(), any());
+    verifyNoInteractions(rbacAuditPort);
+  }
+
+  /** Classification (M14, M15) runs before the throttle decision; the caller's own reads after. */
+  @Test
+  void should_decideThrottleAfterClassificationAndBeforeTheCallersReads_when_assigning() {
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    InOrder order = Mockito.inOrder(throttlePort, userRoleAssignmentPort);
+    order.verify(userRoleAssignmentPort).findPermissionIdsForRole(roleId, tenantId);
+    order.verify(throttlePort).isThrottled(tenantId, actorId);
+    order
+        .verify(userRoleAssignmentPort)
+        .findHeldRolePermissionIdsForAuthorization(actorId, tenantId);
+    order.verify(userRoleAssignmentPort).hasActiveAssignment(targetUserId, roleId);
+  }
+
+  @Test
+  void should_return403WithNoAuditRowCounterAndOneWarn_when_throttledBenignRequestIsDenied() {
+    stubBenignAssignTargetCallerLacksIt();
+    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
+    when(throttlePort.recordSuppressedDenial(tenantId, actorId)).thenReturn(1, 2);
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      for (int i = 0; i < 2; i++) {
+        assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+            .isInstanceOf(InsufficientPermissionException.class)
+            .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+      }
+
+      var warns = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
+      assertThat(warns).as("one WARN per window, and no per-denial WARN").hasSize(1);
+      assertThat(keyValueMap(warns.get(0)))
+          .containsOnlyKeys("event", "tenantId", "actorUserId", "operation", "suppressedCount")
+          .containsEntry("event", "RBAC_DENIAL_THROTTLED")
+          .containsEntry("operation", "assign")
+          .containsEntry("suppressedCount", 1);
+    } finally {
+      stopLogCapture(appender);
+    }
+
+    verifyNoInteractions(rbacAuditPort);
+    verify(throttlePort, never()).recordDenial(any(), any());
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+    assertThat(deniedThrottledCount("assign")).isEqualTo(2.0);
+  }
+
+  @Test
+  void should_return403WithNoAuditRow_when_throttledCallerNoLongerHoldsTheEndpointPermission() {
+    stubBenignAssignTarget();
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(List.of());
+    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.PERMISSION_ABSENT));
+
+    verifyNoInteractions(rbacAuditPort);
+    assertThat(deniedThrottledCount("assign")).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_return403WithNoAuditRow_when_throttledRevokeSubsetDenies() {
+    stubBenignRevokeTarget();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(Set.of(P2)));
+    stubCallerHoldsP1Only();
     when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
 
     assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
 
-    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
-    verify(userRoleAssignmentPort, never()).revoke(any(), any());
     verifyNoInteractions(rbacAuditPort);
+    verify(userRoleAssignmentPort, never()).revoke(any(), any());
+    assertThat(deniedThrottledCount("revoke")).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_stillReturnTheRealDenial_when_recordSuppressedDenialThrows() {
+    stubBenignAssignTargetCallerLacksIt();
+    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
+    when(throttlePort.recordSuppressedDenial(tenantId, actorId))
+        .thenThrow(new RuntimeException("throttle store down"));
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+  }
+
+  @Test
+  void should_recordFullDenialAndNeverSuppress_when_notThrottled() {
+    stubBenignAssignTargetCallerLacksIt();
+    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(false);
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    verify(rbacAuditPort)
+        .recordRoleAssignmentDenied(
+            new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx),
+            DenialReason.GRANT_EXCEEDS_CALLER, "assign", 1);
+    verify(throttlePort).recordDenial(tenantId, actorId);
+    verify(throttlePort, never()).recordSuppressedDenial(any(), any());
+    assertThat(deniedThrottledCount("assign")).isZero();
   }
 
   @Test

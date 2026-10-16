@@ -51,4 +51,17 @@ public interface RoleChangeThrottlePort {
    *     {@code window-seconds}, i.e. the transition into the throttled state
    */
   boolean recordDenial(UUID tenantId, UUID actorUserId);
+
+  /**
+   * Counts one denial that was evaluated and refused while this actor was throttled and wrote no
+   * audit row (US-018 B8, RC-33.1), and returns how many such denials the current throttle window
+   * has seen, this one included. A return of {@code 1} is the first in the window, which is the
+   * one that logs {@code RBAC_DENIAL_THROTTLED}; the state is shared across instances when the
+   * store is. Never throws; returns {@code 0} when the store is unavailable (no WARN).
+   *
+   * @param tenantId the tenant the denied role-change request targeted
+   * @param actorUserId the throttled caller whose request was denied
+   * @return the number of suppressed denials in the current window, or {@code 0} on failure
+   */
+  int recordSuppressedDenial(UUID tenantId, UUID actorUserId);
 }

@@ -164,6 +164,12 @@ nexus:
       # Matches nexus.security.rate-limit.ip-window-seconds (line 191) so operators reason about
       # one window length platform-wide.
       window-seconds: ${NEXUS_RBAC_DENIAL_THROTTLE_WINDOW_SECONDS:60}
+    # Shared-store requirement for that throttle (US-018 B8, RC-45.1). When true, startup fails if
+    # nexus.security.rate-limit.store-type is not redis, because the memory store keeps the throttle
+    # per JVM (RES-11). False here so dev, test and a single-node setup start; application-prod.yml
+    # sets it to true.
+    throttle:
+      require-shared-store: ${NEXUS_RBAC_THROTTLE_REQUIRE_SHARED_STORE:false}
     # Per-user permission epoch (US-018 A9, design §9.2, §9.5). Both timeouts apply to dedicated
     # Redis connections built from spring.data.redis.*; the 2 s timeout above never applies here.
     epoch:

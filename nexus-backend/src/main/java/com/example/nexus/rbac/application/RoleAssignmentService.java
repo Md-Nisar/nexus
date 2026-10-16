@@ -196,10 +196,10 @@ public class RoleAssignmentService {
     verifySameTenant(targetUserId, actor, USER_ROLE_ASSIGN, OPERATION_ASSIGN);
     Role role = resolveRoleInTenant(roleId, actor, USER_ROLE_ASSIGN, OPERATION_ASSIGN);
 
-    requireNotThrottled(actor, OPERATION_ASSIGN, requestContext);
-
-    TargetClassification target =
-        classifyTarget(actor, role, OPERATION_ASSIGN);
+    // B8 (RES-33): classification (two non-locking reads) runs BEFORE the throttle decision, so a
+    // throttled actor is blocked only on the paths that take the set lock or target themself.
+    TargetClassification target = classifyTarget(actor, role, OPERATION_ASSIGN);
+    boolean throttled = evaluateThrottle(actor, targetUserId, target, OPERATION_ASSIGN);
     SetLock setLock = target.adminDefining() ? acquireSetLock(actor, target, role) : null;
     Timer.Sample lockHoldSample = setLock == null ? null : setLock.holdTimer();
 
@@ -208,7 +208,8 @@ public class RoleAssignmentService {
           userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(
               actor.userId(), actor.tenantId());
       requireCallerStillHoldsUserRoleAssign(
-          actor, targetUserId, role, heldRolePermissions, OPERATION_ASSIGN, requestContext);
+          actor, targetUserId, role, heldRolePermissions, OPERATION_ASSIGN, requestContext,
+          throttled);
 
       boolean selfTarget = targetUserId.equals(actor.userId());
       boolean callerIsAdministrator =
@@ -218,7 +219,7 @@ public class RoleAssignmentService {
       }
       requireGrantWithinCallerHoldings(
           actor, targetUserId, role, target, heldRolePermissions, OPERATION_ASSIGN,
-          requestContext);
+          requestContext, throttled);
 
       if (userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)) {
         // Deliberately DEBUG, not WARN: a duplicate-assignment attempt is a benign client bug,
@@ -315,10 +316,8 @@ public class RoleAssignmentService {
     // revoked" identically for every role, and its id is what the lockout check excludes.
     ActiveAssignmentRef ref = findAssignmentRefOrThrow(targetUserId, roleId, actor.tenantId());
 
-    requireNotThrottled(actor, OPERATION_REVOKE, requestContext);
-
-    TargetClassification target =
-        classifyTarget(actor, role, OPERATION_REVOKE);
+    TargetClassification target = classifyTarget(actor, role, OPERATION_REVOKE);
+    boolean throttled = evaluateThrottle(actor, targetUserId, target, OPERATION_REVOKE);
     SetLock setLock = target.adminDefining() ? acquireSetLock(actor, target, role) : null;
     Timer.Sample lockHoldSample = setLock == null ? null : setLock.holdTimer();
 
@@ -333,10 +332,11 @@ public class RoleAssignmentService {
           userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(
               actor.userId(), actor.tenantId());
       requireCallerStillHoldsUserRoleAssign(
-          actor, targetUserId, role, heldRolePermissions, OPERATION_REVOKE, requestContext);
+          actor, targetUserId, role, heldRolePermissions, OPERATION_REVOKE, requestContext,
+          throttled);
       requireGrantWithinCallerHoldings(
           actor, targetUserId, role, target, heldRolePermissions, OPERATION_REVOKE,
-          requestContext);
+          requestContext, throttled);
       if (setLock != null) {
         // The last-admin lockout: distinct holders of admin-defining roles, not rows, excluding
         // the assignment being revoked (by assignment id, never by user id, so a user's OTHER
@@ -590,17 +590,25 @@ public class RoleAssignmentService {
   }
 
   /**
-   * D14 (03-design.md §4.8, §6.1): after the 404s and before every authorization read, the audit
-   * write and the metric. Bounds the cost of repeated authorization denials on {@code
-   * assign()}/{@code revoke()} (T-D10, T-D11, RES-8).
+   * D14, re-scoped by US-018 B8 (Decision 25; 03-design.md §10.8): after the 404s and the target's
+   * classification, before every authorization read of the caller. Returns whether the actor is
+   * currently throttled. A throttled actor is BLOCKED (403, no audit row, counter) only when the
+   * request would take the set lock (the target role is admin-defining) or targets the actor
+   * themself: those are the paths the throttle exists to bound (T-D10, T-D11, RES-8; ADR-0018 D7).
+   * Every other request is evaluated normally, so an authorized benign change still succeeds
+   * (FR-B8.a); a denial among them is handled by {@link #suppressThrottledDenial}.
+   *
+   * <p>A throttled actor never reaches the set lock: this runs before {@link #acquireSetLock}.
+   * Classifying first tells a throttled actor whether a target is admin-defining by whether the
+   * request is blocked (one bit, RES-33, accepted).
    *
    * <p>Defense in depth (MC-7(i)): {@link RoleChangeThrottlePort#isThrottled} is documented to
    * fail safe and never throw, but a throwing implementation must not turn an availability
-   * problem into a false block here — any exception is swallowed and treated as "not throttled",
+   * problem into a false block here: any exception is swallowed and treated as "not throttled",
    * falling through to the real gate, which remains authoritative.
    */
-  private void requireNotThrottled(
-      RoleChangeActor actor, String operation, RequestContext requestContext) {
+  private boolean evaluateThrottle(
+      RoleChangeActor actor, UUID targetUserId, TargetClassification target, String operation) {
     boolean throttled;
     try {
       throttled = throttlePort.isThrottled(actor.tenantId(), actor.userId());
@@ -611,16 +619,61 @@ public class RoleAssignmentService {
           .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
           .addKeyValue(LOG_KEY_OPERATION, operation)
           .log("isThrottled threw despite its never-throw contract", e);
-      throttled = false;
+      return false;
     }
     if (!throttled) {
-      return;
+      return false;
     }
+    if (target.adminDefining() || targetUserId.equals(actor.userId())) {
+      countThrottled(operation);
+      throw new InsufficientPermissionException(USER_ROLE_ASSIGN, DenialReason.NOT_TENANT_ADMIN);
+    }
+    return true;
+  }
+
+  private void countThrottled(String operation) {
     Counter.builder(COUNTER_DENIAL_THROTTLED)
         .tag("operation", operation)
         .register(meterRegistry)
         .increment();
-    throw new InsufficientPermissionException(USER_ROLE_ASSIGN, DenialReason.NOT_TENANT_ADMIN);
+  }
+
+  /**
+   * B8 (RC-33.1): a request by a throttled actor that was evaluated and DENIED returns its 403
+   * without a {@code ROLE_ASSIGNMENT_DENIED} row. A {@code REQUIRES_NEW} row per throttled denial
+   * would re-open US-016 T-D10 (a second pooled connection per request, bounded only by request
+   * rate) and let an attacker bury meaningful denials in noise. Denials before the throttle trips
+   * were recorded in full. Increments {@code nexus.rbac.denial_throttled{operation}} and emits at
+   * most one WARN {@code RBAC_DENIAL_THROTTLED} per throttle window per actor, decided by the
+   * throttle store ({@link RoleChangeThrottlePort#recordSuppressedDenial}, shared across
+   * instances), so the log volume is bounded too. The per-denial WARNs are skipped for the same
+   * reason; the counter carries the volume.
+   */
+  private void suppressThrottledDenial(RoleChangeActor actor, String operation) {
+    countThrottled(operation);
+    int suppressedCount;
+    try {
+      suppressedCount = throttlePort.recordSuppressedDenial(actor.tenantId(), actor.userId());
+    } catch (RuntimeException e) {
+      log.atError()
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_THROTTLE_RECORD_SUPPRESSED_CALL_FAILED")
+          .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+          .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+          .addKeyValue(LOG_KEY_OPERATION, operation)
+          .log("recordSuppressedDenial threw despite its never-throw contract", e);
+      return;
+    }
+    if (suppressedCount != 1) {
+      return;
+    }
+    log.atWarn()
+        .addKeyValue(LOG_KEY_EVENT, "RBAC_DENIAL_THROTTLED")
+        .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+        .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+        .addKeyValue(LOG_KEY_OPERATION, operation)
+        .addKeyValue("suppressedCount", suppressedCount)
+        .log("Denied a role change by a throttled actor without an audit row; further denials in "
+            + "this window are counted, not logged");
   }
 
   /**
@@ -761,12 +814,17 @@ public class RoleAssignmentService {
       Role role,
       List<RolePermissionRef> heldRolePermissions,
       String operation,
-      RequestContext requestContext) {
+      RequestContext requestContext,
+      boolean throttled) {
     boolean stillHeld =
         heldRolePermissions.stream()
             .anyMatch(ref -> RbacSeededPermissionIds.USER_ROLE_ASSIGN.equals(ref.permissionId()));
     if (stillHeld) {
       return;
+    }
+    if (throttled) {
+      suppressThrottledDenial(actor, operation);
+      throw new InsufficientPermissionException(USER_ROLE_ASSIGN, DenialReason.PERMISSION_ABSENT);
     }
     recordThrottleDenialAndMaybeWarn(actor, operation);
     log.atWarn()
@@ -803,7 +861,8 @@ public class RoleAssignmentService {
       TargetClassification target,
       List<RolePermissionRef> heldRolePermissions,
       String operation,
-      RequestContext requestContext) {
+      RequestContext requestContext,
+      boolean throttled) {
     Set<UUID> heldPermissionIds =
         heldRolePermissions.stream()
             .map(RolePermissionRef::permissionId)
@@ -815,6 +874,10 @@ public class RoleAssignmentService {
                 .count();
     if (missingCount == 0) {
       return;
+    }
+    if (throttled) {
+      suppressThrottledDenial(actor, operation);
+      throw new InsufficientPermissionException(USER_ROLE_ASSIGN, DenialReason.GRANT_EXCEEDS_CALLER);
     }
     recordThrottleDenialAndMaybeWarn(actor, operation);
     log.atWarn()
