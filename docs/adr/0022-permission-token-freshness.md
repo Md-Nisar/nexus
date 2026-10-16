@@ -162,3 +162,21 @@ The matching amendment note on ADR-0016 D2 is added under US-018 D2, as a dated 
 - **D1 clarified (RR-M1).** The local bound, the issue-time marker and the replay queue live in the memory of the instance whose bump failed, so the case where Redis refuses writes but serves reads is **closed on the issuing instance only**. Other instances still compare a token with the store's unchanged epoch. Two things bound that: (1) a failed bump evicts the affected users' cached permission sets (a plain `DEL`, which `noeviction` does not refuse), so no instance re-mints a detached permission from the cache, and (2) a token already issued stays valid on other instances for at most the access-token TTL (900 s). RES-46 records this with an owner. **Not built:** a per-instance write canary that would put write refusal under the fail-open window; it would turn a Redis out-of-memory condition into a platform-wide 503 after 15 minutes, which is an availability decision for SRE and PM.
 - **Metrics access (L-3, RR-M2).** The Prometheus and metrics endpoints accept only the operator's `nexus.management.scrape-token` as a bearer token (`ScrapeTokenFilter`); no tenant role can read them, and they are closed when the token is unset. This replaces the first L-3 fix, which gated them on `TENANT_ADMIN`, a per-tenant role.
 
+
+---
+
+## Addendum: B6 permission-cache benchmark (US-018 T-023, M8)
+
+**Status: decision pending the first deployment. No measurement has been taken; no numbers are recorded here, and none are estimated.** The code keeps the cache (the "keep" branch) until the benchmark below produces a result.
+
+**Decision rule (design §10.6, Decision 23; fixed before measuring so the result cannot move it).** Run refresh at 50 requests/s by accounts holding 1 to 5 roles, the same build with the cache on and off, on the staging topology, at least three runs per arm.
+- **Keep** the cache only if refresh p95 drops by **at least 5 ms** (and by more than the run-to-run spread), **or** the MySQL queries per second attributable to minting drop by **at least 30%** (and by more than the spread).
+- Otherwise **remove** it. An inconclusive result (variance as large as the effect) defaults to **remove**, because that is the boring option and it deletes the §9.4 race class.
+- **Remove branch:** delete `PermissionCachePort`, `RedisPermissionCacheAdapter`, `PassThroughPermissionCacheAdapter`, the `permset`/`roleset` keyspace, the bump script's `DEL` step and every eviction call; `RoleResolutionService` reads MySQL on each mint and A9's epoch alone suffices. `TokenFreshnessIT` (TS-9) and the §9.4 race test must still pass without a cache.
+- **Keep branch:** record here that the Redis-write to permission-injection path (a forged `permset` entry being injected at mint, design §9.12) is **accepted under the RC-34 prerequisites** (Redis authentication enforced at startup by `nexus.rbac.redis.require-auth`, network isolation, no shared Redis with untrusted writers) (RC-34.2).
+
+**What exists.** `PassThroughPermissionCacheAdapter`, selected by `nexus.rbac.permission-cache.bypass=true` (default `false`; refuses to start under the `prod` profile), lets one build run both arms. The harness is `nexus-test/performance-test/tests/load/permission-cache-benchmark.js` with the rule implemented in `utils/cache-benchmark-verdict.js` and unit-tested; the procedure is in that directory's README.
+
+**Why it is deferred.** The benchmark needs the staging topology and Docker, and no environment exists yet (STATUS.md, decision 2026-10-05). It is a required step of the first staging deployment, before production traffic; the measured numbers and the resulting decision are then added below this paragraph.
+
+**Measured result:** _not yet measured_.
