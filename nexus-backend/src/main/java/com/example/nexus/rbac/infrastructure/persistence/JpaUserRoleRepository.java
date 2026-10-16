@@ -1,7 +1,7 @@
 package com.example.nexus.rbac.infrastructure.persistence;
 
 import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
-import com.example.nexus.rbac.domain.RolePermissionName;
+import com.example.nexus.rbac.domain.HolderProvenance;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.UserRole;
 import java.util.Collection;
@@ -17,7 +17,7 @@ import org.springframework.data.repository.query.Param;
  * Spring Data JPA repository for the {@link UserRole} aggregate. Additionally implements {@link
  * ZeroAdminTenantReader} (US-017 D25) so {@code RbacZeroActiveAdminsHealthIndicator} can depend on
  * a narrow read-only surface instead of this repository's full {@code save}/{@code delete}
- * capability — zero query changes, zero behaviour change (T-T14/RC-22.4).
+ * capability (T-T14/RC-22.4).
  */
 public interface JpaUserRoleRepository
     extends JpaRepository<UserRole, UUID>, ZeroAdminTenantReader {
@@ -110,54 +110,6 @@ public interface JpaUserRoleRepository
       @Param("roleIds") Collection<byte[]> roleIds, @Param("tenantId") byte[] tenantId);
 
   /**
-   * M5b (US-017 D8) — generalises M5 ({@link #lockActiveAdminAssignment}) from one {@code roleId}
-   * to a set. Same non-negotiable contract: native, {@code FOR SHARE}, {@code FORCE INDEX
-   * (fk_user_roles_role)} so every index record it requests is inside M11's X region (D8's
-   * containment proof; MC-C). Bind parameters are {@code byte[]}, not {@code UUID} — same reason
-   * as {@link #lockActiveAdminAssignment}.
-   *
-   * <p>An EMPTY {@code roleIds} means the caller has no way to qualify: the caller MUST fail
-   * closed and MUST NOT call this method at all (R-10 / T-E18 precedent).
-   */
-  @Query(
-      value =
-          """
-          SELECT * FROM user_roles FORCE INDEX (fk_user_roles_role)
-          WHERE user_id = :userId AND role_id IN (:roleIds)
-            AND tenant_id = :tenantId AND revoked_at IS NULL
-          FOR SHARE
-          """,
-      nativeQuery = true)
-  List<UserRole> lockActiveAssignmentOfAnyRole(
-      @Param("userId") byte[] userId,
-      @Param("roleIds") Collection<byte[]> roleIds,
-      @Param("tenantId") byte[] tenantId);
-
-  /**
-   * M12 (US-017 D24) — every (roleId, permissionName) pair for the roles of the CALLER'S OWN
-   * active assignments in one tenant. Sibling of M7, keyed by USER rather than by role.
-   *
-   * <p>Exists solely to give the self-assignment bypass canary a derivation that shares NO INPUT
-   * with the gate. MUST be driven off {@code fk_user_roles_user} — a different index, a different
-   * statement and a different scoping from M10 (tenant-scoped, driven off {@code r.tenantId}). An
-   * over-broad M10 therefore cannot silence the canary that exists to notice it (T-E29). MUST NOT
-   * reuse M10's query or delegate to it.
-   *
-   * <p>MUST be a plain, NON-LOCKING read, and MUST NEVER be used for an authorization decision —
-   * the gate's only determination is M5b, a fresh locking read (T-E7). MC-G asserts this negative
-   * on both verbs.
-   */
-  @Query(
-      """
-      SELECT new com.example.nexus.rbac.domain.RolePermissionName(rp.id.roleId, p.name)
-      FROM UserRole ur, RolePermission rp, Permission p
-      WHERE ur.roleId = rp.id.roleId AND rp.id.permissionId = p.id
-        AND ur.userId = :userId AND ur.tenantId = :tenantId AND ur.revokedAt IS NULL
-      """)
-  List<RolePermissionName> findPermissionNamesForActiveAssignmentsOfUser(
-      @Param("userId") UUID userId, @Param("tenantId") UUID tenantId);
-
-  /**
    * M13 (US-018, 03-design.md §4.3) — the {@code (roleId, permissionId)} pairs a user holds through
    * active assignments in one tenant. This is <b>the</b> read for grant-subset authorization
    * decisions (ADR-0021 D2); contrast M12 above, which must never be used for one.
@@ -245,41 +197,6 @@ public interface JpaUserRoleRepository
       @Param("userId") UUID userId, @Param("roleId") UUID roleId, @Param("tenantId") UUID tenantId);
 
   /**
-   * M5 — AC8's live-admin check on the CALLER. MUST be a LOCKING read (renders {@code FOR SHARE}
-   * directly in this native query, since Spring Data JPA does not support combining {@code @Lock}
-   * with {@code nativeQuery = true}), never a plain COUNT: a non-locking read is a
-   * REPEATABLE-READ snapshot that can miss a concurrent revocation of the caller's own admin
-   * assignment (a real, if narrow, race). Returns entities (not a scalar) because a locking read
-   * on a COUNT projection is implementation-defined under JPA — the adapter should only ever
-   * inspect {@code .size()} / {@code .isEmpty()}, never mutate these.
-   *
-   * <p><b>Native, with an explicit {@code FORCE INDEX} (MC-5, RC-9.1, 03-design.md §7.2 step
-   * 1):</b> the JPQL equivalent let MySQL's optimizer choose {@code fk_user_roles_user} over
-   * {@code fk_user_roles_role} for this predicate, which breaks D8's containment proof — M11's X
-   * lock (driven by {@code fk_user_roles_role}) no longer provably covers every record this read
-   * requests. Forcing the same index M11 uses makes containment exact again, empirically confirmed
-   * by {@code LastAdminLockoutIT#should_driveBothM11AndM5OffTheRoleIndex_when_explainingCapturedLockingReads}.
-   * Bind parameters are {@code byte[]}, not {@code UUID}: native queries do not go through the
-   * entity-mapped {@code UuidV7Converter} on the way IN, so the adapter converts explicitly (see
-   * {@code JpaUserRoleAssignmentAdapter#hasActiveAdminAssignment}). The result set ({@code SELECT
-   * *}, matching every {@link UserRole}-mapped column) is unaffected — the converter still applies
-   * on the way OUT when Hibernate hydrates the returned entities.
-   */
-  @Query(
-      value =
-          """
-          SELECT * FROM user_roles FORCE INDEX (fk_user_roles_role)
-          WHERE user_id = :userId AND role_id = :roleId
-            AND tenant_id = :tenantId AND revoked_at IS NULL
-          FOR SHARE
-          """,
-      nativeQuery = true)
-  List<UserRole> lockActiveAdminAssignment(
-      @Param("userId") byte[] userId,
-      @Param("roleId") byte[] roleId,
-      @Param("tenantId") byte[] tenantId);
-
-  /**
    * M6 — the revocation write. MUST be exactly this shape: a bulk single-column JPQL UPDATE, never
    * {@code findById->revoke()->save()} (that emits a multi-column UPDATE a least-privilege DB grant
    * rejects, in production only). Returns affected-row count: this int IS the concurrency guard
@@ -309,59 +226,90 @@ public interface JpaUserRoleRepository
   List<UUID> findActiveUserIdsByRole(@Param("roleId") UUID roleId);
 
   /**
-   * FR-2 (a) (US-017 D10, D11, D12; re-scoped by 06-code-review.md H-1, 2026-09-24) —
-   * health-check support only, {@link ZeroAdminTenantReader}'s driving set: tenants with AT LEAST
-   * ONE <b>caller-qualifying</b> role (literal {@code adminRoleName}, or a role carrying ALL of
-   * {@code dangerousNames} — {@code dangerousNamesCount} is {@code dangerousNames.size()}, passed
-   * explicitly since JPQL's {@code SIZE()} only applies to a persistent collection association,
-   * not a bind parameter). {@code COUNT(DISTINCT p.name)} mirrors {@code
-   * RbacDangerousPermissions#carriesAll}'s per-name, duplicate-safe semantics — never a raw row
-   * count, which could over-count a role holding the same permission via more than one row. A
-   * tenant with no caller-qualifying role at all is deliberately invisible here — this is the
-   * DRIVING SET (D11). Names are supplied by the caller from {@code rbac.domain} (D12) — never
-   * hardcoded here.
+   * M16 (US-018 T-018, RC-28.1, RC-50(b)) — the ids of the roles, among the user's ACTIVE
+   * assignments in one tenant, that carry every permission of the catalogue: {@code GROUP BY
+   * ur.role_id HAVING COUNT(DISTINCT permission) = (catalogue count)}. It is the independent
+   * runtime check behind {@code RBAC_SELF_ASSIGN_ADMIN_DISAGREEMENT}: it shares no input with M13
+   * (a different statement, its own {@code r.tenantId = ur.tenantId} and active-assignment
+   * predicates, and the catalogue COUNT computed in the database, not passed in).
    *
-   * <p>Carries the {@code ur.tenantId = r.tenantId}/{@code rp.id.roleId = r.id} cross-check
-   * discipline this repository's other queries carry (T-S1). Read-only, no locking — this runs on
-   * a health-check cadence, not a hot path, and must never contend with the M11/M5b locking reads
-   * above. JPQL, not native SQL, for the same {@code UuidV7Converter} reason as every other query
-   * here.
+   * <p>Per role, never the union (a union-level count would match every union-holder). An empty
+   * catalogue matches nothing (no group can equal a count of zero). Driven off {@code
+   * fk_user_roles_user}. Plain, NON-LOCKING; MUST NEVER be annotated {@code @Lock} (MC-A), and
+   * MUST NEVER be used for an authorization decision.
+   */
+  @Query(
+      """
+      SELECT ur.roleId FROM UserRole ur, Role r, RolePermission rp, Permission p
+      WHERE ur.userId = :userId AND ur.tenantId = :tenantId AND ur.revokedAt IS NULL
+        AND r.id = ur.roleId AND r.tenantId = ur.tenantId
+        AND rp.id.roleId = r.id AND rp.id.permissionId = p.id
+      GROUP BY ur.roleId
+      HAVING COUNT(DISTINCT p.id) = (SELECT COUNT(p2) FROM Permission p2)
+      """)
+  List<UUID> findHeldAdminDefiningRoleIds(
+      @Param("userId") UUID userId, @Param("tenantId") UUID tenantId);
+
+  /**
+   * US-018 T-017 (row 13, row 14) — every active holder of {@code roleId} in {@code tenantId} with
+   * the user who assigned them. Tenant-scoped by predicate. Plain, NON-LOCKING.
+   */
+  @Query(
+      """
+      SELECT new com.example.nexus.rbac.domain.HolderProvenance(ur.userId, ur.assignedBy)
+      FROM UserRole ur
+      WHERE ur.roleId = :roleId AND ur.tenantId = :tenantId AND ur.revokedAt IS NULL
+      """)
+  List<HolderProvenance> findActiveHoldersByRole(
+      @Param("roleId") UUID roleId, @Param("tenantId") UUID tenantId);
+
+  /**
+   * US-018 T-017 — the distinct users holding an ACTIVE assignment of any role in {@code roleIds}
+   * within {@code tenantId}: with the admin-defining role ids, the tenant's administrator user
+   * set. The caller never passes an empty collection. Plain, NON-LOCKING.
+   */
+  @Query(
+      """
+      SELECT DISTINCT ur.userId FROM UserRole ur
+      WHERE ur.roleId IN :roleIds AND ur.tenantId = :tenantId AND ur.revokedAt IS NULL
+      """)
+  List<UUID> findActiveHolderUserIdsByRoles(
+      @Param("roleIds") Collection<UUID> roleIds, @Param("tenantId") UUID tenantId);
+
+  /**
+   * Row 15 — health-check support only, {@link ZeroAdminTenantReader}'s driving set: tenants with
+   * AT LEAST ONE admin-defining role, i.e. a role whose {@code COUNT(DISTINCT permission)} equals
+   * the catalogue count. No names are passed. The {@code COUNT > 0} guard fails closed on an empty
+   * catalogue (otherwise every role would "carry" zero of zero). Read-only, no locking: this runs
+   * on a health-check cadence and must never contend with the M11 locking read. JPQL, for the
+   * {@code UuidV7Converter}.
    */
   @Override
   @Query(
       """
       SELECT DISTINCT r.tenantId FROM Role r
-      WHERE r.name = :adminRoleName
-         OR (SELECT COUNT(DISTINCT p.name) FROM RolePermission rp, Permission p
-             WHERE rp.id.roleId = r.id AND rp.id.permissionId = p.id
-               AND p.name IN :dangerousNames) = :dangerousNamesCount
+      WHERE (SELECT COUNT(DISTINCT p.id) FROM RolePermission rp, Permission p
+             WHERE rp.id.roleId = r.id AND rp.id.permissionId = p.id)
+              = (SELECT COUNT(p2) FROM Permission p2)
+        AND (SELECT COUNT(p3) FROM Permission p3) > 0
       """)
-  List<UUID> findTenantsWithAFullyAdminEquivalentRole(
-      @Param("adminRoleName") String adminRoleName,
-      @Param("dangerousNames") Collection<String> dangerousNames,
-      @Param("dangerousNamesCount") long dangerousNamesCount);
+  List<UUID> findTenantsWithAnAdminDefiningRole();
 
   /**
-   * FR-2 (b) (US-017 D10, D11, D12; re-scoped by 06-code-review.md H-1, 2026-09-24) — tenants with
-   * AT LEAST ONE active holder of some caller-qualifying role. Differenced against {@link
-   * #findTenantsWithAFullyAdminEquivalentRole} in Java, not one correlated {@code
-   * HAVING}/{@code GROUP BY} statement: the tenant-level question ("does *some* caller-qualifying
-   * role have holders") is not equivalent to a role-level {@code NOT EXISTS} once a tenant can
-   * have more than one caller-qualifying role, and two flat queries are directly unit-testable
-   * with mocks.
+   * Row 15 — tenants with AT LEAST ONE active holder of some admin-defining role (same definition
+   * as {@link #findTenantsWithAnAdminDefiningRole}). Differenced against it in Java: the
+   * tenant-level question is not a role-level {@code NOT EXISTS} once a tenant has more than one
+   * admin-defining role.
    */
   @Override
   @Query(
       """
       SELECT DISTINCT r.tenantId FROM Role r, UserRole ur
       WHERE ur.roleId = r.id AND ur.tenantId = r.tenantId AND ur.revokedAt IS NULL
-        AND (r.name = :adminRoleName
-             OR (SELECT COUNT(DISTINCT p.name) FROM RolePermission rp, Permission p
-                 WHERE rp.id.roleId = r.id AND rp.id.permissionId = p.id
-                   AND p.name IN :dangerousNames) = :dangerousNamesCount)
+        AND (SELECT COUNT(DISTINCT p.id) FROM RolePermission rp, Permission p
+             WHERE rp.id.roleId = r.id AND rp.id.permissionId = p.id)
+              = (SELECT COUNT(p2) FROM Permission p2)
+        AND (SELECT COUNT(p3) FROM Permission p3) > 0
       """)
-  List<UUID> findTenantsWithActiveFullyAdminEquivalentHolders(
-      @Param("adminRoleName") String adminRoleName,
-      @Param("dangerousNames") Collection<String> dangerousNames,
-      @Param("dangerousNamesCount") long dangerousNamesCount);
+  List<UUID> findTenantsWithActiveAdminDefiningHolders();
 }

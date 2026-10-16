@@ -55,11 +55,8 @@ import org.springframework.web.client.RestTemplate;
  * /api/v1/users/{userId}/roles/{roleId}}: a caller may revoke a role only when they hold every
  * permission it carries.
  *
- * <p><b>M2 precedence note.</b> Until M3 retires it, the legacy US-016/017 gate runs before A2, so
- * a non-administrator assigning a role that carries a legacy "dangerous" permission ({@code
- * role:write}, {@code user:write}, {@code tenant:write}) is denied there, with {@code
- * NOT_TENANT_ADMIN}. The A2-specific cases below therefore use {@code audit:read}, which the
- * legacy gate does not classify, so the denial they observe is A2's own.
+ * <p><b>M3.</b> The legacy name/dangerous-permission gate is retired; A2 now reports
+ * GRANT_EXCEEDS_CALLER for a non-administrator assigning a role carrying a permission they lack.
  *
  * <p>Fixtures use a fresh tenant per test and {@code is_system_role=false} (see {@code
  * RoleAssignmentIT}'s shared-schema caveat).
@@ -121,9 +118,8 @@ class GrantSubsetIT {
         .containsEntry("requiredPermission", "user:role:assign");
     List<Map<String, Object>> rows = denialRows(target.getId());
     assertThat(rows).as("exactly one ROLE_ASSIGNMENT_DENIED row per request").hasSize(1);
-    // M2: the legacy gate classifies role:write and fires first; M3 retires it, and A2 then
-    // reports GRANT_EXCEEDS_CALLER for this same request.
-    assertThat(rows.get(0)).containsEntry("reason", "NOT_TENANT_ADMIN");
+    // M3: the legacy gate is retired; A2 reports GRANT_EXCEEDS_CALLER for this request.
+    assertThat(rows.get(0)).containsEntry("reason", "GRANT_EXCEEDS_CALLER");
     assertThat(activeAssignmentCount(target.getId(), role.getId())).isZero();
   }
 

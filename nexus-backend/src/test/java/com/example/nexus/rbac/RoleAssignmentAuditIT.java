@@ -369,19 +369,19 @@ class RoleAssignmentAuditIT {
   }
 
   @Test
-  void should_writeRoleAssignmentDeniedRow_when_assignFailsWithNotTenantAdmin() {
+  void should_writeRoleAssignmentDeniedRow_when_assignFailsWithGrantExceedsCaller() {
     UUID tenantId = uuidGenerator.newId();
     User actorUser = seedUser("audit-denied-admin-actor", tenantId);
     grantUserRoleAssign(tenantId, actorUser.getId());
     User target = seedUser("audit-denied-admin-target", tenantId);
-    // seedRole prefixes names ("RAA-" + tag + "-" + randomUUID), which can never match
-    // RbacRoleNames.TENANT_ADMIN under equalsIgnoreCase (03-design.md §0.1 item 5) -- the role
-    // must be built directly with the literal name for AC8's guard to fire at all.
+    // US-018 A2: the role carries role:write, which the actor (user:role:assign only) lacks.
     Role role =
         roleRepository.save(new Role(uuidGenerator.newId(), tenantId, "TENANT_ADMIN", null, false));
+    rolePermissionRepository.save(
+        new RolePermission(role.getId(), RbacSeededPermissionIds.ROLE_WRITE));
     RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
     RequestContext ctx = requestContext();
-    // actorUser holds no active TENANT_ADMIN assignment, so AC8's guard denies the grant.
+    // actorUser lacks role:write, so A2 denies the grant.
 
     assertThatThrownBy(
             () -> roleAssignmentService.assign(actor, target.getId(), role.getId(), ctx))
@@ -389,13 +389,13 @@ class RoleAssignmentAuditIT {
         .satisfies(
             e ->
                 assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
+                    .isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
 
     Map<String, Object> row = findLatestDenialAuditRow(target.getId());
     assertThat(row.get("outcome")).isEqualTo("DENIED");
-    assertThat(row.get("reason")).isEqualTo("NOT_TENANT_ADMIN");
+    assertThat(row.get("reason")).isEqualTo("GRANT_EXCEEDS_CALLER");
     assertThat(row.get("role_name"))
-        .as("T3 fires only after the role is resolved in the actor's own tenant")
+        .as("A2 fires only after the role is resolved in the actor's own tenant")
         .isEqualTo("TENANT_ADMIN");
     assertThat(row.get("attempted_by")).isEqualTo(actorUser.getId().toString());
   }

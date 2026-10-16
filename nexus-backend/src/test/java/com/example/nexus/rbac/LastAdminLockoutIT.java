@@ -20,8 +20,6 @@ import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
 import com.example.nexus.rbac.domain.LastAdminRoleException;
-import com.example.nexus.rbac.domain.RbacDangerousPermissions;
-import com.example.nexus.rbac.domain.RbacRoleNames;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RolePermission;
@@ -54,6 +52,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * US-012 T-018 (04-tasks.md; 03-design.md §5.2 M1/§3.2; 03b-threat-model.md T-D3): the AC5
@@ -138,6 +138,7 @@ class LastAdminLockoutIT {
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private JdbcTemplate jdbc;
   @Autowired private MeterRegistry meterRegistry;
+  @Autowired private PlatformTransactionManager transactionManager;
 
   private static final String TIMER_LOCK_HOLD = "nexus.rbac.privileged_revoke_lock_hold";
 
@@ -431,12 +432,15 @@ class LastAdminLockoutIT {
   /**
    * Seeds a fresh tenant with THREE active {@code TENANT_ADMIN} holders ({@code admin1} —
    * acting as the sole privileged actor for every non-denied thread below, {@code admin2},
-   * {@code admin3}), one dangerous custom role ({@code CUSTOM-DANGEROUS}, carrying {@code
-   * role:write} — a member of {@link com.example.nexus.rbac.domain.RbacDangerousPermissions})
-   * with TWO existing holders, one non-admin {@code user:write}-only principal, and one benign,
+   * {@code admin3}), one custom admin-defining role ({@code CUSTOM-ADMIN-DEFINING}, carrying the
+   * whole permission catalogue, so it is in the set lock exactly as {@code TENANT_ADMIN} is) with
+   * TWO existing holders, one non-admin {@code user:write}-only principal, and one benign,
    * permission-less role ({@code BENIGN}) with one existing holder. 11 threads fire
-   * simultaneously via a {@link CyclicBarrier} split across BOTH verbs, both privileged
-   * categories, and the privileged×benign case D7 newly makes relevant:
+   * simultaneously via a {@link CyclicBarrier} split across BOTH verbs, both admin-defining
+   * roles, and the admin-defining×benign case D7 newly makes relevant. <b>US-018 M3 (T-016):</b>
+   * re-scoped from the name-or-dangerous-permission population to the admin-defining population
+   * (ADR-0021 D6); the lock set is the tenant's admin-defining role ids plus the target, the
+   * thread shapes and the expected outcomes are unchanged:
    *
    * <ol>
    *   <li>2× {@code revoke(TENANT_ADMIN)} by {@code admin1}, targeting {@code admin2} and
@@ -447,33 +451,33 @@ class LastAdminLockoutIT {
    *       no other thread contends for — succeeds deterministically. This is RES-10's restored
    *       thread (see this method's Javadoc): it now races threads 1-2 legitimately through
    *       M11's shared union lock (D7) instead of the pre-D7 deadlock cycle.
-   *   <li>2× {@code revoke(CUSTOM-DANGEROUS)} by {@code admin1}, targeting its two distinct
-   *       existing holders — name-match is false for this role, so M11's lock set is driven off
-   *       {@code CUSTOM-DANGEROUS}'s own permissions, not the {@code TENANT_ADMIN} literal
-   *       (§7.2); both succeed deterministically.
-   *   <li>2× {@code assign(CUSTOM-DANGEROUS)} by {@code admin1}, both targeting the SAME fresh
+   *   <li>2× {@code revoke(CUSTOM-ADMIN-DEFINING)} by {@code admin1}, targeting its two distinct
+   *       existing holders — the role is admin-defining by its permissions alone (its name is
+   *       irrelevant), so M11's lock set covers it as it covers {@code TENANT_ADMIN}; both succeed
+   *       deterministically.
+   *   <li>2× {@code assign(CUSTOM-ADMIN-DEFINING)} by {@code admin1}, both targeting the SAME fresh
    *       user — a duplicate-insert race (mirrors {@code ActiveAssignmentIT}'s own 8-way version
    *       of this pattern, scaled to 2): exactly one succeeds, the other gets {@link
    *       DuplicateRoleAssignmentException} (409 {@code RBAC_004}), never a raw {@code
    *       DataIntegrityViolationException} — {@code JpaUserRoleAssignmentAdapter#assign}
    *       synchronously flushes and translates it in the same try/catch.
-   *   <li>1× {@code assign(CUSTOM-DANGEROUS)} by {@code admin1} against a THIRD, standalone
+   *   <li>1× {@code assign(CUSTOM-ADMIN-DEFINING)} by {@code admin1} against a THIRD, standalone
    *       target no other thread contends for — succeeds deterministically, adding a second
    *       independent concurrent {@code assign()} alongside the duplicate-race pair.
    *   <li>1× {@code revoke(TENANT_ADMIN)} by the non-admin {@code user:write} principal,
    *       targeting {@code admin1}'s OWN assignment (deliberately the one row no other thread
    *       ever touches, so this thread cannot race into a spurious 404) — denied with {@link
    *       InsufficientPermissionException} (403 {@code NOT_TENANT_ADMIN}). Because {@code
-   *       nameMatch} is true for {@code TENANT_ADMIN}, this thread's transaction acquires M11's
-   *       X lock over the WHOLE admin-equivalent role range BEFORE the gate denies it (D1/D7:
-   *       lock acquisition precedes the authorization decision on both verbs, §6.3/§7.3) — this
-   *       is deliberately the X-lock-then-403 path T-D11 names, run concurrently with every
-   *       legitimate X-lock-then-success thread above, including the restored {@code
-   *       assign(TENANT_ADMIN)} thread.
+   *       TENANT_ADMIN} is admin-defining, this thread's transaction acquires M11's X lock over
+   *       the WHOLE admin-defining role range BEFORE the administrator requirement denies it (the
+   *       requirement is decided from M11's own rows, ADR-0021 D2/D5) — this is deliberately the
+   *       X-lock-then-403 path T-D11 names, run concurrently with every legitimate
+   *       X-lock-then-success thread above, including the restored {@code assign(TENANT_ADMIN)}
+   *       thread.
    *   <li>1× {@code assign(BENIGN)} by {@code admin1}, targeting {@code dangerousHolder1} — the
-   *       SAME row a {@code revoke(CUSTOM-DANGEROUS)} thread above concurrently touches.
-   *       {@code BENIGN} carries no permission and is not itself admin-equivalent, so it takes
-   *       no M11 lock and sits outside every privileged lock set — this is the privileged×benign
+   *       SAME row a {@code revoke(CUSTOM-ADMIN-DEFINING)} thread above concurrently touches.
+   *       {@code BENIGN} carries no permission and is not admin-defining, so it takes no M11
+   *       lock and sits outside every set lock — this is the privileged×benign
    *       case RC-20.6 requires: proving no cycle forms through {@code fk_user_roles_user} even
    *       though both transactions touch the same user row.
    *   <li>1× {@code revoke(BENIGN)} by {@code admin1}, targeting {@code admin3} — the SAME row a
@@ -526,8 +530,8 @@ class LastAdminLockoutIT {
     seedActiveAdminAssignment(tenantId, adminRole.getId(), admin2.getId(), admin1.getId());
     seedActiveAdminAssignment(tenantId, adminRole.getId(), admin3.getId(), admin1.getId());
 
-    Role dangerousRole = seedRole(tenantId, "CUSTOM-DANGEROUS", "mixed");
-    grantPermission(dangerousRole.getId(), ROLE_WRITE_PERMISSION_ID);
+    Role dangerousRole = seedRole(tenantId, "CUSTOM-ADMIN-DEFINING", "mixed");
+    grantWholeCatalogue(dangerousRole.getId());
     User dangerousHolder1 = seedUser(tenantId, "mixed-dangerous-holder-1");
     User dangerousHolder2 = seedUser(tenantId, "mixed-dangerous-holder-2");
     seedActiveAssignment(
@@ -542,7 +546,7 @@ class LastAdminLockoutIT {
     User nonAdminUser = seedUserWithRole(tenantId, "mixed-nonadmin", "USER_WRITER",
         USER_WRITE_PERMISSION_ID);
 
-    // BENIGN carries no permission at all, so it is never admin-equivalent regardless of who
+    // BENIGN carries no permission at all, so it is never admin-defining regardless of who
     // holds it -- RC-20.6's privileged x benign fixture, seeded on admin3 (a row a privileged
     // revoke thread below also touches) so the benign revoke thread races that same row.
     Role benignRole = seedRole(tenantId, "BENIGN", "mixed");
@@ -569,21 +573,20 @@ class LastAdminLockoutIT {
     futures.add(submitAssign(executor, barrier, adminActor, newAdminCandidate.getId(),
         adminRole.getId(), "ASSIGN_ADMIN_SUCCESS", "ASSIGN_ADMIN_CONFLICT"));
 
-    // 4-5: revoke(CUSTOM-DANGEROUS) on two distinct existing holders -- both succeed
-    // deterministically; M11's privileged-path lock covers this role too (D7), unlike the
-    // shipped design which never locked it on this path at all.
+    // 4-5: revoke(CUSTOM-ADMIN-DEFINING) on two distinct existing holders -- both succeed
+    // deterministically; M11's set lock covers this role too (it is admin-defining, D6/D7).
     futures.add(submitRevoke(executor, barrier, adminActor, dangerousHolder1.getId(),
         dangerousRole.getId(), "REVOKE_DANGEROUS_SUCCESS"));
     futures.add(submitRevoke(executor, barrier, adminActor, dangerousHolder2.getId(),
         dangerousRole.getId(), "REVOKE_DANGEROUS_SUCCESS"));
 
-    // 6-7: assign(CUSTOM-DANGEROUS) duplicate-insert race -- exactly one winner, one conflict.
+    // 6-7: assign(CUSTOM-ADMIN-DEFINING) duplicate-insert race -- exactly one winner, one conflict.
     futures.add(submitAssign(executor, barrier, adminActor, newDangerousCandidate.getId(),
         dangerousRole.getId(), "ASSIGN_DANGEROUS_SUCCESS", "ASSIGN_DANGEROUS_CONFLICT"));
     futures.add(submitAssign(executor, barrier, adminActor, newDangerousCandidate.getId(),
         dangerousRole.getId(), "ASSIGN_DANGEROUS_SUCCESS", "ASSIGN_DANGEROUS_CONFLICT"));
 
-    // 8: assign(CUSTOM-DANGEROUS) against a THIRD, standalone target -- no other thread contends
+    // 8: assign(CUSTOM-ADMIN-DEFINING) against a THIRD, standalone target -- no other thread contends
     // for this row, so this always succeeds; adds a second independent concurrent assign()
     // alongside the duplicate-race pair.
     futures.add(submitAssign(executor, barrier, adminActor, newDangerousCandidate2.getId(),
@@ -607,8 +610,8 @@ class LastAdminLockoutIT {
                 }));
 
     // 10: assign(BENIGN) targeting dangerousHolder1 -- the SAME row thread 4 concurrently
-    // revokes CUSTOM-DANGEROUS from. BENIGN carries no permission, takes no M11 lock, and sits
-    // outside every privileged lock set -- the privileged x benign case (RC-20.6, §7.3).
+    // revokes CUSTOM-ADMIN-DEFINING from. BENIGN carries no permission, takes no M11 lock, and
+    // sits outside every set lock -- the privileged x benign case (RC-20.6, §7.3).
     futures.add(submitAssign(executor, barrier, adminActor, dangerousHolder1.getId(),
         benignRole.getId(), "ASSIGN_BENIGN_SUCCESS", "ASSIGN_BENIGN_CONFLICT"));
 
@@ -634,12 +637,13 @@ class LastAdminLockoutIT {
     assertThat(counts.getOrDefault("ASSIGN_ADMIN_SUCCESS", 0))
         .as("the restored assign(TENANT_ADMIN) thread must succeed: " + counts).isEqualTo(1);
     assertThat(counts.getOrDefault("REVOKE_DANGEROUS_SUCCESS", 0))
-        .as("both distinct-holder CUSTOM-DANGEROUS revokes must succeed: " + counts).isEqualTo(2);
+        .as("both distinct-holder CUSTOM-ADMIN-DEFINING revokes must succeed: " + counts)
+        .isEqualTo(2);
     assertThat(counts.getOrDefault("ASSIGN_DANGEROUS_SUCCESS", 0))
         .as("the duplicate-race winner plus the standalone assign must both succeed: " + counts)
         .isEqualTo(2);
     assertThat(counts.getOrDefault("ASSIGN_DANGEROUS_CONFLICT", 0))
-        .as("exactly one of the two duplicate dangerous-role assigns must conflict: " + counts)
+        .as("exactly one of the two duplicate admin-defining-role assigns must conflict: " + counts)
         .isEqualTo(1);
     assertThat(counts.getOrDefault("DENIED", 0))
         .as("the non-admin's revoke(TENANT_ADMIN) attempt must be denied: " + counts).isEqualTo(1);
@@ -745,31 +749,29 @@ class LastAdminLockoutIT {
         .anyMatch(sql -> sql.toLowerCase(Locale.ROOT).contains("for update"));
   }
 
-  // ── Scenario 6: MC-5 — EXPLAIN the ACTUAL captured SQL for both M11 and M5 ────────────
+  // ── Scenario 6: MC-5 — EXPLAIN the ACTUAL captured SQL for M11 ─────────────────────────
 
   /**
-   * RC-9.1 / 03-design.md §7.2 step 1 + §11.2 MC-5, D8. D8's containment proof ("every lock M5
-   * requests is already held by M11") is a property of the chosen execution plan, not the
-   * predicates — InnoDB locks index records, not logical rows. M11 drives off {@code
-   * fk_user_roles_role} by its own Javadoc; M5's predicate ({@code userId AND roleId AND
-   * tenantId AND revokedAt IS NULL}) could let the optimizer choose {@code fk_user_roles_role},
-   * {@code fk_user_roles_user}, or {@code uq_user_role_active} — only the former satisfies
-   * containment. Unlike {@link #should_pinQueryPlanToFkIndex_and_emitForUpdate_when_lockingTenantAdminAssignments()}
-   * (M11 only, reconstructed native SQL), this scenario captures the REAL Hibernate-emitted SQL
-   * for both M11 and M5 via {@link #captureHibernateSql} from one {@code revoke()} call — a
-   * self-revocation of a {@code TENANT_ADMIN} role with two active admins, which exercises M11
-   * (the lockout set lock, superseding the removed M1 this scenario originally pinned), then M8
-   * (unlocked), then M5 (the gate's live-admin check) — and EXPLAINs each captured statement,
-   * asserting only the {@code key} column (EXPLAIN's other columns are MySQL-version-sensitive;
-   * this repo pins MySQL 8.4 via Testcontainers).
+   * RC-9.1 / 03-design.md §7.2 step 1 + §11.2 MC-5. The set lock's deadlock-freedom argument is a
+   * property of the chosen execution plan, not the predicates — InnoDB locks index records, not
+   * logical rows. This captures the REAL Hibernate-emitted SQL for M11 from one {@code revoke()}
+   * call (a revoke of an admin-defining role with two active admins) and EXPLAINs it, asserting
+   * only the {@code key} column (EXPLAIN's other columns are MySQL-version-sensitive; this repo
+   * pins MySQL 8.4 via Testcontainers).
    *
-   * <p><strong>If M5's key is ever observed to NOT be {@code fk_user_roles_role}, do not relax
-   * this assertion.</strong> That is a real gap in D8's containment proof requiring either a
-   * predicate reorder / index hint on M5, or a written non-contained-acquisition analysis in
-   * design §7.2/§7.3 plus a harness C re-run — an Architect-level escalation.
+   * <p><b>US-018 M3 (T-016):</b> the M5/M5b caller gate and its containment assertions are
+   * retired with the gate (ledger rows 1 and 2): the administrator status now comes from M11's own
+   * rows, so there is no second locking read to contain. The control that replaces D8's
+   * containment proof is that nothing else locks {@code user_roles} on this path, which the
+   * "exactly one captured statement contains {@code for update}, none {@code for share}" lookups
+   * below assert.
+   *
+   * <p><strong>If M11's key is ever observed to NOT be {@code fk_user_roles_role}, do not relax
+   * this assertion.</strong> That is a real gap in the deadlock-freedom argument requiring an
+   * Architect-level escalation.
    */
   @Test
-  void should_driveBothM11AndM5OffTheRoleIndex_when_explainingCapturedLockingReads()
+  void should_driveM11OffTheRoleIndexAndTakeNoOtherLockingRead_when_explainingCapturedLockingReads()
       throws Exception {
     UUID tenantId = uuidGenerator.newId();
     Role adminRole = seedTenantAdminRole(tenantId, "mc5");
@@ -786,112 +788,85 @@ class LastAdminLockoutIT {
                     actor, admin1.getId(), adminRole.getId(), requestContext()));
 
     // M11 -- PESSIMISTIC_WRITE renders "for update"
-    // (JpaUserRoleRepository#lockActiveAssignmentHoldersByRoles; supersedes the removed M1).
-    String m1Sql = findCapturedStatement(emittedSql, "for update");
-    // M5 -- PESSIMISTIC_READ renders "for share" (JpaUserRoleRepository#lockActiveAdminAssignment,
-    // its own Javadoc). No other query on this call path is locked (M7 is short-circuited by
-    // nameMatch; M8 is a plain unlocked read), so this marker is unambiguous.
-    String m5Sql = findCapturedStatement(emittedSql, "for share");
+    // (JpaUserRoleRepository#lockActiveAssignmentHoldersByRoles).
+    String m11Sql = findCapturedStatement(emittedSql, "for update");
+    assertThat(emittedSql)
+        .as("no locking read other than M11 may be emitted on this path: " + emittedSql)
+        .noneMatch(sql -> sql.toLowerCase(Locale.ROOT).contains("for share"));
 
-    // M11's JPQL bind order: roleIds, tenantId (revokedAt IS NULL has no parameter) -- same
-    // position as the removed M1's roleId/tenantId order it superseded.
-    assertThat(explainKey(m1Sql, toBytes(adminRole.getId()), toBytes(tenantId)))
-        .as("M11 must drive off the FK index on role_id: " + m1Sql)
-        .isEqualTo("fk_user_roles_role");
-
-    // M5's JPQL bind order: userId, roleId, tenantId.
-    assertThat(
-            explainKey(
-                m5Sql, toBytes(admin1.getId()), toBytes(adminRole.getId()), toBytes(tenantId)))
-        .as(
-            "M5 must ALSO drive off fk_user_roles_role for D2's §7.2 containment proof to hold"
-                + " -- if this fails, escalate per 03-design.md §7.2 step 1, do not relax this"
-                + " assertion: "
-                + m5Sql)
+    // M11's bind order: roleIds, tenantId (revokedAt IS NULL has no parameter).
+    assertThat(explainKey(m11Sql, toBytes(adminRole.getId()), toBytes(tenantId)))
+        .as("M11 must drive off the FK index on role_id: " + m11Sql)
         .isEqualTo("fk_user_roles_role");
 
     // US-017 T-006(b), MC-A (extended): M11 must acquire no JOIN at all (never widening the lock
     // beyond user_roles by joining roles/permissions) -- design §11.2 MC-A, port Javadoc.
-    assertThat(m1Sql.toLowerCase(Locale.ROOT))
-        .as("M11 must not join roles or permissions -- lock-scope discipline: " + m1Sql)
+    assertThat(m11Sql.toLowerCase(Locale.ROOT))
+        .as("M11 must not join roles or permissions -- lock-scope discipline: " + m11Sql)
         .doesNotContain(" join ");
-    // US-017 T-006(b), MC-A (extended): M5b (the widened M5) MUST keep FORCE INDEX so every
-    // index record it requests is inside M11's X region (D8's containment proof).
-    assertThat(m5Sql.toLowerCase(Locale.ROOT))
-        .as("M5b must keep FORCE INDEX (fk_user_roles_role): " + m5Sql)
-        .contains("force index");
   }
 
-  // ── Scenario 6b (US-017 T-006(b), 03-design.md §11.2 MC-A extended): M10 non-locking ────
+  // ── Scenario 6b (US-018 T-016, 03-design.md §11.2 MC-A extended): M10' non-locking ───────
 
   /**
-   * MC-A extended: M10 ({@code findPermissionNamesForTenantRoles}, hosted on {@code
-   * JpaRoleRepository#findPermissionNamesByTenantRoles}) touches {@code permissions}, on which
-   * {@code nexus_app} holds {@code SELECT} only (03-design.md §5.2) -- a {@code @Lock}
-   * accidentally added here would be REJECTED IN PRODUCTION but PASS every Testcontainers IT
-   * (every IT connects as the container superuser). Identified positively by requiring BOTH
-   * {@code role_permissions} (excludes M7, which never joins on tenant) AND {@code tenant_id}
-   * (excludes {@code findRole}'s plain by-id entity load, which selects the {@code tenant_id}
-   * column but never predicates on it) in the same captured statement -- unambiguous within one
-   * {@code revoke()} call of a dangerous, non-name-match custom role.
+   * MC-A: M10' ({@code findRolePermissionIdsForTenantRoles}, hosted on {@code
+   * JpaRoleRepository#findRolePermissionIdsByTenantRoles}; replaces M10) reads the tenant's
+   * {@code role_permissions}. A {@code @Lock} accidentally added here would be a new acquisition
+   * outside the single-statement set lock (ADR-0018 D6) and would be REJECTED IN PRODUCTION on a
+   * grant-restricted table yet PASS every Testcontainers IT (every IT connects as the container
+   * superuser). Identified positively by requiring BOTH {@code role_permissions} AND {@code
+   * tenant_id} and excluding M14 (a {@code left join}) and M13 ({@code user_roles}), unambiguous
+   * within one {@code revoke()} call of an admin-defining custom role.
    */
   @Test
-  void should_neverEmitForShareOrForUpdate_when_capturingM10sSql_MCA() throws Exception {
+  void should_neverEmitForShareOrForUpdate_when_capturingM10PrimesSql_MCA() throws Exception {
     UUID tenantId = uuidGenerator.newId();
     Role adminRole = seedTenantAdminRole(tenantId, "mca10");
     User admin = seedUser(tenantId, "mca10-admin");
     seedActiveAdminAssignment(tenantId, adminRole.getId(), admin.getId(), admin.getId());
 
-    Role dangerousRole = seedRole(tenantId, "MCA10-CUSTOM-DANGEROUS", "mca10");
-    grantPermission(dangerousRole.getId(), ROLE_WRITE_PERMISSION_ID);
+    Role customAdminRole = seedRole(tenantId, "MCA10-CUSTOM-ADMIN-DEFINING", "mca10");
+    grantWholeCatalogue(customAdminRole.getId());
     User holder1 = seedUser(tenantId, "mca10-holder1");
     User holder2 = seedUser(tenantId, "mca10-holder2");
-    seedActiveAssignment(tenantId, dangerousRole.getId(), holder1.getId(), admin.getId());
-    seedActiveAssignment(tenantId, dangerousRole.getId(), holder2.getId(), admin.getId());
+    seedActiveAssignment(tenantId, customAdminRole.getId(), holder1.getId(), admin.getId());
+    seedActiveAssignment(tenantId, customAdminRole.getId(), holder2.getId(), admin.getId());
 
     RoleChangeActor actor = new RoleChangeActor(admin.getId(), tenantId);
     List<String> emittedSql =
         captureHibernateSql(
             () ->
                 roleAssignmentService.revoke(
-                    actor, holder1.getId(), dangerousRole.getId(), requestContext()));
+                    actor, holder1.getId(), customAdminRole.getId(), requestContext()));
 
-    // US-018 07-security-review.md M-1: revoke now also emits M13 (driven off user_roles) and M14
-    // (roles LEFT JOIN role_permissions, L-2), both of which touch role_permissions with a tenant
-    // predicate; neither is M10, so both are excluded by their own positive shape.
-    String m10Sql =
+    String m10PrimeSql =
         findStatementMatching(
             emittedSql, List.of("role_permissions", "tenant_id"), List.of("user_roles", "left join"));
-    assertNoLockingClause(m10Sql, "M10 (findPermissionNamesForTenantRoles)");
+    assertNoLockingClause(m10PrimeSql, "M10' (findRolePermissionIdsForTenantRoles)");
   }
 
-  // ── Scenario 6c (US-017 T-006(b), 03-design.md §11.2 MC-A extended): FR-2 non-locking ───
+  // ── Scenario 6c (row 15, 03-design.md §11.2 MC-A extended): the indicator queries non-locking ─
 
   /**
-   * MC-A extended: FR-2's two health-indicator support queries ({@code
-   * findTenantsWithAFullyAdminEquivalentRole}, {@code findTenantsWithActiveFullyAdminEquivalentHolders}
-   * -- renamed from the ANY-based originals post-06-code-review.md H-1, 2026-09-24) both join
-   * {@code role_permissions}/{@code permissions} -- same {@code SELECT}-only grant concern as M10
-   * above, now exercised on the health-check cadence rather than the privileged assign/revoke
-   * path. Invoked directly against the autowired repository bean, capturing both statements from
-   * one action.
+   * MC-A extended: the zero-admin indicator's two support queries ({@code
+   * findTenantsWithAnAdminDefiningRole}, {@code findTenantsWithActiveAdminDefiningHolders}) both
+   * count {@code role_permissions} against {@code permissions}, with the same {@code SELECT}-only
+   * grant concern as M10', now exercised on the health-check cadence. Invoked directly against the
+   * autowired repository bean, capturing both statements from one action.
    */
   @Test
-  void should_neverEmitForShareOrForUpdate_when_capturingFR2sTwoQueries_MCA() throws Exception {
-    long dangerousNamesCount = RbacDangerousPermissions.NAMES.size();
+  void should_neverEmitForShareOrForUpdate_when_capturingTheIndicatorsTwoQueries_MCA()
+      throws Exception {
     List<String> emittedSql =
         captureHibernateSql(
             () -> {
-              userRoleRepository.findTenantsWithAFullyAdminEquivalentRole(
-                  RbacRoleNames.TENANT_ADMIN, RbacDangerousPermissions.NAMES, dangerousNamesCount);
-              userRoleRepository.findTenantsWithActiveFullyAdminEquivalentHolders(
-                  RbacRoleNames.TENANT_ADMIN, RbacDangerousPermissions.NAMES, dangerousNamesCount);
+              userRoleRepository.findTenantsWithAnAdminDefiningRole();
+              userRoleRepository.findTenantsWithActiveAdminDefiningHolders();
             });
 
-    assertThat(emittedSql).as("FR-2's two queries, captured from one action").hasSize(2);
-    assertNoLockingClause(emittedSql.get(0), "FR-2(a) findTenantsWithAFullyAdminEquivalentRole");
-    assertNoLockingClause(
-        emittedSql.get(1), "FR-2(b) findTenantsWithActiveFullyAdminEquivalentHolders");
+    assertThat(emittedSql).as("the indicator's two queries, captured from one action").hasSize(2);
+    assertNoLockingClause(emittedSql.get(0), "findTenantsWithAnAdminDefiningRole");
+    assertNoLockingClause(emittedSql.get(1), "findTenantsWithActiveAdminDefiningHolders");
   }
 
   // ── Scenario 6d (US-018 T-001, 03-design.md §4.11 MC-A extended): M13/M14 non-locking ──────
@@ -942,19 +917,18 @@ class LastAdminLockoutIT {
   // ── Scenario 6e (US-017 T-006(c), 03-design.md §11.2 MC-C, RC-20.7): plan stability ─────
 
   /**
-   * MC-C (re-derived MC-5): D6's deadlock-freedom argument and D8's containment proof both depend
-   * on the CHOSEN PLAN, not merely the predicate -- InnoDB locks index records, and a full-scan
-   * fallback would acquire in primary-key order, breaking both arguments. A 1-element and a
-   * 40-element IN-list can be costed differently by the optimizer, so this asserts {@code key =
-   * fk_user_roles_role} for M11 and M5b at IN-list sizes 1, 2 and >= 20 -- plan stability across
-   * cardinalities, not one lucky fixture size.
+   * MC-C (re-derived MC-5): the set lock's deadlock-freedom argument depends on the CHOSEN PLAN,
+   * not merely the predicate -- InnoDB locks index records, and a full-scan fallback would acquire
+   * in primary-key order, breaking it. A 1-element and a 40-element IN-list can be costed
+   * differently by the optimizer, so this asserts {@code key = fk_user_roles_role} for M11 at
+   * IN-list sizes 1, 2 and >= 20 -- plan stability across cardinalities, not one lucky fixture
+   * size. (M5b, the second half of the former test, is retired with the gate, ledger row 2.)
    *
    * <p><b>If this is ever observed to select a different key at any cardinality, do not relax
-   * this assertion</b> -- escalate per 03-design.md §7.2/§11.2, exactly as the shipped MC-5
-   * predecessor instructs for M5 (Risk (c)).
+   * this assertion</b> -- escalate per 03-design.md §7.2/§11.2.
    */
   @Test
-  void should_pinKeyToFkUserRolesRole_acrossInListCardinalities_forM11AndM5b_MCC() {
+  void should_pinKeyToFkUserRolesRole_acrossInListCardinalities_forM11_MCC() {
     UUID tenantId = uuidGenerator.newId();
     Role adminRole = seedTenantAdminRole(tenantId, "mcc");
     User admin1 = seedUser(tenantId, "mcc-admin1");
@@ -971,9 +945,6 @@ class LastAdminLockoutIT {
 
       assertThat(explainM11Key(roleIds, tenantId))
           .as("M11 must drive off fk_user_roles_role at IN-list size " + size)
-          .isEqualTo("fk_user_roles_role");
-      assertThat(explainM5bKey(admin1.getId(), roleIds, tenantId))
-          .as("M5b must drive off fk_user_roles_role at IN-list size " + size)
           .isEqualTo("fk_user_roles_role");
     }
   }
@@ -996,137 +967,175 @@ class LastAdminLockoutIT {
     return String.valueOf(plan.get(0).get("key"));
   }
 
-  /** MC-C helper: EXPLAINs M5b's shape ({@code lockActiveAssignmentOfAnyRole}) at the given IN-list. */
-  private String explainM5bKey(UUID userId, List<UUID> roleIds, UUID tenantId) {
-    String placeholders = String.join(",", java.util.Collections.nCopies(roleIds.size(), "?"));
-    List<Object> params = new ArrayList<>();
-    params.add(toBytes(userId));
-    roleIds.forEach(id -> params.add(toBytes(id)));
-    params.add(toBytes(tenantId));
-    List<Map<String, Object>> plan =
-        jdbc.queryForList(
-            "EXPLAIN SELECT * FROM user_roles FORCE INDEX (fk_user_roles_role) WHERE user_id = ?"
-                + " AND role_id IN (" + placeholders + ") AND tenant_id = ? AND revoked_at IS"
-                + " NULL FOR SHARE",
-            params.toArray());
-    assertThat(plan).hasSize(1);
-    return String.valueOf(plan.get(0).get("key"));
-  }
-
-  // ── Scenario 7 (US-016 T-012, 03-design.md §11.2 MC-1): M7/M8/M9 non-locking ────────────
+  // ── Scenario 7 (US-018 T-017, 03-design.md §11.2 MC-A extended): the attach reads ───────────
 
   /**
-   * US-016 T-012 / 03-design.md §11.2 MC-1, D5: mechanical proof that M7 ({@code
-   * findPermissionNamesForRole}), M8 ({@code findRoleIdByName}, {@link RoleAssignmentService}'s
-   * call site) and M9's new caller ({@code findActiveUserIdsForRole}, from {@link
-   * RoleManagementService#attachPermission}) never render {@code for share} or {@code for
-   * update}. {@code nexus_app} holds {@code SELECT} only on {@code permissions} (03-design.md
-   * §5.2) — MySQL requires {@code SELECT} plus one of {@code DELETE}/{@code LOCK TABLES}/{@code
-   * UPDATE} to execute a locking read, so a {@code @Lock} accidentally added to any of these three
-   * would be REJECTED IN PRODUCTION but PASS every Testcontainers IT (every IT connects as the
-   * container superuser). Code review alone cannot see this failure mode; this test makes it
+   * MC-A extended: every read an attach issues (A3's M13, M14 and M15, the narrow provenance
+   * rule's holder and administrator reads, and the post-commit holder read with its administrator
+   * user set) must be non-locking. {@code nexus_app} holds {@code SELECT} only on {@code
+   * permissions}, and MySQL requires {@code SELECT} plus one of {@code DELETE}/{@code LOCK
+   * TABLES}/{@code UPDATE} to execute a locking read, so a {@code @Lock} accidentally added to any
+   * of them would be REJECTED IN PRODUCTION but PASS every Testcontainers IT (every IT connects as
+   * the container superuser). Code review alone cannot see this failure mode; this test makes it
    * mechanical.
    *
-   * <p><b>Flow A</b> — {@code assign()} of a non-name-match dangerous custom role, by a non-admin
-   * actor: {@code nameMatch} is false, so {@code carriesDangerousPermission} runs M7; because the
-   * role is privileged, {@code requireActiveTenantAdmin} then runs M8 ({@code findRoleIdByName})
-   * before denying — one call captures both. <b>Flow B</b> — {@code attachPermission()} of a
-   * dangerous permission, by an actor who genuinely holds an active {@code TENANT_ADMIN}
-   * assignment (so AC11's gate passes and the insert is reached): triggers M9's new call site.
+   * <p>The attach completes the catalogue of a role that has one administrator-assigned holder, so
+   * the provenance branch runs too (M14, M15, the holders, M10', the administrator users) and the
+   * post-commit read repeats the holder and administrator reads. Rather than identify each
+   * statement, the assertion is the stronger one: <b>no</b> captured statement contains a locking
+   * clause.
    *
-   * <p><b>Statements are identified positively, never via lock-clause absence</b> (a brittle
-   * full-string assertion would fail on unrelated Hibernate formatting changes — MC-1's own stated
-   * risk, 03-design.md §11.2): M7 by the {@code role_permissions} table, unique to that statement
-   * in Flow A's capture; M8 by the single-column {@code roles} projection ({@code "id from
-   * roles"}, no trailing comma after {@code id}), distinguishing it from the earlier plain {@code
-   * findById(roleId)} entity load in the same flow (which selects every column, so {@code id} is
-   * always followed by a comma there); M9 by the {@code user_roles} table excluding {@code FORCE
-   * INDEX} (Flow B's only other {@code user_roles} statement is the pre-existing, {@code FORCE
-   * INDEX}-driven {@code FOR SHARE} admin-check, which is not new and not asserted on here).
-   *
-   * <p><b>No new privilege-level IT is required</b> in the {@code RolePermissionsPrivilegeIT} /
-   * {@code UserRolesPrivilegeIT} family (03-design.md §5.2: "Because no locking read is proposed
-   * on any new path, no new privilege-level IT ... is required"). Those two classes already prove
-   * {@code nexus_app}'s grant boundary directly via raw JDBC (SELECT-only on {@code permissions},
-   * no UPDATE on {@code roles}/{@code role_permissions}, column-scoped grant on {@code
-   * user_roles}); this test proves the ORM-emitted SQL for M7/M8/M9 never attempts to exercise a
-   * locking grant in the first place. Together they close the loop — neither alone would — but no
-   * <em>new</em> DB-privilege boundary is opened by M7/M8/M9, since none of them acquires a lock.
-   *
-   * <p><b>Mutation check performed and reverted (T-012 DoD).</b> A temporary {@code
-   * @Lock(LockModeType.PESSIMISTIC_READ)} was added to {@code
-   * JpaRoleRepository#findPermissionNamesByRole} (M7's query), confirmed to fail this test, then
-   * reverted.
+   * <p>This replaces the former M7/M8/M9 test (ledger rows 11 and 17): M7 and the M8 call site on
+   * these paths are deleted with the name-based gates.
    */
   @Test
-  void should_neverEmitForShareOrForUpdate_when_capturingM7M8AndM9sSql() throws Exception {
-    // ── Flow A: assign() of a non-name-match dangerous custom role, denied for a non-admin ──
-    UUID tenantA = uuidGenerator.newId();
-    seedTenantAdminRole(tenantA, "mc1a"); // exists so M8 is non-empty; nobody holds it here
-    Role dangerousRole = seedRole(tenantA, "MC1-CUSTOM-DANGEROUS", "mc1a");
-    grantPermission(dangerousRole.getId(), ROLE_WRITE_PERMISSION_ID);
-    User nonAdminActor = seedUser(tenantA, "mc1a-actor");
-    User target = seedUser(tenantA, "mc1a-target");
-    RoleChangeActor actorA = new RoleChangeActor(nonAdminActor.getId(), tenantA);
-
-    List<String> flowASql =
-        captureHibernateSql(
-            () ->
-                assertThatThrownBy(
-                        () ->
-                            roleAssignmentService.assign(
-                                actorA, target.getId(), dangerousRole.getId(), requestContext()))
-                    .isInstanceOf(InsufficientPermissionException.class));
-
-    // Excludes "tenant_id": M10's new tenant-scoped bulk read (also touching role_permissions,
-    // via requireActiveTenantAdmin's admin-equivalence check on this same non-admin actor) has a
-    // r.tenantId predicate that M7's per-role query does not -- without this exclusion both
-    // statements match and findStatementMatching's uniqueness assertion fails.
-    String m7Sql =
-        findStatementMatching(flowASql, List.of("role_permissions"), List.of("tenant_id"));
-    String m8Sql = findStatementMatching(flowASql, List.of("id from roles"), List.of());
-
-    assertNoLockingClause(m7Sql, "M7 (findPermissionNamesForRole)");
-    assertNoLockingClause(m8Sql, "M8 (findRoleIdByName)");
-
-    // ── Flow B: attachPermission() of a dangerous permission, by a genuine active admin ──
-    UUID tenantB = uuidGenerator.newId();
-    Role adminRoleB = seedTenantAdminRole(tenantB, "mc1b");
-    User adminActorUser = seedUser(tenantB, "mc1b-admin");
+  void should_neverEmitForShareOrForUpdate_when_capturingEveryAttachRead_MCA() throws Exception {
+    UUID tenantId = uuidGenerator.newId();
+    Role adminRole = seedTenantAdminRole(tenantId, "mc1b");
+    User adminActorUser = seedUser(tenantId, "mc1b-admin");
     seedActiveAdminAssignment(
-        tenantB, adminRoleB.getId(), adminActorUser.getId(), adminActorUser.getId());
-    Role customRole = seedRole(tenantB, "MC1-ATTACH-TARGET", "mc1b");
-    RoleChangeActor adminActor = new RoleChangeActor(adminActorUser.getId(), tenantB);
+        tenantId, adminRole.getId(), adminActorUser.getId(), adminActorUser.getId());
 
-    List<String> flowBSql =
+    // A custom role carrying the whole catalogue except role:write, with one holder assigned by
+    // the administrator. Attaching role:write completes the catalogue.
+    Role customRole = seedRole(tenantId, "MC1-ATTACH-TARGET", "mc1b");
+    jdbc.update(
+        "INSERT INTO role_permissions (role_id, permission_id) "
+            + "SELECT UUID_TO_BIN(?), id FROM permissions WHERE id <> UUID_TO_BIN(?)",
+        customRole.getId().toString(),
+        ROLE_WRITE_PERMISSION_ID.toString());
+    User holder = seedUser(tenantId, "mc1b-holder");
+    seedActiveAssignment(tenantId, customRole.getId(), holder.getId(), adminActorUser.getId());
+    RoleChangeActor adminActor = new RoleChangeActor(adminActorUser.getId(), tenantId);
+
+    List<String> emittedSql =
         captureHibernateSql(
             () ->
                 roleManagementService.attachPermission(
                     adminActor, customRole.getId(), ROLE_WRITE_PERMISSION_ID, requestContext()));
 
-    // US-018 A3 (attach-subset) adds M13 (caller's held role-permission ids) to this flow; it also
-    // touches user_roles, so M9 is identified by excluding role_permissions, and M13 is pinned
-    // separately (design MC-A: M13 never carries a locking clause). US-018 T-010: M9 now runs
-    // twice, the D13 holder count inside the transaction and the post-commit holder read for
-    // the cache eviction; both must be lock-free.
-    List<String> m9Sqls =
-        flowBSql.stream()
-            .filter(
-                sql -> {
-                  String lower = sql.toLowerCase(Locale.ROOT);
-                  return lower.contains("user_roles")
-                      && !lower.contains("force index")
-                      && !lower.contains("role_permissions");
-                })
-            .toList();
-    String m13Sql =
-        findStatementMatching(
-            flowBSql, List.of("user_roles", "role_permissions"), List.of("force index"));
-    assertThat(m9Sqls)
-        .as("M9 runs once in the transaction and once after commit: " + flowBSql)
-        .hasSize(2);
-    m9Sqls.forEach(m9Sql -> assertNoLockingClause(m9Sql, "M9 (findActiveUserIdsForRole)"));
-    assertNoLockingClause(m13Sql, "M13 (findHeldRolePermissionIdsForAuthorization)");
+    assertThat(emittedSql).as("the attach must emit SQL: " + emittedSql).isNotEmpty();
+    emittedSql.forEach(sql -> assertNoLockingClause(sql, "an attach read"));
+    assertThat(emittedSql.stream().filter(sql -> sql.toLowerCase(Locale.ROOT).contains("user_roles")))
+        .as("the holder reads (in the transaction and after commit) are captured: " + emittedSql)
+        .hasSizeGreaterThanOrEqualTo(2);
+  }
+
+  // ── Scenario 8 (US-018 T-018, 03-design.md §11.2 MC-A extended): M16 non-locking ───────────
+
+  /**
+   * MC-A extended: M16 ({@code findHeldAdminDefiningRoleIds}), the independent self-assignment
+   * check, must never lock: it is read inside the set-lock region and a locking read driven by
+   * {@code fk_user_roles_user} would be a new acquisition outside it (ADR-0018 D6).
+   */
+  @Test
+  void should_neverEmitForShareOrForUpdate_when_capturingM16sSql_MCA() throws Exception {
+    UUID tenantId = uuidGenerator.newId();
+    Role adminRole = seedTenantAdminRole(tenantId, "mca16");
+    User admin = seedUser(tenantId, "mca16-admin");
+    seedActiveAdminAssignment(tenantId, adminRole.getId(), admin.getId(), admin.getId());
+
+    List<String> emittedSql =
+        captureHibernateSql(
+            () ->
+                assertThat(userRoleRepository.findHeldAdminDefiningRoleIds(admin.getId(), tenantId))
+                    .containsExactly(adminRole.getId()));
+
+    assertThat(emittedSql).as("M16, captured from one action").hasSize(1);
+    assertNoLockingClause(emittedSql.get(0), "M16 (findHeldAdminDefiningRoleIds)");
+  }
+
+  // ── Scenario 9 (US-018 T-016, RC-25.1, RC-25.3): the caller's administrator status is current ─
+
+  /**
+   * RC-25.3 (harness C race case): a revoke of the caller's admin-defining role races the caller's
+   * own admin-defining assign, and the assign must return 403.
+   *
+   * <p>Ordering is forced, not hoped for: thread A opens a transaction, revokes the caller's
+   * custom admin-defining role (which takes the set lock) and holds that transaction open until
+   * the assign is provably blocked on the lock ({@code performance_schema.data_lock_waits}); the
+   * assign has by then created its snapshot (the tenant checks run before the lock), so M13 still
+   * shows the caller as an administrator. When A commits, the assign's M11 returns the CURRENT
+   * rows, in which the caller holds no admin-defining role, and A4 decides from them: 403
+   * SELF_ASSIGNMENT. Decided from the snapshot the assign would have succeeded.
+   */
+  @Test
+  void should_return403ForTheAssign_when_aRevokeOfTheCallersAdminDefiningRoleRacesTheirOwnAssign_RC253()
+      throws Exception {
+    UUID tenantId = uuidGenerator.newId();
+    Role adminRole = seedTenantAdminRole(tenantId, "rc253");
+    User revoker = seedUser(tenantId, "rc253-revoker");
+    seedActiveAdminAssignment(tenantId, adminRole.getId(), revoker.getId(), revoker.getId());
+
+    // The caller's ONLY admin status is this custom admin-defining role.
+    Role callersRole = seedRole(tenantId, "RC253-CALLERS-ADMIN", "rc253");
+    grantWholeCatalogue(callersRole.getId());
+    User caller = seedUser(tenantId, "rc253-caller");
+    seedActiveAdminAssignment(tenantId, callersRole.getId(), caller.getId(), revoker.getId());
+
+    RoleChangeActor revokerActor = new RoleChangeActor(revoker.getId(), tenantId);
+    RoleChangeActor callerActor = new RoleChangeActor(caller.getId(), tenantId);
+    TransactionTemplate outer = new TransactionTemplate(transactionManager);
+
+    java.util.concurrent.CountDownLatch revokeDone = new java.util.concurrent.CountDownLatch(1);
+    ExecutorService executor = Executors.newFixedThreadPool(2);
+    Future<?> revokeFuture =
+        executor.submit(
+            () ->
+                outer.executeWithoutResult(
+                    status -> {
+                      roleAssignmentService.revoke(
+                          revokerActor, caller.getId(), callersRole.getId(), requestContext());
+                      revokeDone.countDown();
+                      awaitALockWaiter();
+                    }));
+    Future<String> assignFuture =
+        executor.submit(
+            (Callable<String>)
+                () -> {
+                  assertThat(revokeDone.await(10, TimeUnit.SECONDS)).isTrue();
+                  try {
+                    roleAssignmentService.assign(
+                        callerActor, caller.getId(), adminRole.getId(), requestContext());
+                    return "ASSIGN_SUCCEEDED";
+                  } catch (InsufficientPermissionException e) {
+                    return "ASSIGN_" + e.getReason();
+                  }
+                });
+    executor.shutdown();
+    assertThat(executor.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+    revokeFuture.get();
+
+    assertThat(assignFuture.get())
+        .as("the assign must be decided from M11's current rows, not the stale snapshot")
+        .isEqualTo("ASSIGN_" + DenialReason.SELF_ASSIGNMENT);
+    assertThat(
+            jdbc.queryForObject(
+                "SELECT COUNT(*) FROM user_roles WHERE user_id = ? AND role_id = ? AND revoked_at"
+                    + " IS NULL",
+                Integer.class,
+                toBytes(caller.getId()),
+                toBytes(adminRole.getId())))
+        .as("the caller must not have become a TENANT_ADMIN")
+        .isZero();
+  }
+
+  /** Waits (bounded) until some transaction is blocked on a row lock, then returns. */
+  private void awaitALockWaiter() {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
+    while (System.nanoTime() < deadline) {
+      Integer waiting =
+          jdbc.queryForObject("SELECT COUNT(*) FROM performance_schema.data_lock_waits", Integer.class);
+      if (waiting != null && waiting > 0) {
+        return;
+      }
+      try {
+        Thread.sleep(50);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return;
+      }
+    }
   }
 
   // ── Shared seeding / assertion helpers ─────────────────────────────────────────────────
@@ -1181,6 +1190,14 @@ class LastAdminLockoutIT {
 
   private void grantPermission(UUID roleId, UUID permissionId) {
     rolePermissionRepository.save(new RolePermission(roleId, permissionId));
+  }
+
+  /** Makes {@code roleId} admin-defining (ADR-0021 D3): attaches every catalogue permission. */
+  private void grantWholeCatalogue(UUID roleId) {
+    jdbc.update(
+        "INSERT INTO role_permissions (role_id, permission_id) "
+            + "SELECT UUID_TO_BIN(?), id FROM permissions",
+        roleId.toString());
   }
 
   /** Generically-named alias of {@link #seedActiveAdminAssignment} for Harness C's non-admin-role

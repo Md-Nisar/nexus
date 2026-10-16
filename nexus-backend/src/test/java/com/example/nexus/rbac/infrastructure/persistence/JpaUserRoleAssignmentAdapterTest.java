@@ -12,9 +12,9 @@ import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.ActiveAssignmentRef;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
+import com.example.nexus.rbac.domain.HolderProvenance;
 import com.example.nexus.rbac.domain.IdGenerator;
 import com.example.nexus.rbac.domain.Role;
-import com.example.nexus.rbac.domain.RolePermissionName;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.UserRole;
 import java.lang.reflect.Method;
@@ -113,36 +113,14 @@ class JpaUserRoleAssignmentAdapterTest {
   }
 
   @Test
-  void should_returnTrue_when_lockActiveAdminAssignmentReturnsNonEmptyList() {
-    // M5 is now a native query taking byte[] (03-design.md §7.2 step 1 / MC-5) -- byte[] has no
-    // content equals(), so argument matching uses any(byte[].class) rather than the converted
-    // literal (this test pins the true/false mapping, not the exact byte content).
-    UserRole row = mock(UserRole.class);
-    when(userRoleRepository.lockActiveAdminAssignment(
-            any(byte[].class), any(byte[].class), any(byte[].class)))
-        .thenReturn(List.of(row));
+  void should_delegateToRoleRepository_when_findingRolePermissionIdsForTenantRoles_M10prime() {
+    RolePermissionRef pair = new RolePermissionRef(roleId, UUID.randomUUID());
+    when(roleRepository.findRolePermissionIdsByTenantRoles(tenantId)).thenReturn(List.of(pair));
 
-    assertThat(adapter.hasActiveAdminAssignment(userId, roleId, tenantId)).isTrue();
-  }
-
-  @Test
-  void should_returnFalse_when_lockActiveAdminAssignmentReturnsEmptyList() {
-    when(userRoleRepository.lockActiveAdminAssignment(
-            any(byte[].class), any(byte[].class), any(byte[].class)))
-        .thenReturn(List.of());
-
-    assertThat(adapter.hasActiveAdminAssignment(userId, roleId, tenantId)).isFalse();
-  }
-
-  @Test
-  void should_delegateToRoleRepository_when_findingPermissionNamesForTenantRoles() {
-    RolePermissionName pair = new RolePermissionName(roleId, "role:write");
-    when(roleRepository.findPermissionNamesByTenantRoles(tenantId)).thenReturn(List.of(pair));
-
-    List<RolePermissionName> result = adapter.findPermissionNamesForTenantRoles(tenantId);
+    List<RolePermissionRef> result = adapter.findRolePermissionIdsForTenantRoles(tenantId);
 
     assertThat(result).containsExactly(pair);
-    verify(roleRepository).findPermissionNamesByTenantRoles(tenantId);
+    verify(roleRepository).findRolePermissionIdsByTenantRoles(tenantId);
   }
 
   @Test
@@ -162,42 +140,6 @@ class JpaUserRoleAssignmentAdapterTest {
     List<ActiveAssignmentHolder> result = adapter.lockActiveAssignmentHolders(tenantId, roleIds);
 
     assertThat(result).containsExactly(new ActiveAssignmentHolder(assignmentId, userId, roleId));
-  }
-
-  @Test
-  void should_returnTrue_when_lockActiveAssignmentOfAnyRoleReturnsNonEmptyList() {
-    UserRole row = mock(UserRole.class);
-    when(userRoleRepository.lockActiveAssignmentOfAnyRole(
-            any(byte[].class), any(), any(byte[].class)))
-        .thenReturn(List.of(row));
-
-    boolean result = adapter.hasActiveAssignmentOfAnyRole(userId, List.of(roleId), tenantId);
-
-    assertThat(result).isTrue();
-  }
-
-  @Test
-  void should_returnFalse_when_lockActiveAssignmentOfAnyRoleReturnsEmptyList() {
-    when(userRoleRepository.lockActiveAssignmentOfAnyRole(
-            any(byte[].class), any(), any(byte[].class)))
-        .thenReturn(List.of());
-
-    boolean result = adapter.hasActiveAssignmentOfAnyRole(userId, List.of(roleId), tenantId);
-
-    assertThat(result).isFalse();
-  }
-
-  @Test
-  void should_delegateToUserRoleRepository_when_findingPermissionNamesForActiveAssignmentsOfUser() {
-    RolePermissionName pair = new RolePermissionName(roleId, "user:write");
-    when(userRoleRepository.findPermissionNamesForActiveAssignmentsOfUser(userId, tenantId))
-        .thenReturn(List.of(pair));
-
-    List<RolePermissionName> result =
-        adapter.findPermissionNamesForActiveAssignmentsOfUser(userId, tenantId);
-
-    assertThat(result).containsExactly(pair);
-    verify(userRoleRepository).findPermissionNamesForActiveAssignmentsOfUser(userId, tenantId);
   }
 
   @Test
@@ -340,24 +282,6 @@ class JpaUserRoleAssignmentAdapterTest {
   }
 
   @Test
-  void should_delegateToRoleRepository_when_findingPermissionNamesForRole() {
-    when(roleRepository.findPermissionNamesByRole(roleId))
-        .thenReturn(List.of("user:write", "role:write"));
-
-    List<String> result = adapter.findPermissionNamesForRole(roleId);
-
-    assertThat(result).containsExactly("user:write", "role:write");
-    verify(roleRepository).findPermissionNamesByRole(roleId);
-  }
-
-  @Test
-  void should_returnEmptyList_when_roleHasNoPermissions() {
-    when(roleRepository.findPermissionNamesByRole(roleId)).thenReturn(List.of());
-
-    assertThat(adapter.findPermissionNamesForRole(roleId)).isEmpty();
-  }
-
-  @Test
   void should_delegateToRoleRepositoryFindIdByTenantIdAndName_when_findingRoleIdByName() {
     when(roleRepository.findIdByTenantIdAndName(tenantId, "TENANT_ADMIN"))
         .thenReturn(Optional.of(roleId));
@@ -407,5 +331,38 @@ class JpaUserRoleAssignmentAdapterTest {
     List<UUID> result = adapter.findActiveUserIdsForRole(roleId);
 
     assertThat(result).containsExactly(user1, user2);
+  }
+
+  @Test
+  void should_delegateToUserRoleRepository_when_findingHeldAdminDefiningRoleIds_M16() {
+    when(userRoleRepository.findHeldAdminDefiningRoleIds(userId, tenantId))
+        .thenReturn(List.of(roleId));
+
+    assertThat(adapter.findHeldAdminDefiningRoleIds(userId, tenantId)).containsExactly(roleId);
+  }
+
+  @Test
+  void should_delegateToUserRoleRepository_when_findingActiveHoldersForRole() {
+    HolderProvenance holder = new HolderProvenance(userId, assignedBy);
+    when(userRoleRepository.findActiveHoldersByRole(roleId, tenantId))
+        .thenReturn(List.of(holder));
+
+    assertThat(adapter.findActiveHoldersForRole(roleId, tenantId)).containsExactly(holder);
+  }
+
+  @Test
+  void should_returnDistinctUserIds_when_findingActiveHolderUserIdsForRoles() {
+    when(userRoleRepository.findActiveHolderUserIdsByRoles(List.of(roleId), tenantId))
+        .thenReturn(List.of(userId, assignedBy));
+
+    assertThat(adapter.findActiveHolderUserIdsForRoles(tenantId, List.of(roleId)))
+        .containsExactlyInAnyOrder(userId, assignedBy);
+  }
+
+  @Test
+  void should_notReadAndReturnEmpty_when_findingActiveHolderUserIdsForNoRoles() {
+    assertThat(adapter.findActiveHolderUserIdsForRoles(tenantId, List.of())).isEmpty();
+
+    verify(userRoleRepository, never()).findActiveHolderUserIdsByRoles(any(), any());
   }
 }

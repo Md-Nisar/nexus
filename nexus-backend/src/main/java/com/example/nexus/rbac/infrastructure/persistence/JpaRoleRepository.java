@@ -1,9 +1,7 @@
 package com.example.nexus.rbac.infrastructure.persistence;
 
-import com.example.nexus.rbac.domain.Permission;
 import com.example.nexus.rbac.domain.Role;
-import com.example.nexus.rbac.domain.RolePermission;
-import com.example.nexus.rbac.domain.RolePermissionName;
+import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.RoleView;
 import java.util.List;
 import java.util.Optional;
@@ -56,27 +54,11 @@ public interface JpaRoleRepository extends JpaRepository<Role, UUID> {
   Optional<UUID> findIdByTenantIdAndName(@Param("tenantId") UUID tenantId, @Param("name") String name);
 
   /**
-   * M7 (US-016 D16, RC-12) — the names of every permission attached to {@code roleId}. Hosted
-   * here, not on {@code JpaRolePermissionRepository}, so {@link JpaUserRoleAssignmentAdapter} can
-   * read permission names without gaining any dependency on the repository that holds write
-   * access over {@code role_permissions} (03-design.md §4.4/§4.5, T-T13). Two-entity comma-join JPQL —
-   * {@link Role} has no mapped association to {@link RolePermission} — never native SQL, so
-   * Hibernate's auto-applied {@code UuidV7Converter} handles {@code UUID} <-> {@code BINARY(16)}
-   * for both the predicate and the bind parameter. No {@code @Lock} (MC-1): {@code nexus_app}
-   * holds SELECT only on {@code permissions}. No {@code ORDER BY}: the caller treats the result
-   * as a set.
-   */
-  @Query(
-      "SELECT p.name FROM RolePermission rp, Permission p "
-          + "WHERE rp.id.permissionId = p.id AND rp.id.roleId = :roleId")
-  List<String> findPermissionNamesByRole(@Param("roleId") UUID roleId);
-
-  /**
    * M14 (US-018, 03-design.md §4.3) — the permission ids attached to one role of one tenant,
    * served by the {@code roles} primary key and the {@code role_permissions} primary-key prefix.
-   * Hosted here for the same reason as {@link #findPermissionNamesByRole}: the assignment adapter
-   * reads it without a dependency on the repository that writes {@code role_permissions}. The
-   * {@code r.tenantId} predicate satisfies the tenant-isolation ArchUnit gate (T-S1).
+   * Hosted here so the assignment adapter reads it without a dependency on the repository that
+   * writes {@code role_permissions}. The {@code r.tenantId} predicate satisfies the
+   * tenant-isolation ArchUnit gate (T-S1).
    *
    * <p>Fail-closed shape (07-security-review.md L-2): driven off {@code roles} with a LEFT JOIN, so
    * the two "nothing to grant" cases stay distinguishable in ONE statement. An EMPTY list means the
@@ -98,30 +80,23 @@ public interface JpaRoleRepository extends JpaRepository<Role, UUID> {
   long countByTenantId(UUID tenantId);
 
   /**
-   * M10 (US-017 D3, D4) — every (roleId, permissionName) pair for the roles of ONE tenant.
-   * Bounded at {@code nexus.rbac.max-roles-per-tenant} (default 500) x |permissions| = 7.
+   * M10' (US-018 T-016, replaces M10) — every {@code (roleId, permissionId)} pair for the roles of
+   * ONE tenant. Bounded at {@code nexus.rbac.max-roles-per-tenant} (default 500) x |permissions|.
+   * Ids only: the administrator definition is applied in {@code rbac.domain.RbacAdministrators},
+   * never here and never by passing a list of names.
    *
-   * <p>Deliberately returns NAMES paired with role ids, not a verdict and not a filtered set: the
-   * ANY/ALL policy lives in {@code rbac.domain.RbacAdminEquivalence} and MUST NOT cross this port
-   * in either direction — not hardcoded in the adapter and NOT passed in as a {@code
-   * Set<String>} parameter either (ADR-0017 D2, upheld by ADR-0018 D3).
+   * <p>MUST be a plain, NON-LOCKING read and MUST NEVER be annotated {@code @Lock} (MC-A). It does
+   * not join {@code permissions}. Comma-join JPQL, so {@code UuidV7Converter} handles {@code UUID}
+   * <-> {@code BINARY(16)}. Driven by {@code uq_roles_tenant_name}'s leftmost {@code tenant_id}
+   * prefix into {@code pk_role_permissions}'s leftmost {@code role_id} prefix.
    *
-   * <p>MUST be a plain, NON-LOCKING read and MUST NEVER be annotated {@code @Lock}: it touches
-   * {@code permissions}, on which {@code nexus_app} holds SELECT only (MC-A). Comma-join JPQL,
-   * never native SQL, so {@code UuidV7Converter} handles {@code UUID} <-> {@code BINARY(16)}. No
-   * {@code ORDER BY} — the caller builds sets. Driven by {@code uq_roles_tenant_name}'s leftmost
-   * {@code tenant_id} prefix into {@code pk_role_permissions}'s leftmost {@code role_id} prefix
-   * into {@code permissions}' PK: indexed end to end, no new index.
-   *
-   * <p><b>Roles with zero attached permissions do not appear in this result.</b> That is correct
-   * and deliberate: such a role is admin-equivalent only if it is literally named {@code
-   * TENANT_ADMIN}, and that half is answered by M8, not M10 (D9).
+   * <p>Roles with zero permissions do not appear: they are never admin-defining.
    */
   @Query(
       """
-      SELECT new com.example.nexus.rbac.domain.RolePermissionName(rp.id.roleId, p.name)
-      FROM Role r, RolePermission rp, Permission p
-      WHERE rp.id.roleId = r.id AND rp.id.permissionId = p.id AND r.tenantId = :tenantId
+      SELECT new com.example.nexus.rbac.domain.RolePermissionRef(rp.id.roleId, rp.id.permissionId)
+      FROM Role r, RolePermission rp
+      WHERE rp.id.roleId = r.id AND r.tenantId = :tenantId
       """)
-  List<RolePermissionName> findPermissionNamesByTenantRoles(@Param("tenantId") UUID tenantId);
+  List<RolePermissionRef> findRolePermissionIdsByTenantRoles(@Param("tenantId") UUID tenantId);
 }

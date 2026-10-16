@@ -12,18 +12,21 @@ import com.example.nexus.rbac.domain.Permission;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.domain.RolePermissionId;
+import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.UserRole;
 import com.example.nexus.rbac.infrastructure.persistence.JpaPermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import java.util.UUID;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * US-009 T-09-07 (AC8): save/find round-trip for all 4 RBAC entities under {@code
@@ -43,6 +46,7 @@ class RbacRepositoryRoundTripIT {
   @Autowired private JpaUserRoleRepository userRoleRepository;
   @Autowired private JpaUserRepository userRepository;
   @Autowired private UuidGenerator uuidGenerator;
+  @Autowired private JdbcTemplate jdbc;
 
   private static final UUID TENANT_ID = UUID.fromString("00000000-0000-7000-8000-000000000001");
 
@@ -184,75 +188,75 @@ class RbacRepositoryRoundTripIT {
   }
 
   /**
-   * Gap identified in Phase 8 test-validate (US-016 T-005 / D16): {@code
-   * JpaRoleRepository.findPermissionNamesByRole} (M7, the comma-join JPQL form A-6 mandates
-   * because {@code Role} has no mapped association to {@code RolePermission}) was previously
-   * exercised only via mocked adapter-delegation unit tests and via SQL-capture assertions that
-   * check for the ABSENCE of locking clauses -- nothing proved the query's actual RESULT is
-   * correct against real MySQL. This seeds three permissions on one role and confirms the
-   * comma-join returns exactly those three names, with no duplication and no cross-join fan-out
-   * from a second, unrelated role's permissions.
+   * M10' (US-018 T-016; replaces the name-returning M7/M10 reads this class used to prove) is the
+   * comma-join JPQL form because {@code Role} has no mapped association to {@code RolePermission}.
+   * Nothing but a real MySQL proves its RESULT: it must return exactly one {@code (roleId,
+   * permissionId)} row per attached permission of the tenant's roles, with no duplication, no
+   * cross-join fan-out, and nothing from another tenant's roles.
    */
   @Test
-  void should_returnDistinctPermissionNames_when_roleHasMultiplePermissionsAttached() {
+  void should_returnOneRowPerAttachedPermissionOfTheTenantsRolesOnly_when_findingM10Prime() {
+    UUID tenantId = uuidGenerator.newId();
     Role role =
         roleRepository.save(
-            new Role(
-                uuidGenerator.newId(),
-                uuidGenerator.newId(),
-                "RT-M7-ROLE-" + UUID.randomUUID(),
-                null,
-                false));
-    Permission p1 =
-        permissionRepository.save(
-            new Permission(uuidGenerator.newId(), "rt:m7-a-" + UUID.randomUUID(), "m7 perm a"));
-    Permission p2 =
-        permissionRepository.save(
-            new Permission(uuidGenerator.newId(), "rt:m7-b-" + UUID.randomUUID(), "m7 perm b"));
-    Permission p3 =
-        permissionRepository.save(
-            new Permission(uuidGenerator.newId(), "rt:m7-c-" + UUID.randomUUID(), "m7 perm c"));
+            new Role(uuidGenerator.newId(), tenantId, "RT-M10-ROLE-" + UUID.randomUUID(), null, false));
+    Permission p1 = savePermission("rt:m10-a-");
+    Permission p2 = savePermission("rt:m10-b-");
+    Permission p3 = savePermission("rt:m10-c-");
     rolePermissionRepository.save(new RolePermission(role.getId(), p1.getId()));
     rolePermissionRepository.save(new RolePermission(role.getId(), p2.getId()));
     rolePermissionRepository.save(new RolePermission(role.getId(), p3.getId()));
 
-    // An unrelated role/permission pairing must not leak into the result -- the WHERE
-    // rp.id.roleId = :roleId predicate, not incidental non-overlap, must be what excludes it.
-    Role otherRole =
+    // An unrelated role of ANOTHER tenant must not leak into the result: the tenant predicate, not
+    // incidental non-overlap, must be what excludes it.
+    Role otherTenantsRole =
         roleRepository.save(
             new Role(
                 uuidGenerator.newId(),
                 uuidGenerator.newId(),
-                "RT-M7-OTHER-" + UUID.randomUUID(),
+                "RT-M10-OTHER-" + UUID.randomUUID(),
                 null,
                 false));
-    Permission otherPermission =
-        permissionRepository.save(
-            new Permission(uuidGenerator.newId(), "rt:m7-other-" + UUID.randomUUID(), "other"));
-    rolePermissionRepository.save(new RolePermission(otherRole.getId(), otherPermission.getId()));
+    rolePermissionRepository.save(
+        new RolePermission(otherTenantsRole.getId(), savePermission("rt:m10-other-").getId()));
 
-    assertThat(roleRepository.findPermissionNamesByRole(role.getId()))
-        .containsExactlyInAnyOrder(p1.getName(), p2.getName(), p3.getName());
+    assertThat(roleRepository.findRolePermissionIdsByTenantRoles(tenantId))
+        .containsExactlyInAnyOrder(
+            new RolePermissionRef(role.getId(), p1.getId()),
+            new RolePermissionRef(role.getId(), p2.getId()),
+            new RolePermissionRef(role.getId(), p3.getId()));
   }
 
   /**
-   * Companion to the above: Edge Case 1 (03-design.md §4.1) -- a role with zero attached
-   * permissions must yield an empty list, not null and not an error, from the real comma-join
-   * against MySQL (previously only asserted via a mocked port in {@code
-   * RoleAssignmentServiceTest}).
+   * Companion to the above: a role with zero attached permissions yields no row at all (it can
+   * never be admin-defining), not a null row and not an error, from the real comma-join.
    */
   @Test
-  void should_returnEmptyList_when_roleHasNoPermissionsAttached() {
-    Role role =
-        roleRepository.save(
-            new Role(
-                uuidGenerator.newId(),
-                uuidGenerator.newId(),
-                "RT-M7-EMPTY-ROLE-" + UUID.randomUUID(),
-                null,
-                false));
+  void should_returnNoRows_when_theTenantsRoleHasNoPermissionsAttached() {
+    UUID tenantId = uuidGenerator.newId();
+    roleRepository.save(
+        new Role(uuidGenerator.newId(), tenantId, "RT-M10-EMPTY-ROLE-" + UUID.randomUUID(), null, false));
 
-    assertThat(roleRepository.findPermissionNamesByRole(role.getId())).isEmpty();
+    assertThat(roleRepository.findRolePermissionIdsByTenantRoles(tenantId)).isEmpty();
+  }
+
+  /**
+   * This class inserts permissions into the GLOBAL catalogue. Since US-018 M3 "administrator" is
+   * defined as carrying every permission of that catalogue, a row left behind would silently
+   * demote every other IT's migration-seeded {@code TENANT_ADMIN} for the rest of the run. Remove
+   * everything this class inserted (all are named {@code rt:...}), pairings first.
+   */
+  @AfterEach
+  void removeCatalogueRowsThisClassInserted() {
+    jdbc.update(
+        "DELETE FROM role_permissions WHERE permission_id IN"
+            + " (SELECT id FROM permissions WHERE name LIKE 'rt:%')");
+    jdbc.update("DELETE FROM permissions WHERE name LIKE 'rt:%'");
+  }
+
+  private Permission savePermission(String namePrefix) {
+    return permissionRepository.save(
+        new Permission(uuidGenerator.newId(), namePrefix + UUID.randomUUID(), "round-trip perm"));
   }
 
   private User seedUser(String tag) {

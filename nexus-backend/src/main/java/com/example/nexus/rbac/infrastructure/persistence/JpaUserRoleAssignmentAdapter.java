@@ -5,13 +5,14 @@ import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.ActiveAssignmentRef;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
+import com.example.nexus.rbac.domain.HolderProvenance;
 import com.example.nexus.rbac.domain.IdGenerator;
 import com.example.nexus.rbac.domain.Role;
-import com.example.nexus.rbac.domain.RolePermissionName;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.UserRole;
 import java.nio.ByteBuffer;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -23,19 +24,14 @@ import org.springframework.stereotype.Component;
 
 /**
  * Adapter for {@link UserRoleAssignmentPort}, backed by {@link JpaUserRoleRepository} (M2–M6,
- * M11, M5b, M12) and {@link JpaRoleRepository} (M7, M10). Purely mechanical: this layer does not
- * resolve {@code TENANT_ADMIN} by any hardcoded literal — that resolution (matching a role by name
- * case-insensitively within a tenant) happens in the service layer, per 03-design.md §5.2's R-9
- * discipline. The same discipline now also covers dangerous permission names — this layer never
- * hardcodes a check against {@code RbacDangerousPermissions.NAMES} either. This adapter holds no
- * write capability over {@code role_permissions} and must not acquire one: its permission reads
- * (M7, and now the tenant-scoped M10) are hosted on {@link JpaRoleRepository} precisely so that it
- * cannot (03-design.md D16, T-T13; extended to M10 by D4).
+ * M11, M13, M16) and {@link JpaRoleRepository} (M10', M14). Purely mechanical: this layer decides
+ * nothing about who is an administrator and hardcodes no role or permission name; that is {@code
+ * rbac.domain.RbacAdministrators}, over ids. This adapter holds no write capability over {@code
+ * role_permissions} and must not acquire one: its permission reads (M10', M14) are hosted on {@link
+ * JpaRoleRepository} precisely so that it cannot (03-design.md D16, T-T13).
  *
- * <p><b>Zero new constructor dependencies (US-017 D4):</b> both repositories were already
- * injected; M10 delegates to {@code roleRepository}, and M11/M5b/M12 delegate to {@code
- * userRoleRepository}. {@code JpaRolePermissionRepository} is still not injected — ADR-0017 D2's
- * second half is unweakened by this story.
+ * <p><b>Zero new constructor dependencies:</b> {@code JpaRolePermissionRepository} is still not
+ * injected — ADR-0017 D2's second half is unweakened by this story.
  *
  * <p><b>US-018 M15:</b> the catalogue read goes through {@link JpaPermissionCatalogueRepository},
  * a read-only {@code Repository} that declares {@code findCatalogueIds()} and nothing else, so this
@@ -70,16 +66,6 @@ public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
     return userRoleRepository.countActiveByUserAndRole(userId, roleId) > 0;
   }
 
-  @Override
-  public boolean hasActiveAdminAssignment(UUID userId, UUID roleId, UUID tenantId) {
-    // M5 is now a native query (03-design.md §7.2 step 1 / MC-5): it does not go through the
-    // entity-mapped UuidV7Converter on bind, so the UUID -> BINARY(16) conversion is done here
-    // explicitly, matching ADR-0005's big-endian layout.
-    return !userRoleRepository
-        .lockActiveAdminAssignment(toBytes(userId), toBytes(roleId), toBytes(tenantId))
-        .isEmpty();
-  }
-
   private static byte[] toBytes(UUID uuid) {
     ByteBuffer buf = ByteBuffer.allocate(16);
     buf.putLong(uuid.getMostSignificantBits());
@@ -88,14 +74,14 @@ public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
   }
 
   @Override
-  public List<RolePermissionName> findPermissionNamesForTenantRoles(UUID tenantId) {
-    return roleRepository.findPermissionNamesByTenantRoles(tenantId);
+  public List<RolePermissionRef> findRolePermissionIdsForTenantRoles(UUID tenantId) {
+    return roleRepository.findRolePermissionIdsByTenantRoles(tenantId);
   }
 
   @Override
   public List<ActiveAssignmentHolder> lockActiveAssignmentHolders(
       UUID tenantId, List<UUID> roleIds) {
-    // M11 is native, like M5/M5b (03-design.md §7.2 step 1 / MC-C): the adapter converts the
+    // M11 is native (03-design.md §7.2 step 1 / MC-C): the adapter converts the
     // IN-list to byte[] explicitly and maps the returned entities down to id/userId-only records
     // before they escape this adapter, preserving the repository method's "ids only, never
     // entities" contract.
@@ -105,22 +91,6 @@ public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
         .stream()
         .map(ur -> new ActiveAssignmentHolder(ur.getId(), ur.getUserId(), ur.getRoleId()))
         .toList();
-  }
-
-  @Override
-  public boolean hasActiveAssignmentOfAnyRole(UUID userId, List<UUID> roleIds, UUID tenantId) {
-    // M5b is native, like M5 (03-design.md §7.2 step 1 / MC-5): the adapter converts the IN-list
-    // to byte[] explicitly, reusing the existing toBytes helper — never re-implemented.
-    List<byte[]> roleIdBytes = roleIds.stream().map(JpaUserRoleAssignmentAdapter::toBytes).toList();
-    return !userRoleRepository
-        .lockActiveAssignmentOfAnyRole(toBytes(userId), roleIdBytes, toBytes(tenantId))
-        .isEmpty();
-  }
-
-  @Override
-  public List<RolePermissionName> findPermissionNamesForActiveAssignmentsOfUser(
-      UUID userId, UUID tenantId) {
-    return userRoleRepository.findPermissionNamesForActiveAssignmentsOfUser(userId, tenantId);
   }
 
   @Override
@@ -184,11 +154,6 @@ public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
   }
 
   @Override
-  public List<String> findPermissionNamesForRole(UUID roleId) {
-    return roleRepository.findPermissionNamesByRole(roleId);
-  }
-
-  @Override
   public Optional<UUID> findRoleIdByName(UUID tenantId, String name) {
     return roleRepository.findIdByTenantIdAndName(tenantId, name);
   }
@@ -201,5 +166,23 @@ public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
   @Override
   public List<UUID> findActiveUserIdsForRole(UUID roleId) {
     return userRoleRepository.findActiveUserIdsByRole(roleId);
+  }
+
+  @Override
+  public List<UUID> findHeldAdminDefiningRoleIds(UUID userId, UUID tenantId) {
+    return userRoleRepository.findHeldAdminDefiningRoleIds(userId, tenantId);
+  }
+
+  @Override
+  public List<HolderProvenance> findActiveHoldersForRole(UUID roleId, UUID tenantId) {
+    return userRoleRepository.findActiveHoldersByRole(roleId, tenantId);
+  }
+
+  @Override
+  public Set<UUID> findActiveHolderUserIdsForRoles(UUID tenantId, Collection<UUID> roleIds) {
+    if (roleIds.isEmpty()) {
+      return Set.of();
+    }
+    return Set.copyOf(userRoleRepository.findActiveHolderUserIdsByRoles(roleIds, tenantId));
   }
 }

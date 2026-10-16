@@ -90,8 +90,8 @@ public class UserRoleController {
   @ApiResponse(
       responseCode = "403",
       description =
-          "Missing permission, cross-tenant target, caller is not an active TENANT_ADMIN, or the"
-              + " role carries a permission the caller does not hold")
+          "Missing permission, cross-tenant target, the role carries a permission the caller does"
+              + " not hold, or a self-assignment by a caller who is not an administrator")
   @ApiResponse(responseCode = "404", description = "User or role not found")
   @ApiResponse(responseCode = "409", description = "Duplicate active assignment")
   public ResponseEntity<RoleAssignmentResponse> assignRole(
@@ -150,9 +150,16 @@ public class UserRoleController {
   @Operation(summary = "Revoke a role from a user within the caller's tenant")
   @ApiResponse(responseCode = "204", description = "Role revoked")
   @ApiResponse(responseCode = "400", description = "Malformed path UUID")
-  @ApiResponse(responseCode = "403", description = "Missing permission or cross-tenant target")
+  @ApiResponse(
+      responseCode = "403",
+      description =
+          "Missing permission, cross-tenant target, the role carries a permission the caller does"
+              + " not hold, or the role is an administrator role and the caller is not an"
+              + " administrator")
   @ApiResponse(responseCode = "404", description = "User, role, or active assignment not found")
-  @ApiResponse(responseCode = "409", description = "Would revoke the tenant's last active TENANT_ADMIN")
+  @ApiResponse(
+      responseCode = "409",
+      description = "Would revoke the tenant's last active administrator assignment")
   public void revokeRole(
       @PathVariable String userId,
       @PathVariable String roleId,
