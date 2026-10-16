@@ -32,10 +32,13 @@ import org.springframework.transaction.annotation.Transactional;
  * {@link UserRoleAssignmentPort}, the same persistence path as a real assignment, but skips the
  * caller-permission checks that would otherwise make the first admin impossible to create.
  *
+ * <p>Never active under {@code break-glass} (US-018 T-008): a break-glass process must not grant
+ * TENANT_ADMIN through this unchecked path.
+ *
  * <p>Credentials: {@code test@example.com} / {@code TestPass99!}
  */
 @Component
-@Profile("dev")
+@Profile("dev & !break-glass")
 public class DevDataInitializer implements ApplicationRunner {
 
   private static final Logger log = LoggerFactory.getLogger(DevDataInitializer.class);

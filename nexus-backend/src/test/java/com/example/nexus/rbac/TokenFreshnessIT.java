@@ -264,6 +264,16 @@ class TokenFreshnessIT {
   }
 
   @Test
+  void should_return200_when_refreshCarriesV2Bearer() {
+    Holder holder = seedHolder("refresh-v2");
+    Session session = login(holder.email());
+    Instant now = Instant.now();
+    String v2 = token(holder.user().getId(), 2, null, now, now.plusSeconds(900));
+
+    assertThat(refresh(v2, session.refreshCookie()).getStatusCode().value()).isEqualTo(200);
+  }
+
+  @Test
   void should_revokeFamilyServerSide_when_logoutCarriesStaleEpochBearer() {
     Holder holder = seedHolder("logout-stale");
     Session session = login(holder.email());

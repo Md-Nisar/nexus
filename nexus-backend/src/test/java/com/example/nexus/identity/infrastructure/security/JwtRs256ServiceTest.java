@@ -478,6 +478,22 @@ class JwtRs256ServiceTest {
   }
 
   @Test
+  void should_rejectWithSchemaVersionReason_when_schemaVersionIsFractionalThree() {
+    Map<String, Object> claims = validClaims(3);
+    claims.put("schema_version", 3.0);
+
+    assertRejectedWithReason(signedToken(claims), "schema_version");
+  }
+
+  @Test
+  void should_rejectWithSchemaVersionReason_when_schemaVersionTruncatesToThreeAsInt() {
+    Map<String, Object> claims = validClaims(3);
+    claims.put("schema_version", 4_294_967_299L); // 2^32 + 3: (int) cast would give 3
+
+    assertRejectedWithReason(signedToken(claims), "schema_version");
+  }
+
+  @Test
   void should_rejectWithSchemaVersionReason_when_schemaVersionAbsent() {
     Map<String, Object> claims = validClaims(3);
     claims.remove("schema_version");

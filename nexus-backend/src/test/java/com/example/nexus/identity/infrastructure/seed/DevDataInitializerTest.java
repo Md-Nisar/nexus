@@ -17,16 +17,22 @@ import com.example.nexus.identity.domain.UserStatus;
 import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.domain.RbacRoleNames;
+import com.example.nexus.rbac.interfaces.cli.BreakGlassAdminRunner;
 import java.time.Instant;
+import java.util.Set;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.annotation.Profile;
+import org.springframework.core.env.Profiles;
 
 /** Unit tests for {@link DevDataInitializer} (dev-profile E2E test-user seed). */
 @ExtendWith(MockitoExtension.class)
@@ -116,6 +122,32 @@ class DevDataInitializerTest {
     initializer.run(null);
 
     verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+  }
+
+  // US-018 T-008 (03-design.md §7.2 Packaging): the dev seed grants TENANT_ADMIN without any
+  // check, so it must never run in a break-glass process, and the two runners never overlap.
+
+  @ParameterizedTest
+  @ValueSource(strings = {"break-glass", "dev,break-glass"})
+  void should_notActivate_when_breakGlassProfileActive(String activeProfiles) {
+    Set<String> active = Set.of(activeProfiles.split(","));
+
+    assertThat(isActive(DevDataInitializer.class, active)).isFalse();
+    assertThat(isActive(BreakGlassAdminRunner.class, active)).isTrue();
+  }
+
+  @Test
+  void should_activateOnlyTheDevSeed_when_onlyDevProfileActive() {
+    Set<String> active = Set.of("dev");
+
+    assertThat(isActive(DevDataInitializer.class, active)).isTrue();
+    assertThat(isActive(BreakGlassAdminRunner.class, active)).isFalse();
+  }
+
+  private static boolean isActive(Class<?> bean, Set<String> activeProfiles) {
+    Profile profile = bean.getAnnotation(Profile.class);
+    assertThat(profile).as("%s must be profile-gated", bean.getSimpleName()).isNotNull();
+    return Profiles.of(profile.value()).matches(activeProfiles::contains);
   }
 
   private void stubAdminRole() {
