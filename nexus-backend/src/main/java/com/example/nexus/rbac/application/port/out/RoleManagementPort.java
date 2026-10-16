@@ -57,8 +57,8 @@ public interface RoleManagementPort {
   int softDeleteRole(UUID roleId, UUID tenantId, Instant deletedAt);
 
   /**
-   * Q12 — RC-4's per-tenant cap check. Count of roles in the tenant, served by {@code
-   * uq_roles_tenant_name}'s leftmost prefix — same index as Q1, no new cost.
+   * Q12 — RC-4's per-tenant cap check. Count of LIVE (not soft-deleted) roles in the tenant, served
+   * by {@code uq_roles_tenant_name}'s leftmost prefix — same index as Q1, no new cost.
    */
   long countRolesInTenant(UUID tenantId);
 

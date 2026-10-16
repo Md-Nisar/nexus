@@ -343,6 +343,27 @@ class RoleManagementIT {
     assertThat(created.tenantId()).isEqualTo(otherTenantId);
   }
 
+  /** US-018 T-026: the cap counts live roles only, so deleting one at the cap frees its slot. */
+  @Test
+  void should_createARole_when_theTenantIsAtTheCapButOneRoleIsSoftDeleted() {
+    UUID atCapTenantId = uuidGenerator.newId();
+    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), atCapTenantId);
+    List<Role> fixtureRoles = new ArrayList<>();
+    for (int i = 0; i < 500; i++) {
+      fixtureRoles.add(
+          new Role(uuidGenerator.newId(), atCapTenantId, "T026-CAP-" + i + "-" + UUID.randomUUID(),
+              null, false));
+    }
+    roleRepository.saveAll(fixtureRoles);
+    roleManagementService.softDeleteRole(actor, fixtureRoles.get(0).getId(), requestContext());
+
+    RoleView created =
+        roleManagementService.createRole(
+            actor, "T026-AFTER-DELETE-" + UUID.randomUUID(), null, requestContext());
+
+    assertThat(created.tenantId()).isEqualTo(atCapTenantId);
+  }
+
   // ── US-018 C1 / TS-14: DELETE (soft delete) ──────────────────────────────────────────────
 
   @Test

@@ -33,8 +33,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * US-018 MC-H' (04-tasks.md T-019): the per-role partition of M13 (the caller's held {@code (role,
  * permission)} snapshot) equals what M14 (a role's permission ids, tenant-scoped) returns when
  * called per role, over a fixture matrix: a normal role, a zero-permission role, a whole-catalogue
- * role, and a role of a foreign tenant assigned in this tenant. The soft-deleted-role row of the
- * matrix is added with T-026.
+ * role, a role of a foreign tenant assigned in this tenant, and (US-018 T-026) a soft-deleted role
+ * that still has a hand-made active assignment, which M13 must not report and M14 must fail closed
+ * on.
  *
  * <p>Requires Docker (Testcontainers); written in M3 and not run where Docker is unavailable.
  */
@@ -65,11 +66,20 @@ class HeldPermissionPartitionIT {
         whole.getId().toString());
     Role foreign = seedRole(foreignTenantId, "HPP-FOREIGN");
     grant(foreign, "audit:read");
+    Role deleted = seedRole(tenantId, "HPP-DELETED");
+    grant(deleted, "audit:read");
     List<Role> roles = List.of(normal, empty, whole, foreign);
     for (Role role : roles) {
       userRoleRepository.save(
           new UserRole(uuidGenerator.newId(), user.getId(), role.getId(), tenantId, user.getId()));
     }
+    // A deleted role with an ACTIVE assignment is an invariant break (RC-36.4), forged here on
+    // purpose: the read-side filters are defense in depth for exactly this state.
+    userRoleRepository.save(
+        new UserRole(uuidGenerator.newId(), user.getId(), deleted.getId(), tenantId, user.getId()));
+    jdbc.update(
+        "UPDATE roles SET deleted_at = CURRENT_TIMESTAMP(6) WHERE id = UUID_TO_BIN(?)",
+        deleted.getId().toString());
 
     Map<UUID, Set<UUID>> m13ByRole = new HashMap<>();
     for (RolePermissionRef ref : port.findHeldRolePermissionIdsForAuthorization(user.getId(), tenantId)) {
@@ -87,6 +97,12 @@ class HeldPermissionPartitionIT {
         .isEmpty();
     assertThat(m13ByRole.keySet().stream().filter(id -> id.equals(foreign.getId())))
         .as("M13 never reports the foreign-tenant role")
+        .isEmpty();
+    assertThat(m13ByRole.keySet())
+        .as("M13 never reports a soft-deleted role, even one with an active assignment")
+        .doesNotContain(deleted.getId());
+    assertThat(port.findPermissionIdsForRole(deleted.getId(), tenantId))
+        .as("M14 fails closed for a soft-deleted role")
         .isEmpty();
     assertThat(m13ByRole.get(whole.getId())).isEqualTo(port.findCatalogueIds());
     assertThat(m13ByRole.keySet().stream().collect(Collectors.toSet()))

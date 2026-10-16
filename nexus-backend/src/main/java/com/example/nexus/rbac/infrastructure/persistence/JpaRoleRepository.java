@@ -25,7 +25,7 @@ public interface JpaRoleRepository extends JpaRepository<Role, UUID> {
       SELECT new com.example.nexus.rbac.domain.RoleView(
                r.id, r.tenantId, r.name, r.description, r.systemRole, r.createdAt)
       FROM Role r
-      WHERE r.tenantId = :tenantId
+      WHERE r.tenantId = :tenantId AND r.deletedAt IS NULL
       ORDER BY r.name
       """)
   List<RoleView> findRoleViewsByTenantId(@Param("tenantId") UUID tenantId);
@@ -40,7 +40,7 @@ public interface JpaRoleRepository extends JpaRepository<Role, UUID> {
       SELECT new com.example.nexus.rbac.domain.RoleView(
                r.id, r.tenantId, r.name, r.description, r.systemRole, r.createdAt)
       FROM Role r
-      WHERE r.id = :roleId
+      WHERE r.id = :roleId AND r.deletedAt IS NULL
       """)
   Optional<RoleView> findRoleViewById(@Param("roleId") UUID roleId);
 
@@ -52,7 +52,9 @@ public interface JpaRoleRepository extends JpaRepository<Role, UUID> {
    * column in {@code UPPER()}, which would de-sargonise this write-hot-path query
    * (03-design.md §5.2). Returns the id only, never the entity.
    */
-  @Query("SELECT r.id FROM Role r WHERE r.tenantId = :tenantId AND r.name = :name")
+  @Query(
+      "SELECT r.id FROM Role r "
+          + "WHERE r.tenantId = :tenantId AND r.name = :name AND r.deletedAt IS NULL")
   Optional<UUID> findIdByTenantIdAndName(@Param("tenantId") UUID tenantId, @Param("name") String name);
 
   /**
@@ -71,15 +73,16 @@ public interface JpaRoleRepository extends JpaRepository<Role, UUID> {
   @Query(
       "SELECT rp.id.permissionId FROM Role r "
           + "LEFT JOIN RolePermission rp ON rp.id.roleId = r.id "
-          + "WHERE r.id = :roleId AND r.tenantId = :tenantId")
+          + "WHERE r.id = :roleId AND r.tenantId = :tenantId AND r.deletedAt IS NULL")
   List<UUID> findPermissionIdsByRoleAndTenantId(
       @Param("roleId") UUID roleId, @Param("tenantId") UUID tenantId);
 
   /**
-   * Q12 — RC-4's per-tenant role cap check. Served by {@code uq_roles_tenant_name}'s leftmost
-   * prefix — same index as Q1, no new cost (03-design.md §5.2).
+   * Q12 — RC-4's per-tenant role cap check, counting only LIVE roles (US-018 T-026: a soft-deleted
+   * role frees its slot). Served by {@code uq_roles_tenant_name}'s leftmost prefix — same index as
+   * Q1, no new cost (03-design.md §5.2).
    */
-  long countByTenantId(UUID tenantId);
+  long countByTenantIdAndDeletedAtIsNull(UUID tenantId);
 
   /**
    * M10' (US-018 T-016, replaces M10) — every {@code (roleId, permissionId)} pair for the roles of
@@ -98,7 +101,7 @@ public interface JpaRoleRepository extends JpaRepository<Role, UUID> {
       """
       SELECT new com.example.nexus.rbac.domain.RolePermissionRef(rp.id.roleId, rp.id.permissionId)
       FROM Role r, RolePermission rp
-      WHERE rp.id.roleId = r.id AND r.tenantId = :tenantId
+      WHERE rp.id.roleId = r.id AND r.tenantId = :tenantId AND r.deletedAt IS NULL
       """)
   List<RolePermissionRef> findRolePermissionIdsByTenantRoles(@Param("tenantId") UUID tenantId);
 

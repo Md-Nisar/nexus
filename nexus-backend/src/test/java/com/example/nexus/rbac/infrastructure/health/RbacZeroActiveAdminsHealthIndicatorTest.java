@@ -146,7 +146,48 @@ class RbacZeroActiveAdminsHealthIndicatorTest {
 
     org.mockito.Mockito.verify(zeroAdminTenantReader).findTenantsWithAnAdminDefiningRole();
     org.mockito.Mockito.verify(zeroAdminTenantReader).findTenantsWithActiveAdminDefiningHolders();
+    org.mockito.Mockito.verify(zeroAdminTenantReader).countActiveAssignmentsOnDeletedRolesInAnyTenant();
     org.mockito.Mockito.verifyNoMoreInteractions(zeroAdminTenantReader);
+  }
+
+  // -- US-018 T-026 / RC-36.4: the soft-delete invariant detector ------------------------------
+
+  @Test
+  void should_report_up_withAZeroDetail_when_noActiveAssignmentReferencesADeletedRole() {
+    when(zeroAdminTenantReader.findTenantsWithAnAdminDefiningRole()).thenReturn(List.of());
+    when(zeroAdminTenantReader.findTenantsWithActiveAdminDefiningHolders()).thenReturn(List.of());
+    when(zeroAdminTenantReader.countActiveAssignmentsOnDeletedRolesInAnyTenant()).thenReturn(0L);
+
+    var health = indicator().health();
+
+    assertThat(health.getStatus()).isEqualTo(Status.UP);
+    assertThat(health.getDetails()).containsEntry("deletedRoleActiveAssignments", 0L);
+  }
+
+  @Test
+  void should_report_down_withCountOnly_when_anActiveAssignmentReferencesADeletedRole() {
+    when(zeroAdminTenantReader.findTenantsWithAnAdminDefiningRole()).thenReturn(List.of());
+    when(zeroAdminTenantReader.findTenantsWithActiveAdminDefiningHolders()).thenReturn(List.of());
+    when(zeroAdminTenantReader.countActiveAssignmentsOnDeletedRolesInAnyTenant()).thenReturn(2L);
+
+    var health = indicator().health();
+
+    assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+    assertThat(health.getDetails()).containsEntry("deletedRoleActiveAssignments", 2L);
+    assertThat(health.getDetails()).containsEntry("affectedTenantCount", 0);
+    assertThat(health.getDetails().keySet())
+        .as("count only: no role, user or tenant ids")
+        .containsExactlyInAnyOrder("affectedTenantCount", "deletedRoleActiveAssignments", "issue");
+  }
+
+  @Test
+  void should_report_unknown_not_throw_when_the_deleted_role_detector_query_fails() {
+    when(zeroAdminTenantReader.findTenantsWithAnAdminDefiningRole()).thenReturn(List.of());
+    when(zeroAdminTenantReader.findTenantsWithActiveAdminDefiningHolders()).thenReturn(List.of());
+    when(zeroAdminTenantReader.countActiveAssignmentsOnDeletedRolesInAnyTenant())
+        .thenThrow(new QueryTimeoutException("timeout"));
+
+    assertThat(indicator().health().getStatus()).isEqualTo(Status.UNKNOWN);
   }
 
   /** A holder in another tenant does not rescue a tenant that has none. */

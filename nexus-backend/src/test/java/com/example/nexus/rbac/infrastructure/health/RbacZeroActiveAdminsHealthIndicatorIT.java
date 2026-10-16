@@ -106,6 +106,37 @@ class RbacZeroActiveAdminsHealthIndicatorIT {
     assertThat(warnMessages(appender)).anyMatch(message -> message.contains(tenantId.toString()));
   }
 
+  // -- US-018 T-026 / RC-36.4: an active assignment on a soft-deleted role pages, count only -----
+
+  @Test
+  void should_report_down_withCountOnly_when_anActiveAssignmentReferencesASoftDeletedRole() {
+    UUID tenantId = uuidGenerator.newId();
+    Role role = seedRole(tenantId, "DELROLE-" + UUID.randomUUID(), "deleted");
+    User holder = seedUser(tenantId, "deleted-role-holder");
+    UserRole forged = seedActiveAssignment(tenantId, role.getId(), holder.getId(), holder.getId());
+    jdbc.update(
+        "UPDATE roles SET deleted_at = CURRENT_TIMESTAMP(6) WHERE id = ?", toBytes(role.getId()));
+
+    org.springframework.boot.health.contributor.Health health;
+    try {
+      health = indicator().health();
+    } finally {
+      // The forged row breaks the invariant for the whole shared database: restore it so the
+      // other tests of this class (and the suite) do not see a DOWN they did not cause.
+      forceRevokeDirectly(forged.getId());
+    }
+
+    assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+    assertThat(health.getDetails())
+        .extractingByKey("deletedRoleActiveAssignments")
+        .satisfies(count -> assertThat(((Number) count).longValue()).isGreaterThanOrEqualTo(1L));
+    assertThat(health.getDetails().toString())
+        .as("count only: no role, user or tenant id")
+        .doesNotContain(role.getId().toString())
+        .doesNotContain(holder.getId().toString())
+        .doesNotContain(tenantId.toString());
+  }
+
   // -- Scenario 2: UP -- TENANT_ADMIN (carrying the whole catalogue) has a holder ---------------
 
   @Test

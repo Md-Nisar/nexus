@@ -117,8 +117,9 @@ class JpaRoleManagementAdapterTest {
   }
 
   @Test
-  void should_returnCount_when_countingRolesInTenant() {
-    when(roleRepository.countByTenantId(tenantId)).thenReturn(3L);
+  void should_returnTheLiveRoleCount_when_countingRolesInTenant() {
+    // T-026: the cap counts live roles only, so the adapter must use the live-only count.
+    when(roleRepository.countByTenantIdAndDeletedAtIsNull(tenantId)).thenReturn(3L);
 
     assertThat(adapter.countRolesInTenant(tenantId)).isEqualTo(3L);
   }

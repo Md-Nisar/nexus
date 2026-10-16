@@ -42,6 +42,7 @@ public interface JpaUserRoleRepository
         AND ur.userId = :userId
         AND ur.tenantId = :tenantId
         AND r.tenantId = :tenantId
+        AND r.deletedAt IS NULL
         AND ur.revokedAt IS NULL
       """)
   List<String> findActiveRoleNames(@Param("userId") UUID userId, @Param("tenantId") UUID tenantId);
@@ -60,6 +61,7 @@ public interface JpaUserRoleRepository
         AND ur.userId = :userId
         AND ur.tenantId = :tenantId
         AND r.tenantId = :tenantId
+        AND r.deletedAt IS NULL
         AND ur.revokedAt IS NULL
       """)
   List<String> findActivePermissionNames(
@@ -126,6 +128,7 @@ public interface JpaUserRoleRepository
       SELECT new com.example.nexus.rbac.domain.RolePermissionRef(rp.id.roleId, rp.id.permissionId)
       FROM UserRole ur, Role r, RolePermission rp
       WHERE ur.roleId = r.id AND r.tenantId = ur.tenantId AND rp.id.roleId = r.id
+        AND r.deletedAt IS NULL
         AND ur.userId = :userId AND ur.tenantId = :tenantId AND ur.revokedAt IS NULL
       """)
   List<RolePermissionRef> findHeldRolePermissionIdsForAuthorization(
@@ -174,6 +177,7 @@ public interface JpaUserRoleRepository
         AND ur.userId = :userId
         AND ur.tenantId = :tenantId
         AND r.tenantId = :tenantId
+        AND r.deletedAt IS NULL
         AND ur.revokedAt IS NULL
       ORDER BY r.name
       """)
@@ -191,6 +195,7 @@ public interface JpaUserRoleRepository
         AND ur.roleId = :roleId
         AND ur.tenantId = :tenantId
         AND r.tenantId = :tenantId
+        AND r.deletedAt IS NULL
         AND ur.revokedAt IS NULL
       """)
   Optional<com.example.nexus.rbac.domain.ActiveRoleAssignment> findActiveAssignmentView(
@@ -273,7 +278,7 @@ public interface JpaUserRoleRepository
       """
       SELECT ur.roleId FROM UserRole ur, Role r, RolePermission rp, Permission p
       WHERE ur.userId = :userId AND ur.tenantId = :tenantId AND ur.revokedAt IS NULL
-        AND r.id = ur.roleId AND r.tenantId = ur.tenantId
+        AND r.id = ur.roleId AND r.tenantId = ur.tenantId AND r.deletedAt IS NULL
         AND rp.id.roleId = r.id AND rp.id.permissionId = p.id
       GROUP BY ur.roleId
       HAVING COUNT(DISTINCT p.id) = (SELECT COUNT(p2) FROM Permission p2)
@@ -319,7 +324,8 @@ public interface JpaUserRoleRepository
   @Query(
       """
       SELECT DISTINCT r.tenantId FROM Role r
-      WHERE (SELECT COUNT(DISTINCT p.id) FROM RolePermission rp, Permission p
+      WHERE r.deletedAt IS NULL
+        AND (SELECT COUNT(DISTINCT p.id) FROM RolePermission rp, Permission p
              WHERE rp.id.roleId = r.id AND rp.id.permissionId = p.id)
               = (SELECT COUNT(p2) FROM Permission p2)
         AND (SELECT COUNT(p3) FROM Permission p3) > 0
@@ -337,10 +343,31 @@ public interface JpaUserRoleRepository
       """
       SELECT DISTINCT r.tenantId FROM Role r, UserRole ur
       WHERE ur.roleId = r.id AND ur.tenantId = r.tenantId AND ur.revokedAt IS NULL
+        AND r.deletedAt IS NULL
         AND (SELECT COUNT(DISTINCT p.id) FROM RolePermission rp, Permission p
              WHERE rp.id.roleId = r.id AND rp.id.permissionId = p.id)
               = (SELECT COUNT(p2) FROM Permission p2)
         AND (SELECT COUNT(p3) FROM Permission p3) > 0
       """)
   List<UUID> findTenantsWithActiveAdminDefiningHolders();
+
+  /**
+   * RC-36.4 invariant detector (US-018 T-026) — the number of ACTIVE {@code user_roles} rows that
+   * reference a soft-deleted role. By the delete protocol it is always 0 (a role is deleted only
+   * with no active holder, and assign inserts only against a live role), so any other value is an
+   * invariant break that must page. A count only, never ids.
+   *
+   * <p>Native, and deliberately the one query that must see DELETED roles: a JPQL query on {@code
+   * Role} would be filtered by {@code @SQLRestriction} and could never find one. Read-only,
+   * non-locking; runs under the indicator's 30 s actuator cache.
+   */
+  @Override
+  @Query(
+      value =
+          """
+          SELECT COUNT(*) FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+          WHERE r.deleted_at IS NOT NULL AND ur.revoked_at IS NULL
+          """,
+      nativeQuery = true)
+  long countActiveAssignmentsOnDeletedRolesInAnyTenant();
 }

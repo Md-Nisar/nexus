@@ -89,7 +89,7 @@ public class JpaRoleManagementAdapter implements RoleManagementPort {
 
   @Override
   public long countRolesInTenant(UUID tenantId) {
-    return roleRepository.countByTenantId(tenantId);
+    return roleRepository.countByTenantIdAndDeletedAtIsNull(tenantId);
   }
 
   @Override

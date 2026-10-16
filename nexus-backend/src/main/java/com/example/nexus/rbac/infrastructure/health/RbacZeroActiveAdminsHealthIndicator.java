@@ -39,6 +39,12 @@ import org.springframework.stereotype.Component;
  * infrastructure blip and train operators to ignore the one signal that means a tenant has no
  * administrator.
  *
+ * <p><b>US-018 T-026 (RC-36.4).</b> The same indicator carries the soft-delete invariant detector,
+ * the count-only detail {@code deletedRoleActiveAssignments} ("active {@code user_roles} rows
+ * referencing a soft-deleted role"). It is 0 by construction; greater than 0 reports DOWN, which
+ * pages through the same alert path as the zero-admin detail. No ids are published. It runs under
+ * the same 30 s cache and probe exclusion.
+ *
  * <p>Read-only; issues no writes. Registered as a named {@link HealthIndicator} bean ({@code
  * rbacZeroActiveAdmins}), left visible on the aggregate {@code /actuator/health}, and deliberately
  * excluded from the liveness/readiness probe groups (MC-J) — a DOWN here must stay a page, never a
@@ -66,10 +72,21 @@ public class RbacZeroActiveAdminsHealthIndicator implements HealthIndicator {
           zeroAdminTenantReader.findTenantsWithActiveAdminDefiningHolders();
       tenantsWithAnAdminDefiningRole.removeAll(tenantsWithAnActiveAdminDefiningHolder);
       List<UUID> affectedTenantIds = List.copyOf(tenantsWithAnAdminDefiningRole);
+      long deletedRoleActiveAssignments =
+          zeroAdminTenantReader.countActiveAssignmentsOnDeletedRolesInAnyTenant();
 
+      if (deletedRoleActiveAssignments > 0) {
+        // RC-36.4: a count only, never ids. The delete protocol makes this 0 by construction, so a
+        // positive value is an invariant break that pages through the same alert path.
+        log.warn(
+            "RBAC_DELETED_ROLE_ACTIVE_ASSIGNMENTS activeAssignmentsOnDeletedRoles={}",
+            deletedRoleActiveAssignments);
+      }
       if (!affectedTenantIds.isEmpty()) {
         log.warn(
             "tenant(s) with zero active administrators detected: tenantIds={}", affectedTenantIds);
+      }
+      if (!affectedTenantIds.isEmpty() || deletedRoleActiveAssignments > 0) {
         // 07-security-review.md M-1: the affected tenant ids themselves are NOT published in
         // the actuator detail — /actuator/health's WHEN_AUTHORIZED show-details treats any
         // authenticated principal as authorized (management.endpoint.health.roles is unset),
@@ -77,18 +94,27 @@ public class RbacZeroActiveAdminsHealthIndicator implements HealthIndicator {
         // tenant could otherwise read other tenants' UUIDs here. A count preserves the runbook's
         // alerting signal without the cross-tenant disclosure; the full id list remains
         // available to operators via the WARN log line above.
-        return Health.down()
-            .withDetail("affectedTenantCount", affectedTenantIds.size())
-            .withDetail(
-                "issue",
-                "one or more tenants have at least one admin-defining role (a role carrying every"
-                    + " permission of the catalogue) but zero active holders of any of them —"
-                    + " privileged actions in these tenants have no reachable administrator;"
-                    + " recover with break-glass or manual remediation; see application logs for"
-                    + " affected tenant ids")
-            .build();
+        Health.Builder down =
+            Health.down()
+                .withDetail("affectedTenantCount", affectedTenantIds.size())
+                .withDetail("deletedRoleActiveAssignments", deletedRoleActiveAssignments);
+        if (!affectedTenantIds.isEmpty()) {
+          down.withDetail(
+              "issue",
+              "one or more tenants have at least one admin-defining role (a role carrying every"
+                  + " permission of the catalogue) but zero active holders of any of them —"
+                  + " privileged actions in these tenants have no reachable administrator;"
+                  + " recover with break-glass or manual remediation; see application logs for"
+                  + " affected tenant ids");
+        } else {
+          down.withDetail(
+              "issue",
+              "one or more active role assignments reference a soft-deleted role — the delete"
+                  + " invariant (a deleted role has no active holders) is broken; see the runbook");
+        }
+        return down.build();
       }
-      return Health.up().build();
+      return Health.up().withDetail("deletedRoleActiveAssignments", 0L).build();
     } catch (DataAccessException e) {
       // The self-check itself must never fail the app or throw — an inconclusive check is
       // reported as UNKNOWN, not treated as either a pass or a lockout finding.

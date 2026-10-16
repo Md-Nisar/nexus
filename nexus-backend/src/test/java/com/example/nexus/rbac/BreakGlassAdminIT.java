@@ -612,6 +612,25 @@ class BreakGlassAdminIT {
     assertThat(countActive(tenantId, tenantAdmin.getId())).isEqualTo(1);
   }
 
+  /**
+   * US-018 T-026 (RC-36.3): the CLI's role lookup filters soft-deleted roles. A (forged) soft-deleted
+   * system TENANT_ADMIN is not found, so the grant is refused with exit 4 and nothing is inserted.
+   */
+  @Test
+  void should_refuseWithExit4_when_theSystemTenantAdminRoleIsSoftDeleted() {
+    UUID tenantId = uuidGenerator.newId();
+    Role systemAdmin = seedSystemTenantAdminRole(tenantId);
+    jdbc.update(
+        "UPDATE roles SET deleted_at = CURRENT_TIMESTAMP(6) WHERE id = ?",
+        toBytes(systemAdmin.getId()));
+    User target = seedActiveUser(tenantId, "deleted-admin-role-target");
+
+    int exitCode = runCli(target.getId().toString(), freshChangeRef());
+
+    assertThat(exitCode).isEqualTo(4);
+    assertThat(countActive(tenantId, systemAdmin.getId())).isZero();
+  }
+
   /** A tenant-created role named {@code TENANT_ADMIN} is not the system role: exit 4, no grant. */
   @Test
   void should_refuseWithExit4_when_theTenantAdminRoleIsNotASystemRole() {

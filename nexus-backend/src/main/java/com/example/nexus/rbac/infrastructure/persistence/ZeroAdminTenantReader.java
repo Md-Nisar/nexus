@@ -12,11 +12,18 @@ import java.util.UUID;
  * <p>US-018 row 15 (ADR-0021 D3): both methods use the one definition of an administrator. A role
  * is admin-defining iff its {@code COUNT(DISTINCT permission)} equals the catalogue count; no
  * permission or role names are passed. A tenant is reported when it has at least one admin-defining
- * role and no active holder of any of them.
+ * role and no active holder of any of them. The same indicator carries the count-only soft-delete
+ * invariant detector.
  */
 public interface ZeroAdminTenantReader {
 
   List<UUID> findTenantsWithAnAdminDefiningRole();
 
   List<UUID> findTenantsWithActiveAdminDefiningHolders();
+
+  /**
+   * US-018 T-026 (RC-36.4): active {@code user_roles} rows that reference a soft-deleted role.
+   * Expected 0 always; greater than 0 is an invariant break and pages. A count, never ids.
+   */
+  long countActiveAssignmentsOnDeletedRolesInAnyTenant();
 }
