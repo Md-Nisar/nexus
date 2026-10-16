@@ -4,8 +4,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.Mockito.when;
 
-import com.example.nexus.rbac.domain.RbacDangerousPermissions;
-import com.example.nexus.rbac.domain.RbacRoleNames;
 import com.example.nexus.rbac.infrastructure.persistence.ZeroAdminTenantReader;
 import java.util.List;
 import java.util.UUID;
@@ -21,15 +19,13 @@ import org.springframework.dao.QueryTimeoutException;
  * Unit coverage for the T-015 / T-D4 / US-017 FR-2 zero-active-admins detection control, in
  * isolation from a real database (Mockito {@link ZeroAdminTenantReader}; no Spring context).
  *
- * <p>Re-scoped post-06-code-review.md H-1 (2026-09-24) from the ANY-admin-equivalent predicate to
- * the caller-qualifying (literal {@code TENANT_ADMIN} OR ALL THREE dangerous permissions)
- * predicate — see {@link ZeroAdminTenantReader}'s Javadoc.
+ * <p>Re-targeted by US-018 T-019 (row 15) onto the one definition of "administrator": the reader
+ * reports tenants with an admin-defining role (every permission of the catalogue) and tenants with
+ * an active holder of one, no names passed. The SQL itself is proven by the IT beside this class.
  */
 @ExtendWith(MockitoExtension.class)
 @Tag("UnitTest")
 class RbacZeroActiveAdminsHealthIndicatorTest {
-
-  private static final long DANGEROUS_NAMES_COUNT = RbacDangerousPermissions.NAMES.size();
 
   @Mock private ZeroAdminTenantReader zeroAdminTenantReader;
 
@@ -38,13 +34,11 @@ class RbacZeroActiveAdminsHealthIndicatorTest {
   }
 
   @Test
-  void should_report_up_when_every_caller_qualifying_role_has_an_active_holder() {
+  void should_report_up_when_every_admin_defining_role_has_an_active_holder() {
     UUID tenantId = UUID.randomUUID();
-    when(zeroAdminTenantReader.findTenantsWithAFullyAdminEquivalentRole(
-            RbacRoleNames.TENANT_ADMIN, RbacDangerousPermissions.NAMES, DANGEROUS_NAMES_COUNT))
+    when(zeroAdminTenantReader.findTenantsWithAnAdminDefiningRole())
         .thenReturn(List.of(tenantId));
-    when(zeroAdminTenantReader.findTenantsWithActiveFullyAdminEquivalentHolders(
-            RbacRoleNames.TENANT_ADMIN, RbacDangerousPermissions.NAMES, DANGEROUS_NAMES_COUNT))
+    when(zeroAdminTenantReader.findTenantsWithActiveAdminDefiningHolders())
         .thenReturn(List.of(tenantId));
 
     var health = indicator().health();
@@ -53,12 +47,10 @@ class RbacZeroActiveAdminsHealthIndicatorTest {
   }
 
   @Test
-  void should_report_up_when_no_tenant_has_any_caller_qualifying_role() {
-    when(zeroAdminTenantReader.findTenantsWithAFullyAdminEquivalentRole(
-            RbacRoleNames.TENANT_ADMIN, RbacDangerousPermissions.NAMES, DANGEROUS_NAMES_COUNT))
+  void should_report_up_when_no_tenant_has_any_admin_defining_role() {
+    when(zeroAdminTenantReader.findTenantsWithAnAdminDefiningRole())
         .thenReturn(List.of());
-    when(zeroAdminTenantReader.findTenantsWithActiveFullyAdminEquivalentHolders(
-            RbacRoleNames.TENANT_ADMIN, RbacDangerousPermissions.NAMES, DANGEROUS_NAMES_COUNT))
+    when(zeroAdminTenantReader.findTenantsWithActiveAdminDefiningHolders())
         .thenReturn(List.of());
 
     var health = indicator().health();
@@ -74,11 +66,9 @@ class RbacZeroActiveAdminsHealthIndicatorTest {
   @Test
   void should_report_down_withCountOnly_never_theTenantIds_when_aTenantHasZeroActiveAdmins() {
     UUID lockedOutTenantId = UUID.randomUUID();
-    when(zeroAdminTenantReader.findTenantsWithAFullyAdminEquivalentRole(
-            RbacRoleNames.TENANT_ADMIN, RbacDangerousPermissions.NAMES, DANGEROUS_NAMES_COUNT))
+    when(zeroAdminTenantReader.findTenantsWithAnAdminDefiningRole())
         .thenReturn(List.of(lockedOutTenantId));
-    when(zeroAdminTenantReader.findTenantsWithActiveFullyAdminEquivalentHolders(
-            RbacRoleNames.TENANT_ADMIN, RbacDangerousPermissions.NAMES, DANGEROUS_NAMES_COUNT))
+    when(zeroAdminTenantReader.findTenantsWithActiveAdminDefiningHolders())
         .thenReturn(List.of());
 
     var health = indicator().health();
@@ -93,11 +83,9 @@ class RbacZeroActiveAdminsHealthIndicatorTest {
   void should_report_down_withCorrectCount_when_multipleTenantsAreLockedOut() {
     UUID tenantA = UUID.randomUUID();
     UUID tenantB = UUID.randomUUID();
-    when(zeroAdminTenantReader.findTenantsWithAFullyAdminEquivalentRole(
-            RbacRoleNames.TENANT_ADMIN, RbacDangerousPermissions.NAMES, DANGEROUS_NAMES_COUNT))
+    when(zeroAdminTenantReader.findTenantsWithAnAdminDefiningRole())
         .thenReturn(List.of(tenantA, tenantB));
-    when(zeroAdminTenantReader.findTenantsWithActiveFullyAdminEquivalentHolders(
-            RbacRoleNames.TENANT_ADMIN, RbacDangerousPermissions.NAMES, DANGEROUS_NAMES_COUNT))
+    when(zeroAdminTenantReader.findTenantsWithActiveAdminDefiningHolders())
         .thenReturn(List.of());
 
     var health = indicator().health();
@@ -107,18 +95,16 @@ class RbacZeroActiveAdminsHealthIndicatorTest {
   }
 
   /**
-   * FR-2's tenant-level, not role-level, question: a tenant with TWO caller-qualifying roles
+   * FR-2's tenant-level, not role-level, question: a tenant with TWO admin-defining roles
    * where only one has holders is healthy — the driving set minus the holder set correctly
    * excludes it.
    */
   @Test
-  void should_report_up_when_tenantHasOneHolderlessCallerQualifyingRoleButAnotherWithAHolder() {
+  void should_report_up_when_tenantHasOneHolderlessAdminDefiningRoleButAnotherWithAHolder() {
     UUID tenantId = UUID.randomUUID();
-    when(zeroAdminTenantReader.findTenantsWithAFullyAdminEquivalentRole(
-            RbacRoleNames.TENANT_ADMIN, RbacDangerousPermissions.NAMES, DANGEROUS_NAMES_COUNT))
+    when(zeroAdminTenantReader.findTenantsWithAnAdminDefiningRole())
         .thenReturn(List.of(tenantId));
-    when(zeroAdminTenantReader.findTenantsWithActiveFullyAdminEquivalentHolders(
-            RbacRoleNames.TENANT_ADMIN, RbacDangerousPermissions.NAMES, DANGEROUS_NAMES_COUNT))
+    when(zeroAdminTenantReader.findTenantsWithActiveAdminDefiningHolders())
         .thenReturn(List.of(tenantId));
 
     var health = indicator().health();
@@ -128,8 +114,7 @@ class RbacZeroActiveAdminsHealthIndicatorTest {
 
   @Test
   void should_report_unknown_not_throw_when_the_driving_set_query_fails() {
-    when(zeroAdminTenantReader.findTenantsWithAFullyAdminEquivalentRole(
-            RbacRoleNames.TENANT_ADMIN, RbacDangerousPermissions.NAMES, DANGEROUS_NAMES_COUNT))
+    when(zeroAdminTenantReader.findTenantsWithAnAdminDefiningRole())
         .thenThrow(new QueryTimeoutException("db unavailable"));
 
     var indicator = indicator();
@@ -140,16 +125,43 @@ class RbacZeroActiveAdminsHealthIndicatorTest {
 
   @Test
   void should_report_unknown_not_throw_when_the_holder_set_query_fails() {
-    when(zeroAdminTenantReader.findTenantsWithAFullyAdminEquivalentRole(
-            RbacRoleNames.TENANT_ADMIN, RbacDangerousPermissions.NAMES, DANGEROUS_NAMES_COUNT))
+    when(zeroAdminTenantReader.findTenantsWithAnAdminDefiningRole())
         .thenReturn(List.of(UUID.randomUUID()));
-    when(zeroAdminTenantReader.findTenantsWithActiveFullyAdminEquivalentHolders(
-            RbacRoleNames.TENANT_ADMIN, RbacDangerousPermissions.NAMES, DANGEROUS_NAMES_COUNT))
+    when(zeroAdminTenantReader.findTenantsWithActiveAdminDefiningHolders())
         .thenThrow(new QueryTimeoutException("db unavailable"));
 
     var indicator = indicator();
 
     assertThatCode(indicator::health).doesNotThrowAnyException();
     assertThat(indicator.health().getStatus()).isEqualTo(Status.UNKNOWN);
+  }
+
+  /** Row 15: the indicator takes no names, so a name can never decide who is an administrator. */
+  @Test
+  void should_askTheReaderWithoutAnyArguments_when_checking() {
+    when(zeroAdminTenantReader.findTenantsWithAnAdminDefiningRole()).thenReturn(List.of());
+    when(zeroAdminTenantReader.findTenantsWithActiveAdminDefiningHolders()).thenReturn(List.of());
+
+    indicator().health();
+
+    org.mockito.Mockito.verify(zeroAdminTenantReader).findTenantsWithAnAdminDefiningRole();
+    org.mockito.Mockito.verify(zeroAdminTenantReader).findTenantsWithActiveAdminDefiningHolders();
+    org.mockito.Mockito.verifyNoMoreInteractions(zeroAdminTenantReader);
+  }
+
+  /** A holder in another tenant does not rescue a tenant that has none. */
+  @Test
+  void should_report_down_when_onlyAnotherTenantHasAnActiveAdminDefiningHolder() {
+    UUID emptyTenant = UUID.randomUUID();
+    UUID healthyTenant = UUID.randomUUID();
+    when(zeroAdminTenantReader.findTenantsWithAnAdminDefiningRole())
+        .thenReturn(List.of(emptyTenant, healthyTenant));
+    when(zeroAdminTenantReader.findTenantsWithActiveAdminDefiningHolders())
+        .thenReturn(List.of(healthyTenant));
+
+    var health = indicator().health();
+
+    assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+    assertThat(health.getDetails()).containsEntry("affectedTenantCount", 1);
   }
 }
