@@ -88,6 +88,17 @@ public class JpaRoleManagementAdapter implements RoleManagementPort {
   }
 
   @Override
+  public int updateRole(UUID roleId, UUID tenantId, String name, String description) {
+    try {
+      return roleRepository.updateNameAndDescription(roleId, tenantId, name, description);
+    } catch (DataIntegrityViolationException e) {
+      // The active-name (or, until V10, the plain name) unique key: a fixed literal, never the
+      // driver's message, which the conflict handler would echo into the response body.
+      throw new DuplicateRoleNameException();
+    }
+  }
+
+  @Override
   public long countRolesInTenant(UUID tenantId) {
     return roleRepository.countByTenantIdAndDeletedAtIsNull(tenantId);
   }

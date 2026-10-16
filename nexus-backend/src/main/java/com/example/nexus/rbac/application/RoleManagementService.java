@@ -11,6 +11,7 @@ import com.example.nexus.rbac.application.port.out.PermissionCachePort;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.RoleAuditEvent;
 import com.example.nexus.rbac.application.port.out.RoleManagementPort;
+import com.example.nexus.rbac.application.port.out.RoleUpdateAuditEvent;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.domain.AttachProvenanceConflictException;
 import com.example.nexus.rbac.domain.DuplicateRolePermissionException;
@@ -97,6 +98,7 @@ public class RoleManagementService {
   private static final String OPERATION_DETACH = "detach";
   private static final String OPERATION_ATTACH = "attach";
   private static final String OPERATION_DELETE = "delete";
+  private static final String OPERATION_UPDATE = "update";
   private static final String OPERATION_LIST = "list";
 
   private static final String COUNTER_PERMISSION_DENIED = "nexus.rbac.permission_denied";
@@ -349,6 +351,80 @@ public class RoleManagementService {
                       permissionFreshnessService.invalidateHolders(
                           actor.tenantId(), holders, OPERATION_DETACH));
         });
+  }
+
+  /**
+   * Renames a custom role and/or changes its description (US-018 C1, PATCH). A {@code null} argument
+   * leaves that field unchanged; an empty {@code description} clears it. Order: tenant resolution
+   * (404, a deleted role is a 404), <b>role-subset</b> (403, RC-35: otherwise a {@code role:write}
+   * holder could rename an administrator role to look harmless), system-role immutability (409
+   * {@code RBAC_003}), the reserved-name check (409 {@code RBAC_007}, in memory, as create does), the
+   * two-column {@code UPDATE} (0 rows is a 404; a name already taken among live roles is 409 {@code
+   * RBAC_006}) and the atomic {@code ROLE_UPDATED} audit row.
+   *
+   * <p>The design lists {@code RBAC_006} before {@code RBAC_007}; this order matches create, where
+   * the free in-memory reserved check precedes the database's uniqueness check (see 09-technical.md
+   * M9). A request that changes nothing is a successful no-op: no write, no audit row.
+   *
+   * <p>A rename does not bump the permission epoch: the name is cosmetic for authorization, and
+   * {@code RoleResolutionService} already re-derives role names on the next mint. The description
+   * text is never logged or audited; the audit row names the changed fields and the old and new
+   * name only.
+   */
+  @Transactional
+  public RoleView updateRole(
+      RoleChangeActor actor, UUID roleId, String name, String description, RequestContext ctx) {
+    RoleView role = resolveRoleInTenant(roleId, actor, ROLE_WRITE, OPERATION_UPDATE);
+    requireRoleSubset(actor, role, OPERATION_UPDATE);
+    requireMutableRole(role);
+    if (name != null && RbacRoleNames.isReserved(name)) {
+      throw new ReservedRoleNameException();
+    }
+
+    boolean nameChanged = name != null && !name.equals(role.name());
+    String newDescription =
+        description == null ? role.description() : (description.isEmpty() ? null : description);
+    boolean descriptionChanged =
+        description != null && !java.util.Objects.equals(newDescription, role.description());
+    if (!nameChanged && !descriptionChanged) {
+      return role;
+    }
+    String newName = nameChanged ? name : role.name();
+
+    if (roleManagementPort.updateRole(role.id(), actor.tenantId(), newName, newDescription) == 0) {
+      throw new ResourceNotFoundException("ROLE_NOT_FOUND", "No such role");
+    }
+
+    List<String> changedFields = new java.util.ArrayList<>(2);
+    if (nameChanged) {
+      changedFields.add("name");
+    }
+    if (descriptionChanged) {
+      changedFields.add("description");
+    }
+    rbacAuditPort.recordRoleUpdated(
+        new RoleUpdateAuditEvent(
+            actor.tenantId(),
+            role.id(),
+            newName,
+            nameChanged ? role.name() : null,
+            nameChanged ? newName : null,
+            changedFields,
+            actor.userId(),
+            ctx));
+
+    RoleView updated = roleManagementPort.findRole(role.id()).orElseThrow();
+    registerPostCommitSideEffects(
+        () ->
+            log.atInfo()
+                .addKeyValue(LOG_KEY_EVENT, "ROLE_UPDATED")
+                .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+                .addKeyValue(LOG_KEY_ROLE_ID, role.id())
+                .addKeyValue(LOG_KEY_ROLE_NAME, updated.name())
+                .addKeyValue("changedFields", changedFields)
+                .addKeyValue("updatedBy", actor.userId())
+                .log("Role updated"));
+    return updated;
   }
 
   /**

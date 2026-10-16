@@ -13,7 +13,7 @@ import com.example.nexus.common.security.DenialReason;
  * <ul>
  *   <li><b>Group A (atomic):</b> {@link #recordRoleAssigned}, {@link #recordRoleRevoked}, {@link
  *       #recordRoleCreated}, {@link #recordRolePermissionGranted}, {@link
- *       #recordRolePermissionRevoked}, {@link #recordRoleDeleted}, {@link #recordBreakGlassGrant} — called INLINE, inside
+ *       #recordRolePermissionRevoked}, {@link #recordRoleDeleted}, {@link #recordRoleUpdated}, {@link #recordBreakGlassGrant} — called INLINE, inside
  *       the caller's own mutation transaction, after the mutation and before the method returns.
  *       These join that
  *       transaction ({@code SecureEventService#recordEventInCurrentTransaction}, {@code MANDATORY})
@@ -111,6 +111,14 @@ public interface RbacAuditPort {
    * {@code event.permissionId()}/{@code event.permissionName()} are {@code null}.
    */
   void recordRoleDeleted(RoleAuditEvent event);
+
+  /**
+   * Records a successful role rename or description change (US-018 C1, {@code ROLE_UPDATED}; Group
+   * A — atomic). Joins the caller's transaction and MUST THROW on failure, so a lost audit row rolls
+   * the update back. The row carries the changed field names and the old and new name, never the
+   * description text.
+   */
+  void recordRoleUpdated(RoleUpdateAuditEvent event);
 
   /**
    * Records a successful break-glass first-administrator grant ({@code ROLE_BREAK_GLASS_GRANT}

@@ -23,8 +23,10 @@ import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.rbac.application.port.out.BreakGlassAuditEvent;
 import com.example.nexus.rbac.application.port.out.RbacAuditEvent;
 import com.example.nexus.rbac.application.port.out.RoleAuditEvent;
+import com.example.nexus.rbac.application.port.out.RoleUpdateAuditEvent;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Stream;
@@ -791,6 +793,60 @@ class RbacAuthEventAdapterTest {
     assertThat(metadata.get("roleName").asString()).isEqualTo("Billing Manager");
     assertThat(metadata.get("deletedBy").asString()).isEqualTo(ACTOR_USER_ID.toString());
     assertThat(metadata.has("permissionId")).isFalse();
+  }
+
+  @Test
+  void should_recordChangedFieldsAndOldAndNewName_butNoDescription_when_recordRoleUpdatedCalled() {
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-update", "test-agent");
+    RoleUpdateAuditEvent event =
+        new RoleUpdateAuditEvent(
+            TENANT_ID, ROLE_ID, "New Name", "Old Name", "New Name", List.of("name", "description"),
+            ACTOR_USER_ID, ctx);
+
+    adapter.recordRoleUpdated(event);
+
+    AuthEvent captured = captureRecordedEventInCurrentTransaction();
+    assertThat(captured.getEventType()).isEqualTo("ROLE_UPDATED");
+    assertThat(captured.getOutcome()).isEqualTo("SUCCESS");
+    assertThat(captured.getUserId()).isNull();
+    assertThat(captured.getTenantId()).isEqualTo(TENANT_ID);
+    JsonNode metadata = objectMapper.readTree(captured.getMetadata());
+    assertThat(metadata.get("roleId").asString()).isEqualTo(ROLE_ID.toString());
+    assertThat(metadata.get("oldName").asString()).isEqualTo("Old Name");
+    assertThat(metadata.get("newName").asString()).isEqualTo("New Name");
+    assertThat(metadata.get("changedFields").get(0).asString()).isEqualTo("name");
+    assertThat(metadata.get("changedFields").get(1).asString()).isEqualTo("description");
+    assertThat(metadata.get("updatedBy").asString()).isEqualTo(ACTOR_USER_ID.toString());
+    assertThat(metadata.has("description")).isFalse();
+  }
+
+  @Test
+  void should_omitOldAndNewName_when_onlyTheDescriptionChanged() {
+    RoleUpdateAuditEvent event =
+        new RoleUpdateAuditEvent(
+            TENANT_ID, ROLE_ID, "Same", null, null, List.of("description"), ACTOR_USER_ID,
+            RequestContext.UNKNOWN);
+
+    adapter.recordRoleUpdated(event);
+
+    JsonNode metadata =
+        objectMapper.readTree(captureRecordedEventInCurrentTransaction().getMetadata());
+    assertThat(metadata.has("oldName")).isFalse();
+    assertThat(metadata.has("newName")).isFalse();
+    assertThat(metadata.get("changedFields").size()).isEqualTo(1);
+  }
+
+  @Test
+  void should_rethrow_when_recordRoleUpdatedFailsToWrite() {
+    RoleUpdateAuditEvent event =
+        new RoleUpdateAuditEvent(
+            TENANT_ID, ROLE_ID, "N", null, null, List.of("description"), ACTOR_USER_ID,
+            RequestContext.UNKNOWN);
+    org.mockito.Mockito.doThrow(new IllegalStateException("db down"))
+        .when(secureEventService)
+        .recordEventInCurrentTransaction(org.mockito.ArgumentMatchers.any(AuthEvent.class));
+
+    assertThatThrownBy(() -> adapter.recordRoleUpdated(event)).isInstanceOf(RuntimeException.class);
   }
 
   /**

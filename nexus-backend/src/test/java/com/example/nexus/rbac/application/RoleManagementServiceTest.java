@@ -27,6 +27,7 @@ import com.example.nexus.rbac.application.port.out.PermissionCachePort;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.RoleAuditEvent;
 import com.example.nexus.rbac.application.port.out.RoleManagementPort;
+import com.example.nexus.rbac.application.port.out.RoleUpdateAuditEvent;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.AttachProvenanceConflictException;
@@ -2007,6 +2008,204 @@ class RoleManagementServiceTest {
         .thenReturn(List.of());
 
     service.softDeleteRole(actor, roleId, ctx);
+
+    verifyNoInteractions(permissionFreshness, permissionCachePort);
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // updateRole() -- US-018 C1 (T-027): 404 -> 403 (role-subset) -> 409 RBAC_003 -> RBAC_007
+  // -> UPDATE (0 rows 404, RBAC_006) -> audit
+  // ---------------------------------------------------------------------------------------
+
+  private RoleView renamed(String name, String description) {
+    return new RoleView(roleId, tenantId, name, description, false, Instant.now());
+  }
+
+  @Test
+  void should_renameAndAudit_when_callerHoldsTheRolesPermissions() {
+    stubDeletableBenignRole();
+    when(roleManagementPort.updateRole(roleId, tenantId, "Renamed", "desc")).thenReturn(1);
+    when(roleManagementPort.findRole(roleId))
+        .thenReturn(Optional.of(customRole(tenantId)), Optional.of(renamed("Renamed", "desc")));
+
+    RoleView result = service.updateRole(actor, roleId, "Renamed", null, ctx);
+
+    assertThat(result.name()).isEqualTo("Renamed");
+    verify(rbacAuditPort)
+        .recordRoleUpdated(
+            new RoleUpdateAuditEvent(
+                tenantId, roleId, "Renamed", "Custom Role", "Renamed", List.of("name"), actorId,
+                ctx));
+  }
+
+  @Test
+  void should_keepTheName_when_onlyTheDescriptionChanges() {
+    stubDeletableBenignRole();
+    when(roleManagementPort.updateRole(roleId, tenantId, "Custom Role", "new text")).thenReturn(1);
+    when(roleManagementPort.findRole(roleId))
+        .thenReturn(
+            Optional.of(customRole(tenantId)), Optional.of(renamed("Custom Role", "new text")));
+
+    service.updateRole(actor, roleId, null, "new text", ctx);
+
+    ArgumentCaptor<RoleUpdateAuditEvent> event = ArgumentCaptor.forClass(RoleUpdateAuditEvent.class);
+    verify(rbacAuditPort).recordRoleUpdated(event.capture());
+    assertThat(event.getValue().changedFields()).containsExactly("description");
+    assertThat(event.getValue().oldName()).isNull();
+    assertThat(event.getValue().newName()).isNull();
+  }
+
+  /** The audit event has no field that could carry the description text. */
+  @Test
+  void should_neverCarryTheDescriptionText_when_auditing() {
+    stubDeletableBenignRole();
+    when(roleManagementPort.updateRole(any(), any(), any(), any())).thenReturn(1);
+    when(roleManagementPort.findRole(roleId))
+        .thenReturn(Optional.of(customRole(tenantId)), Optional.of(renamed("X", "SECRET-TEXT")));
+
+    service.updateRole(actor, roleId, "X", "SECRET-TEXT", ctx);
+
+    ArgumentCaptor<RoleUpdateAuditEvent> event = ArgumentCaptor.forClass(RoleUpdateAuditEvent.class);
+    verify(rbacAuditPort).recordRoleUpdated(event.capture());
+    assertThat(event.getValue().toString()).doesNotContain("SECRET-TEXT");
+    assertThat(event.getValue().changedFields()).containsExactly("name", "description");
+  }
+
+  @Test
+  void should_clearTheDescription_when_itIsEmpty() {
+    stubDeletableBenignRole();
+    when(roleManagementPort.updateRole(roleId, tenantId, "Custom Role", null)).thenReturn(1);
+    when(roleManagementPort.findRole(roleId))
+        .thenReturn(Optional.of(customRole(tenantId)), Optional.of(renamed("Custom Role", null)));
+
+    service.updateRole(actor, roleId, null, "", ctx);
+
+    verify(roleManagementPort).updateRole(roleId, tenantId, "Custom Role", null);
+  }
+
+  @Test
+  void should_doNothing_when_noFieldActuallyChanges() {
+    stubDeletableBenignRole();
+
+    RoleView result = service.updateRole(actor, roleId, "Custom Role", "desc", ctx);
+
+    assertThat(result.name()).isEqualTo("Custom Role");
+    verify(roleManagementPort, never()).updateRole(any(), any(), any(), any());
+    verifyNoInteractions(rbacAuditPort);
+  }
+
+  @Test
+  void should_throwRoleNotFound_when_updateRoleIsMissingDeletedOrForeign() {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.empty());
+    assertThatThrownBy(() -> service.updateRole(actor, roleId, "X", null, ctx))
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND");
+
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(otherTenantId)));
+    assertThatThrownBy(() -> service.updateRole(actor, roleId, "X", null, ctx))
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND");
+
+    verify(roleManagementPort, never()).updateRole(any(), any(), any(), any());
+    verifyNoInteractions(rbacAuditPort);
+  }
+
+  /** RC-35.1: role-subset precedes every 409, here the reserved-name one. */
+  @Test
+  void should_deny403BeforeAnyConflict_when_callerLacksTheRolesPermissions() {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(systemRole("MEMBER")));
+    stubRolePermissions(Set.of(P1));
+    stubCallerHoldsRefs();
+
+    assertThatThrownBy(() -> service.updateRole(actor, roleId, "TENANT_ADMIN", null, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    verify(roleManagementPort, never()).updateRole(any(), any(), any(), any());
+  }
+
+  /** RC-35.2: a non-administrator may not rename an admin-defining role to a benign name. */
+  @Test
+  void should_deny403_when_nonAdministratorRenamesAnAdminDefiningRole() {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    stubRolePermissions(CATALOGUE);
+    stubCallerHoldsRefs(new RolePermissionRef(roleId, P1), new RolePermissionRef(roleId, P2));
+
+    assertThatThrownBy(() -> service.updateRole(actor, roleId, "Read Only", null, ctx))
+        .isInstanceOf(InsufficientPermissionException.class);
+
+    verify(roleManagementPort, never()).updateRole(any(), any(), any(), any());
+    verifyNoInteractions(rbacAuditPort);
+  }
+
+  @Test
+  void should_throwSystemRoleImmutable_when_updatingASystemRoleAndCallerPassesSubset() {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(systemRole("MEMBER")));
+    stubRolePermissions(Set.of(P1));
+    stubCallerHoldsRefs(new RolePermissionRef(UUID.randomUUID(), P1));
+
+    assertThatThrownBy(() -> service.updateRole(actor, roleId, "Other", null, ctx))
+        .isInstanceOf(SystemRoleImmutableException.class)
+        .hasFieldOrPropertyWithValue("code", "RBAC_003");
+  }
+
+  @Test
+  void should_throwReservedRoleName_when_renamingToAReservedNameInAnyCase() {
+    stubDeletableBenignRole();
+
+    assertThatThrownBy(() -> service.updateRole(actor, roleId, "tenant_admin", null, ctx))
+        .isInstanceOf(ReservedRoleNameException.class)
+        .hasFieldOrPropertyWithValue("code", "RBAC_007");
+
+    verify(roleManagementPort, never()).updateRole(any(), any(), any(), any());
+  }
+
+  @Test
+  void should_propagateDuplicateName_when_theStoreRejectsTheNewName() {
+    stubDeletableBenignRole();
+    when(roleManagementPort.updateRole(any(), any(), any(), any()))
+        .thenThrow(new DuplicateRoleNameException());
+
+    assertThatThrownBy(() -> service.updateRole(actor, roleId, "Taken", null, ctx))
+        .isInstanceOf(DuplicateRoleNameException.class)
+        .hasFieldOrPropertyWithValue("code", "RBAC_006");
+
+    verifyNoInteractions(rbacAuditPort);
+  }
+
+  @Test
+  void should_throwRoleNotFound_when_theUpdateAffectsNoRow() {
+    stubDeletableBenignRole();
+    when(roleManagementPort.updateRole(any(), any(), any(), any())).thenReturn(0);
+
+    assertThatThrownBy(() -> service.updateRole(actor, roleId, "Renamed", null, ctx))
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND");
+
+    verifyNoInteractions(rbacAuditPort);
+  }
+
+  @Test
+  void should_propagateAuditFailure_when_updateAuditWriteFails() {
+    stubDeletableBenignRole();
+    when(roleManagementPort.updateRole(any(), any(), any(), any())).thenReturn(1);
+    RuntimeException auditFailure = new IllegalStateException("audit down");
+    doThrow(auditFailure).when(rbacAuditPort).recordRoleUpdated(any(RoleUpdateAuditEvent.class));
+
+    assertThatThrownBy(() -> service.updateRole(actor, roleId, "Renamed", null, ctx))
+        .isSameAs(auditFailure);
+  }
+
+  /** A rename is cosmetic for authorization: no epoch bump, no cache eviction. */
+  @Test
+  void should_neverBumpOrEvict_when_roleRenamed() {
+    stubDeletableBenignRole();
+    when(roleManagementPort.updateRole(any(), any(), any(), any())).thenReturn(1);
+    when(roleManagementPort.findRole(roleId))
+        .thenReturn(Optional.of(customRole(tenantId)), Optional.of(renamed("Renamed", "desc")));
+
+    service.updateRole(actor, roleId, "Renamed", null, ctx);
 
     verifyNoInteractions(permissionFreshness, permissionCachePort);
   }

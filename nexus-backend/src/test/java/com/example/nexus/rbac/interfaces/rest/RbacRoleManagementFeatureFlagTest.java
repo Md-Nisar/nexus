@@ -54,4 +54,27 @@ class RbacRoleManagementFeatureFlagTest {
               assertThat(context).hasSingleBean(PermissionController.class);
             });
   }
+
+  /** US-018 C1: PATCH and DELETE of a role ride the same flag as every other role endpoint. */
+  @Test
+  void should_registerPatchAndDeleteHandlersOnlyWithTheRoleController_when_flagTrue() {
+    contextRunner
+        .withPropertyValues(FLAG + "=true")
+        .run(
+            context -> {
+              var methods = RoleController.class.getMethods();
+              assertThat(methods)
+                  .anyMatch(
+                      m ->
+                          m.isAnnotationPresent(
+                              org.springframework.web.bind.annotation.PatchMapping.class));
+              assertThat(methods)
+                  .anyMatch(
+                      m ->
+                          m.getName().equals("softDeleteRole")
+                              && m.isAnnotationPresent(
+                                  org.springframework.web.bind.annotation.DeleteMapping.class));
+              assertThat(context).hasSingleBean(RoleController.class);
+            });
+  }
 }

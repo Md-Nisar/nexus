@@ -279,6 +279,92 @@ class RoleManagementAuditIT {
     }
   }
 
+  // ── US-018 C1 (T-027): ROLE_UPDATED and ROLE_DELETED ─────────────────────────────────────
+
+  /** The ROLE_UPDATED row names the changed fields and the old and new name, never the description. */
+  @Test
+  void should_writeRoleUpdatedWithFieldNamesAndNames_butNeverTheDescription_when_roleIsPatched() {
+    UUID tenantId = uuidGenerator.newId();
+    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
+    Role role = seedRole("UPD", tenantId);
+    String newName = "RMA-RENAMED-" + UUID.randomUUID();
+    String secretDescription = "SECRET-DESCRIPTION-" + UUID.randomUUID();
+
+    roleManagementService.updateRole(
+        actor, role.getId(), newName, secretDescription, requestContext());
+
+    Map<String, Object> row =
+        jdbc.queryForMap(
+            "SELECT JSON_VALID(metadata) AS valid, CAST(metadata AS CHAR) AS metadata, "
+                + "JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.oldName')) AS old_name, "
+                + "JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.newName')) AS new_name, "
+                + "JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.updatedBy')) AS updated_by, "
+                + "JSON_EXTRACT(metadata, '$.changedFields') AS changed_fields "
+                + "FROM auth_events WHERE tenant_id = ? AND event_type = 'ROLE_UPDATED'",
+            toBytes(tenantId));
+    assertThat(((Number) row.get("valid")).intValue()).isEqualTo(1);
+    assertThat(row.get("old_name")).isEqualTo(role.getName());
+    assertThat(row.get("new_name")).isEqualTo(newName);
+    assertThat(row.get("updated_by")).isEqualTo(actor.userId().toString());
+    assertThat(String.valueOf(row.get("changed_fields"))).contains("name").contains("description");
+    assertThat(String.valueOf(row.get("metadata")))
+        .as("the description text is never audited (T-T9/RC-3)")
+        .doesNotContain(secretDescription);
+  }
+
+  @Test
+  void should_rollBackTheRename_when_roleUpdatedAuditInsertIsBlocked() {
+    UUID tenantId = uuidGenerator.newId();
+    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
+    Role role = seedRole("TS5-UPD", tenantId);
+    String newName = "RMA-NOT-APPLIED-" + UUID.randomUUID();
+
+    installAuditBlockTrigger("ROLE_UPDATED");
+    try {
+      assertThatThrownBy(
+              () ->
+                  roleManagementService.updateRole(
+                      actor, role.getId(), newName, null, requestContext()))
+          .as("a blocked Group A (atomic) audit write must propagate -- never be swallowed")
+          .isInstanceOf(RuntimeException.class);
+
+      assertThat(countRolesNamed(tenantId, newName))
+          .as("the blocked ROLE_UPDATED audit insert must roll the rename back")
+          .isZero();
+      assertThat(countRolesNamed(tenantId, role.getName())).isEqualTo(1);
+      assertThat(countAuditRows(tenantId, "ROLE_UPDATED")).isZero();
+    } finally {
+      dropAuditBlockTrigger();
+    }
+  }
+
+  @Test
+  void should_writeRoleDeletedRow_andRollBackTheDelete_whenItsAuditInsertIsBlocked() {
+    UUID tenantId = uuidGenerator.newId();
+    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
+    Role kept = seedRole("TS5-DEL-BLOCKED", tenantId);
+    Role deleted = seedRole("DEL", tenantId);
+
+    roleManagementService.softDeleteRole(actor, deleted.getId(), requestContext());
+    assertThat(countAuditRows(tenantId, "ROLE_DELETED")).isEqualTo(1);
+
+    installAuditBlockTrigger("ROLE_DELETED");
+    try {
+      assertThatThrownBy(
+              () -> roleManagementService.softDeleteRole(actor, kept.getId(), requestContext()))
+          .isInstanceOf(RuntimeException.class);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT COUNT(*) FROM roles WHERE id = ? AND deleted_at IS NULL",
+                  Integer.class,
+                  toBytes(kept.getId())))
+          .as("the blocked ROLE_DELETED audit insert must roll the soft delete back")
+          .isEqualTo(1);
+    } finally {
+      dropAuditBlockTrigger();
+    }
+  }
+
   // ── Fixtures / helpers ───────────────────────────────────────────────────────────────────
 
   private Role seedRole(String tag, UUID tenantId) {

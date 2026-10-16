@@ -57,6 +57,18 @@ public interface RoleManagementPort {
   int softDeleteRole(UUID roleId, UUID tenantId, Instant deletedAt);
 
   /**
+   * C1 PATCH — rewrites a live role's {@code name} and {@code description}: a targeted two-column
+   * {@code UPDATE ... WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL}, never a
+   * load-mutate-save (the {@code nexus_app} grant is column-scoped to exactly these columns and
+   * {@code deleted_at}). The caller passes the values to store (current values for an unchanged
+   * field). Returns the affected-row count: {@code 0} means the role is deleted, missing or in
+   * another tenant (the caller maps it to 404). Implementations translate the {@code
+   * uq_roles_tenant_active_name} / {@code uq_roles_tenant_name} violation into {@code
+   * DuplicateRoleNameException} (RBAC_006), never exposing the driver's message.
+   */
+  int updateRole(UUID roleId, UUID tenantId, String name, String description);
+
+  /**
    * Q12 — RC-4's per-tenant cap check. Count of LIVE (not soft-deleted) roles in the tenant, served
    * by {@code uq_roles_tenant_name}'s leftmost prefix — same index as Q1, no new cost.
    */

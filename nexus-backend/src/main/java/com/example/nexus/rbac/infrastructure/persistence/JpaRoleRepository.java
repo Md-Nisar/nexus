@@ -121,4 +121,20 @@ public interface JpaRoleRepository extends JpaRepository<Role, UUID> {
       @Param("roleId") UUID roleId,
       @Param("tenantId") UUID tenantId,
       @Param("deletedAt") Instant deletedAt);
+
+  /**
+   * C1 PATCH's write (US-018 T-027): a bulk two-column {@code UPDATE}, never {@code
+   * findById->set->save}. Same affected-row-count contract as {@link #softDelete}. Only {@code name}
+   * and {@code description} are written; {@code is_system_role}, {@code tenant_id} and {@code id}
+   * are outside the column-scoped grant.
+   */
+  @Modifying(clearAutomatically = true)
+  @Query(
+      "UPDATE Role r SET r.name = :name, r.description = :description "
+          + "WHERE r.id = :roleId AND r.tenantId = :tenantId AND r.deletedAt IS NULL")
+  int updateNameAndDescription(
+      @Param("roleId") UUID roleId,
+      @Param("tenantId") UUID tenantId,
+      @Param("name") String name,
+      @Param("description") String description);
 }

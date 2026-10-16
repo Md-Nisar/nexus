@@ -205,7 +205,7 @@ public class SecurityConfig {
   CorsConfigurationSource corsConfigurationSource() {
     CorsConfiguration cfg = new CorsConfiguration();
     cfg.setAllowedOrigins(List.of(frontendBaseUrl));
-    cfg.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+    cfg.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
     cfg.setAllowedHeaders(List.of("Content-Type", "Authorization", "X-Correlation-Id"));
     // Expose only headers the browser JS legitimately reads. Set-Cookie is intentionally NOT
     // exposed: the refresh cookie is HttpOnly (never script-readable) and the browser applies it

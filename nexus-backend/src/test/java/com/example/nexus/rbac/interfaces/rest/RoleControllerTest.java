@@ -7,6 +7,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -360,6 +361,104 @@ class RoleControllerTest {
   @Test
   void should_havePermissionAnnotationPresent_when_deleteRoleInspected() throws Exception {
     assertRequiresPermission("softDeleteRole", ROLE_WRITE());
+  }
+
+  // ── updateRole / PATCH (US-018 C1) ────────────────────────────────────
+
+  @Test
+  void should_return200WithTheUpdatedRole_when_patchSucceeds() throws Exception {
+    when(roleManagementService.updateRole(any(), eq(ROLE_ID), eq("Renamed"), any(), any()))
+        .thenReturn(roleView(ROLE_ID, "Renamed", "d", false));
+
+    mockMvc
+        .perform(
+            patch("/api/v1/roles/{roleId}", ROLE_ID)
+                .principal(authentication())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"Renamed\"}"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.id").value(ROLE_ID.toString()))
+        .andExpect(jsonPath("$.name").value("Renamed"))
+        .andExpect(jsonPath("$.isSystemRole").value(false));
+  }
+
+  @Test
+  void should_return400_when_patchBodyIsEmpty() throws Exception {
+    mockMvc
+        .perform(
+            patch("/api/v1/roles/{roleId}", ROLE_ID)
+                .principal(authentication())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{}"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+  }
+
+  @Test
+  void should_return400_when_patchNameIsOversizeOrMalformed() throws Exception {
+    mockMvc
+        .perform(
+            patch("/api/v1/roles/{roleId}", ROLE_ID)
+                .principal(authentication())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"" + "a".repeat(65) + "\"}"))
+        .andExpect(status().isBadRequest());
+    mockMvc
+        .perform(
+            patch("/api/v1/roles/{roleId}", ROLE_ID)
+                .principal(authentication())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"bad\\nname\"}"))
+        .andExpect(status().isBadRequest());
+  }
+
+  @Test
+  void should_return400_when_patchPathRoleIdIsMalformed() throws Exception {
+    mockMvc
+        .perform(
+            patch("/api/v1/roles/{roleId}", "not-a-uuid")
+                .principal(authentication())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"Renamed\"}"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.details[0].field").value("roleId"));
+  }
+
+  @Test
+  void should_return409Rbac006_when_patchNameIsTaken() throws Exception {
+    when(roleManagementService.updateRole(any(), eq(ROLE_ID), any(), any(), any()))
+        .thenThrow(new com.example.nexus.rbac.domain.DuplicateRoleNameException());
+
+    mockMvc
+        .perform(
+            patch("/api/v1/roles/{roleId}", ROLE_ID)
+                .principal(authentication())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"Taken\"}"))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("RBAC_006"));
+  }
+
+  @Test
+  void should_return404_when_patchTargetsAMissingOrDeletedRole() throws Exception {
+    when(roleManagementService.updateRole(any(), eq(ROLE_ID), any(), any(), any()))
+        .thenThrow(
+            new com.example.nexus.common.domain.ResourceNotFoundException(
+                "ROLE_NOT_FOUND", "No such role"));
+
+    mockMvc
+        .perform(
+            patch("/api/v1/roles/{roleId}", ROLE_ID)
+                .principal(authentication())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"description\":\"x\"}"))
+        .andExpect(status().isNotFound())
+        .andExpect(jsonPath("$.code").value("ROLE_NOT_FOUND"));
+  }
+
+  @Test
+  void should_havePermissionAnnotationPresent_when_updateRoleInspected() throws Exception {
+    assertRequiresPermission("updateRole", ROLE_WRITE());
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────

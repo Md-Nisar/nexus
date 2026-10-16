@@ -455,6 +455,111 @@ class RoleManagementIT {
     assertThat(deletedAt(adminDefining.getId())).isNull();
   }
 
+  // ── US-018 C1 / T-027: PATCH (rename / description) ──────────────────────────────────────
+
+  @Test
+  void should_renameACustomRole_andKeepItReadable_when_patched() {
+    UUID tenantId = uuidGenerator.newId();
+    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
+    Role role = seedRole("PATCH", tenantId);
+    String newName = "RMIT-PATCHED-" + UUID.randomUUID();
+
+    RoleView updated =
+        roleManagementService.updateRole(actor, role.getId(), newName, "new text", requestContext());
+
+    assertThat(updated.name()).isEqualTo(newName);
+    assertThat(updated.description()).isEqualTo("new text");
+    assertThat(updated.systemRole()).isFalse();
+  }
+
+  @Test
+  void should_throwSystemRoleImmutable_when_patchingASystemRole() {
+    UUID bootstrapTenantId = UUID.fromString("00000000-0000-7000-8000-000000000001");
+    UUID memberRoleId =
+        fromBytes(
+            jdbc.queryForObject(
+                "SELECT id FROM roles WHERE tenant_id = ? AND name = 'MEMBER'",
+                byte[].class,
+                toBytes(bootstrapTenantId)));
+    RoleChangeActor actor = seedActorHoldingAllPermissionsOf(bootstrapTenantId, memberRoleId);
+
+    assertThatThrownBy(
+            () ->
+                roleManagementService.updateRole(
+                    actor, memberRoleId, "RMIT-X-" + UUID.randomUUID(), null, requestContext()))
+        .isInstanceOf(com.example.nexus.rbac.domain.SystemRoleImmutableException.class)
+        .hasFieldOrPropertyWithValue("code", "RBAC_003");
+  }
+
+  @Test
+  void should_throwDuplicateRoleName_when_renamingToAnActiveNameInTheSameTenant() {
+    UUID tenantId = uuidGenerator.newId();
+    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
+    Role first = seedRole("DUP-A", tenantId);
+    Role second = seedRole("DUP-B", tenantId);
+
+    assertThatThrownBy(
+            () ->
+                roleManagementService.updateRole(
+                    actor, second.getId(), first.getName(), null, requestContext()))
+        .isInstanceOf(com.example.nexus.rbac.domain.DuplicateRoleNameException.class)
+        .hasFieldOrPropertyWithValue("code", "RBAC_006");
+  }
+
+  @ParameterizedTest(name = "reserved name on PATCH: {0}")
+  @ValueSource(strings = {"TENANT_ADMIN", "member", "Member"})
+  void should_throwReservedRoleName_when_renamingToAReservedName(String reserved) {
+    UUID tenantId = uuidGenerator.newId();
+    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
+    Role role = seedRole("RESERVED", tenantId);
+
+    assertThatThrownBy(
+            () ->
+                roleManagementService.updateRole(
+                    actor, role.getId(), reserved, null, requestContext()))
+        .isInstanceOf(ReservedRoleNameException.class)
+        .hasFieldOrPropertyWithValue("code", "RBAC_007");
+  }
+
+  @Test
+  void should_throwRoleNotFound_when_patchingASoftDeletedRole() {
+    UUID tenantId = uuidGenerator.newId();
+    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
+    Role role = seedRole("PATCH-DELETED", tenantId);
+    roleManagementService.softDeleteRole(actor, role.getId(), requestContext());
+
+    assertThatThrownBy(
+            () ->
+                roleManagementService.updateRole(
+                    actor, role.getId(), "RMIT-AFTER-" + UUID.randomUUID(), null, requestContext()))
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND");
+  }
+
+  /** RC-35.2: a non-administrator role:write holder may not rename an admin-defining role. */
+  @Test
+  void should_deny403_when_aNonAdministratorRenamesAnAdminDefiningRoleToABenignName() {
+    UUID tenantId = uuidGenerator.newId();
+    Role adminDefining = seedRole("PATCH-ADMIN-DEFINING", tenantId);
+    List<UUID> catalogue = catalogueIds();
+    catalogue.forEach(id -> rolePermissionRepository.save(new RolePermission(adminDefining.getId(), id)));
+    RoleChangeActor actor = seedActorHoldingSplit(tenantId, catalogue);
+
+    assertThatThrownBy(
+            () ->
+                roleManagementService.updateRole(
+                    actor, adminDefining.getId(), "Read Only", null, requestContext()))
+        .isInstanceOf(com.example.nexus.common.security.InsufficientPermissionException.class);
+
+    Integer stillNamed =
+        jdbc.queryForObject(
+            "SELECT COUNT(*) FROM roles WHERE id = ? AND name = ?",
+            Integer.class,
+            toBytes(adminDefining.getId()),
+            adminDefining.getName());
+    assertThat(stillNamed).isEqualTo(1);
+  }
+
   private Role anyRoleHeldBy(UUID tenantId) {
     return seedRole("HELD", tenantId);
   }

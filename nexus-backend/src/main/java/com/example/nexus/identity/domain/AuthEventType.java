@@ -60,6 +60,11 @@ public enum AuthEventType {
   // the retry buffer, so lane admission does not apply.
   ROLE_DELETED("ROLE_DELETED"),
 
+  // US-018 C1: a role rename or description change (PATCH). Atomic path only, like ROLE_DELETED, so
+  // not PRIORITY. Its metadata carries the changed field names and the old and new NAME, never the
+  // description text.
+  ROLE_UPDATED("ROLE_UPDATED"),
+
   // US-018 A7 (03-design.md §7.2): break-glass first-administrator grant, SUCCESS or FAILURE.
   // Deliberately NOT in PRIORITY below — it is never written on the buffered path: SUCCESS joins
   // the grant transaction and a refusal's FAILURE row commits in its own transaction, both through

@@ -83,6 +83,34 @@ class JpaRoleManagementAdapterTest {
   }
 
   @Test
+  void should_delegateTheSoftDeleteToTheTargetedUpdate_when_softDeletingARole() {
+    UUID roleId = UUID.randomUUID();
+    Instant at = Instant.now();
+    when(roleRepository.softDelete(roleId, tenantId, at)).thenReturn(1);
+
+    assertThat(adapter.softDeleteRole(roleId, tenantId, at)).isEqualTo(1);
+  }
+
+  @Test
+  void should_delegateTheRenameToTheTwoColumnUpdate_when_updatingARole() {
+    UUID roleId = UUID.randomUUID();
+    when(roleRepository.updateNameAndDescription(roleId, tenantId, "New", "desc")).thenReturn(1);
+
+    assertThat(adapter.updateRole(roleId, tenantId, "New", "desc")).isEqualTo(1);
+  }
+
+  @Test
+  void should_throwDuplicateRoleNameWithAFixedMessage_when_theRenameViolatesAUniqueKey() {
+    when(roleRepository.updateNameAndDescription(any(), any(), any(), any()))
+        .thenThrow(new DataIntegrityViolationException("Duplicate entry 'x' for key 'uq_roles'"));
+
+    assertThatThrownBy(() -> adapter.updateRole(UUID.randomUUID(), tenantId, "Taken", null))
+        .isInstanceOf(DuplicateRoleNameException.class)
+        .hasFieldOrPropertyWithValue("code", "RBAC_006")
+        .hasMessage("A role with this name already exists in this tenant");
+  }
+
+  @Test
   void should_throwDuplicateRoleNameException_when_createRoleViolatesUniqueConstraint() {
     when(idGenerator.newId()).thenReturn(UUID.randomUUID());
     when(roleRepository.saveAndFlush(any(Role.class)))

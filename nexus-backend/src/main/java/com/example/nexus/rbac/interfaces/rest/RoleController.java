@@ -15,6 +15,7 @@ import com.example.nexus.rbac.interfaces.rest.dto.PermissionListResponse;
 import com.example.nexus.rbac.interfaces.rest.dto.PermissionResponse;
 import com.example.nexus.rbac.interfaces.rest.dto.RoleListResponse;
 import com.example.nexus.rbac.interfaces.rest.dto.RoleResponse;
+import com.example.nexus.rbac.interfaces.rest.dto.UpdateRoleRequest;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -28,6 +29,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -213,6 +215,52 @@ public class RoleController {
 
     roleManagementService.detachPermission(
         actor, parsedRoleId, parsedPermissionId, RbacControllerSupport.requestContext(httpRequest));
+  }
+
+  /**
+   * Renames a custom role and/or changes its description (US-018 C1). Bounded by the caller's own
+   * authority exactly like a detach (role-subset), so a {@code role:write} holder cannot make an
+   * administrator role look harmless. There is no {@code If-Match}: an admin-only, low-contention
+   * resource, last write wins.
+   *
+   * @return 200 with the updated role
+   */
+  @PatchMapping("/{roleId}")
+  @RequiresPermission(ROLE_WRITE)
+  @Operation(summary = "Rename a custom role or change its description in the caller's tenant")
+  @ApiResponse(responseCode = "200", description = "Role updated")
+  @ApiResponse(
+      responseCode = "400",
+      description = "Validation failed (empty body, bad name or description) or malformed path UUID")
+  @ApiResponse(
+      responseCode = "403",
+      description =
+          "Missing role:write, or the caller does not hold every permission of the role (for an"
+              + " administrator role: or is not an administrator through another role)")
+  @ApiResponse(
+      responseCode = "404",
+      description = "Role not found, deleted, or in another tenant (indistinguishable)")
+  @ApiResponse(
+      responseCode = "409",
+      description =
+          "System role (RBAC_003), name already used by a live role (RBAC_006) or reserved"
+              + " (RBAC_007)")
+  public RoleResponse updateRole(
+      @PathVariable String roleId,
+      @Valid @RequestBody UpdateRoleRequest request,
+      Authentication authentication,
+      HttpServletRequest httpRequest) {
+    RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, ROLE_WRITE);
+    UUID parsedRoleId = RbacControllerSupport.parsePathUuid(roleId, PATH_PARAM_ROLE_ID);
+
+    RoleView role =
+        roleManagementService.updateRole(
+            actor,
+            parsedRoleId,
+            request.name(),
+            request.description(),
+            RbacControllerSupport.requestContext(httpRequest));
+    return toResponse(role);
   }
 
   /**
