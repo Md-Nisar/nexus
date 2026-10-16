@@ -1,6 +1,7 @@
 package com.example.nexus.rbac;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -13,12 +14,12 @@ import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
 import com.example.nexus.rbac.application.RoleManagementService;
+import com.example.nexus.rbac.domain.AttachProvenanceConflictException;
+import com.example.nexus.rbac.domain.DuplicateRolePermissionException;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
-import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.domain.UserRole;
-import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import io.micrometer.core.instrument.Counter;
@@ -36,78 +37,68 @@ import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * US-016 T-018 (03-design.md §4.7/D13, §12.3; 03b-threat-model.md T-E21; 04-tasks.md T-018):
- * standing evidence for RES-1(b), the pre-positioning primitive.
+ * US-018 T-017 (03-design.md §5.1 rows 13 and 14, §5.6; 03b-threat-model.md T-E21, T-E32, RC-23.2,
+ * R1-1; 04-tasks.md T-017): replaces {@code DangerousPermissionHolderSignalIT} (US-016 T-018, the
+ * standing evidence for RES-1(b)), re-targeted from the name-based D13 holder-count signal to the
+ * provenance signals of the attach.
  *
- * <p><b>US-018 update.</b> A4 now denies the literal self-assignment by a non-admin, but the
- * primitive survives through a second account (RES-26, T-E32): a second account grants the benign
- * role instead. Step 1 below therefore seeds that holding directly; every signal assertion is
- * unchanged. The rest of this Javadoc describes the original self-assign form of the same residual.
+ * <p><b>Two things this class proves, and one it must never do.</b>
  *
- * <p><b>This is the residual, made visible — not closed.</b> A non-admin self-assigning a benign
- * role today, followed by an administrator legitimately attaching {@code role:write} to that same
- * role tomorrow, is a silent, permanent, race-free escalation primitive that D13's mint-side
- * holder-count signal does not block and was never meant to block (§4.7: "it does not do... it
- * does not add a gate, and does not change any status code"). Both steps below are legitimate,
- * correctly-ungated actions and both MUST succeed. This test proves only that the resulting
- * escalation is now <b>visible</b> — via the {@code holderCount} audit metadata, the bounded
- * {@code holders} metric bucket, and the {@code
- * RBAC_DANGEROUS_PERMISSION_GRANTED_TO_EXISTING_HOLDERS} WARN — not that it is prevented.
+ * <ul>
+ *   <li><b>The residual stays visible (RES-26, detective).</b> An administrator attaching {@code
+ *       role:write} to a benign role that a NON-administrator account assigned to someone (the
+ *       second-account form of RES-1(b)) is a legitimate, ungated action and it SUCCEEDS; the
+ *       evidence is the paging WARN {@code RBAC_ATTACH_ESCALATES_NON_ADMIN_ASSIGNED_HOLDERS} and
+ *       the bucketed counter. <b>That test must never be rewritten to assert a denial</b>: partial
+ *       escalations are detective only, by design (ADR-0021 D7, D8).
+ *   <li><b>The payoff step is preventive (R1-1).</b> An attach that would make the role
+ *       admin-defining is refused with 409 {@code RBAC_010} while a holder was assigned by a
+ *       non-administrator, writes nothing, and the same attach with only administrator-assigned
+ *       holders succeeds and pages row 14.
+ * </ul>
  *
- * <p><b>This test must never be rewritten to assert a denial.</b> T-E21 survives US-016 by design
- * (03-design.md §3.4, §4.7's "what this does and does not buy"; 03b-threat-model.md T-E21,
- * RES-1(b)). If a future story closes T-E21 by re-validating assignments at attach time, this test
- * is rewritten <b>with</b> that story and its Javadoc rewritten with it — never before, and never
- * as a silent diff. Doing so here, absent that story, would misrepresent an accepted, open
- * residual risk as fixed.
- *
- * <p>Service-layer test, {@link RoleManagementService} autowired directly against real Testcontainers MySQL — no HTTP layer needed, mirroring {@code
- * RoleAssignmentEscalationIT}'s and {@code RoleManagementAuditIT}'s pattern (that pattern's own
- * Javadoc already disclaims T-E21 and points here as its standing evidence).
+ * <p>Service-layer test, {@link RoleManagementService} autowired directly against real
+ * Testcontainers MySQL, mirroring the sibling ITs. Counters carry no tenant tag (B3), so every
+ * assertion on a counter is a delta against a baseline read just before the action.
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
 @Tag("IT")
-class DangerousPermissionHolderSignalIT {
+class AttachEscalationSignalIT {
 
-  // role:write — one of RbacDangerousPermissions.NAMES, same literal id used throughout this
-  // package's other ITs (e.g. RoleAssignmentEscalationIT, RoleManagementAuditIT).
-  private static final UUID DANGEROUS_PERMISSION_ID =
+  private static final UUID ROLE_WRITE_PERMISSION_ID =
       UUID.fromString("019f6839-1805-7000-8000-000000000006");
+
+  private static final String ESCALATION_COUNTER = "nexus.rbac.attach_escalates_non_admin_assigned";
+  private static final String BECAME_ADMIN_DEFINING_COUNTER = "nexus.rbac.role_became_admin_defining";
 
   @Autowired private RoleManagementService roleManagementService;
   @Autowired private JpaRoleRepository roleRepository;
   @Autowired private JpaUserRoleRepository userRoleRepository;
-  @Autowired private JpaRolePermissionRepository rolePermissionRepository;
   @Autowired private JpaUserRepository userRepository;
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private MeterRegistry meterRegistry;
   @Autowired private JdbcTemplate jdbc;
 
-  @Test
-  void should_makeSoleHolderVisibleViaSignal_when_adminRetroactivelyAttachesDangerousPermissionToBenignRoleHeldViaSecondAccount() {
-    UUID tenantId = uuidGenerator.newId();
+  // ── RES-26: the partial escalation is detected, never blocked ──────────────────────────────
 
-    // Step 1: a non-admin comes to hold a BENIGN role. Since US-018 A4 a non-admin can no longer
-    // self-assign it, so the holding is modelled in the RES-26 shape (a second account granted
-    // it) and is seeded directly below, not routed through assign().
-    User nonAdminUser = seedUser("holder", tenantId);
-    UUID nonAdminUserId = nonAdminUser.getId();
+  @Test
+  void should_pageViaSignalAndStillAttach_when_adminAttachesRoleWriteToABenignRoleHeldViaASecondAccount() {
+    UUID tenantId = uuidGenerator.newId();
+    Role adminRole = seedWholeCatalogueRole(tenantId, "TENANT_ADMIN");
+    User admin = seedUser("admin", tenantId);
+    seedActiveAssignment(tenantId, adminRole.getId(), admin.getId(), admin.getId());
+
+    // Step 1 (RES-26's shape): a non-administrator second account assigned a BENIGN role to a
+    // holder. Since A4 a non-administrator can no longer self-assign it; seeded directly.
+    User holder = seedUser("holder", tenantId);
     User secondAccount = seedUser("second-account", tenantId);
     Role benignRole = seedRole("BENIGN", tenantId);
-    seedActiveAssignment(tenantId, benignRole.getId(), nonAdminUserId, secondAccount.getId());
+    seedActiveAssignment(tenantId, benignRole.getId(), holder.getId(), secondAccount.getId());
 
-    // Step 2: an active admin attaches role:write to that SAME role -- a legitimate,
-    // Epic-3-required administrative action (AC11 passes). This retroactively makes the
-    // existing holder's assignment dangerous, with no gate re-evaluation at this moment.
-    Role adminRole = seedRole("ADMIN", tenantId, "TENANT_ADMIN");
-    // US-018 A3: the admin must also hold the permission they attach.
-    rolePermissionRepository.save(new RolePermission(adminRole.getId(), DANGEROUS_PERMISSION_ID));
-    User adminUser = seedUser("admin", tenantId);
-    UUID adminUserId = adminUser.getId();
-    seedActiveAssignment(tenantId, adminRole.getId(), adminUserId, adminUserId);
-    RoleChangeActor adminActor = new RoleChangeActor(adminUserId, tenantId);
-    RequestContext ctx = requestContext();
+    // Step 2: the administrator attaches role:write to that SAME role -- legitimate and ungated.
+    RoleChangeActor adminActor = new RoleChangeActor(admin.getId(), tenantId);
+    double before = counterValue(ESCALATION_COUNTER, "holders", "1", "page", "true");
 
     Logger logger = (Logger) LoggerFactory.getLogger(RoleManagementService.class);
     ListAppender<ILoggingEvent> appender = startLogCapture(logger);
@@ -115,46 +106,147 @@ class DangerousPermissionHolderSignalIT {
     try {
       granted =
           roleManagementService.attachPermission(
-              adminActor, benignRole.getId(), DANGEROUS_PERMISSION_ID, ctx);
+              adminActor, benignRole.getId(), ROLE_WRITE_PERMISSION_ID, requestContext());
 
-      // Step 3: assert the signal fired -- not a denial.
-      var warnEvents = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
-      assertThat(warnEvents)
-          .as("D13's alertable WARN must fire because holderCount > 0")
-          .hasSize(1);
+      var warnEvents =
+          appender.list.stream()
+              .filter(e -> e.getLevel() == Level.WARN)
+              .filter(
+                  e ->
+                      "RBAC_ATTACH_ESCALATES_NON_ADMIN_ASSIGNED_HOLDERS"
+                          .equals(keyValueMap(e).get("event")))
+              .toList();
+      assertThat(warnEvents).as("row 13's WARN must fire: a holder has a non-admin assigner").hasSize(1);
       assertThat(keyValueMap(warnEvents.get(0)))
-          .containsEntry("event", "RBAC_DANGEROUS_PERMISSION_GRANTED_TO_EXISTING_HOLDERS")
+          .containsEntry("tenantId", tenantId)
+          .containsEntry("roleId", benignRole.getId())
+          .containsEntry("permissionId", ROLE_WRITE_PERMISSION_ID)
           .containsEntry("holderCount", 1)
-          .containsEntry("grantedBy", adminUserId);
+          .containsEntry("nonAdminAssignedCount", 1);
     } finally {
       stopLogCapture(logger, appender);
     }
 
-    assertThat(granted).as("step 2 is a legitimate admin attach; it must succeed").isNotNull();
+    assertThat(granted).as("the attach is a legitimate administrative action: it must succeed").isNotNull();
+    assertThat(counterValue(ESCALATION_COUNTER, "holders", "1", "page", "true"))
+        .as("role:write is a paging permission, so the bounded counter carries page=true")
+        .isEqualTo(before + 1.0);
+  }
 
-    Map<String, Object> row = findLatestRolePermissionGrantedRow(tenantId);
-    assertThat(row.get("holder_count"))
-        .as("D13: holderCount == 1 must be threaded through the ROLE_PERMISSION_GRANTED"
-            + " audit metadata")
-        .isEqualTo("1");
+  // ── R1-1: the payoff step is refused ──────────────────────────────────────────────────────
 
-    Counter counter =
-        meterRegistry
-            .find("nexus.rbac.dangerous_permission_granted")
-            .tag("permission", "role:write")
-            .tag("tenantId", tenantId.toString())
-            .tag("holders", "1")
-            .counter();
-    assertThat(counter)
-        .as("the bounded holders=\"1\" bucket tag must be present -- never the raw count, "
-            + "which is unbounded cardinality")
-        .isNotNull();
+  @Test
+  void should_refuseWithRbac010AndWriteNothing_when_completingTheCatalogueOnARoleHeldViaANonAdministrator() {
+    UUID tenantId = uuidGenerator.newId();
+    Role adminRole = seedWholeCatalogueRole(tenantId, "TENANT_ADMIN");
+    User admin = seedUser("admin", tenantId);
+    seedActiveAssignment(tenantId, adminRole.getId(), admin.getId(), admin.getId());
+
+    Role nearlyAdminRole = seedAlmostWholeCatalogueRole(tenantId, "NEARLY-ADMIN");
+    User holder = seedUser("holder", tenantId);
+    User nonAdminAssigner = seedUser("second-account", tenantId);
+    seedActiveAssignment(tenantId, nearlyAdminRole.getId(), holder.getId(), nonAdminAssigner.getId());
+    RoleChangeActor adminActor = new RoleChangeActor(admin.getId(), tenantId);
+    double deniedBefore =
+        counterValue(
+            "nexus.rbac.permission_denied", "permission", "role:write", "reason", "ATTACH_PROVENANCE");
+
+    assertThatThrownBy(
+            () ->
+                roleManagementService.attachPermission(
+                    adminActor, nearlyAdminRole.getId(), ROLE_WRITE_PERMISSION_ID, requestContext()))
+        .isInstanceOf(AttachProvenanceConflictException.class)
+        .hasFieldOrPropertyWithValue("code", "RBAC_010")
+        .satisfies(
+            e ->
+                assertThat(e.getMessage())
+                    .doesNotContain(holder.getId().toString())
+                    .doesNotContain(nonAdminAssigner.getId().toString()));
+
+    assertThat(rolePermissionCount(nearlyAdminRole.getId(), ROLE_WRITE_PERMISSION_ID))
+        .as("a refused attach must leave no role_permissions row")
+        .isZero();
+    assertThat(
+            counterValue(
+                "nexus.rbac.permission_denied", "permission", "role:write", "reason", "ATTACH_PROVENANCE"))
+        .isEqualTo(deniedBefore + 1.0);
+    assertThat(countAuditRows(tenantId, "ROLE_PERMISSION_GRANTED"))
+        .as("a refusal writes no audit row, like every A3-class denial (Decision 7)")
+        .isZero();
+  }
+
+  /** The same attach with only administrator-assigned holders succeeds and pages row 14. */
+  @Test
+  void should_attachAndPageRow14_when_completingTheCatalogueOnARoleHeldViaAnAdministrator() {
+    UUID tenantId = uuidGenerator.newId();
+    Role adminRole = seedWholeCatalogueRole(tenantId, "TENANT_ADMIN");
+    User admin = seedUser("admin", tenantId);
+    seedActiveAssignment(tenantId, adminRole.getId(), admin.getId(), admin.getId());
+
+    Role nearlyAdminRole = seedAlmostWholeCatalogueRole(tenantId, "NEARLY-ADMIN-2");
+    User holder = seedUser("holder", tenantId);
+    seedActiveAssignment(tenantId, nearlyAdminRole.getId(), holder.getId(), admin.getId());
+    RoleChangeActor adminActor = new RoleChangeActor(admin.getId(), tenantId);
+    double before = counterValue(BECAME_ADMIN_DEFINING_COUNTER, "holders", "1");
+
+    roleManagementService.attachPermission(
+        adminActor, nearlyAdminRole.getId(), ROLE_WRITE_PERMISSION_ID, requestContext());
+
+    assertThat(rolePermissionCount(nearlyAdminRole.getId(), ROLE_WRITE_PERMISSION_ID)).isEqualTo(1);
+    assertThat(counterValue(BECAME_ADMIN_DEFINING_COUNTER, "holders", "1"))
+        .as("row 14: the role became admin-defining with one holder; paged when holders > 0")
+        .isEqualTo(before + 1.0);
+  }
+
+  /** A break-glass style holder (assigned_by = the holder, who is an administrator) never trips it. */
+  @Test
+  void should_attach_when_theHolderAssignedThemselvesAndIsAnAdministrator() {
+    UUID tenantId = uuidGenerator.newId();
+    Role adminRole = seedWholeCatalogueRole(tenantId, "TENANT_ADMIN");
+    User admin = seedUser("admin", tenantId);
+    seedActiveAssignment(tenantId, adminRole.getId(), admin.getId(), admin.getId());
+
+    Role nearlyAdminRole = seedAlmostWholeCatalogueRole(tenantId, "NEARLY-ADMIN-3");
+    // The holder is ALSO an administrator (TENANT_ADMIN, seeded above) and assigned the role to
+    // themselves, as a break-glass grant does (assigned_by = the target).
+    seedActiveAssignment(tenantId, nearlyAdminRole.getId(), admin.getId(), admin.getId());
+    RoleChangeActor adminActor = new RoleChangeActor(admin.getId(), tenantId);
+
+    roleManagementService.attachPermission(
+        adminActor, nearlyAdminRole.getId(), ROLE_WRITE_PERMISSION_ID, requestContext());
+
+    assertThat(rolePermissionCount(nearlyAdminRole.getId(), ROLE_WRITE_PERMISSION_ID)).isEqualTo(1);
+  }
+
+  /** RC-50(a): a duplicate attach to an already admin-defining role is RBAC_005, not RBAC_010. */
+  @Test
+  void should_answerRbac005NotRbac010_when_attachingAPermissionAnAdminDefiningRoleAlreadyHas() {
+    UUID tenantId = uuidGenerator.newId();
+    Role adminRole = seedWholeCatalogueRole(tenantId, "TENANT_ADMIN");
+    User admin = seedUser("admin", tenantId);
+    seedActiveAssignment(tenantId, adminRole.getId(), admin.getId(), admin.getId());
+
+    Role alreadyAdminDefining = seedWholeCatalogueRole(tenantId, "ALREADY-ADMIN-DEFINING");
+    User nonAdminAssigner = seedUser("second-account", tenantId);
+    User holder = seedUser("holder", tenantId);
+    seedActiveAssignment(tenantId, alreadyAdminDefining.getId(), holder.getId(), nonAdminAssigner.getId());
+    RoleChangeActor adminActor = new RoleChangeActor(admin.getId(), tenantId);
+
+    assertThatThrownBy(
+            () ->
+                roleManagementService.attachPermission(
+                    adminActor,
+                    alreadyAdminDefining.getId(),
+                    ROLE_WRITE_PERMISSION_ID,
+                    requestContext()))
+        .isInstanceOf(DuplicateRolePermissionException.class)
+        .hasFieldOrPropertyWithValue("code", "RBAC_005");
   }
 
   // ── Fixtures / helpers ───────────────────────────────────────────────────────────────────
 
   private User seedUser(String tag, UUID tenantId) {
-    String email = "dphs-" + tag + "-" + UUID.randomUUID() + "@example.com";
+    String email = "aes-" + tag + "-" + UUID.randomUUID() + "@example.com";
     String hmac = "hmac-" + UUID.randomUUID().toString().replace("-", "");
     User user =
         new User(uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac, "test-hash", null);
@@ -163,31 +255,75 @@ class DangerousPermissionHolderSignalIT {
 
   private Role seedRole(String tag, UUID tenantId) {
     return roleRepository.save(
-        new Role(uuidGenerator.newId(), tenantId, "DPHS-" + tag + "-" + UUID.randomUUID(), null,
-            false));
+        new Role(uuidGenerator.newId(), tenantId, "AES-" + tag + "-" + UUID.randomUUID(), null, false));
   }
 
-  /** Overload for the literal {@code "TENANT_ADMIN"} name AC11's admin gate resolves by. */
-  private Role seedRole(String tag, UUID tenantId, String literalName) {
-    return roleRepository.save(new Role(uuidGenerator.newId(), tenantId, literalName, tag, false));
+  /** A role carrying the whole catalogue: admin-defining. */
+  private Role seedWholeCatalogueRole(UUID tenantId, String name) {
+    Role role =
+        roleRepository.save(
+            new Role(uuidGenerator.newId(), tenantId, nameFor(name), "aes", false));
+    jdbc.update(
+        "INSERT INTO role_permissions (role_id, permission_id) "
+            + "SELECT UUID_TO_BIN(?), id FROM permissions",
+        role.getId().toString());
+    return role;
   }
 
-  private UserRole seedActiveAssignment(UUID tenantId, UUID roleId, UUID assigneeId, UUID assignedById) {
+  /** A role carrying every catalogue permission except {@code role:write}. */
+  private Role seedAlmostWholeCatalogueRole(UUID tenantId, String name) {
+    Role role =
+        roleRepository.save(new Role(uuidGenerator.newId(), tenantId, nameFor(name), "aes", false));
+    jdbc.update(
+        "INSERT INTO role_permissions (role_id, permission_id) "
+            + "SELECT UUID_TO_BIN(?), id FROM permissions WHERE id <> UUID_TO_BIN(?)",
+        role.getId().toString(),
+        ROLE_WRITE_PERMISSION_ID.toString());
+    return role;
+  }
+
+  /** {@code TENANT_ADMIN} is unique per tenant; every other name gets a random suffix. */
+  private static String nameFor(String name) {
+    return "TENANT_ADMIN".equals(name) ? name : name + "-" + UUID.randomUUID();
+  }
+
+  private UserRole seedActiveAssignment(
+      UUID tenantId, UUID roleId, UUID assigneeId, UUID assignedById) {
     return userRoleRepository.save(
         new UserRole(uuidGenerator.newId(), assigneeId, roleId, tenantId, assignedById));
   }
 
   private RequestContext requestContext() {
-    return RequestContext.of(
-        "127.0.0.1", "trace-" + UUID.randomUUID(), "DangerousPermissionHolderSignalIT");
+    return RequestContext.of("127.0.0.1", "trace-" + UUID.randomUUID(), "AttachEscalationSignalIT");
   }
 
-  private Map<String, Object> findLatestRolePermissionGrantedRow(UUID tenantId) {
-    return jdbc.queryForMap(
-        "SELECT JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.holderCount')) AS holder_count "
-            + "FROM auth_events WHERE tenant_id = ? AND event_type = 'ROLE_PERMISSION_GRANTED' "
-            + "ORDER BY created_at DESC LIMIT 1",
-        toBytes(tenantId));
+  private double counterValue(String name, String... tagKeyValues) {
+    var search = meterRegistry.find(name);
+    for (int i = 0; i < tagKeyValues.length; i += 2) {
+      search = search.tag(tagKeyValues[i], tagKeyValues[i + 1]);
+    }
+    Counter counter = search.counter();
+    return counter != null ? counter.count() : 0.0;
+  }
+
+  private int rolePermissionCount(UUID roleId, UUID permissionId) {
+    Integer count =
+        jdbc.queryForObject(
+            "SELECT COUNT(*) FROM role_permissions WHERE role_id = ? AND permission_id = ?",
+            Integer.class,
+            toBytes(roleId),
+            toBytes(permissionId));
+    return count == null ? 0 : count;
+  }
+
+  private int countAuditRows(UUID tenantId, String eventType) {
+    Integer count =
+        jdbc.queryForObject(
+            "SELECT COUNT(*) FROM auth_events WHERE tenant_id = ? AND event_type = ?",
+            Integer.class,
+            toBytes(tenantId),
+            eventType);
+    return count == null ? 0 : count;
   }
 
   private ListAppender<ILoggingEvent> startLogCapture(Logger logger) {
