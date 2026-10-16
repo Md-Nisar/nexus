@@ -50,7 +50,6 @@ class TenantIsolationArchitectureTest {
             // Grandfathered at introduction — keyed by a globally unique id.
             "JpaUserRepository#resetFailedAttemptsDirect",
             "JpaRoleRepository#findRoleViewById",
-            "JpaRoleRepository#findPermissionNamesByRole",
             "JpaUserRoleRepository#countActiveByUserAndRole",
             "JpaUserRoleRepository#revokeById",
             "JpaUserRoleRepository#findActiveUserIdsByRole",

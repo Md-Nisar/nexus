@@ -10,9 +10,9 @@ import com.example.nexus.common.security.AuthenticatedEndpoint;
 import com.example.nexus.common.security.PublicEndpoint;
 import com.example.nexus.common.security.RequiresPermission;
 import com.example.nexus.identity.infrastructure.web.JwtAuthenticationFilter;
-import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.domain.JavaClass;
+import com.tngtech.archunit.core.domain.JavaClasses;
 import com.tngtech.archunit.core.domain.JavaCodeUnit;
 import com.tngtech.archunit.core.domain.JavaCodeUnitAccess;
 import com.tngtech.archunit.core.domain.JavaMethod;
@@ -29,6 +29,9 @@ import com.tngtech.archunit.library.GeneralCodingRules;
 import jakarta.servlet.ServletRequest;
 import jakarta.servlet.ServletResponse;
 import java.lang.annotation.Annotation;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.Principal;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -220,59 +223,55 @@ class HexagonalArchitectureTest {
                             + "class is final, @RequiresPermission is SILENTLY never enforced "
                             + "(SECURITY.md §3.1).");
 
-    // US-015 RC-5a (03b-threat-model.md T-E14): RoleManagementService has UserRoleAssignmentPort
-    // injected for exactly one reason: AC11's hasActiveAdminAssignment (Q11, the fresh, locking
-    // read). findActiveAssignmentViews is the port's OTHER, non-locking read, built for a
-    // different caller's field-redaction decision, and has no legitimate use here — there is no
-    // target user in this story's flows. This rule turns that mistake into a build failure
-    // instead of a code-review-only expectation.
-    @ArchTest
-    static final ArchRule role_management_service_must_not_call_the_non_locking_admin_read =
-            noClasses().that().haveSimpleName("RoleManagementService")
-                    .should().callMethod(
-                            UserRoleAssignmentPort.class,
-                            "findActiveAssignmentViews",
-                            UUID.class,
-                            UUID.class)
-                    .because("RC-5a (03b-threat-model.md T-E14). RoleManagementService has "
-                            + "UserRoleAssignmentPort injected for exactly one reason: AC11's "
-                            + "hasActiveAdminAssignment (Q11, the fresh, locking read). "
-                            + "findActiveAssignmentViews is the port's OTHER, non-locking read, "
-                            + "built for a different caller's field-redaction decision, and has "
-                            + "no legitimate use here — there is no target user in this story's "
-                            + "flows. The realistic F1 failure is not calling a private helper on "
-                            + "another service; it is reaching for the wrong method on a port "
-                            + "that is already injected. This rule turns that mistake into a "
-                            + "build failure instead of a code-review-only expectation.");
+    // US-018 M3 (ledger row 17, FR-A5.c proxy; T-019(e)): "RoleAssignmentService shrinks materially"
+    // is measured, not asserted. After M3 no symbol of the retired machinery appears anywhere in
+    // rbac.application: the name- and permission-list predicates, the second caller gate (M5, M5b),
+    // the non-locking name read the canary used (M12) and its helper, and the D23 / canary meter
+    // and event names. A source scan, not a bytecode rule, because the meter and event names are
+    // string constants that ArchUnit cannot see once compiled. The two former ArchUnit rules that
+    // kept RoleManagementService off the non-locking admin read and M12 off decision paths (row 18)
+    // are removed with the methods they guarded: that is now a compile-time fact.
+    private static final List<String> RETIRED_SYMBOLS =
+            List.of(
+                    "RbacDangerousPermissions",
+                    "RbacAdminEquivalence",
+                    "hasActiveAdminAssignment",
+                    "hasActiveAssignmentOfAnyRole",
+                    "findPermissionNamesForActiveAssignmentsOfUser",
+                    "findPermissionNamesForTenantRoles",
+                    "findPermissionNamesForRole",
+                    "callerHoldsActiveAdminEquivalentRole",
+                    "admin_minted_by_non_named_admin",
+                    "ADMIN_MINTED_BY_NON_NAMED_ADMIN",
+                    "privileged_role_change_allowed",
+                    "self_role_assignment");
 
-    // US-018 MC-2 (03-design.md §4.3, §4.11): grant-subset decisions read the caller's holdings
-    // only from M13 (findHeldRolePermissionIdsForAuthorization). M12 is documented "MUST NEVER be
-    // used for an authorization decision"; until M3 deletes it, its single permitted caller is the
-    // self-assignment canary helper, which records a signal for an already-decided request.
-    // Renaming that helper makes this rule fail, which is intended: the exemption must be
-    // re-reviewed, never widened silently.
     @ArchTest
-    static final ArchRule m12_is_never_read_on_an_rbac_decision_path =
-            noClasses()
-                    .that().haveSimpleName("RoleAssignmentService")
-                    .or().haveSimpleName("RoleManagementService")
-                    .should().callMethodWhere(
-                            DescribedPredicate.describe(
-                                    "call UserRoleAssignmentPort."
-                                            + "findPermissionNamesForActiveAssignmentsOfUser (M12) "
-                                            + "from anywhere other than RoleAssignmentService."
-                                            + "callerHoldsActiveAdminEquivalentRole",
-                                    call -> call.getTarget().getName()
-                                                    .equals("findPermissionNamesForActiveAssignmentsOfUser")
-                                            && call.getTarget().getOwner()
-                                                    .isAssignableTo(UserRoleAssignmentPort.class)
-                                            && !(call.getOriginOwner().getSimpleName()
-                                                            .equals("RoleAssignmentService")
-                                                    && call.getOrigin().getName()
-                                                            .equals("callerHoldsActiveAdminEquivalentRole"))))
-                    .because("MC-2 (US-018 03-design.md §4.3): A2 and A3 must decide from M13 alone. "
-                            + "M12 is a non-authoritative canary read; reusing it, or the JWT, for a "
-                            + "grant decision re-opens FR-A2.b.");
+    static void rbac_application_must_not_reference_the_retired_authorization_machinery(
+            JavaClasses classes) throws IOException {
+        Path applicationSources = Path.of("src/main/java/com/example/nexus/rbac/application");
+        List<Path> sources;
+        try (Stream<Path> walk = Files.walk(applicationSources)) {
+            sources = walk.filter(path -> path.toString().endsWith(".java")).toList();
+        }
+        // Zero files found means the path broke, not that the package is clean.
+        org.assertj.core.api.Assertions.assertThat(sources)
+                .as("rbac.application sources found under " + applicationSources.toAbsolutePath())
+                .hasSizeGreaterThan(5);
+        List<String> offences = new ArrayList<>();
+        for (Path source : sources) {
+            String text = Files.readString(source);
+            for (String symbol : RETIRED_SYMBOLS) {
+                if (text.contains(symbol)) {
+                    offences.add(source.getFileName() + " references " + symbol);
+                }
+            }
+        }
+        org.assertj.core.api.Assertions.assertThat(offences)
+                .as("US-018 FR-A5.c proxy (design §5.1 row 17): no symbol of the retired machinery"
+                        + " may be referenced from rbac.application")
+                .isEmpty();
+    }
 
     private static final List<Class<? extends Annotation>> ACCESS_MARKERS =
             List.of(RequiresPermission.class, AuthenticatedEndpoint.class, PublicEndpoint.class);
