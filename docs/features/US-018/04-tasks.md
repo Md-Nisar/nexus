@@ -1055,15 +1055,15 @@ US-018 (one story, 12 PRs)
 
 **Threats owned:** T-R13 (RC-39.2, RC-50(c)), T-D18 (RC-33.1), T-I18 (RC-33.2), T-T19 (RC-40.3), T-D21 (RC-40.4), T-T21 (RC-48.1 scanner), T-D25 (RC-49.1), RC-45.1 (shared-store half), RC-54(b), RC-34.2 (B6 consideration).
 
-**Merge checklist (M8):**
-- [ ] **V8 pre-flight** (`SELECT COUNT(*) FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.tenant_id <> r.tenant_id`) = 0 in **every** environment before deploy (A-9). Non-zero → stop; remediation needs a DBA exception procedure with Security sign-off.
-- [ ] **Maintenance window** booked for V8 (`ALGORITHM=COPY`; writes to `user_roles` blocked, reads continue).
-- [ ] Runbook (docs pass): a failed V7/V8 is recovered by **`flyway repair` then a re-run, as the Flyway DDL user**; `nexus_app` grants are not widened (RC-49.1, RES-44).
-- [ ] `require-shared-store=true` present in `application-prod.yml` and checked by the runbook; RES-11 closed at deploy.
-- [ ] **RES-6:** Ops retention sign-off for `RBAC_CROSS_TENANT_TARGET` and `RBAC_DENIAL_THROTTLED`.
-- [ ] Cross-tenant **rate ticket alert** at `max(5 × 7-day baseline, 20 per 15 min)` defined (RC-39.2, RC-50(c)); RES-34 accepted.
-- [ ] Exit criteria: TS-11 and TS-12 green; the **pool-pressure k6** re-run green (T-024).
-- [ ] Docs pass: US-012 and US-015 API docs describe the 404; `US-015/monitoring.md:75` no longer groups by `tenantId`; ADR-0023 (B4) accepted; ADR-0022 carries the B6 addendum (T-023).
+**Merge checklist (M8)** (status 2026-10-16, implementer; environment and Ops items are *deferred to the first deployment* per the 2026-10-05 decision and stay required before production):
+- [ ] **V8 pre-flight** (`SELECT COUNT(*) FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.tenant_id <> r.tenant_id;`) = 0 in **every** environment before deploy (A-9). Non-zero -> stop; remediation needs a DBA exception procedure with Security sign-off. *Deferred to first deployment (no environment); the query and the stop rule are in `runbook.md` 13 and the V8 header.*
+- [ ] **Maintenance window** booked for V8 (`ALGORITHM=COPY`; writes to `user_roles` blocked, reads continue). *Deferred to first deployment; stated in `runbook.md` 13 and the V8 header.*
+- [x] Runbook (docs pass): a failed V7/V8 is recovered by **`flyway repair` then a re-run, as the Flyway DDL user**; `nexus_app` grants are not widened (RC-49.1, RES-44). *`runbook.md` 13.*
+- [ ] `require-shared-store=true` present in `application-prod.yml` and checked by the runbook; RES-11 closed at deploy. *Code, default `false` and the startup assertion are done and the runbook check is written (`runbook.md` 13); the `application-prod.yml` line is a **human edit** (hook-protected), exact text in `16-threat-model-repass-M8.md` section 2, and production also needs `nexus.security.rate-limit.store-type: redis`. RES-11 closes at deploy.*
+- [ ] **RES-6:** Ops retention sign-off for `RBAC_CROSS_TENANT_TARGET` and `RBAC_DENIAL_THROTTLED`. *Deferred to first deployment (Ops action); stated in `monitoring.md` 8.*
+- [x] Cross-tenant **rate ticket alert** at `max(5 x 7-day baseline, 20 per 15 min)` defined (RC-39.2, RC-50(c)); RES-34 accepted. *Defined in `monitoring.md` 8; creating it in a monitoring system is an Ops action, deferred to first deployment.*
+- [ ] Exit criteria: TS-11 and TS-12 green; the **pool-pressure k6** re-run green (T-024). *TS-11 (`CrossTenantNotFoundEquivalenceIT`) and TS-12 (`RoleResolutionServiceIT`, `RbacSchemaMigrationIT`) are written and compile but were not run (no Docker). The k6 scripts are written and syntax-checked but were not run (no k6, no staging topology). Deferred to first deployment.*
+- [ ] Docs pass: US-012 and US-015 API docs describe the 404 *(done: `US-012/api-spec.json`, `US-012/monitoring.md`, `US-015/monitoring.md`)*; `US-015/monitoring.md:75` no longer groups by `tenantId` *(done)*; ADR-0023 (B4) accepted *(not done: still "Proposed"; the acceptance is the owners' decision)*; ADR-0022 carries the B6 addendum (T-023) *(done: rule recorded, measurement deferred, no numbers)*.
 
 ### T-020 — Cross-tenant targets return a byte-identical 404, and no RBAC metric carries a tenant tag (B1, B3)
 

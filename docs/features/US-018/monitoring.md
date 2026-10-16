@@ -156,3 +156,28 @@ ORDER BY created_at DESC;
 ```
 
 **Daily reconciliation (deferred; an Ops deliverable, RC-37.4 backstop).** A ticket-severity alert on new `ROLE_BREAK_GLASS_GRANT` rows in `auth_events` so that a lost page is found from the durable row within a day. Design: it covers `SUCCESS` rows (an unpaged crash writes no row, hence the Job-failure alert above). Each SUCCESS row is matched to a ticket under its `changeRef` that records the contact-of-record check and the second approver. **This alert is not implemented in this repository and no environment exists; it is a merge condition and stays open until the first deployment** (STATUS.md). `auth_events` is append-only (BEFORE UPDATE and DELETE triggers), so the rows cannot be altered after the fact.
+
+## 8. M8: cross-tenant evidence, scoped throttle, metric cardinality (US-018 B1, B3, B8)
+
+**Metrics and tags.** No RBAC meter carries a tenant tag (B3; guarded by `RbacMetricCardinalityTest`). `nexus.rbac.permission_denied{permission,reason="CROSS_TENANT_TARGET"}` is the same series as before, now incremented by the services because the response is a 404 (the 403 handler no longer sees it). `nexus.rbac.denial_throttled{operation}` now counts both blocked requests (admin-defining or self-target) and evaluated denials suppressed for a throttled actor.
+
+**Log markers.**
+
+| `event` | Level | Fields | Meaning |
+|---|---|---|---|
+| `RBAC_CROSS_TENANT_TARGET` | WARN | `tenantId`, `actorUserId`, `targetKind` (`user`/`role`), `operation` | A caller used an id from another tenant. **The only record of it** (no audit row, RES-34). Retain at least 1 year (RES-6) |
+| `RBAC_DENIAL_THROTTLED` | WARN | `tenantId`, `actorUserId`, `operation`, `suppressedCount` | First evaluated-and-denied request by a throttled actor in a window; later ones in the window are counted, not logged, and write no `ROLE_ASSIGNMENT_DENIED` row. `suppressedCount` is 1 at emission |
+
+**Alerts to create (suggestions; Ops owns them).**
+
+| Alert | Suggested expression | Severity | Why |
+|---|---|---|---|
+| `nexus_rbac_cross_tenant_target_rate` | `increase(nexus_rbac_permission_denied_total{reason="CROSS_TENANT_TARGET"}[15m]) > max(5 * <the 7-day average of the same increase over 15 m>, 20)` | ticket | RC-39.2 and RC-50(c). With a near-zero baseline "5 x baseline" alone would fire on one event or never; the floor of 20 per 15 minutes sets the minimum. The cross-tenant evidence is log-only, so this alert and the WARN retention are what make probing detectable. **Not yet defined in any monitoring system** |
+| `nexus_rbac_denial_throttled_suppressed` | `increase(nexus_rbac_denial_throttled_total[5m]) > 0` | ticket | Unchanged name. Now also fires for suppressed benign denials; read the WARN `RBAC_DENIAL_THROTTLED` for the actor |
+
+The cross-tenant alert in `US-012/monitoring.md` (`nexus_rbac_cross_tenant_attempt`, `> 0` over 15 m) and `US-015/monitoring.md` (`nexus_rbac_cross_tenant_role_probe`) keep working on the same series; their thresholds are superseded by the rule above if both exist. `US-015/monitoring.md` no longer groups the self-assignment panel by `tenantId`.
+
+**Retention sign-off (RES-6).** Ops must confirm at least 1 year of retention for `RBAC_CROSS_TENANT_TARGET` and `RBAC_DENIAL_THROTTLED` before production. Deferred to the first deployment: no logging environment exists yet.
+
+**Dashboards.** Remove any panel that groups an RBAC metric by `tenantId` or `tenant`. Add: `permission_denied{reason="CROSS_TENANT_TARGET"}` rate, `denial_throttled` by `operation`.
+

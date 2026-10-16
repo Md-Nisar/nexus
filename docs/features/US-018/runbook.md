@@ -63,14 +63,14 @@ Never paste emails, names or tokens into tickets: use user, role, permission and
 
 ## 3. Throttled actor
 
-**Symptom.** A caller gets 403 on every assign or revoke for up to a minute, even for actions that should be allowed. The audit rows stop appearing for the throttled requests. `nexus_rbac_denial_throttled_total` increases; WARN `RBAC_DENIAL_THROTTLE_ENGAGED` was logged once at the transition.
+**Symptom (from M8).** A caller gets 403 when assigning or revoking a role that carries every catalogue permission (an administrator role), or when targeting themself, for up to a minute. Other changes by the same caller still work. `nexus_rbac_denial_throttled_total` increases; WARN `RBAC_DENIAL_THROTTLE_ENGAGED` was logged once at the transition. A request that is evaluated and denied while the actor is throttled also returns 403 but writes **no** `ROLE_ASSIGNMENT_DENIED` row; WARN `RBAC_DENIAL_THROTTLED` is logged once per window and the counter carries the volume.
 
-**Cause.** The actor produced `nexus.rbac.denial-throttle.max-denials` (default 5) gate denials within `window-seconds` (default 60). In M2, A2, A4, revoke-subset and L-1 denials all count. While throttled, requests are rejected before any lock or read, with reason `NOT_TENANT_ADMIN` (a pre-existing label; tidied in M8).
+**Cause.** The actor produced `nexus.rbac.denial-throttle.max-denials` (default 5) gate denials within `window-seconds` (default 60). A throttled actor is blocked only on set-lock (admin-defining) targets and on self-targets, with reason `NOT_TENANT_ADMIN` (a pre-existing label). Every other request is evaluated normally (B8, Decision 25).
 
 **Diagnose.**
-1. Read the preceding durable `ROLE_ASSIGNMENT_DENIED` rows for that actor (monitoring.md section 6) to see which reasons burned the budget. A legitimate operator hitting `GRANT_EXCEEDS_CALLER` five times means they are using the wrong role or lack permissions: fix that, do not raise the limit.
-2. Deployments with `nexus.security.rate-limit.store-type: memory` have one counter per replica, so a user may be throttled on one replica and not another (US-016 runbook).
-3. Wait for the window to pass. Raising `NEXUS_RBAC_DENIAL_THROTTLE_MAX_DENIALS` is a config-and-restart change and weakens a probe-cost bound; only do it with Security agreement.
+1. Read the preceding durable `ROLE_ASSIGNMENT_DENIED` rows for that actor (monitoring.md section 6) to see which reasons burned the budget. Denials after the throttle tripped have no row: use the counter and the `RBAC_DENIAL_THROTTLED` WARN. A legitimate operator hitting `GRANT_EXCEEDS_CALLER` five times means they are using the wrong role or lack permissions: fix that, do not raise the limit.
+2. With `nexus.security.rate-limit.store-type: redis` the throttle is shared by all replicas (keys `nexus:rbac:throttle:{tenantId}:{actorUserId}` and `:until`, `:suppressed`). With `memory` it is per replica, and production refuses to start with `memory` once `nexus.rbac.throttle.require-shared-store` is `true` (section 13).
+3. Wait for the window to pass. To clear a throttle at once (Security agreement required), delete the actor's `...:until` key in Redis. Raising `NEXUS_RBAC_DENIAL_THROTTLE_MAX_DENIALS` is a config-and-restart change and weakens a probe-cost bound.
 
 ## 4. Service-level callers need DB-held permissions
 
@@ -245,3 +245,30 @@ Do not add or use any CLI override flag; none exists.
 - **Page: `RBAC_SELF_ASSIGN_ADMIN_DISAGREEMENT`.** The authorization check and the independent statement disagree about the caller. Treat as a defect in the administrator definition or a race on role data; collect the user's roles and each role's permission count versus the catalogue count and escalate to the owning team. The assignment itself was decided by A4.
 - **Health component `rbacZeroActiveAdmins` DOWN.** A tenant has an admin-defining role with no active holder. Follow the US-017 zero-administrator procedure, or the break-glass CLI (section 11); the definition now includes custom roles carrying the whole catalogue.
 - **Concurrent detach (RES-28) and the attach snapshot (RES-27)** are accepted, detective-only races: a role can lose admin-defining status through two concurrent detaches, and the indicator is what notices.
+
+## 13. M8: V7/V8 migrations, shared throttle store, and what changed for clients
+
+**Cross-tenant ids now return 404.** `POST/DELETE/GET /users/{id}/roles` and the `/roles/{id}/permissions` endpoints answer 404 `USER_NOT_FOUND` / `ROLE_NOT_FOUND` for an id in another tenant, byte-identical to a genuine not-found. Support cannot tell the two apart from the response; use the WARN `RBAC_CROSS_TENANT_TARGET` (`tenantId`, `actorUserId`, `targetKind`, `operation`; no foreign id) and the counter `nexus_rbac_permission_denied_total{reason="CROSS_TENANT_TARGET"}`. There is no audit row for it.
+
+**V8 pre-flight (every environment, before deploy; A-9).** Run as a read-only DBA:
+
+```sql
+SELECT COUNT(*) FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.tenant_id <> r.tenant_id;
+```
+
+The count must be **0**. If it is not, **stop**. `user_roles` rows cannot be deleted (append-only trigger) and a revoked mismatched row still violates the new foreign key. Remediation needs the DBA exception procedure with Security sign-off; do not edit `user_roles` ad hoc. Record the result per environment in the change ticket.
+
+**V8 maintenance window.** Booking required. V8 adds `fk_user_roles_role_tenant` with `ALGORITHM=COPY`: `user_roles` is rebuilt and writes (assign, revoke, break-glass) are blocked for the duration; reads continue. Flyway runs at boot on the first new instance while old instances still serve traffic, so deploy inside the window. Never run with `foreign_key_checks=0`: it skips validating existing rows. V7 is online.
+
+**Recovering a failed V7 or V8 (RES-44).** Each file is one statement, so a failure leaves nothing half-applied, but Flyway records the file as failed and every booting instance refuses to start. Fix the cause (for V8, the pre-flight rows), then, **as the Flyway DDL user** (the owner of `flyway_schema_history`; `nexus_app` grants are not widened and `nexus_app` cannot do this):
+
+1. `flyway repair` (removes the failed row from `flyway_schema_history`).
+2. Redeploy or restart, so the migration runs again.
+
+Do not edit the applied file (ADR 0003).
+
+**Shared throttle store check (RC-45.1, RES-11).** In production `nexus.rbac.throttle.require-shared-store` must resolve to `true` and `nexus.security.rate-limit.store-type` to `redis`. Check the deployed configuration for both values; with `memory` and the requirement on, the application fails at startup naming both properties. The `application-prod.yml` line is a human edit (see `16-threat-model-repass-M8.md` section 2); until it lands the check is manual. RES-11 closes at deploy, when this check passes.
+
+**New permission migrations.** Any migration that inserts into `permissions` must carry the B7 footer from `nexus-backend/src/main/resources/db/templates/permission-migration-footer.sql` with `{{INSERTED_PERMISSION_IDS}}` bound to its own ids; `PermissionMigrationFooterScannerTest` fails the build otherwise. Also do the custom-administrator exposure check before and after deploy and flush the permission cache (`SCAN` and `DEL` of `nexus:rbac:permset:*` and `roleset:*`), as the template lists.
+
+**Permission cache benchmark (B6).** The keep-or-remove measurement is deferred to the first staging deployment; procedure in `nexus-test/performance-test/README.md`, rule and status in the ADR-0022 addendum. `nexus.rbac.permission-cache.bypass=true` is a benchmark-only switch and the application refuses to start with it under the `prod` profile.

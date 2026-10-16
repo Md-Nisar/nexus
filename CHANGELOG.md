@@ -7,6 +7,21 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ## [Unreleased]
 
+### Changed — US-018 Milestone 8 (Group B hardening: B1, B2, B3, B5, B6, B7, B8; T-020 to T-024)
+
+**Backend**
+- **Behaviour change:** a user or role id from another tenant now returns 404 `USER_NOT_FOUND` / `ROLE_NOT_FOUND`, identical to a genuine not-found, on `/users/{id}/roles` (POST, GET, DELETE) and `/roles/{id}/permissions` (GET, POST, DELETE). It was 403 `RBAC_001` / `CROSS_TENANT_TARGET`. The service logs WARN `RBAC_CROSS_TENANT_TARGET` and increments the same `permission_denied{reason="CROSS_TENANT_TARGET"}` series; no `ROLE_ASSIGNMENT_DENIED` row is written for it.
+- Database: `V7` adds `uq_roles_id_tenant`, `V8` adds the composite FK `fk_user_roles_role_tenant` on `user_roles` (maintenance window; pre-flight query must return 0, see `runbook.md` 13). A mismatched `user_roles.tenant_id` can no longer be written.
+- Denial throttle: a throttled actor is blocked only on admin-defining (set-lock) targets and self-targets; other requests are evaluated normally. Denials by a throttled actor write no audit row, count `denial_throttled{operation}` and log one WARN `RBAC_DENIAL_THROTTLED` per window. With `nexus.security.rate-limit.store-type=redis` the throttle state is in Redis (`RedisRoleChangeThrottleAdapter`). New `nexus.rbac.throttle.require-shared-store` (default `false`) fails startup with the memory store.
+- `common.security.Permissions` is the one permission catalogue for `@RequiresPermission` and services. New B7 migration footer template and a scanner test for permission-adding migrations.
+- New benchmark-only switch `nexus.rbac.permission-cache.bypass` (default `false`, refused under `prod`). The B6 keep-or-remove measurement is deferred to the first deployment; the cache is kept until then.
+
+**Frontend**
+- `Permission` type and `PERMISSIONS` list; `appHasPermission` and the guard's `data.permission` are typed; the placeholder names `roles:read` and `users:delete` are fixed; `app.routes.spec.ts` checks every `permissionGuard` route. Runtime behaviour of the guard is unchanged.
+
+**Tests and docs**
+- Unit gate: 2042 run, 0 failures. Integration tests and k6 scripts written, not run (no Docker, no k6). Docs: `monitoring.md` 8, `runbook.md` 13, `09-technical.md` 15, `16-threat-model-repass-M8.md`, ADR-0022 addendum. **Human action:** add `nexus.rbac.throttle.require-shared-store: true` and production `store-type: redis` to `application-prod.yml`.
+
 ### Changed — US-018 Milestone 3 (retire superseded authorization machinery: A5, D3; T-016 to T-019)
 
 **Backend**
