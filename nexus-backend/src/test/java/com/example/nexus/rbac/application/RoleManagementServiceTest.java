@@ -34,6 +34,7 @@ import com.example.nexus.rbac.domain.AttachProvenanceConflictException;
 import com.example.nexus.rbac.domain.DuplicateRoleNameException;
 import com.example.nexus.rbac.domain.DuplicateRolePermissionException;
 import com.example.nexus.rbac.domain.HolderProvenance;
+import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.ReservedRoleNameException;
@@ -261,18 +262,38 @@ class RoleManagementServiceTest {
   // ---------------------------------------------------------------------------------------
 
   @Test
-  void should_returnEmptyList_when_noRolesInTenant() {
-    when(roleManagementPort.findRolesInTenant(tenantId)).thenReturn(List.of());
+  void should_returnAnEmptyPage_when_noRolesInTenant() {
+    when(roleManagementPort.findRolesInTenant(tenantId, 0, 20))
+        .thenReturn(new PageResult<>(List.of(), 0, 0, 20));
 
-    assertThat(service.listRoles(actor)).isEmpty();
+    PageResult<RoleView> result = service.listRoles(actor, 0, 20);
+
+    assertThat(result.items()).isEmpty();
+    assertThat(result.totalPages()).isZero();
   }
 
   @Test
-  void should_returnRolesFromPort_when_rolesExist() {
+  void should_returnTheRequestedPageFromPort_when_rolesExist() {
     RoleView role = customRole(tenantId);
-    when(roleManagementPort.findRolesInTenant(tenantId)).thenReturn(List.of(role));
+    when(roleManagementPort.findRolesInTenant(tenantId, 2, 5))
+        .thenReturn(new PageResult<>(List.of(role), 11, 2, 5));
 
-    assertThat(service.listRoles(actor)).containsExactly(role);
+    PageResult<RoleView> result = service.listRoles(actor, 2, 5);
+
+    assertThat(result.items()).containsExactly(role);
+    assertThat(result.totalElements()).isEqualTo(11);
+    assertThat(result.totalPages()).isEqualTo(3);
+  }
+
+  /** The tenant comes from the actor (the JWT), never from the call's other arguments. */
+  @Test
+  void should_scopeTheRolePageToTheActorsTenant_when_listing() {
+    when(roleManagementPort.findRolesInTenant(any(), eq(0), eq(20)))
+        .thenReturn(new PageResult<>(List.of(), 0, 0, 20));
+
+    service.listRoles(actor, 0, 20);
+
+    verify(roleManagementPort).findRolesInTenant(tenantId, 0, 20);
   }
 
   // ---------------------------------------------------------------------------------------
@@ -1732,9 +1753,13 @@ class RoleManagementServiceTest {
   @Test
   void should_returnAllPermissionsFromPort_when_called() {
     PermissionView permission = benignPermission();
-    when(roleManagementPort.findAllPermissions()).thenReturn(List.of(permission));
+    when(roleManagementPort.findAllPermissions(1, 8))
+        .thenReturn(new PageResult<>(List.of(permission), 9, 1, 8));
 
-    assertThat(service.listAllPermissions()).containsExactly(permission);
+    PageResult<PermissionView> result = service.listAllPermissions(1, 8);
+
+    assertThat(result.items()).containsExactly(permission);
+    assertThat(result.totalPages()).isEqualTo(2);
   }
 
   // ---------------------------------------------------------------------------------------

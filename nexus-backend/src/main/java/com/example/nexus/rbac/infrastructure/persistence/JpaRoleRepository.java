@@ -7,6 +7,8 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -16,19 +18,25 @@ import org.springframework.data.repository.query.Param;
 public interface JpaRoleRepository extends JpaRepository<Role, UUID> {
 
   /**
-   * Q1 — US-015 AC2. All roles in a tenant, projected (never the entity — see {@link RoleView}'s
-   * Javadoc), {@code ORDER BY name} for a stable unpaginated contract (D11). Served by {@code
-   * uq_roles_tenant_name}'s leftmost {@code tenant_id} prefix — no new index (03-design.md §5.2).
+   * Q1 — US-015 AC2, paginated by US-018 C2. One page of the live roles in a tenant, projected
+   * (never the entity — see {@link RoleView}'s Javadoc), {@code ORDER BY name, id}: a total order, so
+   * concurrent writes cannot make pages overlap or skip. Served by {@code uq_roles_tenant_name}'s
+   * leftmost {@code tenant_id} prefix — no new index (03-design.md §5.2). The sort lives in the query,
+   * so the caller passes an UNSORTED {@link Pageable}. The tenant predicate is on both the page and
+   * the count query.
    */
   @Query(
-      """
-      SELECT new com.example.nexus.rbac.domain.RoleView(
-               r.id, r.tenantId, r.name, r.description, r.systemRole, r.createdAt)
-      FROM Role r
-      WHERE r.tenantId = :tenantId AND r.deletedAt IS NULL
-      ORDER BY r.name
-      """)
-  List<RoleView> findRoleViewsByTenantId(@Param("tenantId") UUID tenantId);
+      value =
+          """
+          SELECT new com.example.nexus.rbac.domain.RoleView(
+                   r.id, r.tenantId, r.name, r.description, r.systemRole, r.createdAt)
+          FROM Role r
+          WHERE r.tenantId = :tenantId AND r.deletedAt IS NULL
+          ORDER BY r.name, r.id
+          """,
+      countQuery =
+          "SELECT COUNT(r) FROM Role r WHERE r.tenantId = :tenantId AND r.deletedAt IS NULL")
+  Page<RoleView> findRoleViewsByTenantId(@Param("tenantId") UUID tenantId, Pageable pageable);
 
   /**
    * Q2 — single-role lookup, projected (never the entity — see {@link RoleView}'s Javadoc).

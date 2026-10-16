@@ -6,11 +6,14 @@ import static com.example.nexus.common.security.Permissions.ROLE_WRITE;
 import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.security.RequiresPermission;
 import com.example.nexus.rbac.application.RoleManagementService;
+import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RoleView;
 import com.example.nexus.rbac.interfaces.rest.dto.AttachPermissionRequest;
 import com.example.nexus.rbac.interfaces.rest.dto.CreateRoleRequest;
+import com.example.nexus.rbac.interfaces.rest.dto.PageLinks;
+import com.example.nexus.rbac.interfaces.rest.dto.PageMetadata;
 import com.example.nexus.rbac.interfaces.rest.dto.PermissionListResponse;
 import com.example.nexus.rbac.interfaces.rest.dto.PermissionResponse;
 import com.example.nexus.rbac.interfaces.rest.dto.RoleListResponse;
@@ -34,6 +37,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -98,20 +102,30 @@ public class RoleController {
   }
 
   /**
-   * Lists all roles in the caller's own tenant, ordered by name (AC2, AC8, D11).
+   * Lists one page of the roles in the caller's own tenant, ordered by {@code (name, id)} (AC2, AC8,
+   * D11; paginated by US-018 C2). {@code page} is 0-based (default 0), {@code size} defaults to 20
+   * and is at most 100; an out-of-range value is a 400, never clamped.
    *
-   * @return 200 with a {@code data} envelope
+   * @return 200 with {@code data}, {@code page} and {@code links}
    */
   @GetMapping
   @RequiresPermission(ROLE_READ)
-  @Operation(summary = "List all roles in the caller's tenant")
-  @ApiResponse(responseCode = "200", description = "Roles in the caller's tenant")
+  @Operation(summary = "List the roles in the caller's tenant, one page at a time")
+  @ApiResponse(responseCode = "200", description = "A page of roles in the caller's tenant")
+  @ApiResponse(responseCode = "400", description = "page or size out of range, or not an integer")
   @ApiResponse(responseCode = "403", description = "Missing role:read")
-  public RoleListResponse listRoles(Authentication authentication) {
+  public RoleListResponse listRoles(
+      @RequestParam(name = "page", required = false) String page,
+      @RequestParam(name = "size", required = false) String size,
+      Authentication authentication) {
     RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, ROLE_READ);
+    PageParams params = PageParams.parse(page, size);
 
-    var data = roleManagementService.listRoles(actor).stream().map(RoleController::toResponse).toList();
-    return new RoleListResponse(data);
+    PageResult<RoleView> result = roleManagementService.listRoles(actor, params.page(), params.size());
+    return new RoleListResponse(
+        result.items().stream().map(RoleController::toResponse).toList(),
+        PageMetadata.of(result),
+        PageLinks.of("/api/v1/roles", result));
   }
 
   /**

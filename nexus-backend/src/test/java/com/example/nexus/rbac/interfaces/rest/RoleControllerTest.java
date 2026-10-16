@@ -19,6 +19,7 @@ import ch.qos.logback.core.read.ListAppender;
 import com.example.nexus.common.security.RequiresPermission;
 import com.example.nexus.common.web.GlobalExceptionHandler;
 import com.example.nexus.rbac.application.RoleManagementService;
+import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.RoleView;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -178,16 +179,91 @@ class RoleControllerTest {
   // ── listRoles ────────────────────────────────────────────────────────
 
   @Test
-  void should_return200WithDataEnvelope_when_listingRoles() throws Exception {
+  void should_return200WithDataPageAndLinks_when_listingRolesWithDefaults() throws Exception {
     Authentication auth = authentication();
-    when(roleManagementService.listRoles(any()))
-        .thenReturn(List.of(roleView(ROLE_ID, "Billing Manager", "d", false)));
+    when(roleManagementService.listRoles(any(), eq(0), eq(20)))
+        .thenReturn(
+            new PageResult<>(List.of(roleView(ROLE_ID, "Billing Manager", "d", false)), 1, 0, 20));
 
     mockMvc
         .perform(get("/api/v1/roles").principal(auth))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.data").isArray())
-        .andExpect(jsonPath("$.data[0].id").value(ROLE_ID.toString()));
+        .andExpect(jsonPath("$.data[0].id").value(ROLE_ID.toString()))
+        .andExpect(jsonPath("$.page.size").value(20))
+        .andExpect(jsonPath("$.page.number").value(0))
+        .andExpect(jsonPath("$.page.totalElements").value(1))
+        .andExpect(jsonPath("$.page.totalPages").value(1))
+        .andExpect(jsonPath("$.links.next").value((Object) null))
+        .andExpect(jsonPath("$.links.prev").value((Object) null));
+  }
+
+  @Test
+  void should_acceptTheMaximumPageSize_when_sizeIs100() throws Exception {
+    when(roleManagementService.listRoles(any(), eq(0), eq(100)))
+        .thenReturn(new PageResult<>(List.of(), 0, 0, 100));
+
+    mockMvc
+        .perform(get("/api/v1/roles").param("size", "100").principal(authentication()))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.page.size").value(100));
+  }
+
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.CsvSource({
+    "page,-1",
+    "page,abc",
+    "page,2147483648",
+    "size,0",
+    "size,101",
+    "size,-5",
+    "size,ten"
+  })
+  void should_return400ValidationFailedAndNotClamp_when_pageOrSizeIsOutOfRange(
+      String name, String value) throws Exception {
+    mockMvc
+        .perform(get("/api/v1/roles").param(name, value).principal(authentication()))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"))
+        .andExpect(jsonPath("$.details[0].field").value(name));
+
+    org.mockito.Mockito.verifyNoInteractions(roleManagementService);
+  }
+
+  @Test
+  void should_linkOnlyToTheNextPage_when_onTheFirstPageOfSeveral() throws Exception {
+    when(roleManagementService.listRoles(any(), eq(0), eq(2)))
+        .thenReturn(new PageResult<>(List.of(), 5, 0, 2));
+
+    mockMvc
+        .perform(get("/api/v1/roles").param("size", "2").principal(authentication()))
+        .andExpect(jsonPath("$.page.totalPages").value(3))
+        .andExpect(jsonPath("$.links.next").value("/api/v1/roles?page=1&size=2"))
+        .andExpect(jsonPath("$.links.prev").value((Object) null));
+  }
+
+  @Test
+  void should_linkBothWays_when_onAMiddlePage() throws Exception {
+    when(roleManagementService.listRoles(any(), eq(1), eq(2)))
+        .thenReturn(new PageResult<>(List.of(), 5, 1, 2));
+
+    mockMvc
+        .perform(
+            get("/api/v1/roles").param("page", "1").param("size", "2").principal(authentication()))
+        .andExpect(jsonPath("$.links.next").value("/api/v1/roles?page=2&size=2"))
+        .andExpect(jsonPath("$.links.prev").value("/api/v1/roles?page=0&size=2"));
+  }
+
+  @Test
+  void should_linkOnlyToThePreviousPage_when_onTheLastPage() throws Exception {
+    when(roleManagementService.listRoles(any(), eq(2), eq(2)))
+        .thenReturn(new PageResult<>(List.of(), 5, 2, 2));
+
+    mockMvc
+        .perform(
+            get("/api/v1/roles").param("page", "2").param("size", "2").principal(authentication()))
+        .andExpect(jsonPath("$.links.next").value((Object) null))
+        .andExpect(jsonPath("$.links.prev").value("/api/v1/roles?page=1&size=2"));
   }
 
   @Test

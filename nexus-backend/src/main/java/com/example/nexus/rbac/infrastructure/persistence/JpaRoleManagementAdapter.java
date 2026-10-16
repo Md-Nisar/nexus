@@ -4,6 +4,7 @@ import com.example.nexus.rbac.application.port.out.RoleManagementPort;
 import com.example.nexus.rbac.domain.DuplicateRoleNameException;
 import com.example.nexus.rbac.domain.DuplicateRolePermissionException;
 import com.example.nexus.rbac.domain.IdGenerator;
+import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.Permission;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.Role;
@@ -15,6 +16,8 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
 
@@ -78,8 +81,9 @@ public class JpaRoleManagementAdapter implements RoleManagementPort {
   }
 
   @Override
-  public List<RoleView> findRolesInTenant(UUID tenantId) {
-    return roleRepository.findRoleViewsByTenantId(tenantId);
+  public PageResult<RoleView> findRolesInTenant(UUID tenantId, int page, int size) {
+    return toResult(
+        roleRepository.findRoleViewsByTenantId(tenantId, PageRequest.of(page, size)), page, size);
   }
 
   @Override
@@ -111,10 +115,18 @@ public class JpaRoleManagementAdapter implements RoleManagementPort {
   }
 
   @Override
-  public List<PermissionView> findAllPermissions() {
-    return permissionRepository.findAll(Sort.by("name")).stream()
-        .map(JpaRoleManagementAdapter::toPermissionView)
-        .toList();
+  public PageResult<PermissionView> findAllPermissions(int page, int size) {
+    // name is unique, so Sort.by("name") alone is a total order.
+    return toResult(
+        permissionRepository
+            .findAll(PageRequest.of(page, size, Sort.by("name")))
+            .map(JpaRoleManagementAdapter::toPermissionView),
+        page,
+        size);
+  }
+
+  private static <T> PageResult<T> toResult(Page<T> springPage, int page, int size) {
+    return new PageResult<>(springPage.getContent(), springPage.getTotalElements(), page, size);
   }
 
   @Override

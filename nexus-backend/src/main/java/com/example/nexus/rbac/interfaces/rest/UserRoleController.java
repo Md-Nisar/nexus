@@ -7,8 +7,11 @@ import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.security.RequiresPermission;
 import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
+import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.interfaces.rest.dto.AssignRoleRequest;
+import com.example.nexus.rbac.interfaces.rest.dto.PageLinks;
+import com.example.nexus.rbac.interfaces.rest.dto.PageMetadata;
 import com.example.nexus.rbac.interfaces.rest.dto.RoleAssignmentListResponse;
 import com.example.nexus.rbac.interfaces.rest.dto.RoleAssignmentResponse;
 import io.swagger.v3.oas.annotations.Operation;
@@ -17,7 +20,6 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.net.URI;
-import java.util.List;
 import java.util.UUID;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpStatus;
@@ -29,6 +31,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -112,29 +115,40 @@ public class UserRoleController {
   }
 
   /**
-   * Lists the active role assignments held by {@code userId} within the caller's own tenant.
+   * Lists one page of the active role assignments held by {@code userId} within the caller's own
+   * tenant, ordered by {@code (assignedAt, id)} (paginated by US-018 C2). {@code page} is 0-based
+   * (default 0), {@code size} defaults to 20 and is at most 100; an out-of-range value is a 400,
+   * never clamped.
    *
    * @param userId path-carried target user id (canonical-UUID string; parsed after validation)
    * @param authentication the current authentication; unwrapped here into a {@link RoleChangeActor}
-   * @return 200 with a {@code data} envelope (03-design.md §8.3/D7)
+   * @return 200 with {@code data}, {@code page} and {@code links} (03-design.md §8.3/D7)
    */
   @GetMapping("/{userId}/roles")
   @RequiresPermission(USER_READ)
-  @Operation(summary = "List the active role assignments held by a user within the caller's tenant")
-  @ApiResponse(responseCode = "200", description = "Active role assignments")
-  @ApiResponse(responseCode = "400", description = "Malformed path UUID")
+  @Operation(
+      summary = "List the active role assignments held by a user within the caller's tenant")
+  @ApiResponse(responseCode = "200", description = "A page of active role assignments")
+  @ApiResponse(
+      responseCode = "400",
+      description = "Malformed path UUID, or page or size out of range or not an integer")
   @ApiResponse(responseCode = "403", description = "Missing permission")
   @ApiResponse(responseCode = "404", description = "User not found, or in another tenant (indistinguishable)")
   public RoleAssignmentListResponse listRoles(
-      @PathVariable String userId, Authentication authentication) {
+      @PathVariable String userId,
+      @RequestParam(name = "page", required = false) String page,
+      @RequestParam(name = "size", required = false) String size,
+      Authentication authentication) {
     RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, USER_READ);
     UUID targetUserId = RbacControllerSupport.parsePathUuid(userId, PATH_PARAM_USER_ID);
+    PageParams params = PageParams.parse(page, size);
 
-    List<RoleAssignmentResponse> data =
-        roleAssignmentService.listActive(actor, targetUserId).stream()
-            .map(UserRoleController::toResponse)
-            .toList();
-    return new RoleAssignmentListResponse(data);
+    PageResult<ActiveRoleAssignment> result =
+        roleAssignmentService.listActive(actor, targetUserId, params.page(), params.size());
+    return new RoleAssignmentListResponse(
+        result.items().stream().map(UserRoleController::toResponse).toList(),
+        PageMetadata.of(result),
+        PageLinks.of("/api/v1/users/" + targetUserId + "/roles", result));
   }
 
   /**

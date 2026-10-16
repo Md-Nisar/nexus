@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 import com.example.nexus.rbac.domain.DuplicateRoleNameException;
 import com.example.nexus.rbac.domain.DuplicateRolePermissionException;
 import com.example.nexus.rbac.domain.IdGenerator;
+import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.Permission;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.Role;
@@ -26,6 +27,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 
 /**
@@ -139,9 +142,16 @@ class JpaRoleManagementAdapterTest {
   @Test
   void should_delegateToRepository_when_listingRolesInTenant() {
     RoleView view = new RoleView(roleId, tenantId, "MEMBER", null, false, Instant.now());
-    when(roleRepository.findRoleViewsByTenantId(tenantId)).thenReturn(List.of(view));
+    when(roleRepository.findRoleViewsByTenantId(tenantId, PageRequest.of(1, 10)))
+        .thenReturn(new PageImpl<>(List.of(view), PageRequest.of(1, 10), 11));
 
-    assertThat(adapter.findRolesInTenant(tenantId)).containsExactly(view);
+    PageResult<RoleView> result = adapter.findRolesInTenant(tenantId, 1, 10);
+
+    assertThat(result.items()).containsExactly(view);
+    assertThat(result.totalElements()).isEqualTo(11);
+    assertThat(result.page()).isEqualTo(1);
+    assertThat(result.size()).isEqualTo(10);
+    assertThat(result.totalPages()).isEqualTo(2);
   }
 
   @Test
@@ -173,14 +183,18 @@ class JpaRoleManagementAdapterTest {
   void should_delegateToRepositorySortedByName_when_listingAllPermissions() {
     Permission p1 = new Permission(UUID.randomUUID(), "role:read", "desc1");
     Permission p2 = new Permission(UUID.randomUUID(), "role:write", "desc2");
-    when(permissionRepository.findAll(Sort.by("name"))).thenReturn(List.of(p1, p2));
+    PageRequest request = PageRequest.of(0, 2, Sort.by("name"));
+    when(permissionRepository.findAll(request))
+        .thenReturn(new PageImpl<>(List.of(p1, p2), request, 5));
 
-    List<PermissionView> result = adapter.findAllPermissions();
+    PageResult<PermissionView> result = adapter.findAllPermissions(0, 2);
 
-    assertThat(result)
+    assertThat(result.items())
         .containsExactly(
             new PermissionView(p1.getId(), "role:read", "desc1"),
             new PermissionView(p2.getId(), "role:write", "desc2"));
+    assertThat(result.totalElements()).isEqualTo(5);
+    assertThat(result.totalPages()).isEqualTo(3);
   }
 
   @Test

@@ -1,5 +1,6 @@
 package com.example.nexus.rbac.application.port.out;
 
+import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.RoleView;
 import java.time.Instant;
@@ -41,11 +42,14 @@ public interface RoleManagementPort {
   Optional<RoleView> findRole(UUID roleId);
 
   /**
-   * Q1 — AC2. All roles in a tenant, {@code ORDER BY name} for a stable unpaginated contract
-   * (D11). Served by {@code uq_roles_tenant_name}'s leftmost {@code tenant_id} prefix — no new
-   * index.
+   * Q1 — AC2, paginated by US-018 C2. One page of the LIVE roles in a tenant, {@code ORDER BY name,
+   * id}: a total order, so pages neither overlap nor skip rows under concurrent writes. Served by
+   * {@code uq_roles_tenant_name}'s leftmost {@code tenant_id} prefix — no new index. Non-locking.
+   *
+   * @param page 0-based, {@code >= 0}
+   * @param size {@code >= 1}
    */
-  List<RoleView> findRolesInTenant(UUID tenantId);
+  PageResult<RoleView> findRolesInTenant(UUID tenantId, int page, int size);
 
   /**
    * C1 — soft-deletes a role: a targeted single-column {@code UPDATE roles SET deleted_at = ? WHERE
@@ -79,8 +83,11 @@ public interface RoleManagementPort {
   /** Q4 — AC4's 404 and AC11's name lookup, served by one PK read. */
   Optional<PermissionView> findPermission(UUID permissionId);
 
-  /** Q5 — AC6. All seeded permissions, {@code ORDER BY name}. Deliberately NOT cached (§5.6). */
-  List<PermissionView> findAllPermissions();
+  /**
+   * Q5 — AC6, paginated by US-018 C2. One page of the seeded permissions, {@code ORDER BY name}
+   * ({@code name} is unique). Deliberately NOT cached (§5.6). Non-locking.
+   */
+  PageResult<PermissionView> findAllPermissions(int page, int size);
 
   // --- role_permissions ------------------------------------------------------
 

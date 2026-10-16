@@ -18,6 +18,7 @@ import com.example.nexus.common.security.RequiresPermission;
 import com.example.nexus.common.web.GlobalExceptionHandler;
 import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
+import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.interfaces.rest.dto.AssignRoleRequest;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -156,7 +157,8 @@ class UserRoleControllerTest {
 
   @Test
   void should_requireUserRead_when_get() throws NoSuchMethodException {
-    assertThat(requiredPermissionOf("listRoles", String.class, Authentication.class))
+    assertThat(requiredPermissionOf(
+                "listRoles", String.class, String.class, String.class, Authentication.class))
         .isEqualTo("user:read");
   }
 
@@ -289,22 +291,60 @@ class UserRoleControllerTest {
   @Test
   void should_return200WithDataEnvelope_when_listingRoles() throws Exception {
     Authentication auth = authentication(PRINCIPAL_USER_ID.toString(), TENANT_ID.toString());
-    when(roleAssignmentService.listActive(any(), eq(PATH_USER_ID)))
-        .thenReturn(List.of(activeAssignment(PATH_USER_ID, ROLE_ID, PRINCIPAL_USER_ID)));
+    when(roleAssignmentService.listActive(any(), eq(PATH_USER_ID), eq(0), eq(20)))
+        .thenReturn(
+            new PageResult<>(
+                List.of(activeAssignment(PATH_USER_ID, ROLE_ID, PRINCIPAL_USER_ID)), 1, 0, 20));
 
     mockMvc
         .perform(get("/api/v1/users/{userId}/roles", PATH_USER_ID).principal(auth))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.data").isArray())
         .andExpect(jsonPath("$.data[0].userId").value(PATH_USER_ID.toString()))
-        .andExpect(jsonPath("$.data[0].roleId").value(ROLE_ID.toString()));
+        .andExpect(jsonPath("$.data[0].roleId").value(ROLE_ID.toString()))
+        .andExpect(jsonPath("$.page.size").value(20))
+        .andExpect(jsonPath("$.page.totalElements").value(1))
+        .andExpect(jsonPath("$.links.next").value((Object) null))
+        .andExpect(jsonPath("$.links.prev").value((Object) null));
+  }
+
+  @Test
+  void should_linkBothWaysWithTheUserPath_when_onAMiddlePage() throws Exception {
+    Authentication auth = authentication(PRINCIPAL_USER_ID.toString(), TENANT_ID.toString());
+    when(roleAssignmentService.listActive(any(), eq(PATH_USER_ID), eq(1), eq(2)))
+        .thenReturn(new PageResult<>(List.of(), 5, 1, 2));
+
+    mockMvc
+        .perform(
+            get("/api/v1/users/{userId}/roles", PATH_USER_ID)
+                .param("page", "1")
+                .param("size", "2")
+                .principal(auth))
+        .andExpect(
+            jsonPath("$.links.next").value("/api/v1/users/" + PATH_USER_ID + "/roles?page=2&size=2"))
+        .andExpect(
+            jsonPath("$.links.prev").value("/api/v1/users/" + PATH_USER_ID + "/roles?page=0&size=2"));
+  }
+
+  @Test
+  void should_return400_when_listingRolesWithSize101OrNegativePage() throws Exception {
+    Authentication auth = authentication(PRINCIPAL_USER_ID.toString(), TENANT_ID.toString());
+
+    mockMvc
+        .perform(get("/api/v1/users/{userId}/roles", PATH_USER_ID).param("size", "101").principal(auth))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+    mockMvc
+        .perform(get("/api/v1/users/{userId}/roles", PATH_USER_ID).param("page", "-1").principal(auth))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
   }
 
   @Test
   void should_serializeNullAssignedBy_when_serviceReturnsRedactedAssignment() throws Exception {
     Authentication auth = authentication(PRINCIPAL_USER_ID.toString(), TENANT_ID.toString());
-    when(roleAssignmentService.listActive(any(), eq(PATH_USER_ID)))
-        .thenReturn(List.of(activeAssignment(PATH_USER_ID, ROLE_ID, null)));
+    when(roleAssignmentService.listActive(any(), eq(PATH_USER_ID), eq(0), eq(20)))
+        .thenReturn(new PageResult<>(List.of(activeAssignment(PATH_USER_ID, ROLE_ID, null)), 1, 0, 20));
 
     mockMvc
         .perform(get("/api/v1/users/{userId}/roles", PATH_USER_ID).principal(auth))

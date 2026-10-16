@@ -8,6 +8,7 @@ import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
 import com.example.nexus.rbac.domain.HolderProvenance;
 import com.example.nexus.rbac.domain.IdGenerator;
+import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import java.nio.ByteBuffer;
@@ -20,6 +21,8 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Component;
 
 /**
@@ -130,8 +133,11 @@ public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
   }
 
   @Override
-  public List<ActiveRoleAssignment> findActiveAssignmentViews(UUID userId, UUID tenantId) {
-    return userRoleRepository.findActiveAssignmentViews(userId, tenantId);
+  public PageResult<ActiveRoleAssignment> findActiveAssignmentViews(
+      UUID userId, UUID tenantId, int page, int size) {
+    Page<ActiveRoleAssignment> result =
+        userRoleRepository.findActiveAssignmentViews(userId, tenantId, PageRequest.of(page, size));
+    return new PageResult<>(result.getContent(), result.getTotalElements(), page, size);
   }
 
   @Override

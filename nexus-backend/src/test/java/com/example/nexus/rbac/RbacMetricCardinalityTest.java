@@ -93,7 +93,7 @@ class RbacMetricCardinalityTest {
     // Cross-tenant paths on both services.
     UUID foreignUser = UUID.randomUUID();
     when(directoryPort.findTenantId(foreignUser)).thenReturn(Optional.of(otherTenantId));
-    assertThatThrownBy(() -> assignmentService.listActive(actor, foreignUser))
+    assertThatThrownBy(() -> assignmentService.listActive(actor, foreignUser, 0, 20))
         .isInstanceOf(ResourceNotFoundException.class);
     UUID foreignRoleId = UUID.randomUUID();
     when(managementPort.findRole(foreignRoleId))

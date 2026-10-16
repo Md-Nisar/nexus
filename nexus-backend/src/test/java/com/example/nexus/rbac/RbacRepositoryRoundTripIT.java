@@ -8,16 +8,21 @@ import com.example.nexus.identity.domain.EmailCipher;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
+import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.Permission;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.domain.RolePermissionId;
 import com.example.nexus.rbac.domain.RolePermissionRef;
+import com.example.nexus.rbac.domain.RoleView;
 import com.example.nexus.rbac.domain.UserRole;
 import com.example.nexus.rbac.infrastructure.persistence.JpaPermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
@@ -26,6 +31,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
@@ -252,6 +260,101 @@ class RbacRepositoryRoundTripIT {
         "DELETE FROM role_permissions WHERE permission_id IN"
             + " (SELECT id FROM permissions WHERE name LIKE 'rt:%')");
     jdbc.update("DELETE FROM permissions WHERE name LIKE 'rt:%'");
+  }
+
+  // ── US-018 C2: Pageable variants -- stable order, tenant scoping, deleted roles excluded ─────
+
+  @Test
+  void should_pageRolesInANameThenIdOrderWithoutOverlapOrGap_when_severalSortAdjacently() {
+    UUID tenantId = uuidGenerator.newId();
+    for (String name : List.of("pg-same", "PG-SAME", "Pg-Same", "pg-other")) {
+      roleRepository.save(new Role(uuidGenerator.newId(), tenantId, name + "-" + UUID.randomUUID(), null, false));
+    }
+
+    Page<RoleView> first = roleRepository.findRoleViewsByTenantId(tenantId, PageRequest.of(0, 2));
+    Page<RoleView> second = roleRepository.findRoleViewsByTenantId(tenantId, PageRequest.of(1, 2));
+
+    assertThat(first.getTotalElements()).isEqualTo(4);
+    assertThat(first.getTotalPages()).isEqualTo(2);
+    List<UUID> ids = new ArrayList<>();
+    first.forEach(v -> ids.add(v.id()));
+    second.forEach(v -> ids.add(v.id()));
+    assertThat(ids).doesNotHaveDuplicates().hasSize(4);
+    List<String> names = new ArrayList<>();
+    first.forEach(v -> names.add(v.name().toLowerCase(Locale.ROOT)));
+    second.forEach(v -> names.add(v.name().toLowerCase(Locale.ROOT)));
+    assertThat(names).isSorted();
+  }
+
+  @Test
+  void should_pageOnlyTheTenantsLiveRoles_when_otherTenantsAndDeletedRolesExist() {
+    UUID tenantId = uuidGenerator.newId();
+    UUID otherTenantId = uuidGenerator.newId();
+    Role live = roleRepository.save(new Role(uuidGenerator.newId(), tenantId, "pg-live-" + UUID.randomUUID(), null, false));
+    Role deleted = roleRepository.save(new Role(uuidGenerator.newId(), tenantId, "pg-del-" + UUID.randomUUID(), null, false));
+    roleRepository.save(new Role(uuidGenerator.newId(), otherTenantId, "pg-foreign-" + UUID.randomUUID(), null, false));
+    jdbc.update("UPDATE roles SET deleted_at = CURRENT_TIMESTAMP(6) WHERE id = ?", toBytes(deleted.getId()));
+
+    Page<RoleView> page = roleRepository.findRoleViewsByTenantId(tenantId, PageRequest.of(0, 20));
+
+    assertThat(page.getContent()).extracting(RoleView::id).containsExactly(live.getId());
+    assertThat(page.getTotalElements()).as("the count query filters too").isEqualTo(1);
+    assertThat(roleRepository.countByTenantIdAndDeletedAtIsNull(tenantId)).isEqualTo(1);
+  }
+
+  @Test
+  void should_pageAssignmentsByAssignedAtThenId_andExcludeRevokedAndDeletedRoleRows() {
+    UUID tenantId = uuidGenerator.newId();
+    User user = seedUserIn(tenantId);
+    Role a = roleRepository.save(new Role(uuidGenerator.newId(), tenantId, "pga-" + UUID.randomUUID(), null, false));
+    Role b = roleRepository.save(new Role(uuidGenerator.newId(), tenantId, "pgb-" + UUID.randomUUID(), null, false));
+    Role c = roleRepository.save(new Role(uuidGenerator.newId(), tenantId, "pgc-" + UUID.randomUUID(), null, false));
+    Role gone = roleRepository.save(new Role(uuidGenerator.newId(), tenantId, "pgd-" + UUID.randomUUID(), null, false));
+    for (Role role : List.of(a, b, c, gone)) {
+      userRoleRepository.save(new UserRole(uuidGenerator.newId(), user.getId(), role.getId(), tenantId, user.getId()));
+    }
+    jdbc.update("UPDATE roles SET deleted_at = CURRENT_TIMESTAMP(6) WHERE id = ?", toBytes(gone.getId()));
+
+    Page<ActiveRoleAssignment> first =
+        userRoleRepository.findActiveAssignmentViews(user.getId(), tenantId, PageRequest.of(0, 2));
+    Page<ActiveRoleAssignment> second =
+        userRoleRepository.findActiveAssignmentViews(user.getId(), tenantId, PageRequest.of(1, 2));
+
+    assertThat(first.getTotalElements()).isEqualTo(3);
+    List<UUID> roleIds = new ArrayList<>();
+    first.forEach(v -> roleIds.add(v.roleId()));
+    second.forEach(v -> roleIds.add(v.roleId()));
+    assertThat(roleIds).containsExactlyInAnyOrder(a.getId(), b.getId(), c.getId());
+    assertThat(roleIds).doesNotContain(gone.getId());
+    assertThat(userRoleRepository.findActiveAssignmentViews(user.getId(), uuidGenerator.newId(), PageRequest.of(0, 20)).getTotalElements())
+        .as("another tenant sees none of this user's assignments")
+        .isZero();
+  }
+
+  @Test
+  void should_pagePermissionsByName_when_sortedAtTheRepository() {
+    Page<Permission> first = permissionRepository.findAll(PageRequest.of(0, 3, Sort.by("name")));
+    Page<Permission> second = permissionRepository.findAll(PageRequest.of(1, 3, Sort.by("name")));
+
+    List<String> names = new ArrayList<>();
+    first.forEach(p -> names.add(p.getName()));
+    second.forEach(p -> names.add(p.getName()));
+    assertThat(names).doesNotHaveDuplicates().isSorted();
+    assertThat(first.getTotalElements()).isGreaterThanOrEqualTo(8);
+  }
+
+  private static byte[] toBytes(UUID uuid) {
+    java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(16);
+    buf.putLong(uuid.getMostSignificantBits());
+    buf.putLong(uuid.getLeastSignificantBits());
+    return buf.array();
+  }
+
+  private User seedUserIn(UUID tenantId) {
+    String email = "rt-pg-" + UUID.randomUUID() + "@example.com";
+    String hmac = "hmac-" + UUID.randomUUID().toString().replace("-", "");
+    return userRepository.save(
+        new User(uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac, "test-hash", null));
   }
 
   private Permission savePermission(String namePrefix) {

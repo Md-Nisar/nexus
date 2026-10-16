@@ -4,6 +4,7 @@ import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.ActiveAssignmentRef;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.HolderProvenance;
+import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import java.time.Instant;
@@ -177,8 +178,13 @@ public interface UserRoleAssignmentPort {
    */
   Optional<ActiveRoleAssignment> findActiveAssignmentView(UUID userId, UUID roleId, UUID tenantId);
 
-  /** M4 — all active assignments for a user in a tenant, single projection join (no N+1). */
-  List<ActiveRoleAssignment> findActiveAssignmentViews(UUID userId, UUID tenantId);
+  /**
+   * M4 — one page of the active assignments for a user in a tenant, single projection join (no N+1),
+   * {@code ORDER BY assignedAt, id} (a total order; US-018 C2). Excludes assignments of deleted
+   * roles. Non-locking.
+   */
+  PageResult<ActiveRoleAssignment> findActiveAssignmentViews(
+      UUID userId, UUID tenantId, int page, int size);
 
   /**
    * Inserts a new active assignment and returns its id. The insert is conditional on the role being

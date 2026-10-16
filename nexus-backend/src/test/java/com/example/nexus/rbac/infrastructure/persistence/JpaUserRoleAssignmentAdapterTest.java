@@ -15,6 +15,7 @@ import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
 import com.example.nexus.rbac.domain.HolderProvenance;
 import com.example.nexus.rbac.domain.IdGenerator;
+import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.UserRole;
@@ -32,6 +33,8 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.repository.CrudRepository;
 
 /**
@@ -229,10 +232,16 @@ class JpaUserRoleAssignmentAdapterTest {
   void should_delegateToRepository_when_findingActiveAssignmentViews() {
     ActiveRoleAssignment view =
         new ActiveRoleAssignment(userId, roleId, "MEMBER", Instant.now(), assignedBy);
-    when(userRoleRepository.findActiveAssignmentViews(userId, tenantId))
-        .thenReturn(List.of(view));
+    when(userRoleRepository.findActiveAssignmentViews(userId, tenantId, PageRequest.of(2, 5)))
+        .thenReturn(new PageImpl<>(List.of(view), PageRequest.of(2, 5), 11));
 
-    assertThat(adapter.findActiveAssignmentViews(userId, tenantId)).containsExactly(view);
+    PageResult<ActiveRoleAssignment> result =
+        adapter.findActiveAssignmentViews(userId, tenantId, 2, 5);
+
+    assertThat(result.items()).containsExactly(view);
+    assertThat(result.totalElements()).isEqualTo(11);
+    assertThat(result.page()).isEqualTo(2);
+    assertThat(result.totalPages()).isEqualTo(3);
   }
 
   @Test

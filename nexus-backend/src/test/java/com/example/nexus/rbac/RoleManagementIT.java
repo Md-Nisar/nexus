@@ -175,7 +175,7 @@ class RoleManagementIT {
    */
   @Test
   void should_returnAllSevenSeededPermissions_when_listingAllPermissions() {
-    List<PermissionView> all = roleManagementService.listAllPermissions();
+    List<PermissionView> all = roleManagementService.listAllPermissions(0, 100).items();
 
     assertThat(all.stream().map(PermissionView::name).toList())
         .contains(

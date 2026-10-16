@@ -17,6 +17,7 @@ import com.example.nexus.rbac.domain.AttachProvenanceConflictException;
 import com.example.nexus.rbac.domain.DuplicateRolePermissionException;
 import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.HolderProvenance;
+import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.RbacAdministrators;
 import com.example.nexus.rbac.domain.RbacRoleNames;
@@ -193,10 +194,13 @@ public class RoleManagementService {
     return view;
   }
 
-  /** AC2, AC8. Tenant-scoped by predicate, ordered by name (D11). */
+  /**
+   * AC2, AC8, C2. One page of the live roles of the actor's tenant, tenant-scoped by predicate (the
+   * tenant comes from the actor, i.e. the JWT), ordered by {@code (name, id)}.
+   */
   @Transactional(readOnly = true)
-  public List<RoleView> listRoles(RoleChangeActor actor) {
-    return roleManagementPort.findRolesInTenant(actor.tenantId());
+  public PageResult<RoleView> listRoles(RoleChangeActor actor, int page, int size) {
+    return roleManagementPort.findRolesInTenant(actor.tenantId(), page, size);
   }
 
   /** AC3, AC8. 404 then 403; empty list is a valid 200. */
@@ -505,8 +509,8 @@ public class RoleManagementService {
 
   /** AC6. Global catalogue, no tenant scoping — {@code permissions} has no {@code tenant_id} column. */
   @Transactional(readOnly = true)
-  public List<PermissionView> listAllPermissions() {
-    return roleManagementPort.findAllPermissions();
+  public PageResult<PermissionView> listAllPermissions(int page, int size) {
+    return roleManagementPort.findAllPermissions(page, size);
   }
 
   /**

@@ -3,6 +3,7 @@ package com.example.nexus.rbac.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
@@ -31,6 +32,7 @@ import com.example.nexus.rbac.domain.ActiveAssignmentRef;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
 import com.example.nexus.rbac.domain.LastAdminRoleException;
+import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
@@ -2075,6 +2077,10 @@ class RoleAssignmentServiceTest {
   // listActive(): assignedBy redaction by the one definition of "administrator" (row 16)
   // ---------------------------------------------------------------------------------------
 
+  private static PageResult<ActiveRoleAssignment> page(List<ActiveRoleAssignment> items) {
+    return new PageResult<>(items, items.size(), 0, 20);
+  }
+
   @Test
   void should_redactAssignedByOnEveryElement_when_callerIsNotAnAdministrator() {
     Instant now = Instant.now();
@@ -2084,13 +2090,13 @@ class RoleAssignmentServiceTest {
             new ActiveRoleAssignment(targetUserId, roleId, "MEMBER", now, UUID.randomUUID()),
             new ActiveRoleAssignment(targetUserId, otherRoleId, "BILLING", now, UUID.randomUUID()));
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findActiveAssignmentViews(targetUserId, tenantId))
-        .thenReturn(stored);
+    when(userRoleAssignmentPort.findActiveAssignmentViews(targetUserId, tenantId, 0, 20))
+        .thenReturn(page(stored));
     stubCallerHoldsP1Only();
 
-    List<ActiveRoleAssignment> result = service.listActive(actor, targetUserId);
+    PageResult<ActiveRoleAssignment> result = service.listActive(actor, targetUserId, 0, 20);
 
-    assertThat(result)
+    assertThat(result.items())
         .containsExactly(
             new ActiveRoleAssignment(targetUserId, roleId, "MEMBER", now, null),
             new ActiveRoleAssignment(targetUserId, otherRoleId, "BILLING", now, null));
@@ -2101,12 +2107,15 @@ class RoleAssignmentServiceTest {
   void should_redactAssignedBy_when_callerHoldsTheWholeCatalogueOnlyThroughTheUnion() {
     Instant now = Instant.now();
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findActiveAssignmentViews(targetUserId, tenantId))
+    when(userRoleAssignmentPort.findActiveAssignmentViews(targetUserId, tenantId, 0, 20))
         .thenReturn(
-            List.of(new ActiveRoleAssignment(targetUserId, roleId, "MEMBER", now, UUID.randomUUID())));
+            page(
+                List.of(
+                    new ActiveRoleAssignment(
+                        targetUserId, roleId, "MEMBER", now, UUID.randomUUID()))));
     stubCallerIsUnionHolder();
 
-    assertThat(service.listActive(actor, targetUserId))
+    assertThat(service.listActive(actor, targetUserId, 0, 20).items())
         .extracting(ActiveRoleAssignment::assignedBy)
         .containsOnlyNulls();
   }
@@ -2118,24 +2127,28 @@ class RoleAssignmentServiceTest {
     List<ActiveRoleAssignment> stored =
         List.of(new ActiveRoleAssignment(targetUserId, roleId, "MEMBER", now, UUID.randomUUID()));
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findActiveAssignmentViews(targetUserId, tenantId))
-        .thenReturn(stored);
+    when(userRoleAssignmentPort.findActiveAssignmentViews(targetUserId, tenantId, 0, 20))
+        .thenReturn(page(stored));
     stubCallerIsAdministrator();
 
-    assertThat(service.listActive(actor, targetUserId)).containsExactlyElementsOf(stored);
+    assertThat(service.listActive(actor, targetUserId, 0, 20).items())
+        .containsExactlyElementsOf(stored);
   }
 
   @Test
   void should_redactAssignedBy_when_catalogueReadReturnsEmpty() {
     Instant now = Instant.now();
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findActiveAssignmentViews(targetUserId, tenantId))
+    when(userRoleAssignmentPort.findActiveAssignmentViews(targetUserId, tenantId, 0, 20))
         .thenReturn(
-            List.of(new ActiveRoleAssignment(targetUserId, roleId, "MEMBER", now, UUID.randomUUID())));
+            page(
+                List.of(
+                    new ActiveRoleAssignment(
+                        targetUserId, roleId, "MEMBER", now, UUID.randomUUID()))));
     when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(Set.of());
     stubCallerIsAdministrator();
 
-    assertThat(service.listActive(actor, targetUserId))
+    assertThat(service.listActive(actor, targetUserId, 0, 20).items())
         .extracting(ActiveRoleAssignment::assignedBy)
         .containsOnlyNulls();
   }
@@ -2144,23 +2157,23 @@ class RoleAssignmentServiceTest {
   void should_throwResourceNotFound_when_listActiveTargetUserNotFound() {
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.empty());
 
-    assertThatThrownBy(() -> service.listActive(actor, targetUserId))
+    assertThatThrownBy(() -> service.listActive(actor, targetUserId, 0, 20))
         .isInstanceOf(ResourceNotFoundException.class)
         .hasFieldOrPropertyWithValue("code", "USER_NOT_FOUND");
 
-    verify(userRoleAssignmentPort, never()).findActiveAssignmentViews(any(), any());
+    verify(userRoleAssignmentPort, never()).findActiveAssignmentViews(any(), any(), anyInt(), anyInt());
   }
 
   @Test
   void should_throwSameNotFoundAndReadNothing_when_listActiveTargetTenantMismatch() {
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(otherTenantId));
 
-    assertThatThrownBy(() -> service.listActive(actor, targetUserId))
+    assertThatThrownBy(() -> service.listActive(actor, targetUserId, 0, 20))
         .isInstanceOf(ResourceNotFoundException.class)
         .hasFieldOrPropertyWithValue("code", "USER_NOT_FOUND")
         .hasMessage("No such user");
 
-    verify(userRoleAssignmentPort, never()).findActiveAssignmentViews(any(), any());
+    verify(userRoleAssignmentPort, never()).findActiveAssignmentViews(any(), any(), anyInt(), anyInt());
     verify(userRoleAssignmentPort, never()).findHeldRolePermissionIdsForAuthorization(any(), any());
     verifyNoInteractions(rbacAuditPort);
     assertThat(

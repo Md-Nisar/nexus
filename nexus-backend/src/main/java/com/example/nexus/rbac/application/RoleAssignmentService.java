@@ -18,6 +18,7 @@ import com.example.nexus.rbac.domain.ActiveAssignmentRef;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
 import com.example.nexus.rbac.domain.LastAdminRoleException;
+import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.RbacAdministrators;
 import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
@@ -414,7 +415,8 @@ public class RoleAssignmentService {
   }
 
   /**
-   * Lists the active role assignments held by {@code targetUserId} within the actor's own tenant.
+   * Lists one page of the active role assignments held by {@code targetUserId} within the actor's
+   * own tenant, ordered by {@code (assignedAt, id)} (US-018 C2).
    *
    * <p>{@code assignedBy} is omitted (nulled out) unless the caller is an administrator
    * (03-design.md §2.1; O-10/T-I5): the one definition, a small stated widening of the former
@@ -422,24 +424,36 @@ public class RoleAssignmentService {
    * redact one response field, never whether to authorize a mutation.
    */
   @Transactional(readOnly = true)
-  public List<ActiveRoleAssignment> listActive(RoleChangeActor actor, UUID targetUserId) {
+  public PageResult<ActiveRoleAssignment> listActive(
+      RoleChangeActor actor, UUID targetUserId, int page, int size) {
     // MANDATORY, not redundant with the repository's own tenant predicates (T-E8): without this
     // explicit check, a cross-tenant GET would silently return 200 {"data":[]} instead of a 403,
     // destroying the WARN log + denial metric that makes cross-tenant probing detectable.
     verifySameTenant(targetUserId, actor, USER_READ, OPERATION_LIST);
 
-    List<ActiveRoleAssignment> assignments =
-        userRoleAssignmentPort.findActiveAssignmentViews(targetUserId, actor.tenantId());
+    PageResult<ActiveRoleAssignment> assignments =
+        userRoleAssignmentPort.findActiveAssignmentViews(
+            targetUserId, actor.tenantId(), page, size);
 
-    boolean callerIsAdministrator =
-        RbacAdministrators.isAdministrator(
-            userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(
-                actor.userId(), actor.tenantId()),
-            userRoleAssignmentPort.findCatalogueIds());
-    if (callerIsAdministrator) {
+    if (isCallerAdministrator(userRoleAssignmentPort, actor)) {
       return assignments;
     }
-    return assignments.stream().map(RoleAssignmentService::withAssignedByRedacted).toList();
+    return assignments.map(RoleAssignmentService::withAssignedByRedacted);
+  }
+
+  /**
+   * Whether the caller is an administrator by the one definition (03-design.md §2.1): the redaction
+   * rule shared by {@link #listActive} and the access-review role-holders read (US-018 C3, R1-4), so
+   * the two can never apply different rules to the same {@code assignedBy} field. A plain snapshot
+   * read, appropriate because it decides only whether to redact one response field, never whether
+   * to authorize a mutation.
+   */
+  static boolean isCallerAdministrator(
+      UserRoleAssignmentPort userRoleAssignmentPort, RoleChangeActor actor) {
+    return RbacAdministrators.isAdministrator(
+        userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(
+            actor.userId(), actor.tenantId()),
+        userRoleAssignmentPort.findCatalogueIds());
   }
 
   /**

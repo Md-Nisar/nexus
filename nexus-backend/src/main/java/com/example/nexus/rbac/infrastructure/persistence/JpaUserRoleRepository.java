@@ -8,6 +8,8 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
@@ -162,27 +164,40 @@ public interface JpaUserRoleRepository
       @Param("userId") UUID userId, @Param("roleId") UUID roleId, @Param("tenantId") UUID tenantId);
 
   /**
-   * M4/M4a — active assignments projected with the role's name (AC3, and the 201 response body).
-   * Single comma-join projection, mirroring this repository's own existing {@link
-   * #findActiveRoleNames} style, including its {@code r.tenantId} cross-check (defense-in-depth
-   * against a drifted {@code user_roles.tenant_id} leaking a role across tenants). {@code ORDER BY
-   * r.name} for a stable contract.
+   * M4/M4a — one page of the active assignments projected with the role's name (AC3, and the 201
+   * response body via {@link #findActiveAssignmentView}), paginated by US-018 C2. Single comma-join
+   * projection, mirroring this repository's own existing {@link #findActiveRoleNames} style,
+   * including its {@code r.tenantId} cross-check (defense-in-depth against a drifted {@code
+   * user_roles.tenant_id} leaking a role across tenants) and the live-role filter. {@code ORDER BY
+   * ur.assignedAt, ur.id}: a total order, so pages neither overlap nor skip. The sort is in the
+   * query; pass an UNSORTED {@link Pageable}. The tenant predicate is on both queries.
    */
   @Query(
-      """
-      SELECT new com.example.nexus.rbac.domain.ActiveRoleAssignment(
-               ur.userId, ur.roleId, r.name, ur.assignedAt, ur.assignedBy)
-      FROM UserRole ur, Role r
-      WHERE ur.roleId = r.id
-        AND ur.userId = :userId
-        AND ur.tenantId = :tenantId
-        AND r.tenantId = :tenantId
-        AND r.deletedAt IS NULL
-        AND ur.revokedAt IS NULL
-      ORDER BY r.name
-      """)
-  List<com.example.nexus.rbac.domain.ActiveRoleAssignment> findActiveAssignmentViews(
-      @Param("userId") UUID userId, @Param("tenantId") UUID tenantId);
+      value =
+          """
+          SELECT new com.example.nexus.rbac.domain.ActiveRoleAssignment(
+                   ur.userId, ur.roleId, r.name, ur.assignedAt, ur.assignedBy)
+          FROM UserRole ur, Role r
+          WHERE ur.roleId = r.id
+            AND ur.userId = :userId
+            AND ur.tenantId = :tenantId
+            AND r.tenantId = :tenantId
+            AND r.deletedAt IS NULL
+            AND ur.revokedAt IS NULL
+          ORDER BY ur.assignedAt, ur.id
+          """,
+      countQuery =
+          """
+          SELECT COUNT(ur) FROM UserRole ur, Role r
+          WHERE ur.roleId = r.id
+            AND ur.userId = :userId
+            AND ur.tenantId = :tenantId
+            AND r.tenantId = :tenantId
+            AND r.deletedAt IS NULL
+            AND ur.revokedAt IS NULL
+          """)
+  Page<com.example.nexus.rbac.domain.ActiveRoleAssignment> findActiveAssignmentViews(
+      @Param("userId") UUID userId, @Param("tenantId") UUID tenantId, Pageable pageable);
 
   /** See {@link #findActiveAssignmentViews} — same shape, scoped to a single role. */
   @Query(

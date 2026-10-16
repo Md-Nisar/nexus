@@ -87,7 +87,7 @@ class SoftDeletedRoleVisibilityIT {
         .doesNotContain(deleted.getName());
     assertThat(userRoleQueryPort.findActivePermissionNames(user.getId(), tenantId)).isEmpty();
     // The assignment projections and the role lookups.
-    assertThat(assignmentPort.findActiveAssignmentViews(user.getId(), tenantId))
+    assertThat(assignmentPort.findActiveAssignmentViews(user.getId(), tenantId, 0, 100).items())
         .extracting(ActiveRoleAssignment::roleId)
         .doesNotContain(deleted.getId());
     assertThat(assignmentPort.findActiveAssignmentView(user.getId(), deleted.getId(), tenantId))
@@ -96,7 +96,7 @@ class SoftDeletedRoleVisibilityIT {
     assertThat(roleManagementPort.findRole(deleted.getId())).isEmpty();
     assertThat(assignmentPort.findRoleIdByName(tenantId, deleted.getName())).isEmpty();
     // Listing and the cap count see the live role only.
-    assertThat(roleManagementPort.findRolesInTenant(tenantId))
+    assertThat(roleManagementPort.findRolesInTenant(tenantId, 0, 100).items())
         .extracting(RoleView::id)
         .containsExactly(live.getId());
     assertThat(roleManagementPort.countRolesInTenant(tenantId)).isEqualTo(1L);
