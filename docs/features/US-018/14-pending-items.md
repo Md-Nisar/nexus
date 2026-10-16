@@ -25,7 +25,7 @@ By decision on 2026-10-11, the repeat `/security-review` and the Docker-only che
 
 # M5 (A7 break-glass CLI): merge conditions and open items
 
-**Recorded:** 2026-10-15, from `07-security-review-M5.md` (APPROVED with conditions) and `08-test-audit-M5.md`. T-007 and T-008 are implemented, code-reviewed, security-reviewed and test-validated on `ccr-047fcb60-fqvz6w`; the M5 PR is not merged. The items below are what stands between that and a merge.
+**Recorded:** 2026-10-15 (M5 merged as PR #91 on 2026-10-16), from `07-security-review-M5.md` (APPROVED with conditions) and `08-test-audit-M5.md`. T-007 and T-008 are implemented, code-reviewed, security-reviewed and test-validated on `ccr-047fcb60-fqvz6w`; the M5 PR is not merged. The items below are what stands between that and a merge.
 
 ## Merge conditions
 
