@@ -2,6 +2,7 @@ package com.example.nexus.rbac.infrastructure.cache;
 
 import com.example.nexus.rbac.application.port.out.PermissionCachePort;
 import com.example.nexus.rbac.domain.ResolvedPermissions;
+import jakarta.annotation.PostConstruct;
 import java.util.Collection;
 import java.util.Optional;
 import java.util.UUID;
@@ -27,7 +28,15 @@ public class PassThroughPermissionCacheAdapter implements PermissionCachePort {
 
   static final String BYPASS_PROPERTY = "nexus.rbac.permission-cache.bypass";
 
+  private final Environment environment;
+
   public PassThroughPermissionCacheAdapter(Environment environment) {
+    this.environment = environment;
+  }
+
+  /** Fails startup under the {@code prod} profile (a method, not the constructor, so no half-built object escapes). */
+  @PostConstruct
+  void refuseUnderProd() {
     if (environment.acceptsProfiles(Profiles.of("prod"))) {
       throw new IllegalStateException(
           BYPASS_PROPERTY + " is a benchmark-only switch and must not be set under the prod profile");

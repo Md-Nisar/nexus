@@ -42,7 +42,7 @@ class PassThroughPermissionCacheAdapterTest {
     MockEnvironment prod = new MockEnvironment();
     prod.setActiveProfiles("prod");
 
-    assertThatThrownBy(() -> new PassThroughPermissionCacheAdapter(prod))
+    assertThatThrownBy(() -> new PassThroughPermissionCacheAdapter(prod).refuseUnderProd())
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("nexus.rbac.permission-cache.bypass");
   }
