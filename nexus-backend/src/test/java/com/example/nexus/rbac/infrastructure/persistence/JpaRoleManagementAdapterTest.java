@@ -117,22 +117,6 @@ class JpaRoleManagementAdapterTest {
   }
 
   @Test
-  void should_returnRoleId_when_findRoleIdByNameMatches() {
-    when(roleRepository.findIdByTenantIdAndName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-
-    assertThat(adapter.findRoleIdByName(tenantId, "TENANT_ADMIN")).contains(roleId);
-  }
-
-  @Test
-  void should_returnEmpty_when_findRoleIdByNameHasNoMatch() {
-    when(roleRepository.findIdByTenantIdAndName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.empty());
-
-    assertThat(adapter.findRoleIdByName(tenantId, "TENANT_ADMIN")).isEmpty();
-  }
-
-  @Test
   void should_returnCount_when_countingRolesInTenant() {
     when(roleRepository.countByTenantId(tenantId)).thenReturn(3L);
 

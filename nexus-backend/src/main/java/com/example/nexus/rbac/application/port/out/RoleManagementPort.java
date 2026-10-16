@@ -47,15 +47,6 @@ public interface RoleManagementPort {
   List<RoleView> findRolesInTenant(UUID tenantId);
 
   /**
-   * Q3 — AC11. Resolves the tenant's admin role id by {@code (tenantId, name)}. MUST use a plain
-   * {@code r.name = :name} predicate and rely on {@code utf8mb4_0900_ai_ci} for
-   * case-insensitivity, so {@code uq_roles_tenant_name} is used as an index. MUST NOT wrap the
-   * column in {@code UPPER()} — that de-sargonises AC11's write hot path. Returns the id only,
-   * never the entity. Empty ⇒ the caller MUST fail closed (R-10).
-   */
-  Optional<UUID> findRoleIdByName(UUID tenantId, String name);
-
-  /**
    * Q12 — RC-4's per-tenant cap check. Count of roles in the tenant, served by {@code
    * uq_roles_tenant_name}'s leftmost prefix — same index as Q1, no new cost.
    */

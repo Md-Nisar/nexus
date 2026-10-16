@@ -136,8 +136,10 @@ public class RoleController {
   }
 
   /**
-   * Attaches a permission to a role in the caller's own tenant (AC4, AC7, AC8, AC11, AC12) — the
-   * story's security-critical path.
+   * Attaches a permission to a role in the caller's own tenant (AC4, AC7, AC8, AC12, A3) — the
+   * story's security-critical path. The caller may attach only a permission they hold; an attach
+   * that would make the role an administrator role is refused while a holder was assigned by a
+   * non-administrator.
    *
    * @return 201 with a {@code Location} header addressing the pairing and the attached permission
    */
@@ -149,9 +151,16 @@ public class RoleController {
   @ApiResponse(responseCode = "400", description = "Malformed path or body UUID")
   @ApiResponse(
       responseCode = "403",
-      description = "Missing role:write, cross-tenant role, or AC11 non-admin")
+      description =
+          "Missing role:write, cross-tenant role, or the caller does not hold the permission"
+              + " being attached")
   @ApiResponse(responseCode = "404", description = "Role or permission not found")
-  @ApiResponse(responseCode = "409", description = "System role, or already attached")
+  @ApiResponse(
+      responseCode = "409",
+      description =
+          "System role, already attached (RBAC_005), or the attach would make the role an"
+              + " administrator role while a holder was assigned by a non-administrator"
+              + " (RBAC_010)")
   public ResponseEntity<PermissionResponse> attachPermission(
       @PathVariable String roleId,
       @Valid @RequestBody AttachPermissionRequest request,
@@ -172,8 +181,9 @@ public class RoleController {
   }
 
   /**
-   * Detaches a permission from a role in the caller's own tenant (AC5, AC7, AC8, AC12). No AC11
-   * gate — detaching reduces privilege.
+   * Detaches a permission from a role in the caller's own tenant (AC5, AC7, AC8, AC12). The caller
+   * must hold every permission of the role (role-subset), and, when the role is an administrator
+   * role, be an administrator through a different role.
    */
   @DeleteMapping("/{roleId}/permissions/{permissionId}")
   @ResponseStatus(HttpStatus.NO_CONTENT)
@@ -181,7 +191,12 @@ public class RoleController {
   @Operation(summary = "Detach a permission from a role in the caller's tenant")
   @ApiResponse(responseCode = "204", description = "Permission detached")
   @ApiResponse(responseCode = "400", description = "Malformed path UUID")
-  @ApiResponse(responseCode = "403", description = "Missing role:write or cross-tenant role")
+  @ApiResponse(
+      responseCode = "403",
+      description =
+          "Missing role:write, cross-tenant role, or the caller does not hold every permission of"
+              + " the role (for an administrator role: or is not an administrator through"
+              + " another role)")
   @ApiResponse(responseCode = "404", description = "Role, permission, or pairing not found")
   @ApiResponse(responseCode = "409", description = "System role")
   public void detachPermission(

@@ -3,6 +3,7 @@ package com.example.nexus.rbac.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
@@ -27,13 +28,14 @@ import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.RoleAuditEvent;
 import com.example.nexus.rbac.application.port.out.RoleManagementPort;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
+import com.example.nexus.rbac.domain.AttachProvenanceConflictException;
 import com.example.nexus.rbac.domain.DuplicateRoleNameException;
 import com.example.nexus.rbac.domain.DuplicateRolePermissionException;
+import com.example.nexus.rbac.domain.HolderProvenance;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.ReservedRoleNameException;
 import com.example.nexus.rbac.domain.RoleChangeActor;
-import com.example.nexus.rbac.domain.RolePermissionName;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.RoleLimitExceededException;
 import com.example.nexus.rbac.domain.RoleView;
@@ -47,6 +49,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.BeforeEach;
@@ -77,6 +80,12 @@ class RoleManagementServiceTest {
   private static final String ROLE_WRITE = "role:write";
   private static final String ROLE_READ = "role:read";
   private static final UUID ROLE_WRITE_ID = RbacSeededPermissionIds.ROLE_WRITE;
+  private static final UUID USER_ROLE_ASSIGN_ID = RbacSeededPermissionIds.USER_ROLE_ASSIGN;
+
+  // Fixture catalogue: two permissions. A role carrying both is admin-defining (ADR-0021 D3).
+  private static final UUID P1 = UUID.fromString("00000000-0000-7000-8000-000000000001");
+  private static final UUID P2 = UUID.fromString("00000000-0000-7000-8000-000000000002");
+  private static final Set<UUID> CATALOGUE = Set.of(P1, P2);
 
   @Mock private RoleManagementPort roleManagementPort;
   @Mock private UserRoleAssignmentPort userRoleAssignmentPort;
@@ -117,6 +126,13 @@ class RoleManagementServiceTest {
     permissionId = UUID.randomUUID();
     actor = new RoleChangeActor(actorId, tenantId);
     ctx = RequestContext.UNKNOWN;
+
+    // Baseline (lenient; any test may override): the role is in the tenant and carries no
+    // permissions, and the catalogue is the two-permission fixture.
+    lenient()
+        .when(userRoleAssignmentPort.findPermissionIdsForRole(any(), any()))
+        .thenReturn(Optional.of(Set.of()));
+    lenient().when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(CATALOGUE);
   }
 
   private RoleView customRole(UUID tenant) {
@@ -125,10 +141,6 @@ class RoleManagementServiceTest {
 
   private RoleView systemRole(String name) {
     return new RoleView(roleId, tenantId, name, "desc", true, Instant.now());
-  }
-
-  private PermissionView dangerousPermission() {
-    return new PermissionView(permissionId, "role:write", "Manage roles");
   }
 
   private PermissionView benignPermission() {
@@ -308,11 +320,11 @@ class RoleManagementServiceTest {
   }
 
   // ---------------------------------------------------------------------------------------
-  // attachPermission() -- AC4, AC7, AC8, AC11, AC12
+  // attachPermission() -- AC4, AC7, AC8, A3, the narrow provenance rule
   // ---------------------------------------------------------------------------------------
 
   @Test
-  void should_attachPermissionAndReturnView_when_happyPathNonDangerous() {
+  void should_attachPermissionAndReturnView_when_happyPath() {
     RoleView role = customRole(tenantId);
     PermissionView permission = benignPermission();
     when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
@@ -321,40 +333,57 @@ class RoleManagementServiceTest {
     when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
 
     // Inside a synchronization that never commits, so only the in-transaction calls are seen; the
-    // post-commit holder eviction (T-010) has its own tests below.
+    // post-commit holder read has its own tests below.
     PermissionView result =
         inUncommittedSynchronization(
             () -> service.attachPermission(actor, roleId, permissionId, ctx));
 
     assertThat(result).isEqualTo(permission);
     verify(roleManagementPort).attachPermission(roleId, permissionId);
-    // A3's M13 read is the only in-transaction collaborator call on the non-dangerous path.
+    // In the transaction: A3's M13, and M14 and M15 to decide whether the attach completes the
+    // catalogue. No holder read and no administrator read: that is after commit, or only on the
+    // rare provenance branch.
     verify(userRoleAssignmentPort).findHeldRolePermissionIdsForAuthorization(actorId, tenantId);
+    verify(userRoleAssignmentPort).findPermissionIdsForRole(roleId, tenantId);
+    verify(userRoleAssignmentPort).findCatalogueIds();
     verifyNoMoreInteractions(userRoleAssignmentPort);
-    verify(userRoleAssignmentPort, never()).findActiveUserIdsForRole(any());
   }
 
+  /** The audit row carries no holder count any more: the holder read is after commit (row 13). */
   @Test
-  void should_attachDangerousPermissionAndIncrementCounter_when_callerIsActiveAdmin() {
+  void should_recordAuditWithoutHolderCount_when_attached() {
     RoleView role = customRole(tenantId);
-    PermissionView permission = dangerousPermission();
-    UUID adminRoleId = UUID.randomUUID();
+    PermissionView permission = benignPermission();
     when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
     when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
-    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
-        .thenReturn(true);
     stubCallerHolds(permissionId);
     when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
 
-    PermissionView result = service.attachPermission(actor, roleId, permissionId, ctx);
+    inUncommittedSynchronization(() -> service.attachPermission(actor, roleId, permissionId, ctx));
 
-    assertThat(result).isEqualTo(permission);
+    verify(rbacAuditPort)
+        .recordRolePermissionGranted(
+            new RoleAuditEvent(
+                tenantId, roleId, role.name(), permissionId, "user:read", actorId, ctx, null));
+  }
+
+  /** Row 11: the name-based gate is gone. A caller who holds {@code role:write} may attach it. */
+  @Test
+  void should_attachAFormerlyDangerousPermission_when_callerHoldsItWithoutBeingNamedTenantAdmin() {
+    RoleView role = customRole(tenantId);
+    permissionId = ROLE_WRITE_ID;
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(roleManagementPort.findPermission(permissionId))
+        .thenReturn(Optional.of(new PermissionView(permissionId, "role:write", "Manage roles")));
+    stubCallerHolds();
+    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
+
+    PermissionView result =
+        inUncommittedSynchronization(
+            () -> service.attachPermission(actor, roleId, permissionId, ctx));
+
+    assertThat(result.name()).isEqualTo("role:write");
     verify(roleManagementPort).attachPermission(roleId, permissionId);
-    Counter counter = meterRegistry.find("nexus.rbac.dangerous_permission_granted").counter();
-    assertThat(counter).isNotNull();
-    assertThat(counter.count()).isEqualTo(1.0);
   }
 
   @Test
@@ -428,7 +457,7 @@ class RoleManagementServiceTest {
     }
   }
 
-  /** RC-5b named case: MEMBER is AC7's sole gate against a dangerous-permission attach. */
+  /** RC-5b named case: MEMBER is AC7's sole gate against an attach to a system role. */
   @Test
   void should_throwSystemRoleImmutableException_when_attachRoleIsMember() {
     RoleView role = systemRole("MEMBER");
@@ -443,17 +472,6 @@ class RoleManagementServiceTest {
   }
 
   @Test
-  void should_notCallFindPermission_when_ac7Blocks() {
-    RoleView role = systemRole("TENANT_ADMIN");
-    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
-
-    assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
-        .isInstanceOf(SystemRoleImmutableException.class);
-
-    verify(roleManagementPort, never()).findPermission(any());
-  }
-
-  @Test
   void should_throwResourceNotFound_when_attachPermissionDoesNotExist() {
     RoleView role = customRole(tenantId);
     when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
@@ -464,81 +482,6 @@ class RoleManagementServiceTest {
         .hasFieldOrPropertyWithValue("code", "PERMISSION_NOT_FOUND");
 
     verifyNoInteractions(userRoleAssignmentPort);
-  }
-
-  @Test
-  void should_notInvokeAc11Gate_when_permissionIsNotDangerous() {
-    RoleView role = customRole(tenantId);
-    PermissionView permission = benignPermission();
-    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
-    stubCallerHolds(permissionId);
-    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
-
-    // Inside a synchronization that never commits: the post-commit holder eviction (T-010) is
-    // not part of the gate this test pins.
-    inUncommittedSynchronization(() -> service.attachPermission(actor, roleId, permissionId, ctx));
-
-    verify(roleManagementPort, never()).findRoleIdByName(any(), any());
-    // A3's M13 read is the only in-transaction collaborator call on the non-dangerous path.
-    verify(userRoleAssignmentPort).findHeldRolePermissionIdsForAuthorization(actorId, tenantId);
-    verifyNoMoreInteractions(userRoleAssignmentPort);
-  }
-
-  @Test
-  void should_throwNotTenantAdmin_when_noAdminRoleSeededInTenant() {
-    RoleView role = customRole(tenantId);
-    PermissionView permission = dangerousPermission();
-    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
-    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN")).thenReturn(Optional.empty());
-
-    assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verify(userRoleAssignmentPort, never()).hasActiveAdminAssignment(any(), any(), any());
-    verify(roleManagementPort, never()).attachPermission(any(), any());
-    verify(userRoleAssignmentPort, never()).findActiveUserIdsForRole(any());
-  }
-
-  @Test
-  void should_throwNotTenantAdmin_when_callerNotActiveAdmin() {
-    RoleView role = customRole(tenantId);
-    PermissionView permission = dangerousPermission();
-    UUID adminRoleId = UUID.randomUUID();
-    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
-    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
-        .thenReturn(false);
-
-    ListAppender<ILoggingEvent> appender = startLogCapture();
-    try {
-      assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
-          .isInstanceOf(InsufficientPermissionException.class)
-          .satisfies(
-              e ->
-                  assertThat(((InsufficientPermissionException) e).getReason())
-                      .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-      var warnEvents = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
-      assertThat(warnEvents).hasSize(1);
-      assertThat(keyValueMap(warnEvents.get(0)))
-          .containsEntry("event", "RBAC_DANGEROUS_PERMISSION_ATTACH_BLOCKED");
-    } finally {
-      stopLogCapture(appender);
-    }
-
-    // F1/T-E14 defense in depth: the forbidden non-locking shortcut is never reached.
-    verify(userRoleAssignmentPort, never()).findActiveAssignmentViews(any(), any());
-    verify(roleManagementPort, never()).attachPermission(any(), any());
-    // D13: the AC11 denial path never reaches the insert, so it must never query holder count.
-    verify(userRoleAssignmentPort, never()).findActiveUserIdsForRole(any());
   }
 
   @Test
@@ -573,320 +516,12 @@ class RoleManagementServiceTest {
         .isInstanceOf(DuplicateRolePermissionException.class);
   }
 
-  /** D13 zero-holder boundary: no existing holders means no escalation, so no WARN either. */
-  @Test
-  void should_recordZeroHolderCountAndNoWarn_when_dangerousAttachHasNoActiveHolders() {
-    RoleView role = customRole(tenantId);
-    PermissionView permission = dangerousPermission();
-    UUID adminRoleId = UUID.randomUUID();
-    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
-    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
-        .thenReturn(true);
-    stubCallerHolds(permissionId);
-    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
-    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId)).thenReturn(List.of());
-
-    ListAppender<ILoggingEvent> appender = startLogCapture();
-    try {
-      service.attachPermission(actor, roleId, permissionId, ctx);
-
-      verify(rbacAuditPort)
-          .recordRolePermissionGranted(
-              new RoleAuditEvent(
-                  tenantId, roleId, role.name(), permissionId, "role:write", actorId, ctx, 0));
-
-      var infoEvents = appender.list.stream().filter(e -> e.getLevel() == Level.INFO).toList();
-      assertThat(infoEvents).hasSize(1);
-      assertThat(keyValueMap(infoEvents.get(0)))
-          .containsEntry("event", "ROLE_PERMISSION_GRANTED")
-          .containsEntry("dangerous", true)
-          .containsEntry("holderCount", 0);
-
-      var warnEvents = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
-      assertThat(warnEvents).isEmpty();
-    } finally {
-      stopLogCapture(appender);
-    }
-
-    Counter counter =
-        meterRegistry.find("nexus.rbac.dangerous_permission_granted").tag("holders", "0").counter();
-    assertThat(counter).isNotNull();
-  }
-
-  /** D13 one-holder boundary: the alertable WARN fires as soon as a single holder exists. */
-  @Test
-  void should_recordHolderCountOneAndWarn_when_dangerousAttachHasOneActiveHolder() {
-    RoleView role = customRole(tenantId);
-    PermissionView permission = dangerousPermission();
-    UUID adminRoleId = UUID.randomUUID();
-    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
-    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
-        .thenReturn(true);
-    stubCallerHolds(permissionId);
-    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
-    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId))
-        .thenReturn(List.of(UUID.randomUUID()));
-
-    ListAppender<ILoggingEvent> appender = startLogCapture();
-    try {
-      service.attachPermission(actor, roleId, permissionId, ctx);
-
-      verify(rbacAuditPort)
-          .recordRolePermissionGranted(
-              new RoleAuditEvent(
-                  tenantId, roleId, role.name(), permissionId, "role:write", actorId, ctx, 1));
-
-      var warnEvents = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
-      assertThat(warnEvents).hasSize(1);
-      assertThat(keyValueMap(warnEvents.get(0)))
-          .containsEntry("event", "RBAC_DANGEROUS_PERMISSION_GRANTED_TO_EXISTING_HOLDERS")
-          .containsEntry("holderCount", 1)
-          .containsEntry("grantedBy", actorId);
-    } finally {
-      stopLogCapture(appender);
-    }
-
-    Counter counter =
-        meterRegistry.find("nexus.rbac.dangerous_permission_granted").tag("holders", "1").counter();
-    assertThat(counter).isNotNull();
-  }
-
-  /** D13 mid-bucket boundary: 5 holders lands in the "2-10" bucket, still WARN-worthy. */
-  @Test
-  void should_recordHolderCountAndBucket2To10AndWarn_when_dangerousAttachHasFiveActiveHolders() {
-    RoleView role = customRole(tenantId);
-    PermissionView permission = dangerousPermission();
-    UUID adminRoleId = UUID.randomUUID();
-    List<UUID> holders = List.of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(),
-        UUID.randomUUID(), UUID.randomUUID());
-    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
-    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
-        .thenReturn(true);
-    stubCallerHolds(permissionId);
-    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
-    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId)).thenReturn(holders);
-
-    ListAppender<ILoggingEvent> appender = startLogCapture();
-    try {
-      service.attachPermission(actor, roleId, permissionId, ctx);
-
-      verify(rbacAuditPort)
-          .recordRolePermissionGranted(
-              new RoleAuditEvent(
-                  tenantId, roleId, role.name(), permissionId, "role:write", actorId, ctx, 5));
-
-      var warnEvents = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
-      assertThat(warnEvents).hasSize(1);
-      assertThat(keyValueMap(warnEvents.get(0)))
-          .containsEntry("event", "RBAC_DANGEROUS_PERMISSION_GRANTED_TO_EXISTING_HOLDERS")
-          .containsEntry("holderCount", 5);
-    } finally {
-      stopLogCapture(appender);
-    }
-
-    Counter counter =
-        meterRegistry
-            .find("nexus.rbac.dangerous_permission_granted")
-            .tag("holders", "2-10")
-            .counter();
-    assertThat(counter).isNotNull();
-  }
-
-  /** D13 top boundary: 50 holders lands in the ">10" bucket, never the raw count. */
-  @Test
-  void should_recordHolderCountAndBucketOver10AndWarn_when_dangerousAttachHasFiftyActiveHolders() {
-    RoleView role = customRole(tenantId);
-    PermissionView permission = dangerousPermission();
-    UUID adminRoleId = UUID.randomUUID();
-    List<UUID> holders = new ArrayList<>();
-    for (int i = 0; i < 50; i++) {
-      holders.add(UUID.randomUUID());
-    }
-    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
-    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
-        .thenReturn(true);
-    stubCallerHolds(permissionId);
-    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
-    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId)).thenReturn(holders);
-
-    ListAppender<ILoggingEvent> appender = startLogCapture();
-    try {
-      service.attachPermission(actor, roleId, permissionId, ctx);
-
-      verify(rbacAuditPort)
-          .recordRolePermissionGranted(
-              new RoleAuditEvent(
-                  tenantId, roleId, role.name(), permissionId, "role:write", actorId, ctx, 50));
-
-      var warnEvents = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
-      assertThat(warnEvents).hasSize(1);
-      assertThat(keyValueMap(warnEvents.get(0)))
-          .containsEntry("event", "RBAC_DANGEROUS_PERMISSION_GRANTED_TO_EXISTING_HOLDERS")
-          .containsEntry("holderCount", 50);
-    } finally {
-      stopLogCapture(appender);
-    }
-
-    Counter counter =
-        meterRegistry
-            .find("nexus.rbac.dangerous_permission_granted")
-            .tag("holders", ">10")
-            .counter();
-    assertThat(counter).isNotNull();
-  }
-
-  @Test
-  void should_recordAuditWithoutIncrementingCounter_when_nonDangerousPermissionGranted() {
-    RoleView role = customRole(tenantId);
-    PermissionView permission = benignPermission();
-    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
-    stubCallerHolds(permissionId);
-    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
-
-    ListAppender<ILoggingEvent> appender = startLogCapture();
-    try {
-      service.attachPermission(actor, roleId, permissionId, ctx);
-
-      var infoEvents = appender.list.stream().filter(e -> e.getLevel() == Level.INFO).toList();
-      assertThat(keyValueMap(infoEvents.get(0))).containsEntry("dangerous", false);
-    } finally {
-      stopLogCapture(appender);
-    }
-
-    assertThat(meterRegistry.find("nexus.rbac.dangerous_permission_granted").counter()).isNull();
-  }
-
   // ---------------------------------------------------------------------------------------
-  // attachPermission() -- D22 threshold-crossing signal (RC-15.3)
+  // A3 -- attaching a permission requires the caller to hold it (FR-A3.a), whatever it is
   // ---------------------------------------------------------------------------------------
 
-  /** D22: the third dangerous permission tips the role from ANY-two to ALL-three -- fires. */
   @Test
-  void should_emitRoleBecameFullyAdminEquivalentWarnAndCounter_when_thirdDangerousPermissionAttached() {
-    RoleView role = customRole(tenantId);
-    PermissionView permission = dangerousPermission(); // "role:write"
-    UUID adminRoleId = UUID.randomUUID();
-    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
-    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
-        .thenReturn(true);
-    stubCallerHolds(permissionId);
-    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
-    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId))
-        .thenReturn(List.of(UUID.randomUUID()));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("role:write", "user:write", "tenant:write"));
-
-    ListAppender<ILoggingEvent> appender = startLogCapture();
-    try {
-      service.attachPermission(actor, roleId, permissionId, ctx);
-
-      var warnEvents =
-          appender.list.stream()
-              .filter(e -> e.getLevel() == Level.WARN)
-              .filter(
-                  e ->
-                      "RBAC_ROLE_BECAME_FULLY_ADMIN_EQUIVALENT"
-                          .equals(keyValueMap(e).get("event")))
-              .toList();
-      assertThat(warnEvents).hasSize(1);
-      assertThat(keyValueMap(warnEvents.get(0)))
-          .containsEntry("tenantId", tenantId)
-          .containsEntry("roleId", roleId)
-          .containsEntry("roleName", role.name())
-          .containsEntry("holderCount", 1)
-          .containsEntry("grantedBy", actorId);
-    } finally {
-      stopLogCapture(appender);
-    }
-
-    Counter counter =
-        meterRegistry
-            .find("nexus.rbac.role_became_fully_admin_equivalent")
-            .tag("holders", "1")
-            .counter();
-    assertThat(counter).isNotNull();
-    assertThat(counter.count()).isEqualTo(1.0);
-  }
-
-  /** D22 negative: two of three dangerous permissions held after the attach -- must not fire. */
-  @Test
-  void should_notEmitRoleBecameFullyAdminEquivalentSignal_when_attachKeepsRoleBelowThreshold() {
-    RoleView role = customRole(tenantId);
-    PermissionView permission = dangerousPermission(); // "role:write"
-    UUID adminRoleId = UUID.randomUUID();
-    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
-    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
-        .thenReturn(true);
-    stubCallerHolds(permissionId);
-    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
-    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId)).thenReturn(List.of());
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("role:write", "user:write"));
-
-    ListAppender<ILoggingEvent> appender = startLogCapture();
-    try {
-      service.attachPermission(actor, roleId, permissionId, ctx);
-
-      var warnEvents =
-          appender.list.stream()
-              .filter(e -> e.getLevel() == Level.WARN)
-              .filter(
-                  e ->
-                      "RBAC_ROLE_BECAME_FULLY_ADMIN_EQUIVALENT"
-                          .equals(keyValueMap(e).get("event")))
-              .toList();
-      assertThat(warnEvents).isEmpty();
-    } finally {
-      stopLogCapture(appender);
-    }
-
-    assertThat(meterRegistry.find("nexus.rbac.role_became_fully_admin_equivalent").counter())
-        .isNull();
-  }
-
-  /** D22 negative: a non-dangerous attach never runs the M7 read or the signal at all. */
-  @Test
-  void should_notEmitRoleBecameFullyAdminEquivalentSignal_when_permissionIsNotDangerous() {
-    RoleView role = customRole(tenantId);
-    PermissionView permission = benignPermission();
-    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
-    stubCallerHolds(permissionId);
-    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
-
-    service.attachPermission(actor, roleId, permissionId, ctx);
-
-    verify(userRoleAssignmentPort, never()).findPermissionNamesForRole(any());
-    assertThat(meterRegistry.find("nexus.rbac.role_became_fully_admin_equivalent").counter())
-        .isNull();
-  }
-
-  // ---------------------------------------------------------------------------------------
-  // US-018 T-003: A3 -- attaching a permission requires the caller to hold it (FR-A3.a)
-  // ---------------------------------------------------------------------------------------
-
-  /** The A3 gap the story closes: a non-dangerous permission never reached AC11 before. */
-  @Test
-  void should_throwGrantExceedsCallerWithRoleWrite_when_callerDoesNotHoldNonDangerousPermission() {
+  void should_throwGrantExceedsCallerWithRoleWrite_when_callerDoesNotHoldThePermission() {
     RoleView role = customRole(tenantId);
     when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
     when(roleManagementPort.findPermission(permissionId))
@@ -930,7 +565,9 @@ class RoleManagementServiceTest {
     stubCallerHolds(UUID.randomUUID(), permissionId, UUID.randomUUID());
     when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
 
-    PermissionView result = service.attachPermission(actor, roleId, permissionId, ctx);
+    PermissionView result =
+        inUncommittedSynchronization(
+            () -> service.attachPermission(actor, roleId, permissionId, ctx));
 
     assertThat(result).isEqualTo(permission);
     verify(roleManagementPort).attachPermission(roleId, permissionId);
@@ -1015,72 +652,6 @@ class RoleManagementServiceTest {
     verifyNoInteractions(rbacAuditPort);
   }
 
-  /** AC11 passing is not enough: an active TENANT_ADMIN must also hold the dangerous one. */
-  @Test
-  void should_denyGrantExceedsCaller_when_activeTenantAdminDoesNotHoldDangerousPermission() {
-    RoleView role = customRole(tenantId);
-    UUID adminRoleId = UUID.randomUUID();
-    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(roleManagementPort.findPermission(permissionId))
-        .thenReturn(Optional.of(dangerousPermission()));
-    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
-        .thenReturn(true);
-    stubCallerHolds(UUID.randomUUID());
-
-    assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
-        .isInstanceOfSatisfying(
-            InsufficientPermissionException.class,
-            e -> assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
-
-    verify(roleManagementPort, never()).attachPermission(any(), any());
-    verify(userRoleAssignmentPort, never()).findActiveUserIdsForRole(any());
-  }
-
-  /** AC11 precedes A3: an AC11 denial keeps NOT_TENANT_ADMIN and never pays for the M13 read. */
-  @Test
-  void should_neverReadHeldPermissions_when_ac11Denies() {
-    RoleView role = customRole(tenantId);
-    UUID adminRoleId = UUID.randomUUID();
-    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(roleManagementPort.findPermission(permissionId))
-        .thenReturn(Optional.of(dangerousPermission()));
-    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
-        .isInstanceOfSatisfying(
-            InsufficientPermissionException.class,
-            e -> assertThat(e.getReason()).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verify(userRoleAssignmentPort, never()).findHeldRolePermissionIdsForAuthorization(any(), any());
-  }
-
-  /** M13 is the only authorization read: M12 (the canary's name-based read) is never consulted. */
-  @Test
-  void should_denyGrantExceedsCaller_when_m12ReportsPermissionButM13DoesNot() {
-    RoleView role = customRole(tenantId);
-    PermissionView permission = benignPermission();
-    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
-    lenient()
-        .when(
-            userRoleAssignmentPort.findPermissionNamesForActiveAssignmentsOfUser(actorId, tenantId))
-        .thenReturn(List.of(new RolePermissionName(UUID.randomUUID(), permission.name())));
-    stubCallerHolds();
-
-    assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
-        .isInstanceOfSatisfying(
-            InsufficientPermissionException.class,
-            e -> assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
-
-    verify(userRoleAssignmentPort, never())
-        .findPermissionNamesForActiveAssignmentsOfUser(any(), any());
-  }
-
   // -- 07-security-review.md L-1: role:write must still be in the fresh M13 read ------------
 
   @Test
@@ -1133,20 +704,487 @@ class RoleManagementServiceTest {
   }
 
   // ---------------------------------------------------------------------------------------
-  // detachPermission() -- AC5, AC7, AC8, AC12
+  // Row 14, R1-1, RC-50(a): the narrow provenance rule (409 RBAC_010)
   // ---------------------------------------------------------------------------------------
 
+  /** The role holds {@code P1}; attaching {@code P2} completes the two-permission catalogue. */
+  private void stubCompletingAttach() {
+    permissionId = P2;
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    when(roleManagementPort.findPermission(P2))
+        .thenReturn(Optional.of(new PermissionView(P2, "user:read", "Read users")));
+    stubCallerHolds(P2);
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(Set.of(P1)));
+  }
+
+  /**
+   * The tenant has one admin-defining role, and {@code administratorUserIds} are its active holders:
+   * M10' lists the role, and the administrator user set read returns them.
+   */
+  private UUID stubTenantAdministrators(Set<UUID> administratorUserIds) {
+    UUID adminDefiningRoleId = UUID.randomUUID();
+    // Lenient: a post-commit read that fails before it gets here must not fail the test.
+    lenient()
+        .when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId))
+        .thenReturn(
+            List.of(
+                new RolePermissionRef(adminDefiningRoleId, P1),
+                new RolePermissionRef(adminDefiningRoleId, P2)));
+    lenient()
+        .when(
+            userRoleAssignmentPort.findActiveHolderUserIdsForRoles(
+                eq(tenantId), eq(Set.of(adminDefiningRoleId))))
+        .thenReturn(administratorUserIds);
+    return adminDefiningRoleId;
+  }
+
+  /** R1-1: completing the catalogue while one holder was assigned by a non-administrator. */
   @Test
-  void should_detachPermissionAndCompleteSuccessfully_when_happyPath() {
+  void should_refuseWith409Rbac010AndWriteNothing_when_completingCatalogueWithANonAdministratorAssignedHolder() {
+    stubCompletingAttach();
+    UUID holder = UUID.randomUUID();
+    UUID nonAdministratorAssigner = UUID.randomUUID();
+    when(userRoleAssignmentPort.findActiveHoldersForRole(roleId, tenantId))
+        .thenReturn(List.of(new HolderProvenance(holder, nonAdministratorAssigner)));
+    stubTenantAdministrators(Set.of(UUID.randomUUID()));
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
+          .isInstanceOf(AttachProvenanceConflictException.class)
+          .hasFieldOrPropertyWithValue("code", "RBAC_010")
+          .satisfies(
+              e ->
+                  assertThat(e.getMessage())
+                      .doesNotContain(holder.toString())
+                      .doesNotContain(nonAdministratorAssigner.toString()));
+
+      var warnEvents = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
+      assertThat(warnEvents).hasSize(1);
+      assertThat(keyValueMap(warnEvents.get(0)))
+          .containsOnly(
+              Map.entry("event", "RBAC_ATTACH_PROVENANCE_REFUSED"),
+              Map.entry("tenantId", tenantId),
+              Map.entry("actorUserId", actorId),
+              Map.entry("roleId", roleId),
+              Map.entry("permissionId", P2),
+              Map.entry("nonAdminAssignedCount", 1));
+    } finally {
+      stopLogCapture(appender);
+    }
+
+    verify(roleManagementPort, never()).hasPermission(any(), any());
+    verify(roleManagementPort, never()).attachPermission(any(), any());
+    verifyNoInteractions(rbacAuditPort, permissionCachePort, permissionFreshness);
+    Counter denied =
+        meterRegistry
+            .find("nexus.rbac.permission_denied")
+            .tags("permission", "role:write", "reason", "ATTACH_PROVENANCE")
+            .counter();
+    assertThat(denied).isNotNull();
+    assertThat(denied.count()).isEqualTo(1.0);
+  }
+
+  /** The same attach with only administrator-assigned holders succeeds and pages row 14. */
+  @Test
+  void should_attachAndSignalRow14_when_completingCatalogueWithOnlyAdministratorAssignedHolders() {
+    stubCompletingAttach();
+    UUID administrator = UUID.randomUUID();
+    when(userRoleAssignmentPort.findActiveHoldersForRole(roleId, tenantId))
+        .thenReturn(List.of(new HolderProvenance(UUID.randomUUID(), administrator)));
+    stubTenantAdministrators(Set.of(administrator));
+    when(roleManagementPort.hasPermission(roleId, P2)).thenReturn(false);
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      service.attachPermission(actor, roleId, permissionId, ctx);
+
+      var became =
+          appender.list.stream()
+              .filter(e -> "RBAC_ROLE_BECAME_ADMIN_DEFINING".equals(keyValueMap(e).get("event")))
+              .toList();
+      assertThat(became).hasSize(1);
+      assertThat(became.get(0).getLevel()).isEqualTo(Level.WARN);
+      assertThat(keyValueMap(became.get(0)))
+          .containsOnly(
+              Map.entry("event", "RBAC_ROLE_BECAME_ADMIN_DEFINING"),
+              Map.entry("tenantId", tenantId),
+              Map.entry("roleId", roleId),
+              Map.entry("grantedBy", actorId),
+              Map.entry("holderCount", 1));
+    } finally {
+      stopLogCapture(appender);
+    }
+
+    verify(roleManagementPort).attachPermission(roleId, P2);
+    Counter counter =
+        meterRegistry.find("nexus.rbac.role_became_admin_defining").tag("holders", "1").counter();
+    assertThat(counter).isNotNull();
+    assertThat(counter.count()).isEqualTo(1.0);
+    assertThat(meterRegistry.find("nexus.rbac.attach_escalates_non_admin_assigned").counter())
+        .isNull();
+  }
+
+  /** A break-glass holder (assigned_by equals the holder, who is an administrator) never trips it. */
+  @Test
+  void should_attach_when_theOnlyHolderWasAssignedByThemselvesAndIsAnAdministrator() {
+    stubCompletingAttach();
+    UUID breakGlassAdmin = UUID.randomUUID();
+    when(userRoleAssignmentPort.findActiveHoldersForRole(roleId, tenantId))
+        .thenReturn(List.of(new HolderProvenance(breakGlassAdmin, breakGlassAdmin)));
+    stubTenantAdministrators(Set.of(breakGlassAdmin));
+    when(roleManagementPort.hasPermission(roleId, P2)).thenReturn(false);
+
+    service.attachPermission(actor, roleId, permissionId, ctx);
+
+    verify(roleManagementPort).attachPermission(roleId, P2);
+  }
+
+  /** The role has no holders: nothing to refuse, and the administrator set is never read. */
+  @Test
+  void should_attachWithoutReadingAdministrators_when_completingCatalogueOnARoleWithNoHolders() {
+    stubCompletingAttach();
+    when(userRoleAssignmentPort.findActiveHoldersForRole(roleId, tenantId)).thenReturn(List.of());
+    when(roleManagementPort.hasPermission(roleId, P2)).thenReturn(false);
+
+    service.attachPermission(actor, roleId, permissionId, ctx);
+
+    verify(roleManagementPort).attachPermission(roleId, P2);
+    verify(userRoleAssignmentPort, never()).findActiveHolderUserIdsForRoles(any(), any());
+    Counter counter =
+        meterRegistry.find("nexus.rbac.role_became_admin_defining").tag("holders", "0").counter();
+    assertThat(counter).isNotNull();
+  }
+
+  /** RC-50(a): a duplicate attach to an already admin-defining role is still 409 RBAC_005. */
+  @Test
+  void should_throw409Rbac005NotRbac010_when_attachingToARoleThatIsAlreadyAdminDefining() {
+    permissionId = P2;
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    when(roleManagementPort.findPermission(P2))
+        .thenReturn(Optional.of(new PermissionView(P2, "user:read", "Read users")));
+    stubCallerHolds(P2);
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(CATALOGUE));
+    when(roleManagementPort.hasPermission(roleId, P2)).thenReturn(true);
+
+    assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
+        .isInstanceOf(DuplicateRolePermissionException.class)
+        .hasFieldOrPropertyWithValue("code", "RBAC_005");
+
+    verify(userRoleAssignmentPort, never()).findActiveHoldersForRole(any(), any());
+  }
+
+  /** The rule is narrow: an attach that does not complete the catalogue never reads holders. */
+  @Test
+  void should_notEvaluateProvenance_when_theAttachDoesNotCompleteTheCatalogue() {
+    permissionId = P1;
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    when(roleManagementPort.findPermission(P1))
+        .thenReturn(Optional.of(new PermissionView(P1, "user:read", "Read users")));
+    stubCallerHolds(P1);
+    when(roleManagementPort.hasPermission(roleId, P1)).thenReturn(false);
+
+    inUncommittedSynchronization(() -> service.attachPermission(actor, roleId, P1, ctx));
+
+    verify(userRoleAssignmentPort, never()).findActiveHoldersForRole(any(), any());
+    verify(roleManagementPort).attachPermission(roleId, P1);
+  }
+
+  /** A3 precedes the provenance rule: a caller who may not attach learns nothing about holders. */
+  @Test
+  void should_denyGrantExceedsCallerBeforeProvenance_when_callerDoesNotHoldTheCompletingPermission() {
+    permissionId = P2;
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    when(roleManagementPort.findPermission(P2))
+        .thenReturn(Optional.of(new PermissionView(P2, "user:read", "Read users")));
+    stubCallerHolds(); // the caller does not hold P2
+
+    assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    verify(userRoleAssignmentPort, never()).findActiveHoldersForRole(any(), any());
+  }
+
+  @Test
+  void should_propagateAndNotAttach_when_provenanceHolderReadThrows() {
+    stubCompletingAttach();
+    when(userRoleAssignmentPort.findActiveHoldersForRole(roleId, tenantId))
+        .thenThrow(new IllegalStateException("db down"));
+
+    assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
+        .isInstanceOf(IllegalStateException.class);
+
+    verify(roleManagementPort, never()).attachPermission(any(), any());
+  }
+
+  @Test
+  void should_failClosed_when_m14ReportsTheRoleNotInTheTenantOnAttach() {
     RoleView role = customRole(tenantId);
     when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(roleManagementPort.detachPermission(roleId, permissionId)).thenReturn(1);
     when(roleManagementPort.findPermission(permissionId))
         .thenReturn(Optional.of(benignPermission()));
+    stubCallerHolds(permissionId);
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.empty());
 
-    service.detachPermission(actor, roleId, permissionId, ctx);
+    assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> assertThat(e.getReason()).isEqualTo(DenialReason.CROSS_TENANT_TARGET));
 
-    verify(roleManagementPort).detachPermission(roleId, permissionId);
+    verify(roleManagementPort, never()).attachPermission(any(), any());
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // Row 13 (RC-23.2): the escalation signal, after commit, from one holder read
+  // ---------------------------------------------------------------------------------------
+
+  private List<HolderProvenance> stubBenignAttachWithHolders(
+      List<HolderProvenance> holders, Set<UUID> administratorUserIds) {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    when(roleManagementPort.findPermission(permissionId))
+        .thenReturn(Optional.of(benignPermission()));
+    stubCallerHolds(permissionId);
+    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
+    when(userRoleAssignmentPort.findActiveHoldersForRole(roleId, tenantId)).thenReturn(holders);
+    if (!holders.isEmpty()) {
+      stubTenantAdministrators(administratorUserIds);
+    }
+    return holders;
+  }
+
+  private static List<HolderProvenance> holdersAssignedBy(UUID assigner, int count) {
+    List<HolderProvenance> holders = new ArrayList<>();
+    for (int i = 0; i < count; i++) {
+      holders.add(new HolderProvenance(UUID.randomUUID(), assigner));
+    }
+    return holders;
+  }
+
+  @Test
+  void should_warnAndCountTicket_when_aHolderWasAssignedByANonAdministrator() {
+    UUID nonAdministrator = UUID.randomUUID();
+    stubBenignAttachWithHolders(
+        holdersAssignedBy(nonAdministrator, 1), Set.of(UUID.randomUUID()));
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      service.attachPermission(actor, roleId, permissionId, ctx);
+
+      var warn =
+          appender.list.stream()
+              .filter(
+                  e ->
+                      "RBAC_ATTACH_ESCALATES_NON_ADMIN_ASSIGNED_HOLDERS"
+                          .equals(keyValueMap(e).get("event")))
+              .toList();
+      assertThat(warn).hasSize(1);
+      assertThat(warn.get(0).getLevel()).isEqualTo(Level.WARN);
+      assertThat(keyValueMap(warn.get(0)))
+          .containsOnly(
+              Map.entry("event", "RBAC_ATTACH_ESCALATES_NON_ADMIN_ASSIGNED_HOLDERS"),
+              Map.entry("tenantId", tenantId),
+              Map.entry("roleId", roleId),
+              Map.entry("permissionId", permissionId),
+              Map.entry("holderCount", 1),
+              Map.entry("nonAdminAssignedCount", 1));
+      assertThat(warn.get(0).getFormattedMessage()).doesNotContain(nonAdministrator.toString());
+    } finally {
+      stopLogCapture(appender);
+    }
+
+    Counter counter =
+        meterRegistry
+            .find("nexus.rbac.attach_escalates_non_admin_assigned")
+            .tags("holders", "1", "page", "false")
+            .counter();
+    assertThat(counter).isNotNull();
+    assertThat(counter.count()).isEqualTo(1.0);
+    assertThat(counter.getId().getTags()).extracting("key").doesNotContain("tenantId");
+  }
+
+  @Test
+  void should_pageTheSignal_when_thePermissionIsUserRoleAssign() {
+    permissionId = USER_ROLE_ASSIGN_ID;
+    stubBenignAttachWithHolders(holdersAssignedBy(UUID.randomUUID(), 2), Set.of(UUID.randomUUID()));
+
+    service.attachPermission(actor, roleId, permissionId, ctx);
+
+    assertThat(
+            meterRegistry
+                .find("nexus.rbac.attach_escalates_non_admin_assigned")
+                .tags("holders", "2-10", "page", "true")
+                .counter())
+        .isNotNull();
+  }
+
+  @Test
+  void should_pageTheSignal_when_thePermissionIsRoleWrite() {
+    permissionId = ROLE_WRITE_ID;
+    stubBenignAttachWithHolders(holdersAssignedBy(UUID.randomUUID(), 1), Set.of(UUID.randomUUID()));
+
+    service.attachPermission(actor, roleId, permissionId, ctx);
+
+    assertThat(
+            meterRegistry
+                .find("nexus.rbac.attach_escalates_non_admin_assigned")
+                .tags("holders", "1", "page", "true")
+                .counter())
+        .isNotNull();
+  }
+
+  @Test
+  void should_bucketOverTenHolders_when_manyHoldersWereAssignedByANonAdministrator() {
+    stubBenignAttachWithHolders(holdersAssignedBy(UUID.randomUUID(), 11), Set.of(UUID.randomUUID()));
+
+    service.attachPermission(actor, roleId, permissionId, ctx);
+
+    assertThat(
+            meterRegistry
+                .find("nexus.rbac.attach_escalates_non_admin_assigned")
+                .tags("holders", ">10")
+                .counter())
+        .isNotNull();
+  }
+
+  /** Page when the attach made the role admin-defining even though the pre-commit check passed. */
+  @Test
+  void should_pageTheSignal_when_theAttachMadeTheRoleAdminDefiningAndAHolderIsNowNonAdminAssigned() {
+    stubCompletingAttach();
+    when(roleManagementPort.hasPermission(roleId, P2)).thenReturn(false);
+    UUID assigner = UUID.randomUUID();
+    HolderProvenance holder = new HolderProvenance(UUID.randomUUID(), assigner);
+    when(userRoleAssignmentPort.findActiveHoldersForRole(roleId, tenantId))
+        .thenReturn(List.of(holder));
+    UUID adminRoleId = UUID.randomUUID();
+    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId))
+        .thenReturn(
+            List.of(new RolePermissionRef(adminRoleId, P1), new RolePermissionRef(adminRoleId, P2)));
+    // Before commit the assigner is an administrator; by the time of the read after commit, not.
+    when(userRoleAssignmentPort.findActiveHolderUserIdsForRoles(
+            eq(tenantId), eq(Set.of(adminRoleId))))
+        .thenReturn(Set.of(assigner))
+        .thenReturn(Set.of());
+
+    service.attachPermission(actor, roleId, permissionId, ctx);
+
+    assertThat(
+            meterRegistry
+                .find("nexus.rbac.attach_escalates_non_admin_assigned")
+                .tags("holders", "1", "page", "true")
+                .counter())
+        .isNotNull();
+  }
+
+  @Test
+  void should_emitNoEscalationSignal_when_everyHolderWasAssignedByAnAdministrator() {
+    UUID administrator = UUID.randomUUID();
+    stubBenignAttachWithHolders(holdersAssignedBy(administrator, 3), Set.of(administrator));
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      service.attachPermission(actor, roleId, permissionId, ctx);
+
+      assertThat(
+              appender.list.stream()
+                  .map(e -> keyValueMap(e).get("event"))
+                  .filter(
+                      "RBAC_ATTACH_ESCALATES_NON_ADMIN_ASSIGNED_HOLDERS"::equals))
+          .isEmpty();
+    } finally {
+      stopLogCapture(appender);
+    }
+    assertThat(meterRegistry.find("nexus.rbac.attach_escalates_non_admin_assigned").counter())
+        .isNull();
+    assertThat(meterRegistry.find("nexus.rbac.role_became_admin_defining").counter()).isNull();
+  }
+
+  @Test
+  void should_emitNoSignalAndNotReadAdministrators_when_theRoleHasNoHolders() {
+    stubBenignAttachWithHolders(List.of(), Set.of());
+
+    service.attachPermission(actor, roleId, permissionId, ctx);
+
+    verify(userRoleAssignmentPort, never()).findActiveHolderUserIdsForRoles(any(), any());
+    assertThat(meterRegistry.find("nexus.rbac.attach_escalates_non_admin_assigned").counter())
+        .isNull();
+  }
+
+  /** The formerly dangerous-permission counter and WARN are retired with the gate (row 13). */
+  @Test
+  void should_notEmitTheRetiredDangerousPermissionSignals_when_attaching() {
+    permissionId = ROLE_WRITE_ID;
+    stubBenignAttachWithHolders(holdersAssignedBy(UUID.randomUUID(), 1), Set.of(UUID.randomUUID()));
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      service.attachPermission(actor, roleId, permissionId, ctx);
+
+      assertThat(
+              appender.list.stream()
+                  .map(e -> keyValueMap(e).get("event"))
+                  .filter("RBAC_DANGEROUS_PERMISSION_GRANTED_TO_EXISTING_HOLDERS"::equals))
+          .isEmpty();
+    } finally {
+      stopLogCapture(appender);
+    }
+    assertThat(meterRegistry.find("nexus.rbac.dangerous_permission_granted").counter()).isNull();
+  }
+
+  @Test
+  void should_signalRow14WithUnknownHolders_when_theHolderReadFailsAfterACompletingAttach() {
+    stubCompletingAttach();
+    when(roleManagementPort.hasPermission(roleId, P2)).thenReturn(false);
+    when(userRoleAssignmentPort.findActiveHoldersForRole(roleId, tenantId))
+        .thenReturn(List.of())
+        .thenThrow(new org.springframework.dao.QueryTimeoutException("db down"));
+
+    org.assertj.core.api.Assertions.assertThatCode(
+            () -> service.attachPermission(actor, roleId, permissionId, ctx))
+        .doesNotThrowAnyException();
+
+    // A missing read must alert, never stay silent: unknown holders pages like holders > 0.
+    assertThat(
+            meterRegistry
+                .find("nexus.rbac.role_became_admin_defining")
+                .tag("holders", "unknown")
+                .counter())
+        .isNotNull();
+    verifyNoInteractions(permissionCachePort, permissionFreshness);
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // detachPermission() -- AC5, AC7, AC8, AC12, role-subset (row 12)
+  // ---------------------------------------------------------------------------------------
+
+  /** R is in the tenant and carries {@code rolePermissionIds}. */
+  private void stubRolePermissions(Set<UUID> rolePermissionIds) {
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(rolePermissionIds));
+  }
+
+  /** M13: the caller holds each of {@code refs}, each ref through the role it names. */
+  private void stubCallerHoldsRefs(RolePermissionRef... refs) {
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(List.of(refs));
+  }
+
+  @Test
+  void should_detachPermissionAndCompleteSuccessfully_when_callerHoldsEveryPermissionOfTheRole() {
+    RoleView role = customRole(tenantId);
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    stubRolePermissions(Set.of(P1));
+    stubCallerHoldsRefs(new RolePermissionRef(UUID.randomUUID(), P1));
+    when(roleManagementPort.detachPermission(roleId, P1)).thenReturn(1);
+    when(roleManagementPort.findPermission(P1)).thenReturn(Optional.of(benignPermission()));
+
+    service.detachPermission(actor, roleId, P1, ctx);
+
+    verify(roleManagementPort).detachPermission(roleId, P1);
   }
 
   @Test
@@ -1192,109 +1230,21 @@ class RoleManagementServiceTest {
         .hasFieldOrPropertyWithValue("code", "RBAC_003");
 
     verify(roleManagementPort, never()).detachPermission(any(), any());
-  }
-
-  @Test
-  void should_notCallDetachOnPort_when_ac7Blocks() {
-    RoleView role = systemRole("TENANT_ADMIN");
-    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
-
-    assertThatThrownBy(() -> service.detachPermission(actor, roleId, permissionId, ctx))
-        .isInstanceOf(SystemRoleImmutableException.class);
-
-    verify(roleManagementPort, never()).detachPermission(any(), any());
-    verifyNoInteractions(rbacAuditPort);
+    verifyNoInteractions(userRoleAssignmentPort);
   }
 
   @Test
   void should_throwResourceNotFound_when_pairingWasNeverAttachedOrAlreadyDetached() {
     RoleView role = customRole(tenantId);
     when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    stubRolePermissions(Set.of());
     when(roleManagementPort.detachPermission(roleId, permissionId)).thenReturn(0);
 
     assertThatThrownBy(() -> service.detachPermission(actor, roleId, permissionId, ctx))
         .isInstanceOf(ResourceNotFoundException.class)
         .hasFieldOrPropertyWithValue("code", "ROLE_PERMISSION_NOT_FOUND");
 
-    // D13: findPermission now runs unconditionally (moved above the delete to serve the gate
-    // too), unlike before when it was enrichment-only and reached only after a nonzero delete.
-    verify(roleManagementPort).findPermission(permissionId);
     verifyNoInteractions(rbacAuditPort);
-  }
-
-  /** D13: detaching a dangerous permission now gates like attach -- non-admin gets 403, no write. */
-  @Test
-  void should_throwNotTenantAdminAndNotWrite_when_detachingDangerousPermissionAsNonAdmin() {
-    RoleView role = customRole(tenantId);
-    PermissionView permission = dangerousPermission();
-    UUID adminRoleId = UUID.randomUUID();
-    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
-    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
-        .thenReturn(false);
-
-    ListAppender<ILoggingEvent> appender = startLogCapture();
-    try {
-      assertThatThrownBy(() -> service.detachPermission(actor, roleId, permissionId, ctx))
-          .isInstanceOf(InsufficientPermissionException.class)
-          .satisfies(
-              e ->
-                  assertThat(((InsufficientPermissionException) e).getReason())
-                      .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-      var warnEvents = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
-      assertThat(warnEvents).hasSize(1);
-      assertThat(keyValueMap(warnEvents.get(0)))
-          .containsEntry("event", "RBAC_DANGEROUS_PERMISSION_DETACH_BLOCKED");
-    } finally {
-      stopLogCapture(appender);
-    }
-
-    verify(roleManagementPort, never()).detachPermission(any(), any());
-    verifyNoInteractions(rbacAuditPort);
-  }
-
-  /** D13: an active admin can still detach a dangerous permission -- the gate isn't a ban. */
-  @Test
-  void should_detachDangerousPermission_when_callerIsActiveAdmin() {
-    RoleView role = customRole(tenantId);
-    PermissionView permission = dangerousPermission();
-    UUID adminRoleId = UUID.randomUUID();
-    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
-    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
-        .thenReturn(true);
-    when(roleManagementPort.detachPermission(roleId, permissionId)).thenReturn(1);
-
-    service.detachPermission(actor, roleId, permissionId, ctx);
-
-    verify(roleManagementPort).detachPermission(roleId, permissionId);
-  }
-
-  /** D13 negative case: the gate must not over-fire on an ordinary (non-dangerous) permission. */
-  @Test
-  void should_detachOrdinaryPermissionWithoutGate_when_nonAdminCaller() {
-    RoleView role = customRole(tenantId);
-    PermissionView permission = benignPermission();
-    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(roleManagementPort.findPermission(permissionId)).thenReturn(Optional.of(permission));
-    when(roleManagementPort.detachPermission(roleId, permissionId)).thenReturn(1);
-
-    // Inside a synchronization that never commits: the post-commit holder read (T-010) is not
-    // part of the gate this test pins.
-    inUncommittedSynchronization(
-        () -> {
-          service.detachPermission(actor, roleId, permissionId, ctx);
-          return null;
-        });
-
-    verify(roleManagementPort).detachPermission(roleId, permissionId);
-    verify(roleManagementPort, never()).findRoleIdByName(any(), any());
-    verifyNoInteractions(userRoleAssignmentPort);
   }
 
   @Test
@@ -1333,6 +1283,159 @@ class RoleManagementServiceTest {
     } finally {
       stopLogCapture(appender);
     }
+  }
+
+  // -- Row 12, RC-26.2: role-subset ---------------------------------------------------------
+
+  /** The caller lacks one of the role's permissions: 403 GRANT_EXCEEDS_CALLER, nothing written. */
+  @Test
+  void should_deny403_when_callerDoesNotHoldEveryPermissionOfTheRole() {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    stubRolePermissions(Set.of(P1, P2));
+    stubCallerHoldsRefs(new RolePermissionRef(UUID.randomUUID(), P1));
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      assertThatThrownBy(() -> service.detachPermission(actor, roleId, P1, ctx))
+          .isInstanceOfSatisfying(
+              InsufficientPermissionException.class,
+              e -> {
+                assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER);
+                assertThat(e.getRequiredPermission()).isEqualTo(ROLE_WRITE);
+              });
+
+      var warnEvents = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
+      assertThat(warnEvents).hasSize(1);
+      assertThat(keyValueMap(warnEvents.get(0)))
+          .containsOnly(
+              Map.entry("event", "RBAC_ROLE_SUBSET_DENIED"),
+              Map.entry("tenantId", tenantId),
+              Map.entry("actorUserId", actorId),
+              Map.entry("roleId", roleId),
+              Map.entry("operation", "detach"));
+    } finally {
+      stopLogCapture(appender);
+    }
+
+    verify(roleManagementPort, never()).detachPermission(any(), any());
+    verifyNoInteractions(rbacAuditPort, permissionFreshness, permissionCachePort, transactionManager);
+  }
+
+  /** 403 comes before 404: no attachment-existence oracle for a caller outside the subset. */
+  @Test
+  void should_deny403NotFound404_when_callerLacksThePermissionsAndThePairingDoesNotExist() {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    stubRolePermissions(Set.of(P1));
+    stubCallerHoldsRefs();
+    lenient().when(roleManagementPort.detachPermission(roleId, P2)).thenReturn(0);
+
+    assertThatThrownBy(() -> service.detachPermission(actor, roleId, P2, ctx))
+        .isInstanceOf(InsufficientPermissionException.class);
+
+    verify(roleManagementPort, never()).detachPermission(any(), any());
+  }
+
+  /** RC-26.2: a union-holder cannot demote an admin-defining custom role. */
+  @Test
+  void should_deny403_when_unionHolderDetachesFromAnAdminDefiningRole() {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    stubRolePermissions(CATALOGUE);
+    stubCallerHoldsRefs(
+        new RolePermissionRef(UUID.randomUUID(), P1), new RolePermissionRef(UUID.randomUUID(), P2));
+
+    assertThatThrownBy(() -> service.detachPermission(actor, roleId, P1, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    verify(roleManagementPort, never()).detachPermission(any(), any());
+  }
+
+  /** RC-26.2: an administrator whose only admin-defining role is R may not detach from R. */
+  @Test
+  void should_deny403_when_theCallersOnlyAdminDefiningRoleIsTheRoleBeingDetachedFrom() {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    stubRolePermissions(CATALOGUE);
+    stubCallerHoldsRefs(new RolePermissionRef(roleId, P1), new RolePermissionRef(roleId, P2));
+
+    assertThatThrownBy(() -> service.detachPermission(actor, roleId, P1, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    verify(roleManagementPort, never()).detachPermission(any(), any());
+  }
+
+  /** An administrator through ANOTHER role may detach from R: no single detach removes their status. */
+  @Test
+  void should_detach_when_callerIsAnAdministratorThroughAnotherRole() {
+    UUID otherAdminRoleId = UUID.randomUUID();
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    stubRolePermissions(CATALOGUE);
+    stubCallerHoldsRefs(
+        new RolePermissionRef(roleId, P1),
+        new RolePermissionRef(roleId, P2),
+        new RolePermissionRef(otherAdminRoleId, P1),
+        new RolePermissionRef(otherAdminRoleId, P2));
+    when(roleManagementPort.detachPermission(roleId, P1)).thenReturn(1);
+    when(roleManagementPort.findPermission(P1)).thenReturn(Optional.of(benignPermission()));
+
+    service.detachPermission(actor, roleId, P1, ctx);
+
+    verify(roleManagementPort).detachPermission(roleId, P1);
+  }
+
+  /** The administrator requirement applies only to admin-defining roles: a plain subset suffices. */
+  @Test
+  void should_detachFromANonAdminDefiningRole_when_callerHoldsItsPermissionsButIsNoAdministrator() {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    stubRolePermissions(Set.of(P1));
+    stubCallerHoldsRefs(new RolePermissionRef(UUID.randomUUID(), P1));
+    when(roleManagementPort.detachPermission(roleId, P1)).thenReturn(1);
+    when(roleManagementPort.findPermission(P1)).thenReturn(Optional.of(benignPermission()));
+
+    service.detachPermission(actor, roleId, P1, ctx);
+
+    verify(roleManagementPort).detachPermission(roleId, P1);
+  }
+
+  @Test
+  void should_deny403_when_callerHoldsNothingAtAll() {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    stubRolePermissions(Set.of(P1));
+    stubCallerHoldsRefs();
+
+    assertThatThrownBy(() -> service.detachPermission(actor, roleId, P1, ctx))
+        .isInstanceOf(InsufficientPermissionException.class);
+
+    verify(roleManagementPort, never()).detachPermission(any(), any());
+  }
+
+  @Test
+  void should_failClosed_when_m14ReportsTheRoleNotInTheTenantOnDetach() {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.empty());
+    stubCallerHoldsRefs(new RolePermissionRef(UUID.randomUUID(), P1));
+
+    assertThatThrownBy(() -> service.detachPermission(actor, roleId, P1, ctx))
+        .isInstanceOf(InsufficientPermissionException.class);
+
+    verify(roleManagementPort, never()).detachPermission(any(), any());
+  }
+
+  @Test
+  void should_propagateAndNotDetach_when_roleSubsetReadThrows() {
+    RuntimeException readFailure = new IllegalStateException("M13 read failed");
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenThrow(readFailure);
+
+    assertThatThrownBy(() -> service.detachPermission(actor, roleId, permissionId, ctx))
+        .isSameAs(readFailure);
+
+    verify(roleManagementPort, never()).detachPermission(any(), any());
+    verifyNoInteractions(rbacAuditPort);
   }
 
   // ---------------------------------------------------------------------------------------
@@ -1427,12 +1530,12 @@ class RoleManagementServiceTest {
   @Test
   void should_notRaisePagingSignalOrRetry_when_attachHolderReadFails() {
     stubHappyPathBenignAttach();
-    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId))
+    when(userRoleAssignmentPort.findActiveHoldersForRole(roleId, tenantId))
         .thenThrow(new org.springframework.dao.QueryTimeoutException("db down"));
 
     service.attachPermission(actor, roleId, permissionId, ctx);
 
-    verify(userRoleAssignmentPort).findActiveUserIdsForRole(roleId);
+    verify(userRoleAssignmentPort, times(1)).findActiveHoldersForRole(roleId, tenantId);
     verifyNoInteractions(permissionFreshness);
   }
 
@@ -1449,6 +1552,7 @@ class RoleManagementServiceTest {
   @Test
   void should_neverInvalidate_when_detachReturns404() {
     when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    stubRolePermissions(Set.of());
     when(roleManagementPort.detachPermission(roleId, permissionId)).thenReturn(0);
 
     assertThatThrownBy(() -> service.detachPermission(actor, roleId, permissionId, ctx))
@@ -1460,16 +1564,11 @@ class RoleManagementServiceTest {
 
   @Test
   void should_neverInvalidate_when_detachDenied() {
-    UUID adminRoleId = UUID.randomUUID();
     when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
-    when(roleManagementPort.findPermission(permissionId))
-        .thenReturn(Optional.of(dangerousPermission()));
-    when(roleManagementPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAdminAssignment(actorId, adminRoleId, tenantId))
-        .thenReturn(false);
+    stubRolePermissions(Set.of(P1));
+    stubCallerHoldsRefs();
 
-    assertThatThrownBy(() -> service.detachPermission(actor, roleId, permissionId, ctx))
+    assertThatThrownBy(() -> service.detachPermission(actor, roleId, P1, ctx))
         .isInstanceOf(InsufficientPermissionException.class);
 
     verifyNoInteractions(permissionFreshness, permissionCachePort, transactionManager);
@@ -1540,7 +1639,7 @@ class RoleManagementServiceTest {
       service.attachPermission(actor, roleId, permissionId, ctx);
 
       verifyNoInteractions(permissionCachePort);
-      verify(userRoleAssignmentPort, never()).findActiveUserIdsForRole(any());
+      verify(userRoleAssignmentPort, never()).findActiveHoldersForRole(any(), any());
       fireAfterCommit();
     } finally {
       TransactionSynchronizationManager.clearSynchronization();
@@ -1553,7 +1652,7 @@ class RoleManagementServiceTest {
   @Test
   void should_notThrow_when_holderReadFailsAfterAttachCommit() {
     stubHappyPathBenignAttach();
-    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId))
+    when(userRoleAssignmentPort.findActiveHoldersForRole(roleId, tenantId))
         .thenThrow(new org.springframework.dao.QueryTimeoutException("db down"));
 
     org.assertj.core.api.Assertions.assertThatCode(
@@ -1582,7 +1681,7 @@ class RoleManagementServiceTest {
 
     InOrder order = inOrder(transactionManager, userRoleAssignmentPort, permissionCachePort);
     order.verify(transactionManager).getTransaction(definition.capture());
-    order.verify(userRoleAssignmentPort).findActiveUserIdsForRole(roleId);
+    order.verify(userRoleAssignmentPort).findActiveHoldersForRole(roleId, tenantId);
     order.verify(transactionManager).commit(any());
     order.verify(permissionCachePort).evict(tenantId, holders);
     assertThat(definition.getValue().getPropagationBehavior())
@@ -1643,27 +1742,28 @@ class RoleManagementServiceTest {
         .thenReturn(refs);
   }
 
-  /** A successful ordinary detach whose role has three active holders after commit. */
+  /** A successful detach by a caller who holds the role's permission; three holders after commit. */
   private List<UUID> stubHappyPathDetach() {
     List<UUID> holders = List.of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
     when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
     when(roleManagementPort.findPermission(permissionId))
         .thenReturn(Optional.of(benignPermission()));
+    stubRolePermissions(Set.of(permissionId));
+    stubCallerHoldsRefs(new RolePermissionRef(UUID.randomUUID(), permissionId));
     when(roleManagementPort.detachPermission(roleId, permissionId)).thenReturn(1);
     when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId)).thenReturn(holders);
     return holders;
   }
 
-  /** A successful ordinary attach whose role has three active holders after commit. */
+  /**
+   * A successful ordinary attach whose role has three active holders after commit, all assigned by
+   * administrators (so no escalation signal). Returns the holder user ids.
+   */
   private List<UUID> stubHappyPathBenignAttach() {
-    List<UUID> holders = List.of(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID());
-    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
-    when(roleManagementPort.findPermission(permissionId))
-        .thenReturn(Optional.of(benignPermission()));
-    stubCallerHolds(permissionId);
-    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
-    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId)).thenReturn(holders);
-    return holders;
+    UUID administrator = UUID.randomUUID();
+    List<HolderProvenance> holders = holdersAssignedBy(administrator, 3);
+    stubBenignAttachWithHolders(holders, Set.of(administrator));
+    return holders.stream().map(HolderProvenance::userId).toList();
   }
 
   private static void fireAfterCommit() {

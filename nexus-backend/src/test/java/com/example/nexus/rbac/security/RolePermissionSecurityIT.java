@@ -45,12 +45,13 @@ import org.springframework.web.client.RestTemplate;
 /**
  * US-015 T-010 (Test Scenarios 5, 6, 9, 10; 03b-threat-model.md RC-5b; 03-design.md §8.6): the
  * end-to-end HTTP proof of AC7's system-role immutability, AC8-mirrored cross-tenant isolation,
- * and AC11's dangerous-permission admin gate — real embedded server, real production filter chain,
+ * and (until US-018 M3) AC11's dangerous-permission admin gate, now A3 and role-subset — real
+ * embedded server, real production filter chain,
  * real minted RS256 JWTs, structurally modelled on {@code RoleAssignmentSecurityIT} (denial-reason
  * assertions via {@link MeterRegistry} before/after deltas, since {@code reason} is never on the
  * response body) with the second-tenant fixture shape from {@code CrossTenantPermissionIT}.
  *
- * <p>{@code RoleManagementAdminGateIT} covers AC11's DB-locking guarantee itself (service layer);
+ * <p>{@code RoleManagementAdminGateIT} covers the attach and detach rules at the service layer;
  * this file stays at the HTTP boundary, proving the 403/409 status codes and check ordering an
  * actual client observes.
  */
@@ -78,6 +79,13 @@ class RolePermissionSecurityIT {
   private static final UUID TENANT_WRITE_PERMISSION_ID =
       UUID.fromString("019f6839-1801-7000-8000-000000000002");
 
+  private static byte[] toBytes(UUID uuid) {
+    java.nio.ByteBuffer buf = java.nio.ByteBuffer.allocate(16);
+    buf.putLong(uuid.getMostSignificantBits());
+    buf.putLong(uuid.getLeastSignificantBits());
+    return buf.array();
+  }
+
   @Value("${local.server.port}")
   private int port;
 
@@ -89,6 +97,7 @@ class RolePermissionSecurityIT {
   @Autowired private JwtPort jwtPort;
   @Autowired private MeterRegistry meterRegistry;
   @Autowired private RoleAssignmentService roleAssignmentService;
+  @Autowired private org.springframework.jdbc.core.JdbcTemplate jdbc;
 
   private RestTemplate restTemplate;
 
@@ -226,153 +235,141 @@ class RolePermissionSecurityIT {
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  // Scenario 9: role:write holder, no active TENANT_ADMIN -> 403 NOT_TENANT_ADMIN
+  // Scenario 9 (US-018 M3, T-017, rows 11 and A3): attach is bounded by what the caller HOLDS, for
+  // every permission alike. Formerly "role:write holder, no active TENANT_ADMIN -> 403
+  // NOT_TENANT_ADMIN" (AC11, a name-based gate on role:write / user:write / tenant:write): that
+  // gate is retired. The 403 outcome for a permission the caller does not hold is unchanged and the
+  // reason is GRANT_EXCEEDS_CALLER; attaching role:write itself is now allowed to a caller who
+  // holds it, which is the intended loosening of ADR-0021 (recorded there).
   // ═══════════════════════════════════════════════════════════════════
 
   @Test
-  void should_return403WithNotTenantAdmin_when_nonAdminAttachesRoleWriteToCustomRole() {
-    UUID tenantId = uuidGenerator.newId();
-    User caller = seedUserWithRoleWritePermission(tenantId, "s9-role-write-caller");
-    Role targetRole = seedRole(tenantId, "s9-role-write-target");
-    String token = mintToken(caller);
-    double before = permissionDeniedCount("role:write", "NOT_TENANT_ADMIN");
-
-    ResponseEntity<Map> resp =
-        postAttach(token, targetRole.getId(), ROLE_WRITE_PERMISSION_ID.toString());
-
-    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-    assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
-    assertDenialReasonIncrementedByOne("role:write", "NOT_TENANT_ADMIN", before);
-  }
-
-  @Test
-  void should_return403WithNotTenantAdmin_when_nonAdminAttachesUserWriteToCustomRole() {
+  void should_return403WithGrantExceedsCaller_when_roleWriteHolderAttachesUserWriteToCustomRole() {
     UUID tenantId = uuidGenerator.newId();
     User caller = seedUserWithRoleWritePermission(tenantId, "s9-user-write-caller");
     Role targetRole = seedRole(tenantId, "s9-user-write-target");
     String token = mintToken(caller);
-    double before = permissionDeniedCount("role:write", "NOT_TENANT_ADMIN");
+    double before = permissionDeniedCount("role:write", "GRANT_EXCEEDS_CALLER");
 
     ResponseEntity<Map> resp =
         postAttach(token, targetRole.getId(), USER_WRITE_PERMISSION_ID.toString());
 
     assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
     assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
-    assertDenialReasonIncrementedByOne("role:write", "NOT_TENANT_ADMIN", before);
+    assertDenialReasonIncrementedByOne("role:write", "GRANT_EXCEEDS_CALLER", before);
   }
 
   @Test
-  void should_return403WithNotTenantAdmin_when_nonAdminAttachesTenantWriteToCustomRole() {
+  void should_return403WithGrantExceedsCaller_when_roleWriteHolderAttachesTenantWriteToCustomRole() {
     UUID tenantId = uuidGenerator.newId();
     User caller = seedUserWithRoleWritePermission(tenantId, "s9-tenant-write-caller");
     Role targetRole = seedRole(tenantId, "s9-tenant-write-target");
     String token = mintToken(caller);
-    double before = permissionDeniedCount("role:write", "NOT_TENANT_ADMIN");
+    double before = permissionDeniedCount("role:write", "GRANT_EXCEEDS_CALLER");
 
     ResponseEntity<Map> resp =
         postAttach(token, targetRole.getId(), TENANT_WRITE_PERMISSION_ID.toString());
 
     assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
     assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
-    assertDenialReasonIncrementedByOne("role:write", "NOT_TENANT_ADMIN", before);
+    assertDenialReasonIncrementedByOne("role:write", "GRANT_EXCEEDS_CALLER", before);
   }
 
   /**
-   * Fail-closed branch (03-design.md §8.5 row 7, R-10): the caller's tenant has no seeded
-   * TENANT_ADMIN role at ALL -- true of every freshly generated tenant used throughout this class
-   * (and the normal state for every Epic-3-created tenant today), made explicit here as its own
-   * named case rather than left incidental to the Scenario 9 tests above. Q3 (findRoleIdByName)
-   * returns empty, short-circuiting before Q11 ever runs.
+   * Row 11's intended loosening, over HTTP: attaching {@code role:write} itself, by a caller who
+   * holds it and is not an administrator. (Formerly the same request was 403 NOT_TENANT_ADMIN.)
+   * Every freshly generated tenant here has no {@code TENANT_ADMIN} role at all, which the former
+   * "no seeded TENANT_ADMIN role" fail-closed case made its own test; it is no longer a branch.
    */
   @Test
-  void should_return403WithNotTenantAdmin_when_tenantHasNoSeededTenantAdminRoleAtAll() {
+  void should_return201_when_roleWriteHolderAttachesRoleWriteToCustomRole() {
     UUID tenantId = uuidGenerator.newId();
-    User caller = seedUserWithRoleWritePermission(tenantId, "s9-no-admin-role-caller");
-    Role targetRole = seedRole(tenantId, "s9-no-admin-role-target");
+    User caller = seedUserWithRoleWritePermission(tenantId, "s9-role-write-caller");
+    Role targetRole = seedRole(tenantId, "s9-role-write-target");
     String token = mintToken(caller);
-    double before = permissionDeniedCount("role:write", "NOT_TENANT_ADMIN");
 
     ResponseEntity<Map> resp =
         postAttach(token, targetRole.getId(), ROLE_WRITE_PERMISSION_ID.toString());
 
-    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-    assertDenialReasonIncrementedByOne("role:write", "NOT_TENANT_ADMIN", before);
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+    assertThat(
+            rolePermissionRepository.existsById(
+                new RolePermissionId(targetRole.getId(), ROLE_WRITE_PERMISSION_ID)))
+        .isTrue();
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  // Scenario 10: admin attaches role:write to custom role, grants it to a non-admin (via
-  // US-012's RoleAssignmentService), the non-admin's own attach attempt still 403s
+  // Scenario 10: an administrator attaches role:write to a custom role and grants it to a
+  // non-administrator (via US-012's RoleAssignmentService); the non-administrator's own attach of a
+  // permission they do not hold still 403s
   // ═══════════════════════════════════════════════════════════════════
 
   @Test
-  void should_return403OnTheAttachAttempt_when_nonAdminHolderOfRoleWriteViaGrantedRoleAttemptsToAttach() {
+  void should_return403OnTheAttachAttempt_when_nonAdminHolderOfRoleWriteViaGrantedRoleAttemptsToAttachWhatTheyDoNotHold() {
     UUID tenantId = uuidGenerator.newId();
     Role adminRole = seedNamedRole(tenantId, "TENANT_ADMIN", "s10-admin-role");
-    // The admin needs role:write GRANTED (not just an active TENANT_ADMIN assignment) to pass
-    // @RequiresPermission("role:write") and reach the endpoint at all -- AC11's admin gate is a
-    // SEPARATE, additional check inside the service, not a substitute for holding the permission.
-    grantPermission(adminRole.getId(), ROLE_WRITE_PERMISSION_ID);
-    // US-018 07-security-review.md L-1: the service-level assign() below re-checks the admin's
-    // fresh M13 holdings for user:role:assign.
-    grantPermission(adminRole.getId(), RbacSeededPermissionIds.USER_ROLE_ASSIGN);
+    // The administrator holds the whole catalogue: role:write to reach the endpoint, user:role:assign
+    // for the service-level assign() below (L-1) and every permission it attaches or grants (A2, A3).
+    grantWholeCatalogue(adminRole.getId());
     User admin = seedUser(tenantId, "s10-admin");
     seedActiveAssignment(tenantId, adminRole.getId(), admin.getId(), admin.getId());
     String adminToken = mintToken(admin);
 
-    Role dangerousCustomRole = seedRole(tenantId, "s10-dangerous-custom");
+    Role powerfulCustomRole = seedRole(tenantId, "s10-powerful-custom");
     ResponseEntity<Map> attachResp =
-        postAttach(adminToken, dangerousCustomRole.getId(), ROLE_WRITE_PERMISSION_ID.toString());
+        postAttach(adminToken, powerfulCustomRole.getId(), ROLE_WRITE_PERMISSION_ID.toString());
     assertThat(attachResp.getStatusCode())
-        .as("setup: the admin's own attach must succeed")
+        .as("setup: the administrator's own attach must succeed")
         .isEqualTo(HttpStatus.CREATED);
 
-    // Grant the now-dangerous custom role to a non-admin user, VIA US-012's real
+    // Grant the now-powerful custom role to a non-administrator user, VIA US-012's real
     // RoleAssignmentService (not a raw fixture row) -- genuinely exercising the cross-story
     // integration the scenario names.
     User nonAdmin = seedUser(tenantId, "s10-non-admin");
     roleAssignmentService.assign(
-        new RoleChangeActor(admin.getId(), tenantId), nonAdmin.getId(), dangerousCustomRole.getId(),
+        new RoleChangeActor(admin.getId(), tenantId), nonAdmin.getId(), powerfulCustomRole.getId(),
         RequestContext.of("127.0.0.1", "trace-" + UUID.randomUUID(), "RolePermissionSecurityIT"));
 
-    // The non-admin now holds role:write (via the dangerous custom role) but is NOT an active
-    // TENANT_ADMIN. Their own attempt to attach a dangerous permission must still 403.
+    // The non-administrator now holds role:write (via the custom role) but not user:write. Their
+    // own attempt to attach user:write must 403: they could not have granted it.
     Role anotherTargetRole = seedRole(tenantId, "s10-another-target");
     String nonAdminToken = mintToken(nonAdmin);
-    double before = permissionDeniedCount("role:write", "NOT_TENANT_ADMIN");
+    double before = permissionDeniedCount("role:write", "GRANT_EXCEEDS_CALLER");
 
     ResponseEntity<Map> resp =
         postAttach(nonAdminToken, anotherTargetRole.getId(), USER_WRITE_PERMISSION_ID.toString());
 
     assertThat(resp.getStatusCode())
-        .as("the non-admin holder of role:write must still fail AC11's active-TENANT_ADMIN check")
+        .as("a role:write holder must still fail A3 for a permission they do not hold")
         .isEqualTo(HttpStatus.FORBIDDEN);
     assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
-    assertDenialReasonIncrementedByOne("role:write", "NOT_TENANT_ADMIN", before);
+    assertDenialReasonIncrementedByOne("role:write", "GRANT_EXCEEDS_CALLER", before);
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  // 07-security-review.md L-3: D13's detach gate (RoleManagementService.java:295-305) has only
-  // unit-test (mocked) coverage. These three cases prove the gate at the HTTP boundary --
-  // structurally modelled on the Scenario 9 tests above (role:write-only caller, no active
-  // TENANT_ADMIN, denial-reason metric assertion).
+  // 07-security-review.md L-3, re-cast by US-018 T-017 (row 12): D13's name-based detach gate is
+  // replaced by role-subset. These cases prove the rule at the HTTP boundary: the caller must hold
+  // every permission of the role. (Formerly "role:write-only caller, no active TENANT_ADMIN ->
+  // 403 NOT_TENANT_ADMIN" on a dangerous permission.)
   // ═══════════════════════════════════════════════════════════════════
 
   @Test
-  void should_return403AndLeaveRowIntact_when_nonAdminDetachesADangerousPermission() {
+  void should_return403AndLeaveRowIntact_when_callerLacksAPermissionOfTheRoleBeingDetachedFrom() {
     UUID tenantId = uuidGenerator.newId();
     User caller = seedUserWithRoleWritePermission(tenantId, "l3-dang-caller");
     Role targetRole = seedRole(tenantId, "l3-dang-target");
     grantPermission(targetRole.getId(), ROLE_WRITE_PERMISSION_ID);
+    grantPermission(targetRole.getId(), USER_WRITE_PERMISSION_ID);
     String token = mintToken(caller);
-    double before = permissionDeniedCount("role:write", "NOT_TENANT_ADMIN");
+    double before = permissionDeniedCount("role:write", "GRANT_EXCEEDS_CALLER");
 
     ResponseEntity<Map> resp = deleteDetach(token, targetRole.getId(), ROLE_WRITE_PERMISSION_ID);
 
     assertThat(resp.getStatusCode())
-        .as("a role:write-only non-admin caller must be denied on a dangerous-permission detach")
+        .as("a caller who does not hold user:write must be denied on a role that carries it")
         .isEqualTo(HttpStatus.FORBIDDEN);
     assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
-    assertDenialReasonIncrementedByOne("role:write", "NOT_TENANT_ADMIN", before);
+    assertDenialReasonIncrementedByOne("role:write", "GRANT_EXCEEDS_CALLER", before);
     assertThat(
             rolePermissionRepository.existsById(
                 new RolePermissionId(targetRole.getId(), ROLE_WRITE_PERMISSION_ID)))
@@ -381,32 +378,37 @@ class RolePermissionSecurityIT {
   }
 
   /**
-   * T-I14: a non-admin detaching a dangerous permission that was never attached to the role must
-   * still 403 (the gate runs before the delete's affected-rows check), never a 404 that would let
-   * a non-admin distinguish "attached" from "never attached" on a dangerous permission.
+   * T-I14: a caller outside the role-subset who targets a permission that was never attached must
+   * still 403 (role-subset runs before the delete's affected-rows check), never a 404 that would
+   * let them distinguish "attached" from "never attached".
    */
   @Test
-  void should_return403NotFound_when_nonAdminDetachesADangerousPermissionNeverAttached() {
+  void should_return403NotFound_when_callerOutsideTheRoleSubsetDetachesAPermissionNeverAttached() {
     UUID tenantId = uuidGenerator.newId();
     User caller = seedUserWithRoleWritePermission(tenantId, "l3-never-caller");
     Role targetRole = seedRole(tenantId, "l3-never-target");
+    grantPermission(targetRole.getId(), USER_WRITE_PERMISSION_ID);
     String token = mintToken(caller);
-    double before = permissionDeniedCount("role:write", "NOT_TENANT_ADMIN");
+    double before = permissionDeniedCount("role:write", "GRANT_EXCEEDS_CALLER");
 
     ResponseEntity<Map> resp = deleteDetach(token, targetRole.getId(), ROLE_WRITE_PERMISSION_ID);
 
     assertThat(resp.getStatusCode())
-        .as("must 403, not 404 -- a non-admin must not be able to use the response code to"
-            + " discover whether a dangerous permission is attached")
+        .as("must 403, not 404 -- the caller must not be able to use the response code to"
+            + " discover whether a permission is attached")
         .isEqualTo(HttpStatus.FORBIDDEN);
     assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
-    assertDenialReasonIncrementedByOne("role:write", "NOT_TENANT_ADMIN", before);
+    assertDenialReasonIncrementedByOne("role:write", "GRANT_EXCEEDS_CALLER", before);
   }
 
   @Test
-  void should_return204_when_nonAdminRoleWriteHolderDetachesAnOrdinaryPermission() {
+  void should_return204_when_callerHoldingEveryPermissionOfTheRoleDetachesOne() {
     UUID tenantId = uuidGenerator.newId();
     User caller = seedUserWithRoleWritePermission(tenantId, "l3-ord-caller");
+    // The caller also holds role:read, the one permission the target role carries.
+    Role callerExtraRole = seedRole(tenantId, "l3-ord-caller-extra");
+    grantPermission(callerExtraRole.getId(), ROLE_READ_PERMISSION_ID);
+    seedActiveAssignment(tenantId, callerExtraRole.getId(), caller.getId(), caller.getId());
     Role targetRole = seedRole(tenantId, "l3-ord-target");
     grantPermission(targetRole.getId(), ROLE_READ_PERMISSION_ID);
     String token = mintToken(caller);
@@ -414,8 +416,8 @@ class RolePermissionSecurityIT {
     ResponseEntity<Map> resp = deleteDetach(token, targetRole.getId(), ROLE_READ_PERMISSION_ID);
 
     assertThat(resp.getStatusCode())
-        .as("detaching an ordinary, non-dangerous permission never routes through the AC11 gate --"
-            + " a plain role:write holder may do this without an active TENANT_ADMIN assignment")
+        .as("role-subset: a caller who holds every permission of the role may detach from it"
+            + " without being an administrator")
         .isEqualTo(HttpStatus.NO_CONTENT);
     assertThat(
             rolePermissionRepository.existsById(
@@ -447,6 +449,13 @@ class RolePermissionSecurityIT {
 
   private void grantPermission(UUID roleId, UUID permissionId) {
     rolePermissionRepository.save(new RolePermission(roleId, permissionId));
+  }
+
+  /** Makes {@code roleId} admin-defining (ADR-0021 D3): attaches every catalogue permission. */
+  private void grantWholeCatalogue(UUID roleId) {
+    jdbc.update(
+        "INSERT INTO role_permissions (role_id, permission_id) SELECT ?, id FROM permissions",
+        toBytes(roleId));
   }
 
   private UserRole seedActiveAssignment(UUID tenantId, UUID roleId, UUID assigneeId, UUID assignedById) {

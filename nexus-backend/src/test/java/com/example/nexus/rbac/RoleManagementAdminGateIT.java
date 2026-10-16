@@ -2,7 +2,6 @@ package com.example.nexus.rbac;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.fail;
 
 import com.example.nexus.TestcontainersConfiguration;
 import com.example.nexus.common.domain.RequestContext;
@@ -25,12 +24,10 @@ import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -42,43 +39,28 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
- * US-015 T-010, AC11's dedicated test (03-design.md §5.2, §7.2 D8's RC-5a ArchUnit rule;
- * 03b-threat-model.md T-E14 -- "the single most important test in the entire story"). Non-
- * negotiable per {@code 04-tasks.md} T-010.
+ * US-015 T-010 (AC11's dedicated test; 03-design.md §5.2; 03b-threat-model.md T-E14), re-cast by
+ * US-018 T-017 (04-tasks.md: "attach cases rewritten as A3 cases; detach cases kept as outcome
+ * assertions; union-holder detach -> 403"). Stays entirely at the SERVICE layer ({@link
+ * RoleManagementService} autowired directly, no HTTP); the HTTP 403 shape is covered by {@code
+ * RolePermissionSecurityIT}.
  *
- * <p>Stays entirely at the SERVICE layer ({@link RoleManagementService} autowired directly, no
- * HTTP) -- its job is proving AC11's DB-level guarantee, not re-proving the HTTP 403 shape (already
- * covered by {@code RolePermissionSecurityIT} Scenarios 9/10).
+ * <p><b>What changed and why.</b> AC11 (an attach of a dangerous permission requires an active
+ * {@code TENANT_ADMIN}, decided by a fresh LOCKING read, Q11) and D13 (the same for detach) are
+ * retired: ADR-0021 D2 replaces the attach gate with A3, where the caller must HOLD the permission
+ * being attached, and D5 replaces the detach gate with role-subset. Both read the caller's
+ * holdings in a non-locking snapshot (M13), deliberately: a locking read driven by {@code
+ * fk_user_roles_user} would be a new acquisition outside the set-lock region (ADR-0018 D6).
  *
- * <p><b>The concurrent-revocation case's design, and why it is a 2-thread, {@link CountDownLatch}
- * -orchestrated directed interleaving rather than the N-thread {@code CyclicBarrier} "simultaneous
- * race" pattern {@code ActiveAssignmentIT}/{@code RefreshTokenRotationIT} use elsewhere in this
- * codebase:</b> AC11's guarantee is about READ FRESHNESS under a controlled interleaving, not
- * "exactly one winner races a unique constraint". {@code
- * UserRoleAssignmentPort#hasActiveAdminAssignment} (Q11) is mandated to be a fresh, LOCKING
- * ({@code PESSIMISTIC_READ}/{@code FOR SHARE}) read specifically because a plain (non-locking)
- * read inside the same transaction would reuse the REPEATABLE-READ snapshot established by an
- * earlier read in that same transaction ({@code
- * RoleManagementService#verifyCallerIsActiveTenantAdmin}'s Q3, which runs first) and could
- * therefore MISS a revocation that commits after that snapshot was taken. Proving this requires
- * directed ordering -- pause the attach transaction's OWN locking read until a concurrent
- * revocation has genuinely executed (uncommitted) against the exact same row, confirm the locking
- * read actually BLOCKS on that uncommitted row (the mechanical, not inferred, proof that Q11 is a
- * real locking read), then release the revocation's commit and confirm the locking read then sees
- * the fresh, post-commit state. A CyclicBarrier's simultaneous start cannot express or verify this
- * ordering; only directed, latch-controlled interleaving can.
- *
- * <p>Mechanism: thread T2 opens its own {@link TransactionTemplate} transaction and executes
- * {@code JpaUserRoleRepository#revokeById} (the same targeted {@code UPDATE ... WHERE id = ? AND
- * revoked_at IS NULL} production code path uses) -- which acquires InnoDB's exclusive row lock
- * immediately, synchronously, on execution -- but does not let its transaction commit until
- * signaled. Thread T1 is the REAL {@link RoleManagementService#attachPermission} call on its own
- * thread/transaction: Q3 (role-by-name, a different table, unlocked) runs first, then Q11 attempts
- * to acquire a SHARED lock on the exact row T2 already holds EXCLUSIVELY (uncommitted) and blocks.
- * The test asserts this blocking is real (a bounded {@code Future#get} throws {@link
- * TimeoutException}), then releases T2's commit, then asserts T1's Q11 -- which reads the LATEST
- * COMMITTED row version regardless of T1's own transaction snapshot -- now correctly sees {@code
- * revoked_at IS NOT NULL} and denies the attach.
+ * <p><b>The concurrent-revocation case, retired and replaced.</b> The former "non-negotiable"
+ * test proved that Q11 was a genuine locking read by pausing it behind an uncommitted revocation
+ * and showing that it then saw the committed state. That assertion belongs to a control that no
+ * longer exists, so it is retired, not inverted. The accepted residual that replaces it (RES-27, Low)
+ * is pinned by {@link
+ * #should_attachOnTheSnapshotWithoutBlocking_when_theCallersAssignmentIsRevokedByAnUncommittedTransaction_RES27()}:
+ * the attach does not block on the revoker's lock (so A3 adds no lock acquisition), and it decides
+ * from the snapshot. The window is the transaction's first consistent read to the M13 read, and it
+ * is bounded by the milliseconds between them on this path, which takes no lock.
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
@@ -89,6 +71,8 @@ class RoleManagementAdminGateIT {
       UUID.fromString("019f6839-1805-7000-8000-000000000006");
   private static final UUID AUDIT_READ_PERMISSION_ID =
       UUID.fromString("019f6839-1806-7000-8000-000000000007");
+  private static final UUID USER_READ_PERMISSION_ID =
+      UUID.fromString("019f6839-1802-7000-8000-000000000003");
 
   @Autowired private RoleManagementService roleManagementService;
   @Autowired private JpaRoleRepository roleRepository;
@@ -108,14 +92,14 @@ class RoleManagementAdminGateIT {
     }
   }
 
-  // ── Positive: an active TENANT_ADMIN successfully attaches a dangerous permission ──────
+  // ── Attach: A3 cases ─────────────────────────────────────────────────────────────────────
 
+  /** An administrator (the whole catalogue) holds {@code role:write}, so A3 lets them attach it. */
   @Test
-  void should_attachSucceed_when_callerIsActiveTenantAdmin() {
+  void should_attachSucceed_when_callerHoldsThePermissionThroughAnAdministratorRole() {
     UUID tenantId = uuidGenerator.newId();
     Role adminRole = seedNamedRole(tenantId, "TENANT_ADMIN", "positive-admin-role");
-    // US-018 A3: AC11's active admin must also hold the permission being attached.
-    grantPermission(adminRole.getId(), ROLE_WRITE_PERMISSION_ID);
+    grantWholeCatalogue(adminRole.getId());
     UUID adminUserId = seedUser("positive-admin", tenantId).getId();
     seedActiveAssignment(tenantId, adminRole.getId(), adminUserId, adminUserId);
     RoleChangeActor actor = new RoleChangeActor(adminUserId, tenantId);
@@ -129,40 +113,67 @@ class RoleManagementAdminGateIT {
     assertThat(rolePermissionCount(targetRole.getId(), ROLE_WRITE_PERMISSION_ID)).isEqualTo(1);
   }
 
-  // ── Negative: caller holds role:write via a custom role, but no active TENANT_ADMIN ─────
-
+  /**
+   * Row 11, the intended loosening: the name-based AC11 gate is gone, so a {@code role:write}
+   * holder who is NOT an administrator may attach {@code role:write} itself (they hold it, so they
+   * could have granted it). What bounds an attach now is holdings, for every permission alike.
+   */
   @Test
-  void should_throwNotTenantAdmin_when_callerHasNoActiveTenantAdminAssignment() {
+  void should_attachRoleWrite_when_aNonAdministratorHoldsRoleWrite() {
+    UUID tenantId = uuidGenerator.newId();
+    Role callerRole = seedRole("loosened-caller-role", tenantId);
+    grantPermission(callerRole.getId(), ROLE_WRITE_PERMISSION_ID);
+    UUID callerUserId = seedUser("loosened-caller", tenantId).getId();
+    seedActiveAssignment(tenantId, callerRole.getId(), callerUserId, callerUserId);
+    RoleChangeActor actor = new RoleChangeActor(callerUserId, tenantId);
+    Role targetRole = seedRole("loosened-target", tenantId);
+
+    roleManagementService.attachPermission(
+        actor, targetRole.getId(), ROLE_WRITE_PERMISSION_ID, requestContext());
+
+    assertThat(rolePermissionCount(targetRole.getId(), ROLE_WRITE_PERMISSION_ID)).isEqualTo(1);
+  }
+
+  /**
+   * A3 on a caller who is NOT an administrator and does not hold the permission: 403
+   * GRANT_EXCEEDS_CALLER and no row. (Replaces {@code
+   * should_throwNotTenantAdmin_when_callerHasNoActiveTenantAdminAssignment}; the decision is now
+   * about holdings, not the name {@code TENANT_ADMIN}.)
+   */
+  @Test
+  void should_throwGrantExceedsCaller_when_callerDoesNotHoldRoleWriteToAttach() {
     UUID tenantId = uuidGenerator.newId();
     Role adminRole = seedNamedRole(tenantId, "TENANT_ADMIN", "negative-admin-role");
-    // The tenant's TENANT_ADMIN role genuinely exists and is held -- by SOMEONE ELSE, never the
-    // caller below. This distinguishes this case from the R-10 fail-closed "no TENANT_ADMIN role
-    // exists at all" branch, already covered in RolePermissionSecurityIT.
+    grantWholeCatalogue(adminRole.getId());
+    // The tenant's administrator role genuinely exists and is held -- by SOMEONE ELSE.
     UUID someoneElseId = seedUser("negative-someone-else", tenantId).getId();
     seedActiveAssignment(tenantId, adminRole.getId(), someoneElseId, someoneElseId);
+    // The caller holds the endpoint permission only through a role that carries role:write ... and
+    // user:read, but not the permission they try to attach.
+    Role callerRole = seedRole("negative-caller-role", tenantId);
+    grantPermission(callerRole.getId(), ROLE_WRITE_PERMISSION_ID);
     UUID callerUserId = seedUser("negative-caller", tenantId).getId();
+    seedActiveAssignment(tenantId, callerRole.getId(), callerUserId, callerUserId);
     RoleChangeActor actor = new RoleChangeActor(callerUserId, tenantId);
     Role targetRole = seedRole("negative-target", tenantId);
 
     assertThatThrownBy(
             () ->
                 roleManagementService.attachPermission(
-                    actor, targetRole.getId(), ROLE_WRITE_PERMISSION_ID, requestContext()))
+                    actor, targetRole.getId(), USER_READ_PERMISSION_ID, requestContext()))
         .isInstanceOf(InsufficientPermissionException.class)
         .satisfies(
             e ->
                 assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
+                    .isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
 
-    assertThat(rolePermissionCount(targetRole.getId(), ROLE_WRITE_PERMISSION_ID))
+    assertThat(rolePermissionCount(targetRole.getId(), USER_READ_PERMISSION_ID))
         .as("a denied attach must never leave a role_permissions row")
         .isZero();
   }
 
-  // ── US-018 A3: attaching any permission requires the caller to hold it ─────────────────
-
   /**
-   * The non-dangerous attach gap A3 closes: {@code audit:read} never reaches AC11, so before A3 a
+   * The non-dangerous attach gap A3 closes: {@code audit:read} never reached AC11, so before A3 a
    * {@code role:write} holder could attach it without holding it.
    */
   @Test
@@ -191,13 +202,130 @@ class RoleManagementAdminGateIT {
         .isZero();
   }
 
-  // ── The non-negotiable case ──────────────────────────────────────────────────────────────
+  // ── Detach: role-subset outcomes (rows 12 and 19) ────────────────────────────────────────
+
+  /** The caller holds every permission of the role: detach succeeds (204 at the HTTP layer). */
+  @Test
+  void should_detach_when_callerHoldsEveryPermissionOfTheRole() {
+    UUID tenantId = uuidGenerator.newId();
+    Role callerRole = seedRole("detach-ok-caller-role", tenantId);
+    grantPermission(callerRole.getId(), ROLE_WRITE_PERMISSION_ID);
+    grantPermission(callerRole.getId(), USER_READ_PERMISSION_ID);
+    UUID callerUserId = seedUser("detach-ok-caller", tenantId).getId();
+    seedActiveAssignment(tenantId, callerRole.getId(), callerUserId, callerUserId);
+    RoleChangeActor actor = new RoleChangeActor(callerUserId, tenantId);
+    Role targetRole = seedRole("detach-ok-target", tenantId);
+    grantPermission(targetRole.getId(), USER_READ_PERMISSION_ID);
+
+    roleManagementService.detachPermission(
+        actor, targetRole.getId(), USER_READ_PERMISSION_ID, requestContext());
+
+    assertThat(rolePermissionCount(targetRole.getId(), USER_READ_PERMISSION_ID)).isZero();
+  }
+
+  /** The caller lacks one permission of the role: 403, the pairing stays (role-subset). */
+  @Test
+  void should_throwGrantExceedsCaller_when_callerLacksAPermissionOfTheRoleBeingDetachedFrom() {
+    UUID tenantId = uuidGenerator.newId();
+    Role callerRole = seedRole("detach-deny-caller-role", tenantId);
+    grantPermission(callerRole.getId(), ROLE_WRITE_PERMISSION_ID);
+    UUID callerUserId = seedUser("detach-deny-caller", tenantId).getId();
+    seedActiveAssignment(tenantId, callerRole.getId(), callerUserId, callerUserId);
+    RoleChangeActor actor = new RoleChangeActor(callerUserId, tenantId);
+    Role targetRole = seedRole("detach-deny-target", tenantId);
+    grantPermission(targetRole.getId(), USER_READ_PERMISSION_ID);
+
+    assertThatThrownBy(
+            () ->
+                roleManagementService.detachPermission(
+                    actor, targetRole.getId(), USER_READ_PERMISSION_ID, requestContext()))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    assertThat(rolePermissionCount(targetRole.getId(), USER_READ_PERMISSION_ID)).isEqualTo(1);
+  }
+
+  /**
+   * Row 19 / RC-26.2 (T-E34): a UNION-holder -- the whole catalogue only across two partial roles
+   * -- passes the subset comparison on a custom admin-defining role but is not an administrator,
+   * so they cannot demote it: 403 and the pairing stays.
+   */
+  @Test
+  void should_throwGrantExceedsCaller_when_unionHolderDetachesFromACustomAdminDefiningRole() {
+    UUID tenantId = uuidGenerator.newId();
+    Role customAdminRole = seedRole("union-custom-admin", tenantId);
+    grantWholeCatalogue(customAdminRole.getId());
+    Role halfA = seedRole("union-half-a", tenantId);
+    Role halfB = seedRole("union-half-b", tenantId);
+    grantCatalogueHalf(halfA.getId(), 0);
+    grantCatalogueHalf(halfB.getId(), 1);
+    UUID unionHolderId = seedUser("union-holder", tenantId).getId();
+    seedActiveAssignment(tenantId, halfA.getId(), unionHolderId, unionHolderId);
+    seedActiveAssignment(tenantId, halfB.getId(), unionHolderId, unionHolderId);
+    RoleChangeActor actor = new RoleChangeActor(unionHolderId, tenantId);
+
+    assertThatThrownBy(
+            () ->
+                roleManagementService.detachPermission(
+                    actor, customAdminRole.getId(), USER_READ_PERMISSION_ID, requestContext()))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    assertThat(rolePermissionCount(customAdminRole.getId(), USER_READ_PERMISSION_ID)).isEqualTo(1);
+  }
+
+  /**
+   * RC-26.2: an administrator whose ONLY admin-defining role is the one being detached from may
+   * not detach: no single detach removes the administrator status the caller relies on.
+   */
+  @Test
+  void should_throwGrantExceedsCaller_when_theCallersOnlyAdminDefiningRoleIsTheOneBeingDetached() {
+    UUID tenantId = uuidGenerator.newId();
+    Role customAdminRole = seedRole("only-custom-admin", tenantId);
+    grantWholeCatalogue(customAdminRole.getId());
+    UUID adminId = seedUser("only-custom-admin-holder", tenantId).getId();
+    seedActiveAssignment(tenantId, customAdminRole.getId(), adminId, adminId);
+    RoleChangeActor actor = new RoleChangeActor(adminId, tenantId);
+
+    assertThatThrownBy(
+            () ->
+                roleManagementService.detachPermission(
+                    actor, customAdminRole.getId(), USER_READ_PERMISSION_ID, requestContext()))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    assertThat(rolePermissionCount(customAdminRole.getId(), USER_READ_PERMISSION_ID)).isEqualTo(1);
+  }
+
+  /** An administrator through ANOTHER role may detach from a custom admin-defining role. */
+  @Test
+  void should_detach_when_callerIsAnAdministratorThroughAnotherRole() {
+    UUID tenantId = uuidGenerator.newId();
+    Role adminRole = seedNamedRole(tenantId, "TENANT_ADMIN", "detach-other-admin");
+    grantWholeCatalogue(adminRole.getId());
+    Role customAdminRole = seedRole("detach-other-custom-admin", tenantId);
+    grantWholeCatalogue(customAdminRole.getId());
+    UUID adminId = seedUser("detach-other-admin-holder", tenantId).getId();
+    seedActiveAssignment(tenantId, adminRole.getId(), adminId, adminId);
+    RoleChangeActor actor = new RoleChangeActor(adminId, tenantId);
+
+    roleManagementService.detachPermission(
+        actor, customAdminRole.getId(), USER_READ_PERMISSION_ID, requestContext());
+
+    assertThat(rolePermissionCount(customAdminRole.getId(), USER_READ_PERMISSION_ID)).isZero();
+  }
+
+  // ── RES-27: the snapshot is the accepted residual, and the attach does not block ───────────
 
   @Test
-  void should_denyAttach_when_callersAdminAssignmentIsRevokedInAConcurrentTransactionBetweenQ3AndQ11()
+  void should_attachOnTheSnapshotWithoutBlocking_when_theCallersAssignmentIsRevokedByAnUncommittedTransaction_RES27()
       throws Exception {
     UUID tenantId = uuidGenerator.newId();
     Role adminRole = seedNamedRole(tenantId, "TENANT_ADMIN", "concurrent-admin-role");
+    grantWholeCatalogue(adminRole.getId());
     UUID adminUserId = seedUser("concurrent-admin", tenantId).getId();
     UserRole assignment =
         seedActiveAssignment(tenantId, adminRole.getId(), adminUserId, adminUserId);
@@ -229,48 +357,25 @@ class RoleManagementAdminGateIT {
         .isTrue();
 
     // T1 (attacher): the REAL attachPermission call, started only AFTER T2's update is confirmed
-    // executed -- Q3 runs unlocked, then Q11 must block on T2's exclusive lock.
+    // executed. A3's M13 is a plain snapshot read, so it must NOT block on T2's exclusive lock:
+    // this is the property that keeps A3 outside the lock family (ADR-0018 D6, MC-A). A bounded
+    // get that throws TimeoutException would mean A3 had become a locking read.
     Future<PermissionView> attachFuture =
         executor.submit(
             () ->
                 roleManagementService.attachPermission(
                     actor, targetRole.getId(), ROLE_WRITE_PERMISSION_ID, requestContext()));
+    PermissionView attached = attachFuture.get(10, TimeUnit.SECONDS);
 
-    // Mechanical proof that Q11 is a genuine LOCKING read: T1 must still be blocked a short,
-    // bounded time after T2's update executed -- if this does NOT throw TimeoutException, Q11 is
-    // not actually taking a lock on the row.
-    assertThatThrownBy(() -> attachFuture.get(2, TimeUnit.SECONDS))
-        .as("T1's Q11 locking read must be genuinely blocked by T2's uncommitted exclusive lock"
-            + " on the same user_roles row")
-        .isInstanceOf(TimeoutException.class);
+    // The residual, stated exactly (RES-27): the attach decided from the snapshot, so it succeeded
+    // on authority that T2 is revoking. Accepted (Low): a milliseconds window on a path that takes
+    // no lock, and both actions are audited. This assertion pins the residual so that closing or
+    // widening it is a deliberate decision, not a side effect.
+    assertThat(attached.name()).isEqualTo("role:write");
 
-    // Release T2 -> it commits the revocation, releasing the lock.
     releaseCommit.countDown();
-    Integer revokeAffectedRows = revokeFuture.get(5, TimeUnit.SECONDS);
-    assertThat(revokeAffectedRows).as("T2's revoke itself must succeed").isEqualTo(1);
-
-    // T1 unblocks. PESSIMISTIC_READ/FOR SHARE reads the LATEST COMMITTED row version -- it does
-    // NOT honor T1's own REPEATABLE-READ snapshot (established by Q3's earlier read) -- so Q11
-    // must now see revoked_at IS NOT NULL and deny the attach. This is the exact property that
-    // distinguishes the mandated locking read from the forbidden non-locking shortcut (T-E14).
-    try {
-      attachFuture.get(5, TimeUnit.SECONDS);
-      fail("expected attachPermission to be denied once T2's revocation committed");
-    } catch (ExecutionException e) {
-      assertThat(e.getCause())
-          .as("after T2 commits, T1's attach must fail with NOT_TENANT_ADMIN, never succeed on a"
-              + " stale pre-revocation snapshot")
-          .isInstanceOf(InsufficientPermissionException.class)
-          .satisfies(
-              cause ->
-                  assertThat(((InsufficientPermissionException) cause).getReason())
-                      .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-    }
-
-    assertThat(rolePermissionCount(targetRole.getId(), ROLE_WRITE_PERMISSION_ID))
-        .as("the attach must have been genuinely rejected -- no role_permissions row, not a"
-            + " stale-snapshot false positive")
-        .isZero();
+    assertThat(revokeFuture.get(5, TimeUnit.SECONDS)).as("T2's revoke itself must succeed").isEqualTo(1);
+    assertThat(rolePermissionCount(targetRole.getId(), ROLE_WRITE_PERMISSION_ID)).isEqualTo(1);
   }
 
   private static void awaitUninterruptibly(CountDownLatch latch) {
@@ -302,13 +407,36 @@ class RoleManagementAdminGateIT {
             false));
   }
 
-  /** Overload for the literal role name {@code "TENANT_ADMIN"} AC11 matches on. */
+  /** A role with the given literal name (a case of the name no longer matters). */
   private Role seedNamedRole(UUID tenantId, String literalName, String tag) {
     return roleRepository.save(new Role(uuidGenerator.newId(), tenantId, literalName, tag, false));
   }
 
   private void grantPermission(UUID roleId, UUID permissionId) {
     rolePermissionRepository.save(new RolePermission(roleId, permissionId));
+  }
+
+  /** Makes {@code roleId} admin-defining (ADR-0021 D3): attaches every catalogue permission. */
+  private void grantWholeCatalogue(UUID roleId) {
+    jdbc.update(
+        "INSERT INTO role_permissions (role_id, permission_id) SELECT ?, id FROM permissions",
+        toBytes(roleId));
+  }
+
+  /** Attaches the catalogue permissions whose position in id order has the given parity. */
+  private void grantCatalogueHalf(UUID roleId, int parity) {
+    java.util.List<UUID> ids =
+        jdbc.query(
+            "SELECT id FROM permissions ORDER BY id",
+            (rs, rowNum) -> {
+              ByteBuffer buf = ByteBuffer.wrap(rs.getBytes(1));
+              return new UUID(buf.getLong(), buf.getLong());
+            });
+    for (int i = 0; i < ids.size(); i++) {
+      if (i % 2 == parity) {
+        grantPermission(roleId, ids.get(i));
+      }
+    }
   }
 
   private UserRole seedActiveAssignment(UUID tenantId, UUID roleId, UUID assigneeId, UUID assignedById) {

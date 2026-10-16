@@ -21,8 +21,7 @@ public final class RbacRoleNames {
    */
   public static final Set<String> RESERVED = Set.of(TENANT_ADMIN, MEMBER);
 
-  /** Case-insensitive, null-safe check against {@link #RESERVED}, mirroring {@link
-   * RbacDangerousPermissions#contains(String)}'s shape. */
+  /** Case-insensitive, null-safe check against {@link #RESERVED}. */
   public static boolean isReserved(String name) {
     if (name == null) {
       return false;

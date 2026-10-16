@@ -55,11 +55,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
 @Tag("IT")
 class RoleManagementAuditIT {
 
-  // role:read for the plain grant/revoke success-path scenarios (12/13) -- role:write is one of
-  // AC11's 3 dangerous permissions and requires an active TENANT_ADMIN caller, which these tests
-  // don't set up. DANGEROUS_PERMISSION_ID (role:write) is used deliberately, and only, by the
-  // AC11-denial negative test below. US-018 A3: the attaching caller must hold the permission, so
-  // the success paths use seedActorHolding.
+  // role:read for the plain grant/revoke success-path scenarios (12/13). DANGEROUS_PERMISSION_ID
+  // (role:write) is used by the denial negative test below, where the caller does not hold it.
+  // US-018 A3: the attaching caller must hold the permission, so the success paths use
+  // seedActorHolding.
   private static final UUID SAFE_PERMISSION_ID =
       UUID.fromString("019f6839-1804-7000-8000-000000000005");
   private static final UUID DANGEROUS_PERMISSION_ID =
@@ -184,10 +183,9 @@ class RoleManagementAuditIT {
   }
 
   @Test
-  void should_writeNoRolePermissionGrantedRow_when_attachFailsWithNotTenantAdmin() {
+  void should_writeNoRolePermissionGrantedRow_when_attachFailsWithGrantExceedsCaller() {
     UUID tenantId = uuidGenerator.newId();
-    // Caller has role:write (implicit at the service layer -- no @RequiresPermission gate here)
-    // but no active TENANT_ADMIN assignment.
+    // US-018 A3: the caller does not hold the permission being attached.
     RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
     Role customRole = seedRole("DENIED-ADMIN-GATE", tenantId);
 
@@ -198,7 +196,7 @@ class RoleManagementAuditIT {
         .isInstanceOf(InsufficientPermissionException.class);
 
     assertThat(countAuditRows(tenantId, "ROLE_PERMISSION_GRANTED"))
-        .as("a 403 NOT_TENANT_ADMIN denial must never write a ROLE_PERMISSION_GRANTED row")
+        .as("a 403 GRANT_EXCEEDS_CALLER denial must never write a ROLE_PERMISSION_GRANTED row")
         .isZero();
   }
 
