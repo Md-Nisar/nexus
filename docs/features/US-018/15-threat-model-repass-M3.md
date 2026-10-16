@@ -57,3 +57,13 @@ Paths: services in `nexus-backend/src/main/java/com/example/nexus/rbac/applicati
 9. Two `RoleRevocationSymmetryIT` tests could not stay verbatim (dangerous custom role now `PERMISSION_ABSENT`; `TENANT_ADMIN` fixture needs the whole catalogue). Each is mapped above and in `09-technical.md` section 14.
 10. No integration test ran; harness C, MC-H' and all ITs above need a run with Docker before the sign-off.
 11. Environment items (zero-admin sweep, RES-6 retention, RES-26 owner confirmation) are deferred to the first deployment.
+
+## Automated security review of the M3 commits (2026-10-16): acknowledged, no code change
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | Non-self assign of an admin-defining role by a caller who is not an administrator (`RoleAssignmentService`) | **RES-26, accepted at Gate 2.** A4 closes the literal self-target step only, as ADR-0021 D4 and the method Javadoc state. A caller must still pass A2/A3 grant-subset (hold every permission of the role). Review date 2026-11-27 and the Epic-3 hard expiry are unchanged. |
+| 2 | Provenance check on attach is non-locking (TOCTOU with a concurrent assign) (`RoleManagementService`) | **Designed.** Design §5.6 and T-017 make both reads non-locking and only on the rare completing-attach branch. The race is detective: rows 13 and 14 page after commit. Adding a locking read would add a lock-order edge to the set-lock family that cannot be exercised without Docker. |
+| 3 | Detach from an admin-defining role has no last-admin lockout (`RoleManagementService`) | **Designed, RES-28 accepted.** T-017(b) requires role-subset plus administrator status through a role other than R; detach is deliberately not in the lock family; the zero-admin indicator detects the race. |
+
+Verification: `./mvnw verify -DskipITs` on JDK 25 passes (2005 unit tests, 0 failures, 1 skipped, Checkstyle and SpotBugs clean). The ITs were written and compile but were not run: Docker is unavailable in this environment.
