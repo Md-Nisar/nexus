@@ -98,15 +98,18 @@ class RolePermissionsPrivilegeIT {
   }
 
   @Test
-  void should_denyUpdate_atPrivilegeLevel_when_updatingRoleNameAsNexusApp() throws SQLException {
+  void should_denyUpdate_atPrivilegeLevel_when_updatingIsSystemRoleAsNexusApp()
+      throws SQLException {
+    // US-018 C1: name, description and deleted_at became updatable (column-scoped, see
+    // RolesPrivilegeIT); is_system_role must stay unwritable, which is the AC7 backstop.
     Role role = seedRole("update-denied");
 
     assertThatThrownBy(
             () -> {
               try (PreparedStatement update =
                   nexusAppConnection.prepareStatement(
-                      "UPDATE roles SET name = ? WHERE id = ?")) {
-                update.setString(1, "RENAMED-" + UUID.randomUUID());
+                      "UPDATE roles SET is_system_role = ? WHERE id = ?")) {
+                update.setBoolean(1, true);
                 update.setBytes(2, toBytes(role.getId()));
                 update.executeUpdate();
               }
@@ -162,7 +165,7 @@ class RolePermissionsPrivilegeIT {
   }
 
   @Test
-  void should_grantNoUpdateAtAll_when_showGrantsForNexusAppOnRolesAndRolePermissions()
+  void should_grantOnlyTheC1ColumnSetOnRolesAndNoUpdateOnRolePermissions_when_showGrants()
       throws SQLException {
     List<String> grants = new ArrayList<>();
     try (Statement statement = nexusAppConnection.createStatement();
@@ -183,8 +186,19 @@ class RolePermissionsPrivilegeIT {
         .as("expected at least one GRANT line for role_permissions: " + grants)
         .isNotEmpty();
 
+    // US-018 C1: roles carries exactly the column-scoped UPDATE (name, description, deleted_at),
+    // never a table-scoped UPDATE, a column outside that set, or any DELETE.
     rolesGrants.forEach(
-        g -> assertThat(g.toUpperCase(Locale.ROOT)).as(g).doesNotContain("UPDATE"));
+        g -> {
+          assertThat(g.toUpperCase(Locale.ROOT)).as(g).doesNotContain("DELETE");
+          if (g.toUpperCase(Locale.ROOT).contains("UPDATE")) {
+            assertThat(g).as(g).containsPattern("UPDATE \\(");
+            String columns = g.substring(g.indexOf('(') + 1, g.indexOf(')')).replace("`", "");
+            assertThat(java.util.Arrays.stream(columns.split(",")).map(String::trim).toList())
+                .as(g)
+                .isSubsetOf("name", "description", "deleted_at");
+          }
+        });
     rolePermissionsGrants.forEach(
         g -> assertThat(g.toUpperCase(Locale.ROOT)).as(g).doesNotContain("UPDATE"));
   }

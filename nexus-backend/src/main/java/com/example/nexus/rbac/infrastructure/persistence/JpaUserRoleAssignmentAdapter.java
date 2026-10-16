@@ -1,5 +1,6 @@
 package com.example.nexus.rbac.infrastructure.persistence;
 
+import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.ActiveAssignmentRef;
@@ -9,7 +10,6 @@ import com.example.nexus.rbac.domain.HolderProvenance;
 import com.example.nexus.rbac.domain.IdGenerator;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermissionRef;
-import com.example.nexus.rbac.domain.UserRole;
 import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.util.Collection;
@@ -136,21 +136,23 @@ public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
 
   @Override
   public UUID assign(UUID userId, UUID roleId, UUID tenantId, UUID assignedBy) {
+    UUID id = idGenerator.newId();
+    int inserted;
     try {
-      UserRole userRole = new UserRole(idGenerator.newId(), userId, roleId, tenantId, assignedBy);
-      // saveAndFlush, deliberately NOT save: a plain save() only queues the INSERT in
-      // Hibernate's persistence context -- the physical statement (and any uq_user_role_active
-      // violation) may not execute until whatever LATER operation happens to trigger an
-      // auto-flush (e.g. RoleAssignmentService#assign's own M4a re-read query immediately
-      // after this call). That would let the DataIntegrityViolationException escape this
-      // try/catch entirely and surface as an unhandled 500 instead of a clean 409 RBAC_004 --
-      // a genuine TOCTOU-race bug this project's Phase 8 test-validate concurrency test
-      // caught. Flushing here forces the INSERT (and any constraint violation) to happen
-      // synchronously, inside this method's own try/catch, guaranteeing the translation fires.
-      return userRoleRepository.saveAndFlush(userRole).getId();
+      // A conditional native INSERT ... SELECT (US-018 C1, RC-36.1), executed synchronously here so
+      // a uq_user_role_active violation surfaces inside this try/catch and is translated to 409
+      // RBAC_004 (the TOCTOU backstop a deferred JPA flush would have let escape as a 500). Zero
+      // rows means the role is deleted (or not in the tenant): the same 404 as a missing role.
+      inserted =
+          userRoleRepository.assignIfRoleLive(
+              toBytes(id), toBytes(userId), toBytes(roleId), toBytes(tenantId), toBytes(assignedBy));
     } catch (DataIntegrityViolationException e) {
       throw new DuplicateRoleAssignmentException();
     }
+    if (inserted == 0) {
+      throw new ResourceNotFoundException("ROLE_NOT_FOUND", "No such role");
+    }
+    return id;
   }
 
   @Override

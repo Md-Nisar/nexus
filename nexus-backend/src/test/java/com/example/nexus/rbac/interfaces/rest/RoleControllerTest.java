@@ -311,6 +311,57 @@ class RoleControllerTest {
     assertRequiresPermission("detachPermission", ROLE_WRITE());
   }
 
+  // ── softDeleteRole (US-018 C1) ───────────────────────────────────────────
+
+  @Test
+  void should_return204NoContent_when_deleteRoleSucceeds() throws Exception {
+    mockMvc
+        .perform(delete("/api/v1/roles/{roleId}", ROLE_ID).principal(authentication()))
+        .andExpect(status().isNoContent())
+        .andExpect(jsonPath("$").doesNotExist());
+
+    org.mockito.Mockito.verify(roleManagementService).softDeleteRole(any(), eq(ROLE_ID), any());
+  }
+
+  @Test
+  void should_return400_when_deleteRolePathRoleIdIsMalformed() throws Exception {
+    mockMvc
+        .perform(delete("/api/v1/roles/{roleId}", "not-a-uuid").principal(authentication()))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.details[0].field").value("roleId"));
+  }
+
+  @Test
+  void should_return409Rbac009_when_theRoleStillHasActiveHolders() throws Exception {
+    org.mockito.Mockito.doThrow(new com.example.nexus.rbac.domain.RoleHasHoldersException())
+        .when(roleManagementService)
+        .softDeleteRole(any(), eq(ROLE_ID), any());
+
+    mockMvc
+        .perform(delete("/api/v1/roles/{roleId}", ROLE_ID).principal(authentication()))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.code").value("RBAC_009"));
+  }
+
+  @Test
+  void should_return404_when_deleteTargetsAMissingOrDeletedRole() throws Exception {
+    org.mockito.Mockito.doThrow(
+            new com.example.nexus.common.domain.ResourceNotFoundException(
+                "ROLE_NOT_FOUND", "No such role"))
+        .when(roleManagementService)
+        .softDeleteRole(any(), eq(ROLE_ID), any());
+
+    mockMvc
+        .perform(delete("/api/v1/roles/{roleId}", ROLE_ID).principal(authentication()))
+        .andExpect(status().isNotFound())
+        .andExpect(jsonPath("$.code").value("ROLE_NOT_FOUND"));
+  }
+
+  @Test
+  void should_havePermissionAnnotationPresent_when_deleteRoleInspected() throws Exception {
+    assertRequiresPermission("softDeleteRole", ROLE_WRITE());
+  }
+
   // ── Helpers ──────────────────────────────────────────────────────────
 
   private static String ROLE_WRITE() {

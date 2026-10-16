@@ -28,6 +28,7 @@ import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.RoleAuditEvent;
 import com.example.nexus.rbac.application.port.out.RoleManagementPort;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
+import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.AttachProvenanceConflictException;
 import com.example.nexus.rbac.domain.DuplicateRoleNameException;
 import com.example.nexus.rbac.domain.DuplicateRolePermissionException;
@@ -35,6 +36,7 @@ import com.example.nexus.rbac.domain.HolderProvenance;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.ReservedRoleNameException;
+import com.example.nexus.rbac.domain.RoleHasHoldersException;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.RoleLimitExceededException;
@@ -1801,6 +1803,212 @@ class RoleManagementServiceTest {
     } finally {
       TransactionSynchronizationManager.clearSynchronization();
     }
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // softDeleteRole() -- US-018 C1 (T-025): 404 -> 403 (role-subset) -> 409 RBAC_003 -> [set lock]
+  // -> UPDATE -> 409 RBAC_009 -> audit
+  // ---------------------------------------------------------------------------------------
+
+  private ActiveAssignmentHolder holder(UUID holderRoleId) {
+    return new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), holderRoleId);
+  }
+
+  /** A custom, non-admin-defining role the caller may delete: it carries P1 and the caller holds P1. */
+  private void stubDeletableBenignRole() {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    stubRolePermissions(Set.of(P1));
+    stubCallerHoldsRefs(new RolePermissionRef(UUID.randomUUID(), P1));
+  }
+
+  @Test
+  void should_softDeleteAndAudit_when_customRoleHasNoActiveHolders() {
+    stubDeletableBenignRole();
+    when(roleManagementPort.softDeleteRole(eq(roleId), eq(tenantId), any(Instant.class)))
+        .thenReturn(1);
+    when(userRoleAssignmentPort.lockActiveAssignmentHolders(tenantId, List.of(roleId)))
+        .thenReturn(List.of());
+
+    service.softDeleteRole(actor, roleId, ctx);
+
+    verify(rbacAuditPort)
+        .recordRoleDeleted(
+            new RoleAuditEvent(tenantId, roleId, "Custom Role", null, null, actorId, ctx, null));
+  }
+
+  @Test
+  void should_notTakeTheSetLock_when_deletedRoleIsNotAdminDefining() {
+    stubDeletableBenignRole();
+    when(roleManagementPort.softDeleteRole(eq(roleId), eq(tenantId), any(Instant.class)))
+        .thenReturn(1);
+    when(userRoleAssignmentPort.lockActiveAssignmentHolders(tenantId, List.of(roleId)))
+        .thenReturn(List.of());
+
+    service.softDeleteRole(actor, roleId, ctx);
+
+    verify(userRoleAssignmentPort, never()).findRolePermissionIdsForTenantRoles(any());
+    verify(userRoleAssignmentPort, times(1)).lockActiveAssignmentHolders(any(), any());
+  }
+
+  @Test
+  void should_throwRoleNotFound_when_deleteRoleDoesNotExistOrIsAlreadyDeleted() {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> service.softDeleteRole(actor, roleId, ctx))
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND");
+
+    verifyNoInteractions(rbacAuditPort);
+    verify(roleManagementPort, never()).softDeleteRole(any(), any(), any());
+  }
+
+  @Test
+  void should_throwSameRoleNotFound_when_deleteRoleInAnotherTenant() {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(otherTenantId)));
+
+    assertThatThrownBy(() -> service.softDeleteRole(actor, roleId, ctx))
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND")
+        .hasMessage("No such role");
+
+    verifyNoInteractions(rbacAuditPort);
+    verify(roleManagementPort, never()).softDeleteRole(any(), any(), any());
+  }
+
+  /** RC-35: role-subset runs before the system-role 409, so a caller without the permissions sees 403. */
+  @Test
+  void should_deny403BeforeTheSystemRole409_when_callerLacksTheRolesPermissions() {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(systemRole("MEMBER")));
+    stubRolePermissions(Set.of(P1));
+    stubCallerHoldsRefs();
+
+    assertThatThrownBy(() -> service.softDeleteRole(actor, roleId, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    verify(roleManagementPort, never()).softDeleteRole(any(), any(), any());
+    verifyNoInteractions(rbacAuditPort);
+  }
+
+  @Test
+  void should_throwSystemRoleImmutable_when_deleteRoleIsSystemRoleAndCallerPassesSubset() {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(systemRole("MEMBER")));
+    stubRolePermissions(Set.of(P1));
+    stubCallerHoldsRefs(new RolePermissionRef(UUID.randomUUID(), P1));
+
+    assertThatThrownBy(() -> service.softDeleteRole(actor, roleId, ctx))
+        .isInstanceOf(SystemRoleImmutableException.class)
+        .hasFieldOrPropertyWithValue("code", "RBAC_003");
+
+    verify(roleManagementPort, never()).softDeleteRole(any(), any(), any());
+  }
+
+  /** RC-35.2: a non-administrator may not delete a holder-less admin-defining role. */
+  @Test
+  void should_deny403_when_nonAdministratorDeletesAnAdminDefiningRole() {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    stubRolePermissions(CATALOGUE);
+    // Holds every permission, but only through the role being deleted: no other administrator role.
+    stubCallerHoldsRefs(new RolePermissionRef(roleId, P1), new RolePermissionRef(roleId, P2));
+
+    assertThatThrownBy(() -> service.softDeleteRole(actor, roleId, ctx))
+        .isInstanceOf(InsufficientPermissionException.class);
+
+    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
+    verify(roleManagementPort, never()).softDeleteRole(any(), any(), any());
+  }
+
+  /** RC-46: on an admin-defining role the set lock (M10' then M11) precedes the UPDATE. */
+  @Test
+  void should_takeTheSetLockBeforeTheUpdate_when_deletingAnAdminDefiningRole() {
+    UUID otherAdminRoleId = UUID.randomUUID();
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    stubRolePermissions(CATALOGUE);
+    stubCallerHoldsRefs(
+        new RolePermissionRef(otherAdminRoleId, P1), new RolePermissionRef(otherAdminRoleId, P2));
+    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId))
+        .thenReturn(
+            List.of(
+                new RolePermissionRef(roleId, P1),
+                new RolePermissionRef(roleId, P2),
+                new RolePermissionRef(otherAdminRoleId, P1),
+                new RolePermissionRef(otherAdminRoleId, P2)));
+    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
+        .thenReturn(List.of());
+    when(roleManagementPort.softDeleteRole(eq(roleId), eq(tenantId), any(Instant.class)))
+        .thenReturn(1);
+
+    service.softDeleteRole(actor, roleId, ctx);
+
+    InOrder order = inOrder(userRoleAssignmentPort, roleManagementPort, rbacAuditPort);
+    order.verify(userRoleAssignmentPort).findRolePermissionIdsForTenantRoles(tenantId);
+    ArgumentCaptor<List<UUID>> lockSet = ArgumentCaptor.forClass(List.class);
+    order.verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), lockSet.capture());
+    order.verify(roleManagementPort).softDeleteRole(eq(roleId), eq(tenantId), any(Instant.class));
+    order.verify(userRoleAssignmentPort).lockActiveAssignmentHolders(tenantId, List.of(roleId));
+    order.verify(rbacAuditPort).recordRoleDeleted(any(RoleAuditEvent.class));
+    assertThat(lockSet.getValue()).containsExactlyInAnyOrder(roleId, otherAdminRoleId);
+  }
+
+  @Test
+  void should_throwRoleHasHoldersAndWriteNoAudit_when_anActiveAssignmentExists() {
+    stubDeletableBenignRole();
+    when(roleManagementPort.softDeleteRole(eq(roleId), eq(tenantId), any(Instant.class)))
+        .thenReturn(1);
+    when(userRoleAssignmentPort.lockActiveAssignmentHolders(tenantId, List.of(roleId)))
+        .thenReturn(List.of(holder(roleId)));
+
+    assertThatThrownBy(() -> service.softDeleteRole(actor, roleId, ctx))
+        .isInstanceOf(RoleHasHoldersException.class)
+        .hasFieldOrPropertyWithValue("code", "RBAC_009");
+
+    verifyNoInteractions(rbacAuditPort);
+  }
+
+  @Test
+  void should_throwRoleNotFoundAndReadNoHolders_when_theUpdateAffectsNoRow() {
+    stubDeletableBenignRole();
+    when(roleManagementPort.softDeleteRole(eq(roleId), eq(tenantId), any(Instant.class)))
+        .thenReturn(0);
+
+    assertThatThrownBy(() -> service.softDeleteRole(actor, roleId, ctx))
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND");
+
+    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
+    verifyNoInteractions(rbacAuditPort);
+  }
+
+  @Test
+  void should_propagateAuditFailure_when_deleteAuditWriteFails() {
+    stubDeletableBenignRole();
+    when(roleManagementPort.softDeleteRole(eq(roleId), eq(tenantId), any(Instant.class)))
+        .thenReturn(1);
+    when(userRoleAssignmentPort.lockActiveAssignmentHolders(tenantId, List.of(roleId)))
+        .thenReturn(List.of());
+    RuntimeException auditFailure = new IllegalStateException("audit down");
+    doThrow(auditFailure).when(rbacAuditPort).recordRoleDeleted(any(RoleAuditEvent.class));
+
+    assertThatThrownBy(() -> service.softDeleteRole(actor, roleId, ctx)).isSameAs(auditFailure);
+  }
+
+  /**
+   * A-17: with the "no active holders" precondition no holder carries the role, so a delete bumps
+   * nobody. If that precondition is ever relaxed this test must be replaced by one proving
+   * invalidateHolders runs only inside afterCommit.
+   */
+  @Test
+  void should_neverBumpOrEvict_when_roleDeleted() {
+    stubDeletableBenignRole();
+    when(roleManagementPort.softDeleteRole(eq(roleId), eq(tenantId), any(Instant.class)))
+        .thenReturn(1);
+    when(userRoleAssignmentPort.lockActiveAssignmentHolders(tenantId, List.of(roleId)))
+        .thenReturn(List.of());
+
+    service.softDeleteRole(actor, roleId, ctx);
+
+    verifyNoInteractions(permissionFreshness, permissionCachePort);
   }
 
   private ListAppender<ILoggingEvent> startLogCapture() {

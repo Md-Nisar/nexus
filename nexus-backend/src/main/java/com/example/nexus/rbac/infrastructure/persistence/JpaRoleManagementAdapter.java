@@ -10,6 +10,7 @@ import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.domain.RolePermissionId;
 import com.example.nexus.rbac.domain.RoleView;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -79,6 +80,11 @@ public class JpaRoleManagementAdapter implements RoleManagementPort {
   @Override
   public List<RoleView> findRolesInTenant(UUID tenantId) {
     return roleRepository.findRoleViewsByTenantId(tenantId);
+  }
+
+  @Override
+  public int softDeleteRole(UUID roleId, UUID tenantId, Instant deletedAt) {
+    return roleRepository.softDelete(roleId, tenantId, deletedAt);
   }
 
   @Override

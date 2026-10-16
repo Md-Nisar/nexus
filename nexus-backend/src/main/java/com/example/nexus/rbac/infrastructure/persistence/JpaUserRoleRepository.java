@@ -197,6 +197,37 @@ public interface JpaUserRoleRepository
       @Param("userId") UUID userId, @Param("roleId") UUID roleId, @Param("tenantId") UUID tenantId);
 
   /**
+   * The assign INSERT, made conditional on the role being live (US-018 C1, RC-36.1): {@code INSERT …
+   * SELECT … FROM roles WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL}. Under REPEATABLE READ
+   * the INSERT takes a shared lock on the source {@code roles} row as part of the statement, needs
+   * only {@code SELECT} on {@code roles} (a {@code FOR SHARE} read there would need {@code UPDATE}
+   * and fail in production while passing Testcontainers as superuser, the US-016 D5 trap), and
+   * inserts <b>zero rows</b> when the role was deleted: the caller maps 0 to 404. {@code tenant_id}
+   * of the new row is the role's own, so the composite foreign key of V8 always holds.
+   *
+   * <p>Native, so the bind parameters are {@code byte[]} (the entity-mapped {@code UuidV7Converter}
+   * is bypassed, as in {@link #lockActiveAssignmentHoldersByRoles}). {@code assigned_at} and {@code
+   * active_key} are filled by the database. {@code uq_user_role_active} still rejects a duplicate
+   * active assignment, which the adapter maps to 409 {@code RBAC_004}.
+   */
+  @Modifying
+  @Query(
+      value =
+          """
+          INSERT INTO user_roles (id, user_id, role_id, tenant_id, assigned_by)
+          SELECT :id, :userId, r.id, r.tenant_id, :assignedBy
+          FROM roles r
+          WHERE r.id = :roleId AND r.tenant_id = :tenantId AND r.deleted_at IS NULL
+          """,
+      nativeQuery = true)
+  int assignIfRoleLive(
+      @Param("id") byte[] id,
+      @Param("userId") byte[] userId,
+      @Param("roleId") byte[] roleId,
+      @Param("tenantId") byte[] tenantId,
+      @Param("assignedBy") byte[] assignedBy);
+
+  /**
    * M6 — the revocation write. MUST be exactly this shape: a bulk single-column JPQL UPDATE, never
    * {@code findById->revoke()->save()} (that emits a multi-column UPDATE a least-privilege DB grant
    * rejects, in production only). Returns affected-row count: this int IS the concurrency guard

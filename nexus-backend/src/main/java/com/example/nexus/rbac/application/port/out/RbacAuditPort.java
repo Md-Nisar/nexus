@@ -13,7 +13,7 @@ import com.example.nexus.common.security.DenialReason;
  * <ul>
  *   <li><b>Group A (atomic):</b> {@link #recordRoleAssigned}, {@link #recordRoleRevoked}, {@link
  *       #recordRoleCreated}, {@link #recordRolePermissionGranted}, {@link
- *       #recordRolePermissionRevoked}, {@link #recordBreakGlassGrant} — called INLINE, inside
+ *       #recordRolePermissionRevoked}, {@link #recordRoleDeleted}, {@link #recordBreakGlassGrant} — called INLINE, inside
  *       the caller's own mutation transaction, after the mutation and before the method returns.
  *       These join that
  *       transaction ({@code SecureEventService#recordEventInCurrentTransaction}, {@code MANDATORY})
@@ -104,6 +104,13 @@ public interface RbacAuditPort {
    * caller's transaction and MUST THROW on failure.
    */
   void recordRolePermissionRevoked(RoleAuditEvent event);
+
+  /**
+   * Records a successful role soft delete (US-018 C1, {@code ROLE_DELETED}; Group A — atomic). Joins
+   * the caller's transaction and MUST THROW on failure, so a lost audit row rolls the delete back.
+   * {@code event.permissionId()}/{@code event.permissionName()} are {@code null}.
+   */
+  void recordRoleDeleted(RoleAuditEvent event);
 
   /**
    * Records a successful break-glass first-administrator grant ({@code ROLE_BREAK_GLASS_GRANT}

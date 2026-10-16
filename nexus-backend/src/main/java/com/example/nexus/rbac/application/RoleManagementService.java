@@ -14,12 +14,14 @@ import com.example.nexus.rbac.application.port.out.RoleManagementPort;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.domain.AttachProvenanceConflictException;
 import com.example.nexus.rbac.domain.DuplicateRolePermissionException;
+import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.HolderProvenance;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.RbacAdministrators;
 import com.example.nexus.rbac.domain.RbacRoleNames;
 import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.ReservedRoleNameException;
+import com.example.nexus.rbac.domain.RoleHasHoldersException;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RoleLimitExceededException;
 import com.example.nexus.rbac.domain.RolePermissionRef;
@@ -27,6 +29,7 @@ import com.example.nexus.rbac.domain.RoleView;
 import com.example.nexus.rbac.domain.SystemRoleImmutableException;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
+import java.time.Instant;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
@@ -93,6 +96,7 @@ public class RoleManagementService {
 
   private static final String OPERATION_DETACH = "detach";
   private static final String OPERATION_ATTACH = "attach";
+  private static final String OPERATION_DELETE = "delete";
   private static final String OPERATION_LIST = "list";
 
   private static final String COUNTER_PERMISSION_DENIED = "nexus.rbac.permission_denied";
@@ -347,6 +351,82 @@ public class RoleManagementService {
         });
   }
 
+  /**
+   * Soft-deletes a custom role that has no active holder (US-018 C1, design §11.1). Order: tenant
+   * resolution (404, a deleted role is a 404 too), <b>role-subset</b> (403, as detach, RC-35),
+   * system-role immutability (409 {@code RBAC_003}), then, when the role is admin-defining, the
+   * <b>set lock first</b> (M10' then M11, as assign does: RC-46 option (a), so the two cannot
+   * deadlock on the role row), the single-column {@code UPDATE} that sets {@code deleted_at} (0 rows
+   * is a 404), a {@code FOR UPDATE} read of the role's active assignments (any row is 409 {@code
+   * RBAC_009} and rolls the {@code UPDATE} back), and the atomic {@code ROLE_DELETED} audit row.
+   *
+   * <p>Together with assign's conditional INSERT this keeps the invariant "a deleted role has no
+   * active holders": a concurrent assign either committed before the holder read (409 here) or finds
+   * the role deleted (404 there). Because the precondition is "no active holders", no holder's
+   * token or cache entry can carry the role's permissions, so no epoch bump is needed (A-17: if the
+   * precondition is ever relaxed, this must call {@link
+   * PermissionFreshnessService#invalidateHolders} after commit, as detach does). Role-subset denials
+   * use the detach posture: WARN, the central {@code permission_denied} metric, no audit row.
+   */
+  @Transactional
+  public void softDeleteRole(RoleChangeActor actor, UUID roleId, RequestContext ctx) {
+    RoleView role = resolveRoleInTenant(roleId, actor, ROLE_WRITE, OPERATION_DELETE);
+    SubsetCheck subset = requireRoleSubset(actor, role, OPERATION_DELETE);
+    requireMutableRole(role);
+
+    if (subset.adminDefining()) {
+      acquireSetLockBeforeRoleRow(actor, role, subset.catalogueIds());
+    }
+
+    if (roleManagementPort.softDeleteRole(role.id(), actor.tenantId(), Instant.now()) == 0) {
+      throw new ResourceNotFoundException("ROLE_NOT_FOUND", "No such role");
+    }
+
+    List<ActiveAssignmentHolder> holders =
+        userRoleAssignmentPort.lockActiveAssignmentHolders(actor.tenantId(), List.of(role.id()));
+    if (!holders.isEmpty()) {
+      log.atInfo()
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_ROLE_DELETE_REFUSED_HAS_HOLDERS")
+          .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+          .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+          .addKeyValue(LOG_KEY_ROLE_ID, role.id())
+          .addKeyValue("holderCount", holders.size())
+          .log("Refused to delete a role that still has active holders");
+      throw new RoleHasHoldersException();
+    }
+
+    rbacAuditPort.recordRoleDeleted(
+        new RoleAuditEvent(
+            actor.tenantId(), role.id(), role.name(), null, null, actor.userId(), ctx, null));
+
+    registerPostCommitSideEffects(
+        () ->
+            log.atInfo()
+                .addKeyValue(LOG_KEY_EVENT, "ROLE_DELETED")
+                .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+                .addKeyValue(LOG_KEY_ROLE_ID, role.id())
+                .addKeyValue(LOG_KEY_ROLE_NAME, role.name())
+                .addKeyValue("deletedBy", actor.userId())
+                .log("Role deleted"));
+  }
+
+  /**
+   * The set lock for DELETE of an admin-defining role (RC-46 option (a)): M10' for the tenant's
+   * roles, the admin-defining ones among them, then ONE statement locking every active assignment
+   * of those roles plus this role, in the ascending order {@link RoleAssignmentService} uses. It
+   * runs before the role row is touched, the order assign takes on an admin-defining target. The
+   * rows it returns are not used: the holder check re-reads the role's own rows after the {@code
+   * UPDATE}.
+   */
+  private void acquireSetLockBeforeRoleRow(
+      RoleChangeActor actor, RoleView role, Set<UUID> catalogueIds) {
+    Set<UUID> adminDefiningRoleIds =
+        RoleAssignmentService.resolveAdminDefiningRoleIds(
+            userRoleAssignmentPort, actor.tenantId(), catalogueIds);
+    userRoleAssignmentPort.lockActiveAssignmentHolders(
+        actor.tenantId(), RoleAssignmentService.buildAscendingLockSet(adminDefiningRoleIds, role.id()));
+  }
+
   /** AC6. Global catalogue, no tenant scoping — {@code permissions} has no {@code tenant_id} column. */
   @Transactional(readOnly = true)
   public List<PermissionView> listAllPermissions() {
@@ -457,7 +537,7 @@ public class RoleManagementService {
    * detaches each see the other role in their snapshot, is RES-28 and is detected by the zero-admin
    * health indicator.
    */
-  private void requireRoleSubset(RoleChangeActor actor, RoleView role, String operation) {
+  private SubsetCheck requireRoleSubset(RoleChangeActor actor, RoleView role, String operation) {
     List<RolePermissionRef> held =
         userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(
             actor.userId(), actor.tenantId());
@@ -466,19 +546,22 @@ public class RoleManagementService {
             .findPermissionIdsForRole(role.id(), actor.tenantId())
             .orElse(null);
     boolean allowed = false;
+    boolean adminDefining = false;
+    Set<UUID> catalogueIds = Set.of();
     if (rolePermissionIds != null) {
       Set<UUID> heldPermissionIds = new HashSet<>();
       held.forEach(ref -> heldPermissionIds.add(ref.permissionId()));
-      Set<UUID> catalogueIds = userRoleAssignmentPort.findCatalogueIds();
+      catalogueIds = userRoleAssignmentPort.findCatalogueIds();
       allowed = heldPermissionIds.containsAll(rolePermissionIds);
-      if (allowed && RbacAdministrators.isAdminDefining(rolePermissionIds, catalogueIds)) {
+      adminDefining = RbacAdministrators.isAdminDefining(rolePermissionIds, catalogueIds);
+      if (allowed && adminDefining) {
         List<RolePermissionRef> heldThroughOtherRoles =
             held.stream().filter(ref -> !ref.roleId().equals(role.id())).toList();
         allowed = RbacAdministrators.isAdministrator(heldThroughOtherRoles, catalogueIds);
       }
     }
     if (allowed) {
-      return;
+      return new SubsetCheck(adminDefining, catalogueIds);
     }
     log.atWarn()
         .addKeyValue(LOG_KEY_EVENT, "RBAC_ROLE_SUBSET_DENIED")
@@ -489,6 +572,12 @@ public class RoleManagementService {
         .log("Blocked a role definition change by a caller who does not hold the role's permissions");
     throw new InsufficientPermissionException(ROLE_WRITE, DenialReason.GRANT_EXCEEDS_CALLER);
   }
+
+  /**
+   * What a passed role-subset check learned about the role, so a caller that needs the
+   * classification (DELETE, for the set lock) does not read M14 and M15 a second time.
+   */
+  private record SubsetCheck(boolean adminDefining, Set<UUID> catalogueIds) {}
 
   /**
    * Whether attaching {@code permissionId} would make {@code role} admin-defining: it is NOT

@@ -91,7 +91,7 @@ class RbacSchemaMigrationIT {
     assertThat(roleColumns)
         .containsExactly(
             "id", "tenant_id", "name", "description", "is_system_role", "created_at",
-            "updated_at");
+            "updated_at", "deleted_at", "active_name");
 
     List<String> rolePermissionColumns =
         jdbc.queryForList(
@@ -167,7 +167,7 @@ class RbacSchemaMigrationIT {
                 + "WHERE CAST(success AS UNSIGNED) = 1 ORDER BY installed_rank",
             String.class);
 
-    assertThat(versions).contains("1", "2", "3", "4", "5", "6", "7", "8");
+    assertThat(versions).contains("1", "2", "3", "4", "5", "6", "7", "8", "9");
   }
 
   /**
@@ -198,6 +198,37 @@ class RbacSchemaMigrationIT {
             String.class);
 
     assertThat(columns).containsExactly("role_id", "tenant_id");
+  }
+
+  /**
+   * US-018 C1 (V9, expand): {@code deleted_at} and the STORED generated {@code active_name} exist, and
+   * the unique key over {@code (tenant_id, active_name)} sits next to the old {@code
+   * uq_roles_tenant_name}, which V10 drops one release later.
+   */
+  @Test
+  void should_haveActiveNameUniqueKeyNextToTheOldNameKey_when_v9Applied() {
+    List<String> activeNameKey =
+        jdbc.queryForList(
+            "SELECT column_name FROM information_schema.statistics "
+                + "WHERE table_schema = DATABASE() AND table_name = 'roles' "
+                + "AND index_name = 'uq_roles_tenant_active_name' AND non_unique = 0 "
+                + "ORDER BY seq_in_index",
+            String.class);
+    Integer oldKey =
+        jdbc.queryForObject(
+            "SELECT COUNT(*) FROM information_schema.statistics "
+                + "WHERE table_schema = DATABASE() AND table_name = 'roles' "
+                + "AND index_name = 'uq_roles_tenant_name'",
+            Integer.class);
+    String activeNameExtra =
+        jdbc.queryForObject(
+            "SELECT extra FROM information_schema.columns WHERE table_schema = DATABASE() "
+                + "AND table_name = 'roles' AND column_name = 'active_name'",
+            String.class);
+
+    assertThat(activeNameKey).containsExactly("tenant_id", "active_name");
+    assertThat(oldKey).isPositive();
+    assertThat(activeNameExtra).containsIgnoringCase("STORED GENERATED");
   }
 
   @Test

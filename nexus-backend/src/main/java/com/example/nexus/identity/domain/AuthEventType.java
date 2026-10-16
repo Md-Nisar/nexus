@@ -55,6 +55,11 @@ public enum AuthEventType {
   ROLE_PERMISSION_GRANTED("ROLE_PERMISSION_GRANTED"),
   ROLE_PERMISSION_REVOKED("ROLE_PERMISSION_REVOKED"),
 
+  // US-018 C1 (03-design.md 11.1): a role soft delete. Not PRIORITY, like ROLE_CREATED: it is
+  // written on the atomic path (SecureEventService#recordEventInCurrentTransaction), never through
+  // the retry buffer, so lane admission does not apply.
+  ROLE_DELETED("ROLE_DELETED"),
+
   // US-018 A7 (03-design.md §7.2): break-glass first-administrator grant, SUCCESS or FAILURE.
   // Deliberately NOT in PRIORITY below — it is never written on the buffered path: SUCCESS joins
   // the grant transaction and a refusal's FAILURE row commits in its own transaction, both through

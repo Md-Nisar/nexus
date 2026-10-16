@@ -26,7 +26,7 @@ import tools.jackson.databind.ObjectMapper;
  * <ul>
  *   <li><b>Group A (atomic)</b> — {@link #recordRoleAssigned}, {@link #recordRoleRevoked}, {@link
  *       #recordRoleCreated}, {@link #recordRolePermissionGranted}, {@link
- *       #recordRolePermissionRevoked} — delegates to {@link
+ *       #recordRolePermissionRevoked}, {@link #recordRoleDeleted} — delegates to {@link
  *       SecureEventService#recordEventInCurrentTransaction(AuthEvent)} ({@code MANDATORY}: joins
  *       the caller's own mutation transaction) and propagates any failure, including a metadata
  *       JSON-serialization failure.
@@ -145,6 +145,12 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
   @Override
   public void recordRolePermissionGranted(RoleAuditEvent event) {
     recordAtomic(event, AuthEventType.ROLE_PERMISSION_GRANTED, "grantedBy", "grantPermission");
+  }
+
+  /** @see #recordRoleCreated(RoleAuditEvent) */
+  @Override
+  public void recordRoleDeleted(RoleAuditEvent event) {
+    recordAtomic(event, AuthEventType.ROLE_DELETED, "deletedBy", "deleteRole");
   }
 
   /** @see #recordRoleCreated(RoleAuditEvent) */

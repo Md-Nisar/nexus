@@ -343,6 +343,166 @@ class RoleManagementIT {
     assertThat(created.tenantId()).isEqualTo(otherTenantId);
   }
 
+  // ── US-018 C1 / TS-14: DELETE (soft delete) ──────────────────────────────────────────────
+
+  @Test
+  void should_throwRoleHasHolders_when_deletingACustomRoleWithAnActiveHolder() {
+    UUID tenantId = uuidGenerator.newId();
+    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
+    Role role = seedRole("DEL-HOLDER", tenantId);
+    UserRole holder = seedHolder(tenantId, role);
+
+    assertThatThrownBy(() -> roleManagementService.softDeleteRole(actor, role.getId(), requestContext()))
+        .isInstanceOf(com.example.nexus.rbac.domain.RoleHasHoldersException.class)
+        .hasFieldOrPropertyWithValue("code", "RBAC_009");
+
+    assertThat(deletedAt(role.getId())).as("the 409 rolls the soft delete back").isNull();
+    assertThat(holder.getId()).isNotNull();
+  }
+
+  @Test
+  void should_throwSystemRoleImmutable_when_deletingASystemRole() {
+    UUID bootstrapTenantId = UUID.fromString("00000000-0000-7000-8000-000000000001");
+    UUID memberRoleId =
+        fromBytes(
+            jdbc.queryForObject(
+                "SELECT id FROM roles WHERE tenant_id = ? AND name = 'MEMBER'",
+                byte[].class,
+                toBytes(bootstrapTenantId)));
+    // Role-subset runs before the system-role 409, so the caller must hold MEMBER's permissions.
+    RoleChangeActor actor = seedActorHoldingAllPermissionsOf(bootstrapTenantId, memberRoleId);
+
+    assertThatThrownBy(() -> roleManagementService.softDeleteRole(actor, memberRoleId, requestContext()))
+        .isInstanceOf(com.example.nexus.rbac.domain.SystemRoleImmutableException.class)
+        .hasFieldOrPropertyWithValue("code", "RBAC_003");
+  }
+
+  @Test
+  void should_deleteAndHideTheRole_when_itsHolderWasRevokedFirst() {
+    UUID tenantId = uuidGenerator.newId();
+    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
+    Role role = seedRole("DEL-REVOKED", tenantId);
+    UserRole holder = seedHolder(tenantId, role);
+    jdbc.update(
+        "UPDATE user_roles SET revoked_at = CURRENT_TIMESTAMP(6) WHERE id = ?",
+        toBytes(holder.getId()));
+
+    roleManagementService.softDeleteRole(actor, role.getId(), requestContext());
+
+    assertThat(deletedAt(role.getId())).isNotNull();
+    assertThatThrownBy(() -> roleManagementService.listRolePermissions(actor, role.getId()))
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND");
+    assertThatThrownBy(() -> roleManagementService.softDeleteRole(actor, role.getId(), requestContext()))
+        .as("a replayed DELETE is a 404")
+        .isInstanceOf(ResourceNotFoundException.class);
+  }
+
+  @Test
+  void should_writeAnAtomicRoleDeletedAuditRow_when_aRoleIsDeleted() {
+    UUID tenantId = uuidGenerator.newId();
+    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
+    Role role = seedRole("DEL-AUDIT", tenantId);
+
+    roleManagementService.softDeleteRole(actor, role.getId(), requestContext());
+
+    Integer rows =
+        jdbc.queryForObject(
+            "SELECT COUNT(*) FROM auth_events WHERE event_type = 'ROLE_DELETED' AND tenant_id = ?"
+                + " AND JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.roleId')) = ?",
+            Integer.class,
+            toBytes(tenantId),
+            role.getId().toString());
+    assertThat(rows).isEqualTo(1);
+  }
+
+  /** RC-35.2: a role:write holder who is not an administrator may not delete such a role. */
+  @Test
+  void should_deny403_when_aNonAdministratorDeletesAHolderlessAdminDefiningRole() {
+    UUID tenantId = uuidGenerator.newId();
+    Role adminDefining = seedRole("DEL-ADMIN-DEFINING", tenantId);
+    List<UUID> catalogue = catalogueIds();
+    catalogue.forEach(id -> rolePermissionRepository.save(new RolePermission(adminDefining.getId(), id)));
+    // The caller holds the whole catalogue, but split over two roles: a superset of the role's
+    // permissions (role-subset's first leg) without being an administrator through any one role.
+    RoleChangeActor actor = seedActorHoldingSplit(tenantId, catalogue);
+
+    assertThatThrownBy(
+            () -> roleManagementService.softDeleteRole(actor, adminDefining.getId(), requestContext()))
+        .isInstanceOf(com.example.nexus.common.security.InsufficientPermissionException.class);
+
+    assertThat(deletedAt(adminDefining.getId())).isNull();
+  }
+
+  private Role anyRoleHeldBy(UUID tenantId) {
+    return seedRole("HELD", tenantId);
+  }
+
+  private UserRole seedHolder(UUID tenantId, Role role) {
+    User user =
+        userRepository.save(
+            new User(
+                uuidGenerator.newId(),
+                tenantId,
+                new EmailCipher("rmit-holder-" + UUID.randomUUID() + "@example.com"),
+                "hmac-" + UUID.randomUUID().toString().replace("-", ""),
+                "test-hash",
+                null));
+    return userRoleRepository.save(
+        new UserRole(uuidGenerator.newId(), user.getId(), role.getId(), tenantId, user.getId()));
+  }
+
+  private java.time.Instant deletedAt(UUID roleId) {
+    java.sql.Timestamp ts =
+        jdbc.queryForObject(
+            "SELECT deleted_at FROM roles WHERE id = ?", java.sql.Timestamp.class, toBytes(roleId));
+    return ts == null ? null : ts.toInstant();
+  }
+
+  private List<UUID> catalogueIds() {
+    return jdbc.query("SELECT id FROM permissions", (rs, i) -> fromBytes(rs.getBytes(1)));
+  }
+
+  private RoleChangeActor seedActorHoldingAllPermissionsOf(UUID tenantId, UUID sourceRoleId) {
+    List<UUID> permissionIds =
+        jdbc.query(
+            "SELECT permission_id FROM role_permissions WHERE role_id = ?",
+            (rs, i) -> fromBytes(rs.getBytes(1)),
+            toBytes(sourceRoleId));
+    return seedActorHoldingRoles(tenantId, List.of(permissionIds));
+  }
+
+  private RoleChangeActor seedActorHoldingSplit(UUID tenantId, List<UUID> permissionIds) {
+    int half = permissionIds.size() / 2;
+    return seedActorHoldingRoles(
+        tenantId, List.of(permissionIds.subList(0, half), permissionIds.subList(half, permissionIds.size())));
+  }
+
+  private RoleChangeActor seedActorHoldingRoles(UUID tenantId, List<List<UUID>> permissionGroups) {
+    User user =
+        userRepository.save(
+            new User(
+                uuidGenerator.newId(),
+                tenantId,
+                new EmailCipher("rmit-actor-" + UUID.randomUUID() + "@example.com"),
+                "hmac-" + UUID.randomUUID().toString().replace("-", ""),
+                "test-hash",
+                null));
+    for (List<UUID> group : permissionGroups) {
+      Role holderRole = anyRoleHeldBy(tenantId);
+      group.forEach(id -> rolePermissionRepository.save(new RolePermission(holderRole.getId(), id)));
+      userRoleRepository.save(
+          new UserRole(
+              uuidGenerator.newId(), user.getId(), holderRole.getId(), tenantId, user.getId()));
+    }
+    return new RoleChangeActor(user.getId(), tenantId);
+  }
+
+  private static UUID fromBytes(byte[] bytes) {
+    java.nio.ByteBuffer buf = java.nio.ByteBuffer.wrap(bytes);
+    return new UUID(buf.getLong(), buf.getLong());
+  }
+
   // ── Fixtures / helpers ───────────────────────────────────────────────────────────────────
 
   private Role seedRole(String tag, UUID tenantId) {

@@ -181,9 +181,12 @@ public interface UserRoleAssignmentPort {
   List<ActiveRoleAssignment> findActiveAssignmentViews(UUID userId, UUID tenantId);
 
   /**
-   * Inserts a new active assignment and returns its id. Implementations translate the {@code
-   * uq_user_role_active} violation into {@code DuplicateRoleAssignmentException} ({@code
-   * RBAC_004}) so a concurrent duplicate request yields 409, not 500.
+   * Inserts a new active assignment and returns its id. The insert is conditional on the role being
+   * live and in {@code tenantId} (US-018 C1, RC-36.1): when it inserts nothing, implementations
+   * throw a {@code ResourceNotFoundException} with code {@code ROLE_NOT_FOUND}, so an assign that
+   * races a delete of the role can never attach a holder to a deleted role. Implementations also
+   * translate the {@code uq_user_role_active} violation into {@code DuplicateRoleAssignmentException}
+   * ({@code RBAC_004}) so a concurrent duplicate request yields 409, not 500.
    */
   UUID assign(UUID userId, UUID roleId, UUID tenantId, UUID assignedBy);
 

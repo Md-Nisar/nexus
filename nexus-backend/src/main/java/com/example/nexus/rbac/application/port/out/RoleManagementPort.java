@@ -2,6 +2,7 @@ package com.example.nexus.rbac.application.port.out;
 
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.RoleView;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -45,6 +46,15 @@ public interface RoleManagementPort {
    * index.
    */
   List<RoleView> findRolesInTenant(UUID tenantId);
+
+  /**
+   * C1 — soft-deletes a role: a targeted single-column {@code UPDATE roles SET deleted_at = ? WHERE
+   * id = ? AND tenant_id = ? AND deleted_at IS NULL}, never a load-mutate-save (the {@code nexus_app}
+   * grant is column-scoped). Returns the affected-row count: {@code 1} = deleted, {@code 0} = already
+   * deleted, missing or in another tenant (the caller maps 0 to 404). The statement takes an X lock
+   * on the role row, which is what a concurrent assign's conditional INSERT queues behind.
+   */
+  int softDeleteRole(UUID roleId, UUID tenantId, Instant deletedAt);
 
   /**
    * Q12 — RC-4's per-tenant cap check. Count of roles in the tenant, served by {@code

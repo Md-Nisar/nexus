@@ -8,6 +8,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.ActiveAssignmentRef;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
@@ -28,7 +29,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -236,49 +236,63 @@ class JpaUserRoleAssignmentAdapterTest {
   }
 
   @Test
-  void should_saveAndFlushNewUserRoleAndReturnItsId_when_noConstraintViolation() {
+  void should_insertConditionallyAndReturnTheGeneratedId_when_roleIsLive() {
     UUID generatedId = UUID.randomUUID();
-    UUID savedId = UUID.randomUUID();
     when(idGenerator.newId()).thenReturn(generatedId);
-    UserRole saved = new UserRole(savedId, userId, roleId, tenantId, assignedBy);
-    when(userRoleRepository.saveAndFlush(any(UserRole.class))).thenReturn(saved);
+    when(userRoleRepository.assignIfRoleLive(
+            any(byte[].class), any(byte[].class), any(byte[].class), any(byte[].class),
+            any(byte[].class)))
+        .thenReturn(1);
 
     UUID result = adapter.assign(userId, roleId, tenantId, assignedBy);
 
-    assertThat(result).isEqualTo(savedId);
-    ArgumentCaptor<UserRole> captor = ArgumentCaptor.forClass(UserRole.class);
-    verify(userRoleRepository).saveAndFlush(captor.capture());
-    assertThat(captor.getValue().getId()).isEqualTo(generatedId);
-    assertThat(captor.getValue().getUserId()).isEqualTo(userId);
-    assertThat(captor.getValue().getRoleId()).isEqualTo(roleId);
-    assertThat(captor.getValue().getTenantId()).isEqualTo(tenantId);
-    assertThat(captor.getValue().getAssignedBy()).isEqualTo(assignedBy);
+    assertThat(result).isEqualTo(generatedId);
+    verify(userRoleRepository)
+        .assignIfRoleLive(
+            toBytes(generatedId), toBytes(userId), toBytes(roleId), toBytes(tenantId),
+            toBytes(assignedBy));
+  }
+
+  /** RC-36.1: zero rows means the role is deleted or foreign, the same 404 as a missing role. */
+  @Test
+  void should_throwRoleNotFound_when_conditionalInsertInsertsNothing() {
+    when(idGenerator.newId()).thenReturn(UUID.randomUUID());
+    when(userRoleRepository.assignIfRoleLive(
+            any(byte[].class), any(byte[].class), any(byte[].class), any(byte[].class),
+            any(byte[].class)))
+        .thenReturn(0);
+
+    assertThatThrownBy(() -> adapter.assign(userId, roleId, tenantId, assignedBy))
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND")
+        .hasMessage("No such role");
   }
 
   /**
-   * The TOCTOU-backstop test (see class Javadoc): {@code uq_user_role_active} rejecting a
-   * concurrent duplicate insert surfaces to this adapter as a {@link
-   * DataIntegrityViolationException} from {@code saveAndFlush(...)} — this must be translated into
-   * a clean {@link DuplicateRoleAssignmentException}, never left to propagate as an untranslated
-   * 500-shaped exception.
-   *
-   * <p>{@code saveAndFlush}, deliberately not {@code save}, is what this test pins: a plain {@code
-   * save()} only queues the INSERT in Hibernate's persistence context, so the constraint violation
-   * would not actually surface until some LATER auto-flush-triggering call (e.g. {@code
-   * RoleAssignmentService#assign}'s own M4a re-read immediately afterwards) — outside this
-   * method's {@code try/catch} entirely. A real 8-thread concurrency IT ({@code
-   * RoleAssignmentIT#should_allowExactlyOneWinner_when_eightConcurrentAssignsRaceForSameUserAndRole})
-   * caught exactly that bug against real MySQL before this fix.
+   * The TOCTOU-backstop test: {@code uq_user_role_active} rejecting a concurrent duplicate insert
+   * surfaces to this adapter as a {@link DataIntegrityViolationException} from the INSERT, which is
+   * executed synchronously inside this method (a deferred flush would let it escape the translation
+   * as a 500; a real 8-thread concurrency IT caught exactly that bug against MySQL). It must be
+   * translated into a clean {@link DuplicateRoleAssignmentException}.
    */
   @Test
-  void should_throwDuplicateRoleAssignmentException_when_saveAndFlushThrowsDataIntegrityViolation() {
+  void should_throwDuplicateRoleAssignmentException_when_insertThrowsDataIntegrityViolation() {
     when(idGenerator.newId()).thenReturn(UUID.randomUUID());
-    when(userRoleRepository.saveAndFlush(any(UserRole.class)))
+    when(userRoleRepository.assignIfRoleLive(
+            any(byte[].class), any(byte[].class), any(byte[].class), any(byte[].class),
+            any(byte[].class)))
         .thenThrow(new DataIntegrityViolationException("uq_user_role_active violated"));
 
     assertThatThrownBy(() -> adapter.assign(userId, roleId, tenantId, assignedBy))
         .isInstanceOf(DuplicateRoleAssignmentException.class)
         .hasFieldOrPropertyWithValue("code", "RBAC_004");
+  }
+
+  private static byte[] toBytes(UUID uuid) {
+    return java.nio.ByteBuffer.allocate(16)
+        .putLong(uuid.getMostSignificantBits())
+        .putLong(uuid.getLeastSignificantBits())
+        .array();
   }
 
   @Test

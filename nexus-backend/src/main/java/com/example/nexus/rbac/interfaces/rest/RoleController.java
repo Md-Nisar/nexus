@@ -215,6 +215,38 @@ public class RoleController {
         actor, parsedRoleId, parsedPermissionId, RbacControllerSupport.requestContext(httpRequest));
   }
 
+  /**
+   * Soft-deletes a custom role that has no active holder (US-018 C1). Bounded by the caller's own
+   * authority exactly like a detach: the caller must hold every permission of the role (and, for an
+   * administrator role, be an administrator through another role). The role stays in the audit
+   * trail; its name stays reserved until the V10 contract step.
+   */
+  @DeleteMapping("/{roleId}")
+  @ResponseStatus(HttpStatus.NO_CONTENT)
+  @RequiresPermission(ROLE_WRITE)
+  @Operation(summary = "Delete a custom role in the caller's tenant (soft delete)")
+  @ApiResponse(responseCode = "204", description = "Role deleted")
+  @ApiResponse(responseCode = "400", description = "Malformed path UUID")
+  @ApiResponse(
+      responseCode = "403",
+      description =
+          "Missing role:write, or the caller does not hold every permission of the role (for an"
+              + " administrator role: or is not an administrator through another role)")
+  @ApiResponse(
+      responseCode = "404",
+      description = "Role not found, already deleted, or in another tenant (indistinguishable)")
+  @ApiResponse(
+      responseCode = "409",
+      description = "System role (RBAC_003), or the role still has active holders (RBAC_009)")
+  public void softDeleteRole(
+      @PathVariable String roleId, Authentication authentication, HttpServletRequest httpRequest) {
+    RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, ROLE_WRITE);
+    UUID parsedRoleId = RbacControllerSupport.parsePathUuid(roleId, PATH_PARAM_ROLE_ID);
+
+    roleManagementService.softDeleteRole(
+        actor, parsedRoleId, RbacControllerSupport.requestContext(httpRequest));
+  }
+
   private static RoleResponse toResponse(RoleView view) {
     return new RoleResponse(
         view.id().toString(), view.name(), view.description(), view.systemRole(), view.createdAt());

@@ -770,6 +770,29 @@ class RbacAuthEventAdapterTest {
     assertThat(metadata.has("grantedBy")).isFalse();
   }
 
+  @Test
+  void should_mapAllFieldsCorrectly_when_recordRoleDeletedCalled() {
+    RequestContext ctx = new RequestContext("127.0.0.1", "trace-delete", "test-agent");
+    RoleAuditEvent event =
+        new RoleAuditEvent(
+            TENANT_ID, ROLE_ID, "Billing Manager", null, null, ACTOR_USER_ID, ctx, null);
+
+    adapter.recordRoleDeleted(event);
+
+    AuthEvent captured = captureRecordedEventInCurrentTransaction();
+    assertThat(captured.getEventType()).isEqualTo("ROLE_DELETED");
+    assertThat(captured.getOutcome()).isEqualTo("SUCCESS");
+    assertThat(captured.getUserId()).isNull();
+    assertThat(captured.getTenantId()).isEqualTo(TENANT_ID);
+
+    JsonNode metadata = objectMapper.readTree(captured.getMetadata());
+    assertThat(metadata.get("traceId").asString()).isEqualTo("trace-delete");
+    assertThat(metadata.get("roleId").asString()).isEqualTo(ROLE_ID.toString());
+    assertThat(metadata.get("roleName").asString()).isEqualTo("Billing Manager");
+    assertThat(metadata.get("deletedBy").asString()).isEqualTo(ACTOR_USER_ID.toString());
+    assertThat(metadata.has("permissionId")).isFalse();
+  }
+
   /**
    * Adversarial corpus for the tenant-controlled {@code roleName}/{@code permissionName} pair
    * (threat model T-T8): quotes, backslashes, control characters, and the two Unicode line

@@ -3,10 +3,12 @@ package com.example.nexus.rbac.infrastructure.persistence;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.RoleView;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -99,4 +101,21 @@ public interface JpaRoleRepository extends JpaRepository<Role, UUID> {
       WHERE rp.id.roleId = r.id AND r.tenantId = :tenantId
       """)
   List<RolePermissionRef> findRolePermissionIdsByTenantRoles(@Param("tenantId") UUID tenantId);
+
+  /**
+   * C1 DELETE's write (US-018 T-025): a bulk single-column {@code UPDATE}, never {@code
+   * findById->set->save} (that would flush a multi-column UPDATE; the {@code nexus_app} grant is
+   * column-scoped to {@code name}, {@code description} and {@code deleted_at}). The affected-row
+   * count is the concurrency guard: {@code 0} means the role is already deleted, missing or in
+   * another tenant. {@code updated_at} is refreshed by the database ({@code ON UPDATE}), which needs
+   * no column privilege.
+   */
+  @Modifying(clearAutomatically = true)
+  @Query(
+      "UPDATE Role r SET r.deletedAt = :deletedAt "
+          + "WHERE r.id = :roleId AND r.tenantId = :tenantId AND r.deletedAt IS NULL")
+  int softDelete(
+      @Param("roleId") UUID roleId,
+      @Param("tenantId") UUID tenantId,
+      @Param("deletedAt") Instant deletedAt);
 }

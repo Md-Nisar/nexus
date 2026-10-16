@@ -112,8 +112,8 @@ class AuthEventTypeTest {
   }
 
   @Test
-  void should_defineAllTwentySevenConstants_when_valuesCalled() {
-    assertThat(AuthEventType.values()).hasSize(27);
+  void should_defineAllTwentyEightConstants_when_valuesCalled() {
+    assertThat(AuthEventType.values()).hasSize(28);
     assertThat(Arrays.stream(AuthEventType.values()).map(Enum::name))
         .containsExactlyInAnyOrder(
             "LOGIN_SUCCESS",
@@ -142,6 +142,7 @@ class AuthEventTypeTest {
             "ROLE_CREATED",
             "ROLE_PERMISSION_GRANTED",
             "ROLE_PERMISSION_REVOKED",
+            "ROLE_DELETED",
             "ROLE_BREAK_GLASS_GRANT");
   }
 
@@ -168,6 +169,13 @@ class AuthEventTypeTest {
   @Test
   void should_returnFalse_when_isPriorityCheckedOnRoleCreated() {
     assertThat(AuthEventType.ROLE_CREATED.isPriority()).isFalse();
+  }
+
+  /** US-018 C1: ROLE_DELETED is written on the atomic path only, never via the retry buffer. */
+  @Test
+  void should_returnFalse_when_isPriorityCheckedOnRoleDeleted() {
+    assertThat(AuthEventType.ROLE_DELETED.isPriority()).isFalse();
+    assertThat(AuthEventType.ROLE_DELETED.wireName()).isEqualTo("ROLE_DELETED");
   }
 
   /**
