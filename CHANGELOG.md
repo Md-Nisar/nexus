@@ -7,6 +7,18 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ## [Unreleased]
 
+### Changed — US-018 Milestone 3 (retire superseded authorization machinery: A5, D3; T-016 to T-019)
+
+**Backend**
+- "Administrator" now means one active role carrying every catalogue permission. The name-based dangerous-permission gates on assign, revoke, attach and detach are removed; A2/A3/A4, revoke-subset and role-subset replace them. Behaviour changes: a partial administrator can assign exactly the permissions they hold; a caller without `user:read` can no longer revoke `MEMBER`; a revoke or detach of an admin-defining role needs an administrator (a union of roles is not enough).
+- New 409 `RBAC_010`: an attach that would make a role admin-defining is refused while a holder was assigned by a non-administrator.
+- New signals: ERROR `RBAC_SELF_ASSIGN_ADMIN_DISAGREEMENT` (+ counter), WARN `RBAC_ATTACH_ESCALATES_NON_ADMIN_ASSIGNED_HOLDERS`, `RBAC_ROLE_BECAME_ADMIN_DEFINING`, `RBAC_ATTACH_PROVENANCE_REFUSED`, `RBAC_ROLE_SUBSET_DENIED`, `RBAC_ADMINISTRATOR_REQUIRED_DENIED`; `nexus.rbac.admin_role_assigned{selfTarget}`.
+- Removed meters: `self_role_assignment`, `privileged_role_change_blocked`, `privileged_role_change_allowed`, `admin_minted_by_non_named_admin`. `last_admin_lockout_blocked` lost its tag.
+- Zero-admin health indicator, `listActive` redaction and the break-glass precondition use the same definition. Deleted `RbacDangerousPermissions`, `RbacAdminEquivalence`, `RolePermissionName`.
+
+**Tests and docs**
+- Unit gate: 2005 run, 0 failures. Integration tests rewritten and compile-checked, not run (no Docker). Docs: `monitoring.md` 4a, `runbook.md` 12, `09-technical.md` 14, `15-threat-model-repass-M3.md`.
+
 ### Added — US-018 Milestone 5 (break-glass first-administrator CLI: A7; T-007, T-008)
 
 **Backend**

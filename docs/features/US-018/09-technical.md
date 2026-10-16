@@ -194,3 +194,32 @@ Design: `03-design.md` section 7 (final behaviour; nothing there was stale for t
 **Open.** O-7 (a DISABLED sole administrator gets exit 5; owner decision required before merge, characterised by `..._pendingO7Decision` in `BreakGlassAdminIT`), optional L-1 (the refusal page is not wrapped, so a throwing page hides the refusal code behind exit 1) and L-2 (the target's ACTIVE check is outside the grant transaction). See STATUS.md and `14-pending-items.md`.
 
 **Tests.** Test audit run: surefire 2032 run, 0 failures, 0 errors, 1 skipped (pre-existing); failsafe 497 run, 0 failures; JaCoCo, SpotBugs and Checkstyle green. `BreakGlassAdminIT` has 29 tests, including real child-JVM runs as `nexus_app`.
+
+---
+
+## 14. M3: retire the superseded authorization machinery (A5, D3; T-016 to T-019)
+
+Design: `03-design.md` section 5 (ledger rows 1 to 19). Decision record: ADR-0021. Re-pass: `15-threat-model-repass-M3.md`.
+
+**What it does.** "Administrator" has one meaning everywhere: an active holder of one role that carries every permission in the catalogue (an admin-defining role); never the union across roles. The name-based gates (dangerous permissions, `TENANT_ADMIN` by name) are gone; the grant-subset rules (A2 assign, A3 attach, A4 self-assign, revoke-subset, role-subset) do the work.
+
+**How.**
+- **Ports.** Removed M5, M5b, M7, M10, M12 and `RoleManagementPort.findRoleIdByName`. Added M10' `findRolePermissionIdsForTenantRoles`, M16 `findHeldAdminDefiningRoleIds` (independent per-role `GROUP BY ... HAVING COUNT(DISTINCT) =` catalogue count, non-locking), `findActiveHoldersForRole`, `findActiveHolderUserIdsForRoles`. `RbacAdministrators` gained `adminDefiningRoleIds` and `isAdministrator` over `(role, permission)` pairs.
+- **Assign / revoke.** If the target is admin-defining, M10' then one ascending unsigned-byte `FOR UPDATE` statement (M11) over admin-defining ids plus the target; on that path the caller's administrator status comes from M11's rows (RC-25.1/25.3). Revoke: tenant 404, M3 404, throttle, classify, lock, administrator requirement (`NOT_TENANT_ADMIN`), L-1, union subset (`GRANT_EXCEEDS_CALLER`), distinct-holder lockout (409), update.
+- **Attach / detach.** Attach: A3, then (only if it completes the catalogue) 409 `RBAC_010` while an active holder was assigned by a non-administrator. After commit: row 13 and row 14 signals from an after-commit read. Detach: role-subset before the delete; for an admin-defining role the caller must be an administrator through another role.
+- **Detection.** Self-target assign runs M16 before the INSERT; a disagreement with A4 logs ERROR `RBAC_SELF_ASSIGN_ADMIN_DISAGREEMENT` and counts `nexus.rbac.self_assign_admin_disagreement`. `admin_role_assigned{selfTarget}` fires for admin-defining targets.
+- **Indicator / redaction / break-glass.** The zero-admin indicator compares tenants with an admin-defining role against tenants with an active admin-defining holder (count only, 30 s cache and probe exclusion unchanged). `listActive` redacts `assignedBy` unless the caller is an administrator. `BootstrapAdminService` uses the same definition.
+- **FR-A5.c proxy.** `HexagonalArchitectureTest` scans `rbac/application` sources for the retired symbols.
+
+**Deviations and decisions (recorded).**
+1. Administrator requirement on revoke runs before M13, L-1 and the subset check, so the kept 403 test `should_return403_when_nonAdminAttemptsToRevokeTheTenantsLastAdmin` stays `NOT_TENANT_ADMIN`. Two `RoleRevocationSymmetryIT` tests could not stay verbatim (the dangerous custom role is now `PERMISSION_ABSENT`, `TENANT_ADMIN` fixtures carry the whole catalogue).
+2. Classification (M14/M15) happens before the lock; the union-holder A2 comparison on the lock path uses the M13 snapshot (staleness accepted, same TOCTOU family as RES-27).
+3. The "reverse" disagreement (A4 says administrator, M16 says not) is unreachable by construction in the self-target path and is not tested as a separate signal.
+4. No L-1 on detach beyond the endpoint permission; detach is not in the lock family (RES-28).
+5. The audit `holderCount` field is no longer written on attach (the event field remains, null).
+6. Attach is not retried after commit if the after-commit read fails (`holders="unknown"`); detach holder read is retried once.
+7. k6 load script `load/role-change-privileged-denial-throttle.k6.js` still references retired names and was not updated.
+8. Ordering of denial reasons follows A-13 (administrator requirement first, then subset).
+
+**Tests.** `verify -DskipITs`: 2005 run, 0 failures, 0 errors, 1 skipped; Checkstyle, SpotBugs, JaCoCo and ArchUnit green. Integration tests were rewritten or added (harness C re-scope with the RC-25.3 case, `HeldPermissionPartitionIT`, `AttachEscalationSignalIT`, `BreakGlassAdminIT` custom-admin cases) and compile, but were **not run**: no Docker in the M3 session.
+

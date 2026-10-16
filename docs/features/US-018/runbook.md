@@ -16,7 +16,7 @@ Never paste emails, names or tokens into tickets: use user, role, permission and
    | `PERMISSION_ABSENT` | `RBAC_ENDPOINT_PERMISSION_NOT_HELD` | Right after the V6 deploy: stale permission cache or old JWT without `user:role:assign`. Otherwise the caller's role was revoked and the token is stale (working as intended) | Step 2 |
    | `GRANT_EXCEEDS_CALLER` | `RBAC_GRANT_EXCEEDS_CALLER` (assign, revoke) or `RBAC_ATTACH_EXCEEDS_CALLER` (attach) | The role being assigned, revoked or attached carries a permission the caller does not hold. This is A2, A3 or revoke-subset working as designed | Step 3 |
    | `SELF_ASSIGNMENT` | `RBAC_SELF_ASSIGNMENT_DENIED` | A non-administrator targeted themselves (A4) | Step 4 |
-   | `NOT_TENANT_ADMIN` | `RBAC_PRIVILEGED_ROLE_CHANGE_BLOCKED` or `RBAC_DENIAL_THROTTLE_ENGAGED` | Legacy gate for privileged roles, or the actor is throttled | Section 3 |
+   | `NOT_TENANT_ADMIN` | `RBAC_ADMINISTRATOR_REQUIRED_DENIED` or `RBAC_DENIAL_THROTTLE_ENGAGED` | (M3) The caller revoked an admin-defining role without being an administrator, or the actor is throttled. An administrator is an active holder of one role carrying every catalogue permission; holding the union across roles does not count | Section 3 and section 12 |
    | `CROSS_TENANT_TARGET` | n/a | Target user or role belongs to another tenant | Check ids; do not widen anything |
 
 2. **`PERMISSION_ABSENT`.** Does the caller hold `user:role:assign` (or `role:write`) in the database right now?
@@ -54,7 +54,7 @@ Never paste emails, names or tokens into tickets: use user, role, permission and
 
 **Symptom.** `DELETE /api/v1/users/{userId}/roles/{roleId}` returns 409 `RBAC_002` "Cannot revoke the last active TENANT_ADMIN assignment in this tenant".
 
-**What it means.** The revocation would leave the tenant with no distinct active holder of a role able to administer it. The lockout is intact and unchanged by M2; in M2 it still uses the US-017 admin-equivalent definition (re-scoped to admin-defining roles in M3). Authorization is evaluated first, so only a caller allowed to revoke that role ever sees 409.
+**What it means.** The revocation would leave the tenant with no distinct active holder of a role able to administer it. The lockout counts distinct active holders of admin-defining roles (a role carrying every catalogue permission), since M3. Authorization is evaluated first, so only a caller allowed to revoke that role ever sees 409.
 
 **Do.**
 1. Confirm it is genuine: count active holders of the role (and of other roles that carry every permission) in the tenant.
@@ -236,3 +236,12 @@ If the page was received but the process shows a start failure with reason `WEB_
 **After the grant.** The DISABLED holder keeps its `TENANT_ADMIN` assignment; the grant does not touch it. Once the new administrator has logged in, they revoke the DISABLED holder's assignment through the normal API (the last-administrator guard allows it, because the new administrator is now a holder too), so a later re-enable of that account does not silently restore its administrator rights. Record the revoke on the ticket.
 
 Do not add or use any CLI override flag; none exists.
+
+## 12. M3: refusals and signals after the name-based gate was retired
+
+- **409 `RBAC_010` on attach.** The attach would make the role admin-defining while an active holder was assigned by someone who is not an administrator. Look up the holders (`user_roles.assigned_by`) of the role; have an administrator re-assign or revoke those holders, then retry. The response names no holder; the WARN `RBAC_ATTACH_PROVENANCE_REFUSED` carries only the count.
+- **403 on detach (`GRANT_EXCEEDS_CALLER`, WARN `RBAC_ROLE_SUBSET_DENIED`).** The caller must hold every permission of the role; for an admin-defining role they must also be an administrator through another role. Ask an administrator to detach.
+- **Page: `role_became_admin_defining` with holders.** Check the holders of the role (`holders="unknown"` means the after-commit read failed, so read them by hand). If the attach was not intended, detach the permission with an administrator account and review who attached it (`ROLE_PERMISSION_GRANTED` row).
+- **Page: `RBAC_SELF_ASSIGN_ADMIN_DISAGREEMENT`.** The authorization check and the independent statement disagree about the caller. Treat as a defect in the administrator definition or a race on role data; collect the user's roles and each role's permission count versus the catalogue count and escalate to the owning team. The assignment itself was decided by A4.
+- **Health component `rbacZeroActiveAdmins` DOWN.** A tenant has an admin-defining role with no active holder. Follow the US-017 zero-administrator procedure, or the break-glass CLI (section 11); the definition now includes custom roles carrying the whole catalogue.
+- **Concurrent detach (RES-28) and the attach snapshot (RES-27)** are accepted, detective-only races: a role can lose admin-defining status through two concurrent detaches, and the indicator is what notices.

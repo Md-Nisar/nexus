@@ -58,7 +58,28 @@ All are WARN and carry ids only. The design requires the denial markers named in
 | `nexus_rbac_audit_write_failed_deny` | `increase(nexus_rbac_audit_write_failed_total{operation="deny"}[5m]) > 0` | ticket | Denial rows are being lost, so the forensic trail for M2 denials is incomplete |
 | `nexus_rbac_grant_check_role_not_in_tenant` | log-based, any occurrence of `RBAC_GRANT_CHECK_ROLE_NOT_IN_TENANT` | page | Unreachable by construction; a hit means a tenant-isolation invariant broke |
 
-The existing page alerts from US-016/US-017 (`nexus_rbac_gate_bypass_canary`, `nexus_rbac_privileged_role_change_blocked_dangerous`, the zero-active-admins health signal) are unchanged in M2 and remain the primary escalation signals; their canary mechanism is replaced in M3.
+The existing page alerts from US-016/US-017 (`nexus_rbac_gate_bypass_canary`, `nexus_rbac_privileged_role_change_blocked_dangerous`, the zero-active-admins health signal) were unchanged in M2. M3 replaces them; see section 4a.
+
+## 4a. M3 alert changes (A5: superseded machinery retired)
+
+Suggestions, as above. The name-based gate, the M12 canary and the US-017 counters are gone, so alerts built on them must be re-pointed. No meter carries a tenant tag.
+
+| Alert | Suggested expression | Suggested severity | Replaces / why |
+|---|---|---|---|
+| `nexus_rbac_gate_bypass_canary` (re-pointed) | `increase(nexus_rbac_self_assign_admin_disagreement_total[5m]) > 0`; log: ERROR `RBAC_SELF_ASSIGN_ADMIN_DISAGREEMENT` (`tenantId`, `actorUserId`, `roleId`) | page | An independent per-role statement (M16, non-locking, run before the INSERT of a self-target assign) says the caller is an administrator while A4 said not. A4 and M16 disagree: the "administrator" definition has a bug or the data changed between reads. Never consulted for authorization |
+| `self_role_assignment_total` ticket | dropped | n/a | The meter no longer exists. Self-assignment by a non-administrator is `permission_denied{reason="SELF_ASSIGNMENT"}` (section 4) |
+| `nexus_rbac_privileged_role_change_blocked_dangerous` | replaced by `increase(nexus_rbac_permission_denied_total{reason="NOT_TENANT_ADMIN"}[15m]) > 0` | ticket | `privileged_role_change_blocked` and `_allowed` no longer exist. `NOT_TENANT_ADMIN` now means only: the caller is not an administrator (one role carrying the whole catalogue) on a revoke of an admin-defining role. Admin-defining assigns by a non-administrator are `GRANT_EXCEEDS_CALLER` |
+| `nexus_rbac_attach_escalates_non_admin_assigned` | `increase(nexus_rbac_attach_escalates_non_admin_assigned_total{holders!="0"}[15m]) > 0` | ticket; page when `page="true"` | Every attach, after commit: holders of the role gain the permission. Ticket when some holder was assigned by a non-administrator; `page="true"` when the permission is `user:role:assign` or `role:write` or the attach makes the role admin-defining (RES-26 detective control). Log: WARN `RBAC_ATTACH_ESCALATES_NON_ADMIN_ASSIGNED_HOLDERS` (`tenantId`, `roleId`, `permissionId`, `holderCount`, `nonAdminAssignedCount`). `holders="unknown"` means the after-commit read failed: treat as non-zero |
+| `nexus_rbac_role_became_admin_defining` | `increase(nexus_rbac_role_became_admin_defining_total{holders!="0"}[15m]) > 0` (include `holders="unknown"`) | page | An attach completed the catalogue on a role that has active holders: those holders became administrators. Log: WARN `RBAC_ROLE_BECAME_ADMIN_DEFINING`. With zero holders it is informational |
+| `nexus_rbac_attach_provenance_refused` | `increase(nexus_rbac_permission_denied_total{permission="role:write",reason="ATTACH_PROVENANCE"}[15m]) > 0`; log: WARN `RBAC_ATTACH_PROVENANCE_REFUSED` (`tenantId`, `actorUserId`, `roleId`, `permissionId`, `nonAdminAssignedCount`) | ticket | The attach was refused with 409 `RBAC_010`: it would make a role admin-defining while a holder was assigned by a non-administrator. Preventive only for that payoff |
+| `nexus_rbac_admin_role_assigned` | `increase(nexus_rbac_admin_role_assigned_total[1h]) > 0` split by `selfTarget` | ticket, never page | An admin-defining role was assigned. `selfTarget="true"` is an administrator assigning it to themselves |
+| `nexus_rbac_role_subset_denied` | log: WARN `RBAC_ROLE_SUBSET_DENIED` (`tenantId`, `actorUserId`, `roleId`, `operation`) with `permission_denied{permission="role:write",reason="GRANT_EXCEEDS_CALLER"}` | ticket on a burst | A detach by a caller who does not hold every permission of the role, or who would be detaching from their own only administrator role. No audit row |
+| `RBAC_ADMINISTRATOR_REQUIRED_DENIED` | log: WARN, same fields as the other denials | ticket on a burst | A revoke of an admin-defining role by a non-administrator (including a union-holder) |
+| `nexus_rbac_last_admin_lockout_blocked` | `increase(nexus_rbac_last_admin_lockout_blocked_total[15m]) > 0` | ticket | **Lost its tag in M3.** Any dashboard or alert that filtered on the old tag must drop the filter. Log: WARN `RBAC_LAST_ADMIN_REVOCATION_BLOCKED` |
+
+Removed meters (zero references; an alert on them goes silent, it does not fail): `nexus.rbac.self_role_assignment`, `nexus.rbac.privileged_role_change_blocked`, `nexus.rbac.privileged_role_change_allowed`, `nexus.rbac.admin_minted_by_non_named_admin`. The zero-active-admins health indicator now means: a tenant has at least one admin-defining role (every catalogue permission) with no active holder.
+
+Retention (RES-6): the four WARN/ERROR events above are a detective control; Ops retention sign-off is deferred to the first deployment.
 
 ## 5. Post-deploy expectations and dashboard rows
 

@@ -861,14 +861,14 @@ US-018 (one story, 12 PRs)
 **Threats owned:** T-E33 (RC-25), T-E34 (RC-26), T-E36 (RC-28), T-E32 (RC-23.2, R1-1 / RC-50(a)), T-E35 (RES-14 via RC-27.1), RC-50(b), RES-27, RES-28, RES-42.
 
 **Merge checklist (M3):**
-- [ ] **Step B re-pass** signs off each ledger row (design §5.1, TM §5) against the code.
-- [ ] **RES-26:** the Platform Security Owner confirms the story owner's Gate 2 acceptance at this re-pass (TM §13.8); review date 2026-11-27 and Epic-3 hard expiry unchanged.
+- [ ] **Step B re-pass** signs off each ledger row (design §5.1, TM §5) against the code. Prepared in `15-threat-model-repass-M3.md` (code location and proving test per row, gaps stated); the sign-off itself is pending.
+- [ ] **RES-26 (sign-off deferred, not a code item):** the Platform Security Owner confirms the story owner's Gate 2 acceptance at this re-pass (TM §13.8); review date 2026-11-27 and Epic-3 hard expiry unchanged.
 - [ ] M4 and M7 merged. ~~M2 soaked in staging for ≥ 1 sprint with no `RbacAdministrators` anomalies~~ waived for the merge on 2026-10-05 (no environment); the soak and the anomaly check are now conditions on the first staging deployment.
-- [ ] **Harness C** (`LastAdminLockoutIT`) passes repeatedly with the re-scoped lock set, the benign thread and the **RC-25.3** race case; **MC-H'** green.
-- [ ] **Zero-admin sweep** under the new definition in every environment where either parent flag was ever `true`, done forensically (US-017 RC-21 pattern); a remediation ticket or written acceptance per affected tenant before production deploy.
-- [ ] **RES-6:** Ops retention sign-off for `RBAC_ATTACH_ESCALATES_NON_ADMIN_ASSIGNED_HOLDERS`, `RBAC_SELF_ASSIGN_ADMIN_DISAGREEMENT`, `RBAC_ATTACH_PROVENANCE_REFUSED` and the role-subset denial WARN (design §2.3; A-8).
-- [ ] RES-13 closed at this merge (A3 + role-subset); RES-28 and RES-42 accepted as recorded.
-- [ ] Alert content (docs pass): `nexus_rbac_gate_bypass_canary` re-pointed at `self_assign_admin_disagreement` (page); the `self_role_assignment_total` ticket dropped; row 13 ticket/page and row 14 page; `admin_role_assigned{selfTarget}` ticket.
+- [ ] **Harness C** (`LastAdminLockoutIT`) passes repeatedly with the re-scoped lock set, the benign thread and the **RC-25.3** race case; **MC-H'** green. Written and compile-checked, **not run** (no Docker in the M3 session): deferred to the first run with Docker / first deployment.
+- [ ] (deferred to first deployment; environment query) **Zero-admin sweep** under the new definition in every environment where either parent flag was ever `true`, done forensically (US-017 RC-21 pattern); a remediation ticket or written acceptance per affected tenant before production deploy.
+- [ ] (deferred to first deployment; Ops) **RES-6:** Ops retention sign-off for `RBAC_ATTACH_ESCALATES_NON_ADMIN_ASSIGNED_HOLDERS`, `RBAC_SELF_ASSIGN_ADMIN_DISAGREEMENT`, `RBAC_ATTACH_PROVENANCE_REFUSED` and the role-subset denial WARN (design §2.3; A-8).
+- [x] RES-13 closed at this merge (A3 + role-subset: code and tests in T-016/T-017); RES-28 and RES-42 accepted as recorded (see 09-technical.md section 14).
+- [x] Alert content (docs pass, monitoring.md section 4a, runbook.md section 12): `nexus_rbac_gate_bypass_canary` re-pointed at `self_assign_admin_disagreement` (page); the `self_role_assignment_total` ticket dropped; row 13 ticket/page and row 14 page; `admin_role_assigned{selfTarget}` ticket.
 
 ### T-016 — Assign and revoke decide "administrator" from the set lock's own rows, and revoke-subset replaces the T-E17 gates (ledger rows 1–6, 10)
 
