@@ -104,7 +104,7 @@ yield an empty array.
 {
   path: 'roles',
   canActivate: [authGuard, permissionGuard],   // order matters — see below
-  data: { permission: 'roles:read' },
+  data: { permission: 'role:read' },
   loadComponent: () => import('./features/roles/roles.component').then((m) => m.RolesComponent),
 }
 ```
@@ -143,7 +143,7 @@ import { HasPermissionDirective } from '../../shared/directives/has-permission.d
 @Component({
   imports: [HasPermissionDirective],   // each standalone component imports it itself
   template: `
-    <button *appHasPermission="'users:delete'" (click)="delete()">Delete user</button>
+    <button *appHasPermission="'user:write'" (click)="delete()">Delete user</button>
   `,
 })
 export class UsersComponent {}

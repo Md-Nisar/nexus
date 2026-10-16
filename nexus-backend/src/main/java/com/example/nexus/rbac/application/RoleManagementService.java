@@ -1,5 +1,8 @@
 package com.example.nexus.rbac.application;
 
+import static com.example.nexus.common.security.Permissions.ROLE_READ;
+import static com.example.nexus.common.security.Permissions.ROLE_WRITE;
+
 import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.common.security.DenialReason;
@@ -79,8 +82,6 @@ public class RoleManagementService {
 
   private static final Logger log = LoggerFactory.getLogger(RoleManagementService.class);
 
-  private static final String ROLE_WRITE = "role:write";
-  private static final String ROLE_READ = "role:read";
 
   private static final String LOG_KEY_EVENT = "event";
   private static final String LOG_KEY_TENANT_ID = "tenantId";

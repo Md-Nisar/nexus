@@ -4,6 +4,7 @@ import { By } from '@angular/platform-browser';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { HasPermissionDirective } from './has-permission.directive';
 import { AuthStore } from '../../core/auth/auth.store';
+import { Permission } from '../types/permission';
 import { createAuthStoreStub, AuthStoreStub } from '../testing/auth.fixtures';
 
 @Component({
@@ -11,20 +12,24 @@ import { createAuthStoreStub, AuthStoreStub } from '../testing/auth.fixtures';
   template: `<span *appHasPermission="perm()" data-testid="guarded">Manage users</span>`,
 })
 class HostComponent {
-  readonly perm = signal('users:read');
+  readonly perm = signal<Permission>('user:read');
 }
 
 @Component({
   imports: [HasPermissionDirective],
-  template: `<span *appHasPermission="''" data-testid="guarded-empty">Empty permission</span>`,
+  template: `<span *appHasPermission="empty" data-testid="guarded-empty">Empty permission</span>`,
 })
-class EmptyPermissionHostComponent {}
+class EmptyPermissionHostComponent {
+  // Deliberately outside the `Permission` union: the test proves the runtime behaviour for a
+  // template authoring mistake that the compiler would otherwise reject.
+  readonly empty = '' as unknown as Permission;
+}
 
 @Component({
   imports: [HasPermissionDirective],
   template: `
-    <span *appHasPermission="'users:read'" data-testid="guarded-read">Manage users</span>
-    <span *appHasPermission="'users:write'" data-testid="guarded-write">Edit users</span>
+    <span *appHasPermission="'user:read'" data-testid="guarded-read">Manage users</span>
+    <span *appHasPermission="'user:write'" data-testid="guarded-write">Edit users</span>
   `,
 })
 class MultiHostComponent {}
@@ -53,13 +58,13 @@ describe('HasPermissionDirective', () => {
   }
 
   it('renders the host template when the user holds the required permission', () => {
-    stub.permissions.set(['users:read']);
+    stub.permissions.set(['user:read']);
     const { query } = guardedElement();
     expect(query()).not.toBeNull();
   });
 
   it('does not render the host template when the user lacks the required permission', () => {
-    stub.permissions.set(['users:write']);
+    stub.permissions.set(['user:write']);
     const { query } = guardedElement();
     expect(query()).toBeNull();
   });
@@ -79,12 +84,12 @@ describe('HasPermissionDirective', () => {
     // signal). This proves the effect() also re-evaluates when appHasPermission itself
     // changes, via the HostComponent's own perm() signal, which is the other half of the
     // directive's reactive dependency graph.
-    stub.permissions.set(['users:write']);
+    stub.permissions.set(['user:write']);
     const { fixture, query } = guardedElement();
     const host = fixture.componentInstance;
     expect(query()).toBeNull();
 
-    host.perm.set('users:write');
+    host.perm.set('user:write');
     fixture.detectChanges();
 
     expect(query()).not.toBeNull();
@@ -95,14 +100,14 @@ describe('HasPermissionDirective', () => {
     const { fixture, query } = guardedElement();
     expect(query()).toBeNull();
 
-    stub.permissions.set(['users:read']);
+    stub.permissions.set(['user:read']);
     fixture.detectChanges();
 
     expect(query()).not.toBeNull();
   });
 
   it('removes the view reactively when the permission is revoked after initial render', () => {
-    stub.permissions.set(['users:read']);
+    stub.permissions.set(['user:read']);
     const { fixture, query } = guardedElement();
     expect(query()).not.toBeNull();
 
@@ -113,14 +118,14 @@ describe('HasPermissionDirective', () => {
   });
 
   it('does not recreate the embedded view when permissions changes to a new array with identical contents', () => {
-    stub.permissions.set(['users:read']);
+    stub.permissions.set(['user:read']);
     const { fixture, query } = guardedElement();
     const firstElement = query()?.nativeElement;
     expect(firstElement).toBeDefined();
 
     // A fresh array instance, same contents — the computed()'s value-equality short-circuit
     // must prevent the effect from re-running, so the view is never torn down and recreated.
-    stub.permissions.set(['users:read']);
+    stub.permissions.set(['user:read']);
     fixture.detectChanges();
 
     const secondElement = query()?.nativeElement;
@@ -134,7 +139,7 @@ describe('HasPermissionDirective', () => {
     // happens by the `resource:action` convention. Proven against both an empty and a
     // non-empty permissions list so this isn't just coincidentally false because the
     // stub defaults to [].
-    stub.permissions.set(['users:read', 'users:write']);
+    stub.permissions.set(['user:read', 'user:write']);
     const fixture = TestBed.createComponent(EmptyPermissionHostComponent);
     fixture.detectChanges();
 
@@ -155,13 +160,13 @@ describe('HasPermissionDirective', () => {
     expect(readEl()).toBeNull();
     expect(writeEl()).toBeNull();
 
-    stub.permissions.set(['users:read']);
+    stub.permissions.set(['user:read']);
     fixture.detectChanges();
 
     expect(readEl()).not.toBeNull();
     expect(writeEl()).toBeNull();
 
-    stub.permissions.set(['users:read', 'users:write']);
+    stub.permissions.set(['user:read', 'user:write']);
     fixture.detectChanges();
 
     expect(readEl()).not.toBeNull();
@@ -180,7 +185,7 @@ describe('HasPermissionDirective', () => {
     // `R3ViewContainerRef`, which is not part of the public API. If the effect had
     // instead run twice (once for the revoke, once for the re-grant), the view would
     // have been torn down and recreated, and this element reference would change.
-    stub.permissions.set(['users:read']);
+    stub.permissions.set(['user:read']);
     const { fixture, query } = guardedElement();
     const firstElement = query()?.nativeElement;
     expect(firstElement).toBeDefined();
@@ -188,7 +193,7 @@ describe('HasPermissionDirective', () => {
     // Two rapid, same-tick writes: revoke then immediately re-grant, with no
     // detectChanges() in between.
     stub.permissions.set([]);
-    stub.permissions.set(['users:read']);
+    stub.permissions.set(['user:read']);
     fixture.detectChanges();
 
     const secondElement = query()?.nativeElement;

@@ -1,5 +1,8 @@
 package com.example.nexus.rbac.interfaces.rest;
 
+import static com.example.nexus.common.security.Permissions.ROLE_READ;
+import static com.example.nexus.common.security.Permissions.ROLE_WRITE;
+
 import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.security.RequiresPermission;
 import com.example.nexus.rbac.application.RoleManagementService;
@@ -57,8 +60,6 @@ import org.springframework.web.bind.annotation.RestController;
 @Tag(name = "Role Management", description = "Tenant-scoped role and role-permission management")
 public class RoleController {
 
-  private static final String ROLE_WRITE = "role:write";
-  private static final String ROLE_READ = "role:read";
   private static final String PATH_PARAM_ROLE_ID = "roleId";
   private static final String PATH_PARAM_PERMISSION_ID = "permissionId";
 

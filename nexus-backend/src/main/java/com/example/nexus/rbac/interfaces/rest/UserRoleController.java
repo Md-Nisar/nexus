@@ -1,5 +1,8 @@
 package com.example.nexus.rbac.interfaces.rest;
 
+import static com.example.nexus.common.security.Permissions.USER_READ;
+import static com.example.nexus.common.security.Permissions.USER_ROLE_ASSIGN;
+
 import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.security.RequiresPermission;
 import com.example.nexus.rbac.application.RoleAssignmentService;
@@ -60,8 +63,6 @@ import org.springframework.web.bind.annotation.RestController;
 public class UserRoleController {
 
   // US-018 A1 (ADR-0021 D1): local constant until the typed catalogue (B5) lands.
-  private static final String USER_ROLE_ASSIGN = "user:role:assign";
-  private static final String USER_READ = "user:read";
   private static final String PATH_PARAM_USER_ID = "userId";
 
   private final RoleAssignmentService roleAssignmentService;

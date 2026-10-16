@@ -1,5 +1,8 @@
 package com.example.nexus.rbac.application;
 
+import static com.example.nexus.common.security.Permissions.USER_READ;
+import static com.example.nexus.common.security.Permissions.USER_ROLE_ASSIGN;
+
 import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.common.security.DenialReason;
@@ -84,8 +87,6 @@ public class RoleAssignmentService {
    * {@code requiredPermission} of every 403 they raise. Local constant until the typed catalogue
    * (B5) lands.
    */
-  private static final String USER_ROLE_ASSIGN = "user:role:assign";
-  private static final String USER_READ = "user:read";
 
   private static final String OPERATION_ASSIGN = "assign";
   private static final String OPERATION_REVOKE = "revoke";

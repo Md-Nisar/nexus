@@ -83,13 +83,13 @@ describe('apiErrorInterceptor', () => {
         code: 'RBAC_001',
         detail: 'You do not have permission to perform this action',
         traceId: 'trace-rbac-1',
-        requiredPermission: 'roles:read',
+        requiredPermission: 'role:read',
       },
       { status: 403, statusText: 'Forbidden' },
     );
 
     expect(captured?.code).toBe('RBAC_001');
-    expect(captured?.requiredPermission).toBe('roles:read');
+    expect(captured?.requiredPermission).toBe('role:read');
   });
 
   it('should leave requiredPermission undefined for an ACCESS_DENIED problem response', () => {
