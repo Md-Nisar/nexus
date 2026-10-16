@@ -28,12 +28,12 @@ public interface JpaUserRoleRepository
    * BINARY(16)} conversion for both the join predicate and the bind parameters.
    *
    * <p>Cross-checks {@code r.tenantId} in addition to {@code ur.tenantId}: {@code
-   * user_roles.tenant_id} is a denormalized copy with no DB constraint tying it to the assigned
-   * role's own {@code tenant_id} (no FK exists — see {@code V5__rbac_schema.sql}). Requiring both
-   * to match is defense-in-depth against a future assignment-time bug (e.g. US-012) writing a
-   * mismatched {@code user_roles.tenant_id}, which would otherwise silently leak a role's
-   * permissions across tenants (US-010 AC9 / threat-model T-S1 — a privilege-escalation class of
-   * bug, not just a data bug).
+   * user_roles.tenant_id} is a denormalized copy of the assigned role's own {@code tenant_id}.
+   * Since US-018 V8 the database backstops it with the composite foreign key {@code
+   * fk_user_roles_role_tenant} ({@code (role_id, tenant_id)} references {@code roles (id,
+   * tenant_id)}), so a mismatched row can no longer be written; requiring both to match here stays
+   * as defense in depth for a leak of a role's permissions across tenants (US-010 AC9 /
+   * threat-model T-S1 — a privilege-escalation class of bug, not just a data bug).
    */
   @Query(
       """

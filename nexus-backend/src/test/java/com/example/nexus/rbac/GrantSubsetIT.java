@@ -1,6 +1,7 @@
 package com.example.nexus.rbac;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.nexus.TestcontainersConfiguration;
 import com.example.nexus.identity.application.port.out.JwtPort;
@@ -177,30 +178,27 @@ class GrantSubsetIT {
   }
 
   /**
-   * T-S1 on M13: a {@code user_roles} row whose {@code tenant_id} is the caller's tenant but whose
-   * role belongs to another tenant (possible until the V8 composite FK) must not widen the caller's
-   * holdings, even though the foreign role carries exactly the permission the target needs.
+   * T-S1 on M13, closed at the schema by V8 (US-018 B2): a {@code user_roles} row whose {@code
+   * tenant_id} is the caller's tenant but whose role belongs to another tenant can no longer be
+   * written, so it cannot widen the caller's holdings even though the foreign role carries exactly
+   * the permission the target needs. The M13 read path keeps its own tenant predicate as defense in
+   * depth.
    */
   @Test
-  void should_ignoreForeignTenantRole_when_userRoleRowPointsCrossTenant() {
+  void should_rejectForeignTenantRoleRow_when_userRoleRowPointsCrossTenant() {
     UUID tenantId = uuidGenerator.newId();
     UUID foreignTenantId = uuidGenerator.newId();
     User caller = seedUserWithPermissions(tenantId, "ts1-xt-caller", USER_ROLE_ASSIGN_PERMISSION_ID);
     Role foreignRole =
         seedRoleWithPermissions(foreignTenantId, "XT-FOREIGN-AUDITOR", AUDIT_READ_PERMISSION_ID);
-    userRoleRepository.save(
-        new UserRole(
-            uuidGenerator.newId(), caller.getId(), foreignRole.getId(), tenantId, caller.getId()));
-    User target = seedUser(tenantId, "ts1-xt-target");
-    Role role = seedRoleWithPermissions(tenantId, "XT-LOCAL-AUDITOR", AUDIT_READ_PERMISSION_ID);
 
-    ResponseEntity<Map> resp = postAssign(mintToken(caller), target.getId(), role.getId());
-
-    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-    assertThat(denialRows(target.getId()))
-        .singleElement()
-        .satisfies(row -> assertThat(row).containsEntry("reason", "GRANT_EXCEEDS_CALLER"));
-    assertThat(activeAssignmentCount(target.getId(), role.getId())).isZero();
+    assertThatThrownBy(
+            () ->
+                userRoleRepository.saveAndFlush(
+                    new UserRole(
+                        uuidGenerator.newId(), caller.getId(), foreignRole.getId(), tenantId,
+                        caller.getId())))
+        .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
   }
 
   // ── US-018 T-002: A4 self-assignment (03-design.md §2.1, §4.4) ──────────────────────

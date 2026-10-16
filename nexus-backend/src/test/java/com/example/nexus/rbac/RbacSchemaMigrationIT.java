@@ -167,7 +167,49 @@ class RbacSchemaMigrationIT {
                 + "WHERE CAST(success AS UNSIGNED) = 1 ORDER BY installed_rank",
             String.class);
 
-    assertThat(versions).contains("1", "2", "3", "4", "5", "6");
+    assertThat(versions).contains("1", "2", "3", "4", "5", "6", "7", "8");
+  }
+
+  /**
+   * US-018 B2 / TS-12 (V7 and V8): the composite parent key and the composite foreign key exist, and
+   * the original single-column {@code fk_user_roles_role} is kept. V8 applying at all also proves
+   * the pre-existing seed rows (for example {@code CrossTenantPermissionIT}'s) were consistent.
+   */
+  @Test
+  void should_haveRoleIdTenantUniqueKey_when_v7Applied() {
+    List<String> columns =
+        jdbc.queryForList(
+            "SELECT column_name FROM information_schema.statistics "
+                + "WHERE table_schema = DATABASE() AND table_name = 'roles' "
+                + "AND index_name = 'uq_roles_id_tenant' AND non_unique = 0 ORDER BY seq_in_index",
+            String.class);
+
+    assertThat(columns).containsExactly("id", "tenant_id");
+  }
+
+  @Test
+  void should_haveCompositeRoleTenantForeignKey_when_v8Applied() {
+    List<String> columns =
+        jdbc.queryForList(
+            "SELECT kcu.column_name FROM information_schema.key_column_usage kcu "
+                + "WHERE kcu.table_schema = DATABASE() AND kcu.table_name = 'user_roles' "
+                + "AND kcu.constraint_name = 'fk_user_roles_role_tenant' "
+                + "AND kcu.referenced_table_name = 'roles' ORDER BY kcu.ordinal_position",
+            String.class);
+
+    assertThat(columns).containsExactly("role_id", "tenant_id");
+  }
+
+  @Test
+  void should_keepSingleColumnRoleForeignKey_when_v8Applied() {
+    Integer count =
+        jdbc.queryForObject(
+            "SELECT COUNT(*) FROM information_schema.table_constraints "
+                + "WHERE table_schema = DATABASE() AND table_name = 'user_roles' "
+                + "AND constraint_name = 'fk_user_roles_role' AND constraint_type = 'FOREIGN KEY'",
+            Integer.class);
+
+    assertThat(count).isEqualTo(1);
   }
 
   /**
