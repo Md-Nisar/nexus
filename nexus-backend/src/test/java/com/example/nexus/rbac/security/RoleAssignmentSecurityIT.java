@@ -131,7 +131,7 @@ class RoleAssignmentSecurityIT {
   // ═══════════════════════════════════════════════════════════════════
 
   @Test
-  void should_return403WithCrossTenantTarget_when_postingRoleAssignmentForUserInDifferentTenant() {
+  void should_return404WithUserNotFound_when_postingRoleAssignmentForUserInDifferentTenant() {
     UUID tenantA = uuidGenerator.newId();
     UUID tenantB = uuidGenerator.newId();
     User caller = seedUserWithRole(tenantA, "post-xt-caller", "ASSIGNER", USER_ROLE_ASSIGN_PERMISSION_ID);
@@ -142,21 +142,21 @@ class RoleAssignmentSecurityIT {
 
     ResponseEntity<Map> resp = postAssign(token, targetInTenantB.getId(), someRoleId);
 
-    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-    assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(resp.getBody()).containsEntry("code", "USER_NOT_FOUND");
     assertDenialReasonIncrementedByOne("user:role:assign", "CROSS_TENANT_TARGET", before);
   }
 
   /**
    * <b>The single most important assertion in this entire test class.</b> A design defect found
    * in threat-model review (T-E8) would have let this endpoint silently return {@code 200
-   * {"data": []}} for a cross-tenant probe instead of {@code 403} — destroying the only signal
+   * {"data": []}} for a cross-tenant probe instead of {@code 404} (US-018 B1) — destroying the only signal
    * (the WARN log + {@code nexus.rbac.permission_denied{reason="CROSS_TENANT_TARGET"}} counter)
-   * that makes cross-tenant probing on {@code GET} detectable. This must be {@code 403}, never
+   * that makes cross-tenant probing on {@code GET} detectable. This must be {@code 404}, never
    * {@code 200} with an empty (or any) {@code data} array.
    */
   @Test
-  void should_return403WithCrossTenantTarget_notEmptyList_when_gettingRolesForUserInDifferentTenant() {
+  void should_return404WithUserNotFound_notEmptyList_when_gettingRolesForUserInDifferentTenant() {
     UUID tenantA = uuidGenerator.newId();
     UUID tenantB = uuidGenerator.newId();
     User caller = seedUserWithRole(tenantA, "get-xt-caller", "READER", USER_READ_PERMISSION_ID);
@@ -167,16 +167,16 @@ class RoleAssignmentSecurityIT {
     ResponseEntity<Map> resp = getRoles(token, targetInTenantB.getId());
 
     assertThat(resp.getStatusCode())
-        .as("cross-tenant GET must be 403 CROSS_TENANT_TARGET -- explicitly NOT 200 with an"
+        .as("cross-tenant GET must be the genuine-not-found 404 -- explicitly NOT 200 with an"
             + " empty (or any) data array (T-E8)")
-        .isEqualTo(HttpStatus.FORBIDDEN);
+        .isEqualTo(HttpStatus.NOT_FOUND);
     assertThat(resp.getStatusCode()).isNotEqualTo(HttpStatus.OK);
-    assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
+    assertThat(resp.getBody()).containsEntry("code", "USER_NOT_FOUND");
     assertDenialReasonIncrementedByOne("user:read", "CROSS_TENANT_TARGET", before);
   }
 
   @Test
-  void should_return403WithCrossTenantTarget_when_deletingRoleAssignmentForUserInDifferentTenant() {
+  void should_return404WithUserNotFound_when_deletingRoleAssignmentForUserInDifferentTenant() {
     UUID tenantA = uuidGenerator.newId();
     UUID tenantB = uuidGenerator.newId();
     User caller = seedUserWithRole(tenantA, "delete-xt-caller", "ASSIGNER", USER_ROLE_ASSIGN_PERMISSION_ID);
@@ -187,8 +187,8 @@ class RoleAssignmentSecurityIT {
 
     ResponseEntity<Map> resp = deleteRole(token, targetInTenantB.getId(), someRoleId);
 
-    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-    assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(resp.getBody()).containsEntry("code", "USER_NOT_FOUND");
     assertDenialReasonIncrementedByOne("user:role:assign", "CROSS_TENANT_TARGET", before);
   }
 

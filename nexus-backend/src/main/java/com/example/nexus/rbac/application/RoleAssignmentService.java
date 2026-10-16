@@ -89,6 +89,11 @@ public class RoleAssignmentService {
 
   private static final String OPERATION_ASSIGN = "assign";
   private static final String OPERATION_REVOKE = "revoke";
+  private static final String OPERATION_LIST = "list";
+  private static final String TARGET_KIND_USER = "user";
+  private static final String TARGET_KIND_ROLE = "role";
+  private static final String MESSAGE_NO_SUCH_USER = "No such user";
+  private static final String MESSAGE_NO_SUCH_ROLE = "No such role";
 
   private static final String TIMER_PRIVILEGED_REVOKE_LOCK_HOLD =
       "nexus.rbac.privileged_revoke_lock_hold";
@@ -185,23 +190,15 @@ public class RoleAssignmentService {
   @Transactional
   public ActiveRoleAssignment assign(
       RoleChangeActor actor, UUID targetUserId, UUID roleId, RequestContext requestContext) {
-    Role role;
-    try {
-      verifySameTenant(targetUserId, actor, USER_ROLE_ASSIGN);
-      role = resolveRoleInTenant(roleId, actor, USER_ROLE_ASSIGN);
-    } catch (InsufficientPermissionException e) {
-      // roleName is null by construction here: the target check runs before the role is resolved,
-      // and resolveRoleInTenant throws without returning the (foreign-tenant) Role. A denial row
-      // therefore never carries another tenant's role name.
-      recordDenial(
-          actor, targetUserId, roleId, null, e.getReason(), OPERATION_ASSIGN, requestContext, null);
-      throw e;
-    }
+    // A cross-tenant user or role throws the same 404 as a genuine not-found, with no audit row
+    // (US-018 B1, FR-B1.a): the WARN and the counter are emitted by crossTenantNotFound.
+    verifySameTenant(targetUserId, actor, USER_ROLE_ASSIGN, OPERATION_ASSIGN);
+    Role role = resolveRoleInTenant(roleId, actor, USER_ROLE_ASSIGN, OPERATION_ASSIGN);
 
     requireNotThrottled(actor, OPERATION_ASSIGN, requestContext);
 
     TargetClassification target =
-        classifyTarget(actor, targetUserId, role, OPERATION_ASSIGN, requestContext);
+        classifyTarget(actor, role, OPERATION_ASSIGN);
     SetLock setLock = target.adminDefining() ? acquireSetLock(actor, target, role) : null;
     Timer.Sample lockHoldSample = setLock == null ? null : setLock.holdTimer();
 
@@ -310,16 +307,8 @@ public class RoleAssignmentService {
   @Transactional
   public void revoke(
       RoleChangeActor actor, UUID targetUserId, UUID roleId, RequestContext requestContext) {
-    Role role;
-    try {
-      verifySameTenant(targetUserId, actor, USER_ROLE_ASSIGN);
-      role = resolveRoleInTenant(roleId, actor, USER_ROLE_ASSIGN);
-    } catch (InsufficientPermissionException e) {
-      // roleName is null by construction here -- same rationale as assign()'s catch above.
-      recordDenial(
-          actor, targetUserId, roleId, null, e.getReason(), OPERATION_REVOKE, requestContext, null);
-      throw e;
-    }
+    verifySameTenant(targetUserId, actor, USER_ROLE_ASSIGN, OPERATION_REVOKE);
+    Role role = resolveRoleInTenant(roleId, actor, USER_ROLE_ASSIGN, OPERATION_REVOKE);
 
     // Resolved once, ahead of the lockout check: this covers "never assigned" and "already
     // revoked" identically for every role, and its id is what the lockout check excludes.
@@ -328,7 +317,7 @@ public class RoleAssignmentService {
     requireNotThrottled(actor, OPERATION_REVOKE, requestContext);
 
     TargetClassification target =
-        classifyTarget(actor, targetUserId, role, OPERATION_REVOKE, requestContext);
+        classifyTarget(actor, role, OPERATION_REVOKE);
     SetLock setLock = target.adminDefining() ? acquireSetLock(actor, target, role) : null;
     Timer.Sample lockHoldSample = setLock == null ? null : setLock.holdTimer();
 
@@ -436,7 +425,7 @@ public class RoleAssignmentService {
     // MANDATORY, not redundant with the repository's own tenant predicates (T-E8): without this
     // explicit check, a cross-tenant GET would silently return 200 {"data":[]} instead of a 403,
     // destroying the WARN log + denial metric that makes cross-tenant probing detectable.
-    verifySameTenant(targetUserId, actor, USER_READ);
+    verifySameTenant(targetUserId, actor, USER_READ, OPERATION_LIST);
 
     List<ActiveRoleAssignment> assignments =
         userRoleAssignmentPort.findActiveAssignmentViews(targetUserId, actor.tenantId());
@@ -481,17 +470,12 @@ public class RoleAssignmentService {
 
   /**
    * Classifies the target role: M14 for its permission ids and M15 for the catalogue. An empty M14
-   * {@code Optional} (the role is not in the caller's tenant) denies with {@code
-   * CROSS_TENANT_TARGET} and no role name: it is unreachable today (the tenant check ran first and
-   * a role's tenant is immutable), so reaching it means an invariant broke, and "grants nothing"
-   * would be the wrong reading (07-security-review.md L-2). A read failure propagates (500).
+   * {@code Optional} (the role is not in the caller's tenant) denies with the cross-tenant 404 and
+   * no audit row: it is unreachable today (the tenant check ran first and a role's tenant is
+   * immutable), so reaching it means an invariant broke, and "grants nothing" would be the wrong
+   * reading (07-security-review.md L-2). A read failure propagates (500).
    */
-  private TargetClassification classifyTarget(
-      RoleChangeActor actor,
-      UUID targetUserId,
-      Role role,
-      String operation,
-      RequestContext requestContext) {
+  private TargetClassification classifyTarget(RoleChangeActor actor, Role role, String operation) {
     Optional<Set<UUID>> targetPermissionIdsInTenant =
         userRoleAssignmentPort.findPermissionIdsForRole(role.getId(), actor.tenantId());
     if (targetPermissionIdsInTenant.isEmpty()) {
@@ -502,11 +486,7 @@ public class RoleAssignmentService {
           .addKeyValue(LOG_KEY_ROLE_ID, role.getId())
           .addKeyValue(LOG_KEY_OPERATION, operation)
           .log("Denied a role change: the role's permissions are not readable in the caller's tenant");
-      recordDenial(
-          actor, targetUserId, role.getId(), null, DenialReason.CROSS_TENANT_TARGET, operation,
-          requestContext, null);
-      throw new InsufficientPermissionException(
-          USER_ROLE_ASSIGN, DenialReason.CROSS_TENANT_TARGET);
+      throw crossTenantNotFound(actor, USER_ROLE_ASSIGN, TARGET_KIND_ROLE, operation);
     }
     Set<UUID> catalogueIds = userRoleAssignmentPort.findCatalogueIds();
     return new TargetClassification(
@@ -859,35 +839,62 @@ public class RoleAssignmentService {
   }
 
   /**
-   * AC4 tenant-isolation check on the subject ({@code targetUserId}): empty ⇒ 404 {@code
-   * USER_NOT_FOUND}; a tenant other than {@code actor.tenantId()} ⇒ 403 {@code
-   * CROSS_TENANT_TARGET}.
+   * AC4 tenant-isolation check on the subject ({@code targetUserId}): empty or another tenant's
+   * user ⇒ the same 404 {@code USER_NOT_FOUND} (US-018 B1, Decision 20), so the response is no
+   * existence oracle.
    */
-  private void verifySameTenant(UUID targetUserId, RoleChangeActor actor, String requiredPermission) {
+  private void verifySameTenant(
+      UUID targetUserId, RoleChangeActor actor, String requiredPermission, String operation) {
     UUID targetTenantId =
         userDirectoryPort
             .findTenantId(targetUserId)
-            .orElseThrow(
-                () -> new ResourceNotFoundException("USER_NOT_FOUND", "No such user"));
+            .orElseThrow(() -> new ResourceNotFoundException("USER_NOT_FOUND", MESSAGE_NO_SUCH_USER));
     if (!targetTenantId.equals(actor.tenantId())) {
-      throw new InsufficientPermissionException(requiredPermission, DenialReason.CROSS_TENANT_TARGET);
+      throw crossTenantNotFound(actor, requiredPermission, TARGET_KIND_USER, operation);
     }
   }
 
   /**
-   * AC4 tenant-isolation check on the role: empty ⇒ 404 {@code ROLE_NOT_FOUND}; a tenant other
-   * than {@code actor.tenantId()} ⇒ 403 {@code CROSS_TENANT_TARGET}.
+   * AC4 tenant-isolation check on the role: empty or another tenant's role ⇒ the same 404 {@code
+   * ROLE_NOT_FOUND} (US-018 B1).
    */
-  private Role resolveRoleInTenant(UUID roleId, RoleChangeActor actor, String requiredPermission) {
+  private Role resolveRoleInTenant(
+      UUID roleId, RoleChangeActor actor, String requiredPermission, String operation) {
     Role role =
         userRoleAssignmentPort
             .findRole(roleId)
-            .orElseThrow(
-                () -> new ResourceNotFoundException("ROLE_NOT_FOUND", "No such role"));
+            .orElseThrow(() -> new ResourceNotFoundException("ROLE_NOT_FOUND", MESSAGE_NO_SUCH_ROLE));
     if (!role.getTenantId().equals(actor.tenantId())) {
-      throw new InsufficientPermissionException(requiredPermission, DenialReason.CROSS_TENANT_TARGET);
+      throw crossTenantNotFound(actor, requiredPermission, TARGET_KIND_ROLE, operation);
     }
     return role;
+  }
+
+  /**
+   * The cross-tenant 404 (B1, FR-B1.a and FR-B1.b): the exception is built from the same code and
+   * message as a genuine not-found, so the body is byte-identical. The evidence is the WARN {@code
+   * RBAC_CROSS_TENANT_TARGET} and the same {@code nexus.rbac.permission_denied} series the 403
+   * handler increments (the 404 handler does not). No audit row and no {@code AuthEventRetryBuffer}
+   * entry: a synchronous write on this path only would be a timing oracle (R1-5, RES-34). The WARN
+   * carries no foreign id.
+   */
+  private ResourceNotFoundException crossTenantNotFound(
+      RoleChangeActor actor, String requiredPermission, String targetKind, String operation) {
+    log.atWarn()
+        .addKeyValue(LOG_KEY_EVENT, "RBAC_CROSS_TENANT_TARGET")
+        .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+        .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+        .addKeyValue("targetKind", targetKind)
+        .addKeyValue(LOG_KEY_OPERATION, operation)
+        .log("Refused a role change: the target belongs to another tenant");
+    Counter.builder("nexus.rbac.permission_denied")
+        .tag("permission", requiredPermission)
+        .tag("reason", DenialReason.CROSS_TENANT_TARGET.name())
+        .register(meterRegistry)
+        .increment();
+    return TARGET_KIND_USER.equals(targetKind)
+        ? new ResourceNotFoundException("USER_NOT_FOUND", MESSAGE_NO_SUCH_USER)
+        : new ResourceNotFoundException("ROLE_NOT_FOUND", MESSAGE_NO_SUCH_ROLE);
   }
 
   private ActiveAssignmentRef findAssignmentRefOrThrow(UUID targetUserId, UUID roleId, UUID tenantId) {

@@ -316,48 +316,50 @@ class RoleAssignmentServiceTest {
   }
 
   @Test
-  void should_throwCrossTenantTarget_when_assignTargetTenantMismatch() {
+  void should_throwSameNotFoundAndWriteNoDenialRow_when_assignTargetTenantMismatch() {
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(otherTenantId));
 
     assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "USER_NOT_FOUND")
+        .hasMessage("No such user");
 
     verify(userRoleAssignmentPort, never()).findRole(any());
-    verify(rbacAuditPort)
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, null, actorId, ctx),
-            DenialReason.CROSS_TENANT_TARGET, "assign");
-    verifyNoInteractions(permissionCachePort);
+    verifyNoInteractions(permissionCachePort, rbacAuditPort);
+    assertThat(
+            meterRegistry
+                .get("nexus.rbac.permission_denied")
+                .tag("permission", "user:role:assign")
+                .tag("reason", "CROSS_TENANT_TARGET")
+                .counter()
+                .count())
+        .isEqualTo(1.0);
   }
 
-  /**
-   * {@code recordDenial}'s own {@code catch (RuntimeException)} (defense-in-depth atop {@link
-   * RbacAuditPort}'s "must never throw" contract): the real denial still wins and is not masked by
-   * the audit port's contract violation.
-   */
   @Test
   void should_stillThrowOriginalDenialException_when_rbacAuditPortViolatesNeverThrowContract() {
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(otherTenantId));
+    stubBenignSelfAssignTarget();
+    stubCallerHoldsP1Only();
     doThrow(new RuntimeException("audit port broke its never-throw contract"))
         .when(rbacAuditPort)
         .recordRoleAssignmentDenied(any(), any(), any());
 
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
         .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.SELF_ASSIGNMENT));
   }
 
   @Test
   void should_logErrorWithCallSiteFailedMarker_when_rbacAuditPortViolatesNeverThrowContract() {
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(otherTenantId));
+    stubBenignSelfAssignTarget();
+    stubCallerHoldsP1Only();
     doThrow(new RuntimeException("audit port broke its never-throw contract"))
         .when(rbacAuditPort)
         .recordRoleAssignmentDenied(any(), any(), any());
 
     ListAppender<ILoggingEvent> appender = startLogCapture();
     try {
-      assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+      assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
           .isInstanceOf(InsufficientPermissionException.class);
 
       var errorEvents = appender.list.stream().filter(e -> e.getLevel() == Level.ERROR).toList();
@@ -365,7 +367,7 @@ class RoleAssignmentServiceTest {
       assertThat(keyValueMap(errorEvents.get(0)))
           .containsEntry("event", "RBAC_AUDIT_DENIAL_CALL_SITE_FAILED")
           .containsEntry("tenantId", tenantId)
-          .containsEntry("targetUserId", targetUserId);
+          .containsEntry("targetUserId", actorId);
     } finally {
       stopLogCapture(appender);
     }
@@ -384,21 +386,26 @@ class RoleAssignmentServiceTest {
   }
 
   @Test
-  void should_throwCrossTenantTarget_when_assignRoleTenantMismatch() {
+  void should_throwSameNotFoundAndWriteNoDenialRow_when_assignRoleTenantMismatch() {
     Role foreignRole = new Role(roleId, otherTenantId, "MEMBER", "desc", false);
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
     when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(foreignRole));
 
     assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND")
+        .hasMessage("No such role");
 
     verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
-    verify(rbacAuditPort)
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, null, actorId, ctx),
-            DenialReason.CROSS_TENANT_TARGET, "assign");
-    verifyNoInteractions(permissionCachePort);
+    verifyNoInteractions(permissionCachePort, rbacAuditPort);
+    assertThat(
+            meterRegistry
+                .get("nexus.rbac.permission_denied")
+                .tag("permission", "user:role:assign")
+                .tag("reason", "CROSS_TENANT_TARGET")
+                .counter()
+                .count())
+        .isEqualTo(1.0);
   }
 
   @Test
@@ -1026,24 +1033,16 @@ class RoleAssignmentServiceTest {
   }
 
   @Test
-  void should_denyCrossTenantTargetAndNotSave_when_m14ReportsRoleNotInTenantOnAssign() {
+  void should_throwRoleNotFoundAndNotSave_when_m14ReportsRoleNotInTenantOnAssign() {
     stubBenignAssignTarget();
     when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
         .thenReturn(Optional.empty());
 
     assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOfSatisfying(
-            InsufficientPermissionException.class,
-            e -> {
-              assertThat(e.getReason()).isEqualTo(DenialReason.CROSS_TENANT_TARGET);
-              assertThat(e.getRequiredPermission()).isEqualTo("user:role:assign");
-            });
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND");
 
-    // The denial row never carries a role name on a tenant-mismatch path.
-    verify(rbacAuditPort, times(1))
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, null, actorId, ctx),
-            DenialReason.CROSS_TENANT_TARGET, "assign");
+    verifyNoInteractions(rbacAuditPort);
     verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
     verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
   }
@@ -1345,29 +1344,44 @@ class RoleAssignmentServiceTest {
   }
 
   @Test
-  void should_throwCrossTenantTarget_when_revokeTargetTenantMismatch() {
+  void should_throwSameNotFoundAndWriteNoDenialRow_when_revokeTargetTenantMismatch() {
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(otherTenantId));
 
     assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "USER_NOT_FOUND")
+        .hasMessage("No such user");
 
-    verify(rbacAuditPort)
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, null, actorId, ctx),
-            DenialReason.CROSS_TENANT_TARGET, "revoke");
-    verifyNoInteractions(permissionCachePort);
+    verifyNoInteractions(permissionCachePort, rbacAuditPort);
+    assertThat(
+            meterRegistry
+                .get("nexus.rbac.permission_denied")
+                .tag("permission", "user:role:assign")
+                .tag("reason", "CROSS_TENANT_TARGET")
+                .counter()
+                .count())
+        .isEqualTo(1.0);
   }
 
   @Test
-  void should_reportUserRoleAssignAsRequiredPermission_when_revokeTargetCrossTenant() {
+  void should_logCrossTenantWarnWithoutForeignIds_when_revokeTargetCrossTenant() {
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(otherTenantId));
 
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getRequiredPermission())
-                    .isEqualTo("user:role:assign"));
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
+          .isInstanceOf(ResourceNotFoundException.class);
+
+      var warns = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
+      assertThat(warns).hasSize(1);
+      assertThat(keyValueMap(warns.get(0)))
+          .containsOnlyKeys("event", "tenantId", "actorUserId", "targetKind", "operation")
+          .containsEntry("event", "RBAC_CROSS_TENANT_TARGET")
+          .containsEntry("targetKind", "user")
+          .containsEntry("operation", "revoke");
+    } finally {
+      stopLogCapture(appender);
+    }
   }
 
   @Test
@@ -1383,21 +1397,26 @@ class RoleAssignmentServiceTest {
   }
 
   @Test
-  void should_throwCrossTenantTarget_when_revokeRoleTenantMismatch() {
+  void should_throwSameNotFoundAndWriteNoDenialRow_when_revokeRoleTenantMismatch() {
     Role foreignRole = new Role(roleId, otherTenantId, "MEMBER", "desc", false);
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
     when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(foreignRole));
 
     assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND")
+        .hasMessage("No such role");
 
     verify(userRoleAssignmentPort, never()).findActiveAssignmentRef(any(), any(), any());
-    verify(rbacAuditPort)
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, null, actorId, ctx),
-            DenialReason.CROSS_TENANT_TARGET, "revoke");
-    verifyNoInteractions(permissionCachePort);
+    verifyNoInteractions(permissionCachePort, rbacAuditPort);
+    assertThat(
+            meterRegistry
+                .get("nexus.rbac.permission_denied")
+                .tag("permission", "user:role:assign")
+                .tag("reason", "CROSS_TENANT_TARGET")
+                .counter()
+                .count())
+        .isEqualTo(1.0);
   }
 
   /**
@@ -1987,18 +2006,16 @@ class RoleAssignmentServiceTest {
   }
 
   @Test
-  void should_denyCrossTenantTargetAndNotRevoke_when_m14ReportsRoleNotInTenantOnRevoke() {
+  void should_throwRoleNotFoundAndNotRevoke_when_m14ReportsRoleNotInTenantOnRevoke() {
     stubBenignRevokeTarget();
     when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
         .thenReturn(Optional.empty());
 
     assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND");
 
-    verify(rbacAuditPort, times(1))
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, null, actorId, ctx),
-            DenialReason.CROSS_TENANT_TARGET, "revoke");
+    verifyNoInteractions(rbacAuditPort);
     verify(userRoleAssignmentPort, never()).revoke(any(), any());
   }
 
@@ -2134,22 +2151,26 @@ class RoleAssignmentServiceTest {
     verify(userRoleAssignmentPort, never()).findActiveAssignmentViews(any(), any());
   }
 
-  /**
-   * T-E8: the tenant check happens BEFORE, and is not replaced by, the repository's own tenant
-   * predicate, or a cross-tenant probe would silently return {@code 200 {"data":[]}}.
-   */
   @Test
-  void should_throwCrossTenantTarget_andReadNothing_when_listActiveTargetTenantMismatch() {
+  void should_throwSameNotFoundAndReadNothing_when_listActiveTargetTenantMismatch() {
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(otherTenantId));
 
     assertThatThrownBy(() -> service.listActive(actor, targetUserId))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "USER_NOT_FOUND")
+        .hasMessage("No such user");
 
     verify(userRoleAssignmentPort, never()).findActiveAssignmentViews(any(), any());
     verify(userRoleAssignmentPort, never()).findHeldRolePermissionIdsForAuthorization(any(), any());
-    // Load-bearing (US-014 T-E14): listActive's 403 is deliberately excluded from AC4.
     verifyNoInteractions(rbacAuditPort);
+    assertThat(
+            meterRegistry
+                .get("nexus.rbac.permission_denied")
+                .tag("permission", "user:read")
+                .tag("reason", "CROSS_TENANT_TARGET")
+                .counter()
+                .count())
+        .isEqualTo(1.0);
   }
 
   // ---------------------------------------------------------------------------------------

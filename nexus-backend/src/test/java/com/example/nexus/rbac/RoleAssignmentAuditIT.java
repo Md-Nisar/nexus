@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.nexus.TestcontainersConfiguration;
 import com.example.nexus.common.domain.RequestContext;
+import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.common.security.DenialReason;
 import com.example.nexus.common.security.InsufficientPermissionException;
 import com.example.nexus.identity.application.service.SecureEventService;
@@ -231,14 +232,11 @@ class RoleAssignmentAuditIT {
             () ->
                 roleAssignmentService.assign(
                     actor, target.getId(), role.getId(), requestContext()))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "USER_NOT_FOUND");
 
     assertThat(countAuditRows(target.getId(), "ROLE_ASSIGNED"))
-        .as("a rolled-back 403 must never write a ROLE_ASSIGNED audit row — side effects are"
+        .as("a rolled-back 404 must never write a ROLE_ASSIGNED audit row — side effects are"
             + " after-commit only")
         .isZero();
   }
@@ -290,8 +288,9 @@ class RoleAssignmentAuditIT {
   // ── (read AFTER assertThatThrownBy completes -- the only proof the REQUIRES_NEW write ───
   // ── actually committed; a Mockito verify would prove nothing about durability) ──────────
 
+  /** US-018 B1 (R1-5): a cross-tenant target is a 404 and writes no denial row, on either verb. */
   @Test
-  void should_writeRoleAssignmentDeniedRow_when_assignFailsWithCrossTenantTarget() {
+  void should_writeNoDenialRow_when_assignFailsWithCrossTenantTarget() {
     UUID actorTenantId = uuidGenerator.newId();
     UUID targetTenantId = uuidGenerator.newId();
     User actorUser = seedUser("audit-denied-403-actor", actorTenantId);
@@ -303,29 +302,64 @@ class RoleAssignmentAuditIT {
 
     assertThatThrownBy(
             () -> roleAssignmentService.assign(actor, target.getId(), role.getId(), ctx))
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "USER_NOT_FOUND");
+
+    assertThat(countAuditRows(target.getId(), "ROLE_ASSIGNMENT_DENIED"))
+        .as("a cross-tenant target writes no denial row (a timing oracle otherwise)")
+        .isZero();
+  }
+
+  @Test
+  void should_writeNoDenialRow_when_revokeFailsWithCrossTenantTarget() {
+    UUID actorTenantId = uuidGenerator.newId();
+    UUID targetTenantId = uuidGenerator.newId();
+    User actorUser = seedUser("audit-nodenied-revoke-actor", actorTenantId);
+    grantUserRoleAssign(actorTenantId, actorUser.getId());
+    User target = seedUser("audit-nodenied-revoke-target", targetTenantId);
+    Role role = seedRole("AUDIT-NODENIED-REVOKE", actorTenantId);
+    RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), actorTenantId);
+
+    assertThatThrownBy(
+            () -> roleAssignmentService.revoke(actor, target.getId(), role.getId(), requestContext()))
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "USER_NOT_FOUND");
+
+    assertThat(countAuditRows(target.getId(), "ROLE_ASSIGNMENT_DENIED")).isZero();
+  }
+
+  /** The assign-side denial row still survives TX1's rollback, here for a self-assignment. */
+  @Test
+  void should_writeRoleAssignmentDeniedRow_when_assignFailsWithSelfAssignment() {
+    UUID tenantId = uuidGenerator.newId();
+    User actorUser = seedUser("audit-denied-self-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
+    Role role = seedRole("AUDIT-DENIED-SELF", tenantId);
+    RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
+    RequestContext ctx = requestContext();
+
+    assertThatThrownBy(
+            () -> roleAssignmentService.assign(actor, actorUser.getId(), role.getId(), ctx))
         .isInstanceOf(InsufficientPermissionException.class)
         .satisfies(
             e ->
                 assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+                    .isEqualTo(DenialReason.SELF_ASSIGNMENT));
 
-    assertThat(countAuditRows(target.getId(), "ROLE_ASSIGNMENT_DENIED"))
+    assertThat(countAuditRows(actorUser.getId(), "ROLE_ASSIGNMENT_DENIED"))
         .as("the denial row must survive TX1's rollback")
         .isEqualTo(1);
-    assertThat(countAuditRows(target.getId(), "ROLE_ASSIGNED"))
+    assertThat(countAuditRows(actorUser.getId(), "ROLE_ASSIGNED"))
         .as("a denial must never be miscategorised as a successful assignment")
         .isZero();
 
-    Map<String, Object> row = findLatestDenialAuditRow(target.getId());
+    Map<String, Object> row = findLatestDenialAuditRow(actorUser.getId());
     assertThat(row.get("outcome")).isEqualTo("DENIED");
-    assertThat(toUuid((byte[]) row.get("user_id"))).isEqualTo(target.getId());
-    assertThat(toUuid((byte[]) row.get("tenant_id"))).isEqualTo(actorTenantId);
-    assertThat(row.get("reason")).isEqualTo("CROSS_TENANT_TARGET");
+    assertThat(toUuid((byte[]) row.get("user_id"))).isEqualTo(actorUser.getId());
+    assertThat(toUuid((byte[]) row.get("tenant_id"))).isEqualTo(tenantId);
+    assertThat(row.get("reason")).isEqualTo("SELF_ASSIGNMENT");
     assertThat(row.get("attempted_by")).isEqualTo(actorUser.getId().toString());
     assertThat(row.get("role_id")).isEqualTo(role.getId().toString());
-    assertThat(row.get("role_name"))
-        .as("T1 fires before the role is ever resolved -- roleName must be absent")
-        .isNull();
     assertThat(row.get("trace_id")).isEqualTo(ctx.traceId());
     assertThat(row.get("operation"))
         .as("D17: an assign()-side denial must carry operation=\"assign\" in its metadata")
@@ -333,17 +367,21 @@ class RoleAssignmentAuditIT {
   }
 
   // ── US-016 T-016 (D17): the revoke-side counterpart of the assertion above -- completes ────
-  // ── the operation metadata chain for both verbs, using the same T1 cross-tenant shape ─────
+  // ── the operation metadata chain for both verbs, using a revoke-subset denial ─────
 
   @Test
-  void should_writeRoleAssignmentDeniedRow_when_revokeFailsWithCrossTenantTarget() {
-    UUID actorTenantId = uuidGenerator.newId();
-    UUID targetTenantId = uuidGenerator.newId();
-    User actorUser = seedUser("audit-denied-revoke-actor", actorTenantId);
-    grantUserRoleAssign(actorTenantId, actorUser.getId());
-    User target = seedUser("audit-denied-revoke-target", targetTenantId);
-    Role role = seedRole("AUDIT-DENIED-REVOKE", actorTenantId);
-    RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), actorTenantId);
+  void should_writeRoleAssignmentDeniedRow_when_revokeFailsWithGrantExceedsCaller() {
+    UUID tenantId = uuidGenerator.newId();
+    User actorUser = seedUser("audit-denied-revoke-actor", tenantId);
+    grantUserRoleAssign(tenantId, actorUser.getId());
+    User target = seedUser("audit-denied-revoke-target", tenantId);
+    // The role carries role:write, which the actor (user:role:assign only) lacks: revoke-subset.
+    Role role = seedRole("AUDIT-DENIED-REVOKE", tenantId);
+    rolePermissionRepository.save(
+        new RolePermission(role.getId(), RbacSeededPermissionIds.ROLE_WRITE));
+    userRoleRepository.save(
+        new UserRole(uuidGenerator.newId(), target.getId(), role.getId(), tenantId, actorUser.getId()));
+    RoleChangeActor actor = new RoleChangeActor(actorUser.getId(), tenantId);
     RequestContext ctx = requestContext();
 
     assertThatThrownBy(
@@ -352,7 +390,7 @@ class RoleAssignmentAuditIT {
         .satisfies(
             e ->
                 assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+                    .isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
 
     assertThat(countAuditRows(target.getId(), "ROLE_ASSIGNMENT_DENIED"))
         .as("the revoke-side denial row must survive TX1's rollback")
@@ -362,7 +400,7 @@ class RoleAssignmentAuditIT {
         .isZero();
 
     Map<String, Object> row = findLatestDenialAuditRow(target.getId());
-    assertThat(row.get("reason")).isEqualTo("CROSS_TENANT_TARGET");
+    assertThat(row.get("reason")).isEqualTo("GRANT_EXCEEDS_CALLER");
     assertThat(row.get("operation"))
         .as("D17: a revoke()-side denial must carry operation=\"revoke\" in its metadata")
         .isEqualTo("revoke");
@@ -409,7 +447,7 @@ class RoleAssignmentAuditIT {
    * Eight threads, each with its OWN tenant/actor/target/role fixture (so this proves independent
    * {@code REQUIRES_NEW} transactions never cross-contaminate each other's audit row, rather than
    * modelling the {@code FOR SHARE} lock-contention shape T-D6 separately describes for a single
-   * shared admin row), fire a T1 cross-tenant {@code assign} denial simultaneously via a {@link
+   * shared admin row), fire a self-assignment {@code assign} denial simultaneously via a {@link
    * CyclicBarrier} — the same deterministic, no-{@code Thread.sleep} harness {@code
    * LastAdminLockoutIT#should_allowExactlyOneWinner_when_eightConcurrentRevokesRaceAcrossTwoAdmins}
    * already establishes for this codebase. Every thread's own doomed TX1 suspends and a
@@ -420,7 +458,7 @@ class RoleAssignmentAuditIT {
    * bleed fields across threads.
    */
   @Test
-  void should_writeOneCorrectlyAttributedDenialRowPerThread_when_eightConcurrentCrossTenantDenialsRace()
+  void should_writeOneCorrectlyAttributedDenialRowPerThread_when_eightConcurrentSelfAssignmentDenialsRace()
       throws Exception {
     int threadCount = 8;
     List<User> actors = new ArrayList<>();
@@ -430,10 +468,11 @@ class RoleAssignmentAuditIT {
 
     for (int i = 0; i < threadCount; i++) {
       UUID actorTenantId = uuidGenerator.newId();
-      UUID targetTenantId = uuidGenerator.newId();
       actorTenantIds.add(actorTenantId);
-      actors.add(seedUser("audit-conc-actor-" + i, actorTenantId));
-      targets.add(seedUser("audit-conc-target-" + i, targetTenantId));
+      User actorUser = seedUser("audit-conc-actor-" + i, actorTenantId);
+      grantUserRoleAssign(actorTenantId, actorUser.getId());
+      actors.add(actorUser);
+      targets.add(actorUser);
       roles.add(seedRole("AUDIT-CONC-" + i, actorTenantId));
     }
 
@@ -471,8 +510,8 @@ class RoleAssignmentAuditIT {
       // future.get() rethrows unwrapped for anything unexpected -- a raw DataAccessException
       // or any outcome other than the expected denial fails this loop loudly.
       assertThat(future.get())
-          .as("every thread must observe its own genuine T1 cross-tenant-target denial")
-          .isEqualTo(DenialReason.CROSS_TENANT_TARGET);
+          .as("every thread must observe its own genuine self-assignment denial")
+          .isEqualTo(DenialReason.SELF_ASSIGNMENT);
     }
 
     for (int i = 0; i < threadCount; i++) {

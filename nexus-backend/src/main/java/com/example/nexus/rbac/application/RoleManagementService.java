@@ -92,6 +92,7 @@ public class RoleManagementService {
 
   private static final String OPERATION_DETACH = "detach";
   private static final String OPERATION_ATTACH = "attach";
+  private static final String OPERATION_LIST = "list";
 
   private static final String COUNTER_PERMISSION_DENIED = "nexus.rbac.permission_denied";
   private static final String REASON_ATTACH_PROVENANCE = "ATTACH_PROVENANCE";
@@ -194,7 +195,7 @@ public class RoleManagementService {
   /** AC3, AC8. 404 then 403; empty list is a valid 200. */
   @Transactional(readOnly = true)
   public List<PermissionView> listRolePermissions(RoleChangeActor actor, UUID roleId) {
-    RoleView role = resolveRoleInTenant(roleId, actor, ROLE_READ);
+    RoleView role = resolveRoleInTenant(roleId, actor, ROLE_READ, OPERATION_LIST);
     return roleManagementPort.findPermissionsForRole(role.id());
   }
 
@@ -222,7 +223,7 @@ public class RoleManagementService {
   @Transactional
   public PermissionView attachPermission(
       RoleChangeActor actor, UUID roleId, UUID permissionId, RequestContext ctx) {
-    RoleView role = resolveRoleInTenant(roleId, actor, ROLE_WRITE);
+    RoleView role = resolveRoleInTenant(roleId, actor, ROLE_WRITE, OPERATION_ATTACH);
     requireMutableRole(role);
 
     PermissionView permission =
@@ -294,7 +295,7 @@ public class RoleManagementService {
   @Transactional
   public void detachPermission(
       RoleChangeActor actor, UUID roleId, UUID permissionId, RequestContext ctx) {
-    RoleView role = resolveRoleInTenant(roleId, actor, ROLE_WRITE);
+    RoleView role = resolveRoleInTenant(roleId, actor, ROLE_WRITE, OPERATION_DETACH);
     requireMutableRole(role);
 
     requireRoleSubset(actor, role, OPERATION_DETACH);
@@ -351,14 +352,31 @@ public class RoleManagementService {
     return roleManagementPort.findAllPermissions();
   }
 
-  /** AC8 tenant-isolation check: empty ⇒ 404 {@code ROLE_NOT_FOUND}; foreign tenant ⇒ 403 {@code CROSS_TENANT_TARGET}. */
-  private RoleView resolveRoleInTenant(UUID roleId, RoleChangeActor actor, String requiredPermission) {
+  /**
+   * AC8 tenant-isolation check: empty or another tenant's role ⇒ the same 404 {@code
+   * ROLE_NOT_FOUND} (US-018 B1). A cross-tenant id also emits the WARN {@code
+   * RBAC_CROSS_TENANT_TARGET} and the {@code permission_denied} counter, and writes no audit row.
+   */
+  private RoleView resolveRoleInTenant(
+      UUID roleId, RoleChangeActor actor, String requiredPermission, String operation) {
     RoleView view =
         roleManagementPort
             .findRole(roleId)
             .orElseThrow(() -> new ResourceNotFoundException("ROLE_NOT_FOUND", "No such role"));
     if (!view.tenantId().equals(actor.tenantId())) {
-      throw new InsufficientPermissionException(requiredPermission, DenialReason.CROSS_TENANT_TARGET);
+      log.atWarn()
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_CROSS_TENANT_TARGET")
+          .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+          .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+          .addKeyValue("targetKind", "role")
+          .addKeyValue("operation", operation)
+          .log("Refused a role change: the target belongs to another tenant");
+      Counter.builder(COUNTER_PERMISSION_DENIED)
+          .tag("permission", requiredPermission)
+          .tag("reason", DenialReason.CROSS_TENANT_TARGET.name())
+          .register(meterRegistry)
+          .increment();
+      throw new ResourceNotFoundException("ROLE_NOT_FOUND", "No such role");
     }
     return view;
   }
@@ -483,9 +501,7 @@ public class RoleManagementService {
         userRoleAssignmentPort
             .findPermissionIdsForRole(role.id(), actor.tenantId())
             .orElseThrow(
-                () ->
-                    new InsufficientPermissionException(
-                        ROLE_WRITE, DenialReason.CROSS_TENANT_TARGET));
+                () -> new ResourceNotFoundException("ROLE_NOT_FOUND", "No such role"));
     Set<UUID> catalogueIds = userRoleAssignmentPort.findCatalogueIds();
     if (RbacAdministrators.isAdminDefining(rolePermissionIds, catalogueIds)) {
       return false;

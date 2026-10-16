@@ -7,8 +7,6 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.example.nexus.TestcontainersConfiguration;
 import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.domain.ResourceNotFoundException;
-import com.example.nexus.common.security.DenialReason;
-import com.example.nexus.common.security.InsufficientPermissionException;
 import com.example.nexus.identity.domain.EmailCipher;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
@@ -283,14 +281,11 @@ class RoleAssignmentCacheIT {
 
     assertThatThrownBy(
             () -> roleAssignmentService.assign(actor, target.getId(), role.getId(), requestContext()))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "USER_NOT_FOUND");
 
     assertThat(redisTemplate.hasKey(roleKey(actorTenantId, target.getId())))
-        .as("a thrown 403 must never evict — side effects are post-commit only")
+        .as("a thrown 404 must never evict — side effects are post-commit only")
         .isTrue();
     assertThat(redisTemplate.hasKey(permKey(actorTenantId, target.getId()))).isTrue();
   }

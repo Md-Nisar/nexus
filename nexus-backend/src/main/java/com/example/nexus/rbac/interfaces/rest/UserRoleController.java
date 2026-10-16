@@ -90,9 +90,9 @@ public class UserRoleController {
   @ApiResponse(
       responseCode = "403",
       description =
-          "Missing permission, cross-tenant target, the role carries a permission the caller does"
+          "Missing permission, the role carries a permission the caller does"
               + " not hold, or a self-assignment by a caller who is not an administrator")
-  @ApiResponse(responseCode = "404", description = "User or role not found")
+  @ApiResponse(responseCode = "404", description = "User or role not found, or in another tenant (indistinguishable)")
   @ApiResponse(responseCode = "409", description = "Duplicate active assignment")
   public ResponseEntity<RoleAssignmentResponse> assignRole(
       @PathVariable String userId,
@@ -122,8 +122,8 @@ public class UserRoleController {
   @Operation(summary = "List the active role assignments held by a user within the caller's tenant")
   @ApiResponse(responseCode = "200", description = "Active role assignments")
   @ApiResponse(responseCode = "400", description = "Malformed path UUID")
-  @ApiResponse(responseCode = "403", description = "Missing permission or cross-tenant target")
-  @ApiResponse(responseCode = "404", description = "User not found")
+  @ApiResponse(responseCode = "403", description = "Missing permission")
+  @ApiResponse(responseCode = "404", description = "User not found, or in another tenant (indistinguishable)")
   public RoleAssignmentListResponse listRoles(
       @PathVariable String userId, Authentication authentication) {
     RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, USER_READ);
@@ -153,10 +153,12 @@ public class UserRoleController {
   @ApiResponse(
       responseCode = "403",
       description =
-          "Missing permission, cross-tenant target, the role carries a permission the caller does"
+          "Missing permission, the role carries a permission the caller does"
               + " not hold, or the role is an administrator role and the caller is not an"
               + " administrator")
-  @ApiResponse(responseCode = "404", description = "User, role, or active assignment not found")
+  @ApiResponse(responseCode = "404", description =
+          "User, role, or active assignment not found, or user or role in another tenant"
+              + " (indistinguishable)")
   @ApiResponse(
       responseCode = "409",
       description = "Would revoke the tenant's last active administrator assignment")

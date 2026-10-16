@@ -305,18 +305,25 @@ class RoleManagementServiceTest {
   }
 
   @Test
-  void should_throwInsufficientPermission_when_listPermissionsRoleInAnotherTenant() {
+  void should_throwSameRoleNotFound_when_listPermissionsRoleInAnotherTenant() {
     RoleView role = customRole(otherTenantId);
     when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
 
     assertThatThrownBy(() -> service.listRolePermissions(actor, roleId))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND")
+        .hasMessage("No such role");
 
     verify(roleManagementPort, never()).findPermissionsForRole(any());
+    verifyNoInteractions(rbacAuditPort);
+    assertThat(
+            meterRegistry
+                .get("nexus.rbac.permission_denied")
+                .tag("permission", "role:read")
+                .tag("reason", "CROSS_TENANT_TARGET")
+                .counter()
+                .count())
+        .isEqualTo(1.0);
   }
 
   // ---------------------------------------------------------------------------------------
@@ -398,18 +405,25 @@ class RoleManagementServiceTest {
   }
 
   @Test
-  void should_throwInsufficientPermission_when_attachRoleInAnotherTenant() {
+  void should_throwSameRoleNotFound_when_attachRoleInAnotherTenant() {
     RoleView role = customRole(otherTenantId);
     when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
 
     assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND")
+        .hasMessage("No such role");
 
     verify(roleManagementPort, never()).findPermission(any());
+    verifyNoInteractions(rbacAuditPort);
+    assertThat(
+            meterRegistry
+                .get("nexus.rbac.permission_denied")
+                .tag("permission", "role:write")
+                .tag("reason", "CROSS_TENANT_TARGET")
+                .counter()
+                .count())
+        .isEqualTo(1.0);
   }
 
   /** Pins §8.6 rule 1: tenant resolution always before AC7, even when the role is also a system role. */
@@ -420,11 +434,9 @@ class RoleManagementServiceTest {
     when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(foreignSystemRole));
 
     assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND")
+        .hasMessage("No such role");
   }
 
   @Test
@@ -932,9 +944,9 @@ class RoleManagementServiceTest {
         .thenReturn(Optional.empty());
 
     assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
-        .isInstanceOfSatisfying(
-            InsufficientPermissionException.class,
-            e -> assertThat(e.getReason()).isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND")
+        .hasMessage("No such role");
 
     verify(roleManagementPort, never()).attachPermission(any(), any());
   }
@@ -1197,16 +1209,24 @@ class RoleManagementServiceTest {
   }
 
   @Test
-  void should_throwInsufficientPermission_when_detachRoleInAnotherTenant() {
+  void should_throwSameRoleNotFound_when_detachRoleInAnotherTenant() {
     RoleView role = customRole(otherTenantId);
     when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
 
     assertThatThrownBy(() -> service.detachPermission(actor, roleId, permissionId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND")
+        .hasMessage("No such role");
+
+    verifyNoInteractions(rbacAuditPort);
+    assertThat(
+            meterRegistry
+                .get("nexus.rbac.permission_denied")
+                .tag("permission", "role:write")
+                .tag("reason", "CROSS_TENANT_TARGET")
+                .counter()
+                .count())
+        .isEqualTo(1.0);
   }
 
   @Test

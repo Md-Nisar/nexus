@@ -175,11 +175,11 @@ class RolePermissionSecurityIT {
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  // Scenario 6: cross-tenant role read/write -> 403/404
+  // Scenario 6: cross-tenant role read/write -> 404 (US-018 B1)
   // ═══════════════════════════════════════════════════════════════════
 
   @Test
-  void should_return403WithCrossTenantTarget_when_listingPermissionsForRoleInDifferentTenant() {
+  void should_return404WithRoleNotFound_when_listingPermissionsForRoleInDifferentTenant() {
     UUID tenantA = uuidGenerator.newId();
     UUID tenantB = uuidGenerator.newId();
     User caller = seedUserWithRoleReadPermission(tenantA, "s6-get-caller");
@@ -189,13 +189,13 @@ class RolePermissionSecurityIT {
     ResponseEntity<Map> resp = getPermissions(token, roleInTenantB.getId());
 
     assertThat(resp.getStatusCode())
-        .as("a cross-tenant GET must be 403, never 200 with any data array")
-        .isEqualTo(HttpStatus.FORBIDDEN);
-    assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
+        .as("a cross-tenant GET must be the genuine-not-found 404, never 200 with any data array")
+        .isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(resp.getBody()).containsEntry("code", "ROLE_NOT_FOUND");
   }
 
   @Test
-  void should_return403WithCrossTenantTarget_when_attachingPermissionToRoleInDifferentTenant() {
+  void should_return404WithRoleNotFound_when_attachingPermissionToRoleInDifferentTenant() {
     UUID tenantA = uuidGenerator.newId();
     UUID tenantB = uuidGenerator.newId();
     User caller = seedUserWithRoleWritePermission(tenantA, "s6-post-caller");
@@ -205,12 +205,12 @@ class RolePermissionSecurityIT {
     ResponseEntity<Map> resp =
         postAttach(token, roleInTenantB.getId(), USER_READ_PERMISSION_ID.toString());
 
-    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-    assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(resp.getBody()).containsEntry("code", "ROLE_NOT_FOUND");
   }
 
   @Test
-  void should_return403WithCrossTenantTarget_when_detachingPermissionFromRoleInDifferentTenant() {
+  void should_return404WithRoleNotFound_when_detachingPermissionFromRoleInDifferentTenant() {
     UUID tenantA = uuidGenerator.newId();
     UUID tenantB = uuidGenerator.newId();
     User caller = seedUserWithRoleWritePermission(tenantA, "s6-delete-caller");
@@ -219,8 +219,8 @@ class RolePermissionSecurityIT {
 
     ResponseEntity<Map> resp = deleteDetach(token, roleInTenantB.getId(), USER_READ_PERMISSION_ID);
 
-    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-    assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(resp.getBody()).containsEntry("code", "ROLE_NOT_FOUND");
   }
 
   @Test

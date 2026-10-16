@@ -14,8 +14,10 @@
  * platform-wide (every tenant, every endpoint sharing the pool) stall.
  *
  * This script drives exactly that shape — a short, sharp concurrency burst, not sustained RPS —
- * against the CHEAPEST denial path (T2, CROSS_TENANT_TARGET via a foreign-tenant roleId: no valid
- * foreign user UUID needed, no mutation, no lock; threat-model T-D7's "cheap path" finding).
+ * against the cheapest REQUIRES_NEW denial path left after US-018 B1 (GRANT_EXCEEDS_CALLER: a
+ * role in the caller's own tenant that carries a permission the caller lacks; no mutation, no
+ * lock; threat-model T-D7). The former cross-tenant scenario is gone: since US-018 B1 a
+ * cross-tenant target is a 404 that writes no audit row and opens no second connection.
  *
  * Run manually against a staging-like environment with production-like HikariCP sizing (NOT
  * against a laptop/CI Testcontainers instance, which has different pool characteristics) — this is
@@ -23,9 +25,10 @@
  *
  * Usage:
  *   k6 run -e BASE_URL=https://staging.example.com \
- *          -e ADMIN_TOKEN=<TENANT_ADMIN JWT with user:write> \
- *          -e TARGET_USER_ID=<any user id in the admin's OWN tenant> \
- *          -e FOREIGN_ROLE_ID=<a role id belonging to a DIFFERENT tenant> \
+ *          -e ACTOR_TOKENS=<comma-separated JWTs, at least 10, each for a DIFFERENT user holding
+ *             only user:role:assign, so no actor reaches the denial throttle (US-018 B8)> \
+ *          -e TARGET_USER_ID=<any user id in the actors' OWN tenant> \
+ *          -e EXCEEDING_ROLE_ID=<a role id in that tenant carrying a permission the actors lack> \
  *          nexus-backend/src/test/load/role-assignment-denial-pool-pressure.k6.js
  *
  * What to watch (the T-D6 watch-list, design §11 / §9.3 — pull from the app's Actuator/
@@ -33,11 +36,17 @@
  *   - hikaricp_connections_pending      -- must return to the pre-run baseline (0) promptly
  *   - hikaricp_connections_acquire_seconds -- must not show a sustained tail above baseline
  *   - nexus.rbac.audit_write_failed{operation="deny"} -- must stay at 0
- *   - nexus.rbac.permission_denied{reason="CROSS_TENANT_TARGET"} -- expected to rise with load;
+ *   - nexus.rbac.permission_denied{reason="GRANT_EXCEEDS_CALLER"} -- expected to rise with load;
  *     confirms the requests actually reached the denial path this script targets
  *
  * Pass/fail here is informational, not a build gate: a 403 on every request is the CORRECT
- * application-level outcome (this script intentionally trips CROSS_TENANT_TARGET on every call).
+ * application-level outcome (this script intentionally trips GRANT_EXCEEDS_CALLER on every call).
+ * Each VU uses its own actor and makes 3 iterations, below the default denial threshold of 5, so
+ * every call writes a REQUIRES_NEW denial row: that is the pool-pressure shape. A throttled actor
+ * writes no row (US-018 B8), which would hide the pressure.
+ *
+ * Status: written for the US-018 M8 exit gate (T-024); NOT run in the authoring environment
+ * (no Docker, no staging topology). Run once per deployment shape before production.
  * The thing worth failing on is elevated p95 latency or non-403 errors under the burst, which
  * would indicate pool exhaustion (T-D6 live) rather than the accepted, priced cost.
  */
@@ -46,9 +55,9 @@ import http from 'k6/http';
 import { check } from 'k6';
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
-const ADMIN_TOKEN = __ENV.ADMIN_TOKEN;
+const ACTOR_TOKENS = (__ENV.ACTOR_TOKENS || '').split(',').filter((t) => t.length > 0);
 const TARGET_USER_ID = __ENV.TARGET_USER_ID;
-const FOREIGN_ROLE_ID = __ENV.FOREIGN_ROLE_ID;
+const EXCEEDING_ROLE_ID = __ENV.EXCEEDING_ROLE_ID;
 
 export const options = {
   scenarios: {
@@ -75,28 +84,28 @@ export const options = {
 };
 
 export default function () {
-  if (!ADMIN_TOKEN || !TARGET_USER_ID || !FOREIGN_ROLE_ID) {
+  if (ACTOR_TOKENS.length < 10 || !TARGET_USER_ID || !EXCEEDING_ROLE_ID) {
     throw new Error(
-      'Set BASE_URL, ADMIN_TOKEN, TARGET_USER_ID, FOREIGN_ROLE_ID env vars before running.'
+      'Set BASE_URL, ACTOR_TOKENS (at least 10), TARGET_USER_ID, EXCEEDING_ROLE_ID env vars before running.'
     );
   }
 
-  // T2 (CROSS_TENANT_TARGET): a role id from another tenant against a target already in the
-  // caller's own tenant. Cheapest denial to generate at volume (threat-model T-D7) -- no
-  // reconnaissance of a foreign user id required.
+  // GRANT_EXCEEDS_CALLER: a role in the caller's own tenant whose permissions the caller does not
+  // all hold. One actor per VU keeps every actor under the denial throttle.
+  const token = ACTOR_TOKENS[(__VU - 1) % ACTOR_TOKENS.length];
   const res = http.post(
     `${BASE_URL}/api/v1/users/${TARGET_USER_ID}/roles`,
-    JSON.stringify({ roleId: FOREIGN_ROLE_ID }),
+    JSON.stringify({ roleId: EXCEEDING_ROLE_ID }),
     {
       headers: {
-        Authorization: `Bearer ${ADMIN_TOKEN}`,
+        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
     }
   );
 
   check(res, {
-    // 403 RBAC_001/CROSS_TENANT_TARGET is the CORRECT outcome for every call this script
+    // 403 RBAC_001/GRANT_EXCEEDS_CALLER is the CORRECT outcome for every call this script
     // makes -- it is what proves the request reached the denial path, not a failure.
     'denied as expected (403) or pool exhausted (5xx/timeout) -- inspect body on 5xx': (r) =>
       r.status === 403 || r.status >= 500,

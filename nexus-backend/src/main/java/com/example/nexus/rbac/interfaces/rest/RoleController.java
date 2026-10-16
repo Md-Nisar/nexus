@@ -121,8 +121,8 @@ public class RoleController {
   @RequiresPermission(ROLE_READ)
   @Operation(summary = "List the permissions attached to a role in the caller's tenant")
   @ApiResponse(responseCode = "200", description = "Permissions attached to the role")
-  @ApiResponse(responseCode = "403", description = "Missing role:read or cross-tenant role")
-  @ApiResponse(responseCode = "404", description = "Role not found")
+  @ApiResponse(responseCode = "403", description = "Missing role:read")
+  @ApiResponse(responseCode = "404", description = "Role not found, or in another tenant (indistinguishable)")
   public PermissionListResponse listRolePermissions(
       @PathVariable String roleId, Authentication authentication) {
     RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, ROLE_READ);
@@ -152,9 +152,9 @@ public class RoleController {
   @ApiResponse(
       responseCode = "403",
       description =
-          "Missing role:write, cross-tenant role, or the caller does not hold the permission"
+          "Missing role:write, or the caller does not hold the permission"
               + " being attached")
-  @ApiResponse(responseCode = "404", description = "Role or permission not found")
+  @ApiResponse(responseCode = "404", description = "Role or permission not found, or role in another tenant (indistinguishable)")
   @ApiResponse(
       responseCode = "409",
       description =
@@ -194,10 +194,11 @@ public class RoleController {
   @ApiResponse(
       responseCode = "403",
       description =
-          "Missing role:write, cross-tenant role, or the caller does not hold every permission of"
+          "Missing role:write, or the caller does not hold every permission of"
               + " the role (for an administrator role: or is not an administrator through"
               + " another role)")
-  @ApiResponse(responseCode = "404", description = "Role, permission, or pairing not found")
+  @ApiResponse(responseCode = "404", description =
+          "Role, permission, or pairing not found, or role in another tenant (indistinguishable)")
   @ApiResponse(responseCode = "409", description = "System role")
   public void detachPermission(
       @PathVariable String roleId,

@@ -65,7 +65,7 @@
             }
           },
           "403": {
-            "description": "Missing permission or cross-tenant target",
+            "description": "Missing permission",
             "content": {
               "*/*": {
                 "schema": {
@@ -75,7 +75,7 @@
             }
           },
           "404": {
-            "description": "User not found",
+            "description": "User not found, or in another tenant (indistinguishable, US-018 B1)",
             "content": {
               "*/*": {
                 "schema": {
@@ -134,7 +134,7 @@
             }
           },
           "403": {
-            "description": "Missing permission, cross-tenant target, or caller is not an active TENANT_ADMIN",
+            "description": "Missing permission, or caller is not an active TENANT_ADMIN",
             "content": {
               "*/*": {
                 "schema": {
@@ -144,7 +144,7 @@
             }
           },
           "404": {
-            "description": "User or role not found",
+            "description": "User or role not found, or in another tenant (indistinguishable, US-018 B1)",
             "content": {
               "*/*": {
                 "schema": {
@@ -538,10 +538,10 @@
             "description": "Malformed path UUID"
           },
           "403": {
-            "description": "Missing permission or cross-tenant target"
+            "description": "Missing permission"
           },
           "404": {
-            "description": "User, role, or active assignment not found"
+            "description": "User, role, or active assignment not found, or user or role in another tenant (indistinguishable, US-018 B1)"
           },
           "409": {
             "description": "Would revoke the tenant's last active TENANT_ADMIN"

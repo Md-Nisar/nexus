@@ -56,9 +56,9 @@ public interface RbacAuditPort {
    * <p>Called INLINE, before the caller throws, from a transaction that is about to roll back:
    * durability rests entirely on the implementation committing in an independent
    * ({@code REQUIRES_NEW}) transaction. Scoped to the 403 authorization denials
-   * ({@code CROSS_TENANT_TARGET}, {@code NOT_TENANT_ADMIN}, and from US-018 {@code
-   * SELF_ASSIGNMENT} and {@code GRANT_EXCEEDS_CALLER}); never called for the 409 conflicts
-   * or the 404s, and never from a read path — an "assignment denied" event for a read is a
+   * ({@code NOT_TENANT_ADMIN}, and from US-018 {@code SELF_ASSIGNMENT}, {@code
+   * GRANT_EXCEEDS_CALLER} and the revoke-subset denial); never called for the 409 conflicts or
+   * the 404s (a cross-tenant target is a 404 from US-018 B1 and writes no row, R1-5), and never from a read path — an "assignment denied" event for a read is a
    * semantic mislabel, and would also widen the emitting population to every {@code user:read}
    * holder rather than the {@code user:role:assign} holders this event type is scoped to.
    *
