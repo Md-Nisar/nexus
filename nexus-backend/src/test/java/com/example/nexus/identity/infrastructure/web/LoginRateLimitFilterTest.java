@@ -55,6 +55,28 @@ class LoginRateLimitFilterTest {
   }
 
   @Test
+  void shouldNotFilter_returnsFalse_forPercentEncodedLoginPath() {
+    MockHttpServletRequest req = new MockHttpServletRequest("POST", "/api/v1/auth/%6Cogin");
+    assertThat(filter.shouldNotFilter(req)).isFalse();
+  }
+
+  @Test
+  void shouldNotFilter_returnsFalse_forEncodedSlashAndPathParameterVariants() {
+    assertThat(filter.shouldNotFilter(new MockHttpServletRequest("POST", "/api/v1/auth/login;x=1")))
+        .isFalse();
+    assertThat(filter.shouldNotFilter(new MockHttpServletRequest("POST", "/api/v1/auth/%72efresh")))
+        .isFalse();
+    assertThat(
+            filter.shouldNotFilter(
+                new MockHttpServletRequest("POST", "/api/v1/auth/password/%66orgot")))
+        .isFalse();
+    assertThat(
+            filter.shouldNotFilter(
+                new MockHttpServletRequest("POST", "/api/v1/auth/password/%72eset")))
+        .isFalse();
+  }
+
+  @Test
   void shouldNotFilter_returnsFalse_forPostOnRefreshPath() {
     MockHttpServletRequest req = new MockHttpServletRequest("POST", "/api/v1/auth/refresh");
     assertThat(filter.shouldNotFilter(req)).isFalse();

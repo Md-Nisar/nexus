@@ -79,9 +79,9 @@ M1 was developed on the session branch `ccr-76994a18-now72v`, not on `feature/US
 
 M1 PR (#82) merged with the suggested Conventional Commit title verbatim. Whether its body covers F-5's deferral to T-009 was not independently re-verified here (GitHub API access was unavailable at update time).
 
-Ticket separately (pre-existing, outside the M1 diff, found by the security review):
-- **P-1 (Medium):** `LoginRateLimitFilter` matches paths by raw string, so `/api/v1/auth/%6Cogin` bypasses all four auth rate limits. Frontend nginx normalises the path, but direct backend traffic is exposed.
-- **P-2 (Low):** `/actuator/metrics` and `/actuator/prometheus` are reachable by any authenticated user with zero permissions.
+Two pre-existing M1 security-review findings, both closed on `ccr-047fcb60-fqvz6w` (no ticket needed):
+- **P-1 (Medium), fixed 2026-10-18:** `LoginRateLimitFilter` compared the raw request URI, so `/api/v1/auth/%6Cogin` bypassed all four auth rate limits. It now matches on `UrlPathHelper.defaultInstance.getPathWithinApplication` (decoded, `;` parameters removed). Unit tests cover encoded and path-parameter variants of all four paths.
+- **P-2 (Low), already fixed by M7:** `/actuator/metrics` and `/actuator/prometheus` require the scrape-token authority (`ScrapeTokenFilter`, `SecurityConfig`); no tenant role can read them.
 
 For T-009 (from the M1 reviews): build `permitAll` from `PublicEndpointRequestMatcher` (method + pattern); use the matcher only as "skip the epoch check if true"; add a fail-closed counter (e.g. `nexus.security.public_match_failed_closed`, no path tag); make `@WebMvcTest` slices load the matcher; consider a rule that `@PublicEndpoint` patterns are literal.
 

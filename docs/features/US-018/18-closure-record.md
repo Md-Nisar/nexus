@@ -52,5 +52,5 @@ RES-26 (second-account pre-positioning; review date 2026-11-27 and the Epic-3 ha
 
 ## Housekeeping left
 
-- Two M1 findings (pre-existing, outside the US-018 diff) still need tickets: the `%6Cogin` rate-limit path bypass (Medium) and the actuator metrics endpoints readable by any authenticated user (Low). `STATUS.md` lists them.
+- The two pre-existing M1 findings are closed: the `%6Cogin` rate-limit bypass is fixed in `LoginRateLimitFilter` (path matched after decoding), and the actuator metrics exposure was already closed by M7 (scrape token). See `STATUS.md`.
 - Opening the PR for this branch: `/pre-pr-check` has not been run and no PR exists. It needs a human decision on how to split or squash the milestone commits.
