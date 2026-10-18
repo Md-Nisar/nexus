@@ -137,7 +137,7 @@ class RbacSchemaMigrationIT {
                 + "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'roles' "
                 + "GROUP BY INDEX_NAME",
             String.class);
-    assertThat(roleIndexes).contains("uq_roles_tenant_name");
+    assertThat(roleIndexes).contains("uq_roles_tenant_active_name").doesNotContain("uq_roles_tenant_name");
 
     List<String> userRoleIndexes =
         jdbc.queryForList(
@@ -201,12 +201,12 @@ class RbacSchemaMigrationIT {
   }
 
   /**
-   * US-018 C1 (V9, expand): {@code deleted_at} and the STORED generated {@code active_name} exist, and
-   * the unique key over {@code (tenant_id, active_name)} sits next to the old {@code
-   * uq_roles_tenant_name}, which V10 drops one release later.
+   * US-018 C1 (V9 expand, V10 contract): {@code deleted_at} and the STORED generated {@code
+   * active_name} exist, the unique key over {@code (tenant_id, active_name)} is the only name key,
+   * and the old {@code uq_roles_tenant_name} is gone.
    */
   @Test
-  void should_haveActiveNameUniqueKeyNextToTheOldNameKey_when_v9Applied() {
+  void should_haveOnlyTheActiveNameUniqueKey_when_v10Applied() {
     List<String> activeNameKey =
         jdbc.queryForList(
             "SELECT column_name FROM information_schema.statistics "
@@ -227,7 +227,7 @@ class RbacSchemaMigrationIT {
             String.class);
 
     assertThat(activeNameKey).containsExactly("tenant_id", "active_name");
-    assertThat(oldKey).isPositive();
+    assertThat(oldKey).isZero();
     assertThat(activeNameExtra).containsIgnoringCase("STORED GENERATED");
   }
 

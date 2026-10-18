@@ -20,7 +20,7 @@ public interface JpaRoleRepository extends JpaRepository<Role, UUID> {
   /**
    * Q1 — US-015 AC2, paginated by US-018 C2. One page of the live roles in a tenant, projected
    * (never the entity — see {@link RoleView}'s Javadoc), {@code ORDER BY name, id}: a total order, so
-   * concurrent writes cannot make pages overlap or skip. Served by {@code uq_roles_tenant_name}'s
+   * concurrent writes cannot make pages overlap or skip. Served by {@code uq_roles_tenant_active_name}'s
    * leftmost {@code tenant_id} prefix — no new index (03-design.md §5.2). The sort lives in the query,
    * so the caller passes an UNSORTED {@link Pageable}. The tenant predicate is on both the page and
    * the count query.
@@ -56,7 +56,7 @@ public interface JpaRoleRepository extends JpaRepository<Role, UUID> {
    * Q3 — US-015 AC11, the method F1 identifies as the story's single most likely silent failure
    * point. Resolves the tenant's admin role id by {@code (tenantId, name)}. MUST use a plain
    * {@code r.name = :name} predicate and rely on {@code utf8mb4_0900_ai_ci} for
-   * case-insensitivity, so {@code uq_roles_tenant_name} is used as an index — never wrap the
+   * case-insensitivity, so {@code uq_roles_tenant_active_name} is used as an index — never wrap the
    * column in {@code UPPER()}, which would de-sargonise this write-hot-path query
    * (03-design.md §5.2). Returns the id only, never the entity.
    */
@@ -87,7 +87,7 @@ public interface JpaRoleRepository extends JpaRepository<Role, UUID> {
 
   /**
    * Q12 — RC-4's per-tenant role cap check, counting only LIVE roles (US-018 T-026: a soft-deleted
-   * role frees its slot). Served by {@code uq_roles_tenant_name}'s leftmost prefix — same index as
+   * role frees its slot). Served by {@code uq_roles_tenant_active_name}'s leftmost prefix — same index as
    * Q1, no new cost (03-design.md §5.2).
    */
   long countByTenantIdAndDeletedAtIsNull(UUID tenantId);
@@ -100,7 +100,7 @@ public interface JpaRoleRepository extends JpaRepository<Role, UUID> {
    *
    * <p>MUST be a plain, NON-LOCKING read and MUST NEVER be annotated {@code @Lock} (MC-A). It does
    * not join {@code permissions}. Comma-join JPQL, so {@code UuidV7Converter} handles {@code UUID}
-   * <-> {@code BINARY(16)}. Driven by {@code uq_roles_tenant_name}'s leftmost {@code tenant_id}
+   * <-> {@code BINARY(16)}. Driven by {@code uq_roles_tenant_active_name}'s leftmost {@code tenant_id}
    * prefix into {@code pk_role_permissions}'s leftmost {@code role_id} prefix.
    *
    * <p>Roles with zero permissions do not appear: they are never admin-defining.
