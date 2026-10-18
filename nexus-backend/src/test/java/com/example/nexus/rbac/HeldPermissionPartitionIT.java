@@ -70,8 +70,12 @@ class HeldPermissionPartitionIT {
     grant(deleted, "audit:read");
     List<Role> roles = List.of(normal, empty, whole, foreign);
     for (Role role : roles) {
+      // V8 (fk_user_roles_role_tenant) makes a cross-tenant assignment impossible to forge, so the
+      // foreign role is assigned under its own tenant; the reads below must still never report it.
+      UUID assignmentTenant = role == foreign ? foreignTenantId : tenantId;
       userRoleRepository.save(
-          new UserRole(uuidGenerator.newId(), user.getId(), role.getId(), tenantId, user.getId()));
+          new UserRole(
+              uuidGenerator.newId(), user.getId(), role.getId(), assignmentTenant, user.getId()));
     }
     // A deleted role with an ACTIVE assignment is an invariant break (RC-36.4), forged here on
     // purpose: the read-side filters are defense in depth for exactly this state.

@@ -1454,6 +1454,60 @@ class RoleAssignmentServiceTest {
     verifyNoInteractions(permissionCachePort, rbacAuditPort);
   }
 
+  /** Fail closed on revoke: a failing classification read is never treated as "allow". */
+  @Test
+  void should_propagateAndWriteNothing_when_revokeClassificationReadThrows() {
+    stubBenignRevokeTarget();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenThrow(new RuntimeException("db down"));
+
+    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(RuntimeException.class)
+        .hasMessage("db down");
+
+    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
+    verify(userRoleAssignmentPort, never()).revoke(any(), any());
+    verifyNoInteractions(rbacAuditPort, permissionCachePort);
+  }
+
+  @Test
+  void should_propagateAndWriteNothing_when_revokeTenantRoleSetReadThrows() {
+    stubRevokeTarget(role("ADMIN_LIKE"));
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(CATALOGUE));
+    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId))
+        .thenThrow(new RuntimeException("db down"));
+
+    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(RuntimeException.class)
+        .hasMessage("db down");
+
+    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
+    verify(userRoleAssignmentPort, never()).revoke(any(), any());
+    verifyNoInteractions(rbacAuditPort, permissionCachePort);
+  }
+
+  @Test
+  void should_propagateRecordErrorTimerAndWriteNothing_when_revokeDecisionReadThrows() {
+    stubRevokeTarget(role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(holder(actorId, roleId)));
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenThrow(new RuntimeException("db down"));
+
+    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(RuntimeException.class)
+        .hasMessage("db down");
+
+    verify(userRoleAssignmentPort, never()).revoke(any(), any());
+    assertThat(
+            meterRegistry
+                .find("nexus.rbac.privileged_revoke_lock_hold")
+                .tags("operation", "revoke", "outcome", "error")
+                .timer())
+        .isNotNull();
+    verifyNoInteractions(rbacAuditPort, permissionCachePort);
+  }
+
   // ---------------------------------------------------------------------------------------
   // T-016 (row 2, rows 3 and 5): revoke-subset, the administrator requirement, the lockout
   // ---------------------------------------------------------------------------------------

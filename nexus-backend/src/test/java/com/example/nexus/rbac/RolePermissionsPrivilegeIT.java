@@ -190,7 +190,8 @@ class RolePermissionsPrivilegeIT {
     // never a table-scoped UPDATE, a column outside that set, or any DELETE.
     rolesGrants.forEach(
         g -> {
-          assertThat(g.toUpperCase(Locale.ROOT)).as(g).doesNotContain("DELETE");
+          // \b: the column deleted_at is allowed, the DELETE privilege is not.
+          assertThat(g.toUpperCase(Locale.ROOT)).as(g).doesNotContainPattern("\\bDELETE\\b");
           if (g.toUpperCase(Locale.ROOT).contains("UPDATE")) {
             assertThat(g).as(g).containsPattern("UPDATE \\(");
             String columns = g.substring(g.indexOf('(') + 1, g.indexOf(')')).replace("`", "");

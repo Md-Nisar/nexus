@@ -71,12 +71,12 @@ public interface UserRoleAssignmentPort {
    * database's and give false assurance about the one property D6 rests on.
    *
    * <p>The Java sort is belt-and-braces: the real guarantee is the PLAN. An ascending range scan on
-   * fk_user_roles_role acquires in index order regardless of IN-list order, so <b>plan stability
+   * fk_user_roles_role_tenant (role_id, tenant_id) acquires in index order regardless of IN-list order, so <b>plan stability
    * across IN-list cardinalities is part of the claim</b>, not a fixture detail — MC-C asserts
-   * key = fk_user_roles_role for IN-lists of size 1, 2 and >= 20. A full-scan fallback would
+   * key = fk_user_roles_role_tenant for IN-lists of size 1, 2 and >= 20. A full-scan fallback would
    * acquire in primary-key order and break the argument.
    *
-   * <p>The adapter MUST drive off {@code role_id} (fk_user_roles_role) as an IN-list range, never
+   * <p>The adapter MUST drive off {@code role_id} (fk_user_roles_role_tenant) as an IN-list range, never
    * {@code tenant_id}, and MUST NOT join {@code Role} — joining would widen the lock beyond
    * user_roles. Tenant containment is therefore carried by two things together: the role-id set is
    * tenant-derived by the caller, and {@code tenant_id} remains a residual predicate (T-S1).

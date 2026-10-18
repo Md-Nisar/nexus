@@ -693,7 +693,8 @@ class TokenFreshnessIT {
 
   /**
    * An administrator for detach and attach: it holds {@code role:write} (the endpoint permission
-   * A3 re-checks) and {@code audit:read} (so it may attach it).
+   * A3 re-checks), {@code audit:read} (so it may attach it) and {@code role:read} (so it may
+   * detach it from the reader roles, which the role-subset check requires).
    */
   private RoleChangeActor seedAdmin() {
     User adminUser = activeUser("freshness-admin-" + UUID.randomUUID() + "@example.com");
@@ -701,6 +702,9 @@ class TokenFreshnessIT {
     rolePermissionRepository.save(
         new RolePermission(adminRole.getId(), RbacSeededPermissionIds.ROLE_WRITE));
     rolePermissionRepository.save(new RolePermission(adminRole.getId(), AUDIT_READ));
+    // Role-subset (ADR-0021 D5): a detach needs every permission of the target role, and the
+    // target roles in this class carry role:read.
+    rolePermissionRepository.save(new RolePermission(adminRole.getId(), ROLE_READ));
     userRoleRepository.save(new UserRole(
         uuidGenerator.newId(), adminUser.getId(), adminRole.getId(), TENANT_ID, adminUser.getId()));
     return new RoleChangeActor(adminUser.getId(), TENANT_ID);

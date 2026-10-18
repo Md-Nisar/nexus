@@ -78,7 +78,7 @@ public interface JpaUserRoleRepository
    * REPLACES the removed M1 {@code lockActiveAssignmentsByRole} — a singleton {@code roleIds} is a
    * strict superset of M1's one-role lock.
    *
-   * <p>Driven off {@code roleId} (fk_user_roles_role) as an IN-list range — NEVER {@code
+   * <p>Driven off {@code roleId} (the leading column of fk_user_roles_role_tenant, V8) as an IN-list range — NEVER {@code
    * tenantId} as the primary predicate — and NO join with {@code Role}: joining would widen the
    * lock beyond {@code user_roles} (lock-scope discipline inherited verbatim from M1). {@code
    * tenantId} remains a residual defense-in-depth predicate (T-S1).
@@ -108,7 +108,7 @@ public interface JpaUserRoleRepository
   @Query(
       value =
           """
-          SELECT * FROM user_roles FORCE INDEX (fk_user_roles_role)
+          SELECT * FROM user_roles FORCE INDEX (fk_user_roles_role_tenant)
           WHERE role_id IN (:roleIds) AND tenant_id = :tenantId AND revoked_at IS NULL
           FOR UPDATE
           """,

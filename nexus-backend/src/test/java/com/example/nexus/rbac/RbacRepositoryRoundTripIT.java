@@ -145,7 +145,7 @@ class RbacRepositoryRoundTripIT {
         roleRepository.save(
             new Role(
                 uuidGenerator.newId(),
-                uuidGenerator.newId(),
+                TENANT_ID,
                 "RT-UR-ROLE-" + UUID.randomUUID(),
                 null,
                 false));

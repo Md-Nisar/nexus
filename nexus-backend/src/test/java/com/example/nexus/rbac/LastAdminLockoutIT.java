@@ -30,6 +30,11 @@ import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.nio.ByteBuffer;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -54,6 +59,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
+import org.testcontainers.containers.MySQLContainer;
 
 /**
  * US-012 T-018 (04-tasks.md; 03-design.md §5.2 M1/§3.2; 03b-threat-model.md T-D3): the AC5
@@ -137,6 +143,7 @@ class LastAdminLockoutIT {
   @Autowired private JpaPermissionCatalogueRepository permissionCatalogueRepository;
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private JdbcTemplate jdbc;
+  @Autowired private MySQLContainer<?> mysqlContainer;
   @Autowired private MeterRegistry meterRegistry;
   @Autowired private PlatformTransactionManager transactionManager;
 
@@ -704,7 +711,7 @@ class LastAdminLockoutIT {
    * {@code JpaUserRoleRepository#lockActiveAssignmentHoldersByRoles} (M11, US-017 D6 — supersedes
    * the removed M1 this scenario originally pinned; a one-element {@code role_id IN (:roleIds)}
    * is the same access pattern MySQL's optimizer plans identically to an equality lookup),
-   * asserting {@code key = fk_user_roles_role} (the FK index name — confirmed against
+   * asserting {@code key = fk_user_roles_role_tenant} (the FK index name — confirmed against
    * {@code V5__rbac_schema.sql}'s {@code CONSTRAINT fk_user_roles_role FOREIGN KEY (role_id)}
    * and the threat model's own live-MySQL verification) and {@code type = ref}, never {@code
    * ALL}; (2) a Hibernate SQL-logging capture around the REAL production call path ({@link
@@ -732,7 +739,7 @@ class LastAdminLockoutIT {
     Map<String, Object> row = plan.get(0);
     assertThat(String.valueOf(row.get("key")))
         .as("M11 must drive off the FK index on role_id, never a full table scan: " + row)
-        .isEqualTo("fk_user_roles_role");
+        .isEqualTo("fk_user_roles_role_tenant");
     assertThat(String.valueOf(row.get("type")))
         .as("M11's access type must be an index lookup (ref), never ALL: " + row)
         .isEqualTo("ref");
@@ -766,7 +773,7 @@ class LastAdminLockoutIT {
    * "exactly one captured statement contains {@code for update}, none {@code for share}" lookups
    * below assert.
    *
-   * <p><strong>If M11's key is ever observed to NOT be {@code fk_user_roles_role}, do not relax
+   * <p><strong>If M11's key is ever observed to NOT be {@code fk_user_roles_role_tenant}, do not relax
    * this assertion.</strong> That is a real gap in the deadlock-freedom argument requiring an
    * Architect-level escalation.
    */
@@ -797,7 +804,7 @@ class LastAdminLockoutIT {
     // M11's bind order: roleIds, tenantId (revokedAt IS NULL has no parameter).
     assertThat(explainKey(m11Sql, toBytes(adminRole.getId()), toBytes(tenantId)))
         .as("M11 must drive off the FK index on role_id: " + m11Sql)
-        .isEqualTo("fk_user_roles_role");
+        .isEqualTo("fk_user_roles_role_tenant");
 
     // US-017 T-006(b), MC-A (extended): M11 must acquire no JOIN at all (never widening the lock
     // beyond user_roles by joining roles/permissions) -- design §11.2 MC-A, port Javadoc.
@@ -920,7 +927,7 @@ class LastAdminLockoutIT {
    * MC-C (re-derived MC-5): the set lock's deadlock-freedom argument depends on the CHOSEN PLAN,
    * not merely the predicate -- InnoDB locks index records, and a full-scan fallback would acquire
    * in primary-key order, breaking it. A 1-element and a 40-element IN-list can be costed
-   * differently by the optimizer, so this asserts {@code key = fk_user_roles_role} for M11 at
+   * differently by the optimizer, so this asserts {@code key = fk_user_roles_role_tenant} for M11 at
    * IN-list sizes 1, 2 and >= 20 -- plan stability across cardinalities, not one lucky fixture
    * size. (M5b, the second half of the former test, is retired with the gate, ledger row 2.)
    *
@@ -944,8 +951,8 @@ class LastAdminLockoutIT {
       }
 
       assertThat(explainM11Key(roleIds, tenantId))
-          .as("M11 must drive off fk_user_roles_role at IN-list size " + size)
-          .isEqualTo("fk_user_roles_role");
+          .as("M11 must drive off fk_user_roles_role_tenant at IN-list size " + size)
+          .isEqualTo("fk_user_roles_role_tenant");
     }
   }
 
@@ -960,7 +967,7 @@ class LastAdminLockoutIT {
     // back to a full table scan at IN-list size 25.
     List<Map<String, Object>> plan =
         jdbc.queryForList(
-            "EXPLAIN SELECT * FROM user_roles FORCE INDEX (fk_user_roles_role) WHERE role_id IN ("
+            "EXPLAIN SELECT * FROM user_roles FORCE INDEX (fk_user_roles_role_tenant) WHERE role_id IN ("
                 + placeholders + ") AND tenant_id = ? AND revoked_at IS NULL FOR UPDATE",
             params.toArray());
     assertThat(plan).hasSize(1);
@@ -1123,18 +1130,25 @@ class LastAdminLockoutIT {
   /** Waits (bounded) until some transaction is blocked on a row lock, then returns. */
   private void awaitALockWaiter() {
     long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(8);
-    while (System.nanoTime() < deadline) {
-      Integer waiting =
-          jdbc.queryForObject("SELECT COUNT(*) FROM performance_schema.data_lock_waits", Integer.class);
-      if (waiting != null && waiting > 0) {
-        return;
-      }
-      try {
+    // performance_schema is not readable by nexus_app (least privilege), so the observer connects
+    // as the container's root user.
+    try (Connection observer =
+            DriverManager.getConnection(
+                mysqlContainer.getJdbcUrl(), "root", mysqlContainer.getPassword());
+        Statement statement = observer.createStatement()) {
+      while (System.nanoTime() < deadline) {
+        try (ResultSet rs =
+            statement.executeQuery("SELECT COUNT(*) FROM performance_schema.data_lock_waits")) {
+          if (rs.next() && rs.getInt(1) > 0) {
+            return;
+          }
+        }
         Thread.sleep(50);
-      } catch (InterruptedException e) {
-        Thread.currentThread().interrupt();
-        return;
       }
+    } catch (SQLException e) {
+      throw new IllegalStateException("could not observe data_lock_waits", e);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
     }
   }
 

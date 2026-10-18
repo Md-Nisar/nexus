@@ -403,7 +403,7 @@ class RoleManagementAdminGateIT {
 
   private Role seedRole(String tag, UUID tenantId) {
     return roleRepository.save(
-        new Role(uuidGenerator.newId(), tenantId, "RMAG-" + tag + "-" + UUID.randomUUID(), null,
+        new Role(uuidGenerator.newId(), tenantId, "RMAG-" + tag + "-" + UUID.randomUUID().toString().substring(0, 8), null,
             false));
   }
 
