@@ -52,6 +52,49 @@ Append-only: never edit an applied migration — write a new one. Non-additive c
 
 Create `com.example.nexus.<context>` with `domain/`, `application/`, `infrastructure/`, `interfaces/` packages. The ArchUnit suite (`HexagonalArchitectureTest`) picks it up automatically and fails the build on dependency-rule violations. Conventions: `.claude/skills/spring-boot-standards/SKILL.md`.
 
+### Authorization rules (RBAC)
+
+Design: `docs/features/US-018/03-design.md`; decisions: ADR-0021 and ADR-0022 (both still Proposed). Behaviour as built is in `docs/features/US-018/09-technical.md`.
+
+#### Grant-subset rules and "administrator"
+
+A caller may only hand out, take away or attach what they currently hold. The caller's holdings are read live from the DB inside the write transaction, never from the JWT.
+
+| Operation | Rule |
+|---|---|
+| Assign a role (A2) | Every permission of the target role is in the **union** of the caller's held permissions |
+| Attach a permission (A3) | The caller holds that permission (any permission, not only formerly dangerous ones) |
+| Self-assign (A4) | Only an administrator may assign a role to themselves |
+| Revoke a role | Caller holds every permission of the role; if the role is admin-defining the caller must also be an administrator |
+| Detach a permission (role-subset) | Caller holds every permission of the role; if the role is admin-defining the caller must be an administrator through a *different* role |
+| `PATCH` / `DELETE` a role (C1) | Role-subset bounds these too (ADR-0021 D5); whether the administrator-through-another-role clause also applies to them is unverified |
+
+**"Administrator" has one definition:** a role is *admin-defining* iff it alone carries every permission in the `permissions` catalogue; a user is an *administrator* iff they hold an active admin-defining role. It is per role, never the union across roles, and never a role name (`RbacAdministrators`). Grant bounds ("could the caller have granted this?") use the union; every "is the caller an administrator?" question uses the per-role definition. The last-admin lockout, the zero-admin health indicator, `listActive` redaction of `assignedBy` and the break-glass CLI use the same definition. Denials are 403 `RBAC_001`; the body's `requiredPermission` is always the endpoint permission, not the missing one.
+
+#### The three access markers
+
+Every MVC handler carries exactly one of these (build fails otherwise: `HexagonalArchitectureTest`, `EndpointClassificationWebTest`):
+
+- `@RequiresPermission(Permissions.X)` — a signed-in caller holding that permission.
+- `@AuthenticatedEndpoint` — a signed-in caller, no permission. Own data only: the handler may not bind a caller-chosen identifier (`@PathVariable`, `@RequestParam`, `@RequestHeader`, any `UUID` parameter, `HttpServletRequest`, and so on; identifiers inside a `@RequestBody` are not covered by the rule). Anything addressing another resource needs `@RequiresPermission`.
+- `@PublicEndpoint` — anonymous callers allowed. A marker only: access is granted by the `permitAll` list in `SecurityConfig`, and the web test fails if the two disagree. Declare an explicit HTTP method; a handler without one is treated as non-public.
+
+`@RequiresPermission` must sit on a public, non-final, non-static method of a Spring bean, and self-invocation is not intercepted.
+
+#### Token freshness (permission epoch)
+
+Revoking a role or detaching a permission bumps a per-user epoch in Redis (`nexus:rbac:epoch:{tenantId}:{userId}`); tokens carry it as `perm_epoch` (schema version 3), and `JwtAuthenticationFilter` answers 401 `AUTH_003` to a token below the current epoch. A revoked user is therefore cut off on the next request, not after the 15-minute token and permission-cache lifetimes.
+
+- **Latency target:** the epoch check must stay at or below 2 ms p95 at 200 RPS (`nexus.rbac.epoch.check.latency`), within EPIC-002's 5 ms p95 RBAC overhead. A local-Docker run measured 0.58 ms p95 (`STATUS.md`); the staging-topology run is unverified (no environment exists yet).
+- **Redis outage:** after 3 read failures in 10 s an instance serves degraded-open (epochs it already saw still make a token stale). **15 minutes** after the first failure (`nexus.rbac.epoch.fail-open-window`) it goes degraded-closed: authenticated, non-public requests get **503 `AUTH_005` with `Retry-After: 30`**. Public endpoints are never rejected. 60 s without a counted failure returns it to healthy.
+- The frontend does not yet special-case 503 `AUTH_005` (`09-technical.md` section 12).
+
+#### `Permissions` constants and the migration footer
+
+`com.example.nexus.common.security.Permissions` holds one `String` constant per catalogue row plus `ALL`. Every `@RequiresPermission` value and every service-level `requiredPermission` references a constant, never a literal. Adding a catalogue row means a constant, an entry in `ALL`, and an entry in the frontend `Permission` type (below); `PermissionsCatalogueTest` and `PermissionsCatalogueIT` fail on a mismatch.
+
+Every Flyway migration that inserts into `permissions` must end with the footer from `src/main/resources/db/templates/permission-migration-footer.sql` (not itself a migration; use the A-PRE-V9 variant before V9, A-V9 from V9, plus block B). The footer attaches the new permission to every role that already carried the whole catalogue (so custom administrators are not demoted) and to every system `TENANT_ADMIN`. Replace the single placeholder `{{INSERTED_PERMISSION_IDS}}` with the ids *your* file inserts; copying another migration's footer verbatim fails `PermissionMigrationFooterScannerTest`. Also required, but not scanned: an IT that seeds a full-catalogue custom role and asserts it gains the permission, the custom-admin exposure check around the deploy, and a flush of the `rbac:permset:*` / `roleset:*` cache keys afterwards.
+
 ## Frontend (`nexus-frontend/`)
 
 ### Commands
@@ -188,6 +231,18 @@ never render it, never put it in a URL, and never send it to analytics. Show
 - `AppError.requiredPermission` is never rendered, put in a URL, or forwarded to analytics/telemetry.
 - Data hidden by `*appHasPermission` is also omitted **server-side** — the directive hides controls, never data.
 - No secret, credential, internal hostname, or confidential business rule lives inside a permission-gated component.
+
+### The `Permission` type and `SKIP_ACCESS_DENIED_REDIRECT`
+
+`shared/types/permission.ts` exports `Permission`, a closed union of the catalogue names, and `PERMISSIONS`. `permissionGuard` data and `*appHasPermission` take a `Permission`, so a misspelt name is a compile error. It mirrors the backend `Permissions` class by hand; `app.routes.spec.ts` walks the route table (including lazy `loadChildren`) and fails on an unknown name. Typing a permission authorizes nothing.
+
+`apiErrorInterceptor` sends a 403 with code `RBAC_001` to `/access-denied`, with no query parameters, and still rethrows the `AppError`. A filter-level `ACCESS_DENIED`, 401 and 404 never redirect. A caller that handles the denial inline opts out per request:
+
+```ts
+http.get(url, { context: new HttpContext().set(SKIP_ACCESS_DENIED_REDIRECT, true) });
+```
+
+`SKIP_ACCESS_DENIED_REDIRECT` is exported from `core/http/skip-access-denied-redirect.ts`.
 
 ## Docker
 
