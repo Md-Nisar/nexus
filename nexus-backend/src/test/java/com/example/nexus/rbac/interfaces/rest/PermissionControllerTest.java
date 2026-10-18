@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.example.nexus.common.web.GlobalExceptionHandler;
 import com.example.nexus.rbac.application.RoleManagementService;
+import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.PermissionView;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.List;
@@ -48,8 +49,13 @@ class PermissionControllerTest {
 
   @Test
   void should_return200WithDataEnvelope_when_listingPermissions() throws Exception {
-    when(roleManagementService.listAllPermissions())
-        .thenReturn(List.of(new PermissionView(PERMISSION_ID, "user:read", "Read user accounts")));
+    when(roleManagementService.listAllPermissions(0, 20))
+        .thenReturn(
+            new PageResult<>(
+                List.of(new PermissionView(PERMISSION_ID, "user:read", "Read user accounts")),
+                1,
+                0,
+                20));
 
     mockMvc
         .perform(get("/api/v1/permissions"))
@@ -57,12 +63,39 @@ class PermissionControllerTest {
         .andExpect(jsonPath("$.data").isArray())
         .andExpect(jsonPath("$.data[0].id").value(PERMISSION_ID.toString()))
         .andExpect(jsonPath("$.data[0].name").value("user:read"))
-        .andExpect(jsonPath("$.data[0].description").value("Read user accounts"));
+        .andExpect(jsonPath("$.data[0].description").value("Read user accounts"))
+        .andExpect(jsonPath("$.page.totalElements").value(1))
+        .andExpect(jsonPath("$.links.next").value((Object) null));
+  }
+
+  @Test
+  void should_linkToTheNextPage_when_moreCataloguePagesExist() throws Exception {
+    when(roleManagementService.listAllPermissions(0, 3))
+        .thenReturn(new PageResult<>(List.of(), 8, 0, 3));
+
+    mockMvc
+        .perform(get("/api/v1/permissions").param("size", "3"))
+        .andExpect(jsonPath("$.page.totalPages").value(3))
+        .andExpect(jsonPath("$.links.next").value("/api/v1/permissions?page=1&size=3"))
+        .andExpect(jsonPath("$.links.prev").value((Object) null));
+  }
+
+  @Test
+  void should_return400_when_sizeIs101OrPageIsNegative() throws Exception {
+    mockMvc
+        .perform(get("/api/v1/permissions").param("size", "101"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
+    mockMvc
+        .perform(get("/api/v1/permissions").param("page", "-1"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value("VALIDATION_FAILED"));
   }
 
   @Test
   void should_return200WithEmptyDataArray_when_noPermissionsExist() throws Exception {
-    when(roleManagementService.listAllPermissions()).thenReturn(List.of());
+    when(roleManagementService.listAllPermissions(0, 20))
+        .thenReturn(new PageResult<>(List.of(), 0, 0, 20));
 
     mockMvc
         .perform(get("/api/v1/permissions"))
@@ -79,7 +112,7 @@ class PermissionControllerTest {
    */
   @Test
   void should_havePermissionAnnotationPresent_when_listPermissionsInspected() throws Exception {
-    var method = PermissionController.class.getMethod("listPermissions");
+    var method = PermissionController.class.getMethod("listPermissions", String.class, String.class);
     var annotation = method.getAnnotation(com.example.nexus.common.security.RequiresPermission.class);
 
     assertThat(annotation).isNotNull();

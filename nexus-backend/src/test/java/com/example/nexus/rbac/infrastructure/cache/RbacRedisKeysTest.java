@@ -45,4 +45,13 @@ class RbacRedisKeysTest {
     assertThat(keys.permset(TENANT, USER, RedisPermissionEpochAdapter.MAX_EPOCH))
         .endsWith(":9007199254740990");
   }
+
+  @Test
+  void should_buildThrottleKeysUnderTheDocumentedShape() {
+    assertThat(keys.throttle(TENANT, USER))
+        .isEqualTo("nexus-test:rbac:throttle:" + TENANT + ":" + USER);
+    assertThat(keys.throttleUntil(TENANT, USER)).isEqualTo(keys.throttle(TENANT, USER) + ":until");
+    assertThat(keys.throttleSuppressed(TENANT, USER))
+        .isEqualTo(keys.throttle(TENANT, USER) + ":suppressed");
+  }
 }

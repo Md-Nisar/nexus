@@ -1434,3 +1434,13 @@ nexus-backend/src/main/java/com/example/nexus/rbac/interfaces/rest/dto/Permissio
 - `docs/adr/0011` §1 (audit retry-buffer lanes, capacity 200, drop-newest, depth-critical ≥180), `0014` D5/D6, `0015` D7/D8, `0016` D3/D4/D6, `0005` (UUIDv7), `0002` (hexagonal), `0003` (Flyway append-only — **not engaged**)
 - `SECURITY.md` §3.1 — the `RBAC_001` response shape and the `@RequiresPermission` visibility/self-invocation pitfalls (D8); gains the error-code register (D3)
 - `docs/TESTING.md` — Testcontainers-MySQL-only policy for `*IT`
+
+
+---
+
+## API changes by US-018 M9 (C1, C2, C3)
+
+- **Paginated lists (C2).** `GET /api/v1/roles` (ordered `(name, id)`) and `GET /api/v1/permissions` (ordered `name`) take `page` (0-based, default 0) and `size` (default 20, max 100; invalid is 400 `VALIDATION_FAILED`, never clamped) and answer `{ data, page: { size, number, totalElements, totalPages }, links: { next, prev } }`. `GET /api/v1/roles/{roleId}/permissions` stays unpaginated.
+- **`PATCH /api/v1/roles/{roleId}` (C1).** Body `{ name?, description? }` (at least one; `name` 1..64 with create's pattern; an empty `description` clears it). 200 `RoleResponse`. Errors: 400 `VALIDATION_FAILED`, 404 `ROLE_NOT_FOUND` (missing, deleted, foreign), 403 `RBAC_001` (no `role:write`, or role-subset fails, checked before any 409), 409 `RBAC_003` system role, 409 `RBAC_007` reserved name, 409 `RBAC_006` name used by a live role. Audit `ROLE_UPDATED` (changed field names, old and new name, never the description). No `If-Match`.
+- **`DELETE /api/v1/roles/{roleId}` (C1).** Soft delete, 204. Errors: 404, 403 `RBAC_001` (role-subset), 409 `RBAC_003`, 409 `RBAC_009` (active holders; revoke them first). Audit `ROLE_DELETED`. A deleted role's name stays reserved until V10.
+- **Access review (C3), `audit:read`, behind this flag.** `GET /api/v1/roles/{roleId}/holders`, `GET /api/v1/permissions/{permissionId}/holders` (paged, distinct users, `viaRoleIds`), `GET /api/v1/users/{userId}/effective-permissions`. Ids only. **These endpoints disclose the tenant's administrator roster to every `audit:read` holder (RES-37, Low, accepted; ADR-0021).** `assignedBy` of a role holder is shown only to an administrator.

@@ -200,6 +200,17 @@ class SecurityConfigWebTest {
         .andExpect(header().string("Access-Control-Allow-Credentials", "true"));
   }
 
+  /** US-018 T-027 (C1): PATCH /api/v1/roles/{roleId} needs PATCH in the CORS allow-list. */
+  @Test
+  void cors_preflight_allows_patch() throws Exception {
+    mvc.perform(options("/api/v1/roles/00000000-0000-7000-8000-000000000001")
+            .header("Origin", "http://localhost:2000")
+            .header("Access-Control-Request-Method", "PATCH")
+            .header("Access-Control-Request-Headers", "Content-Type,Authorization"))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Access-Control-Allow-Methods", containsString("PATCH")));
+  }
+
   // ── Expired / invalid JWT must produce 401, not 500 (T-3.5) ──────────────
 
   @Test

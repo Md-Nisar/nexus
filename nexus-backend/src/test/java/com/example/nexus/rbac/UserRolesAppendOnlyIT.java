@@ -55,7 +55,7 @@ class UserRolesAppendOnlyIT {
     return roleRepository.save(
         new Role(
             uuidGenerator.newId(),
-            uuidGenerator.newId(),
+            TENANT_ID,
             "URAO-" + tag + "-" + UUID.randomUUID(),
             null,
             false));

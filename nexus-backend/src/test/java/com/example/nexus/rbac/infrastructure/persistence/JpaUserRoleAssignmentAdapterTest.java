@@ -8,13 +8,18 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.ActiveAssignmentRef;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
+import com.example.nexus.rbac.domain.HolderProvenance;
 import com.example.nexus.rbac.domain.IdGenerator;
+import com.example.nexus.rbac.domain.PageResult;
+import com.example.nexus.rbac.domain.PermissionHolder;
+import com.example.nexus.rbac.domain.RoleHolder;
+import com.example.nexus.rbac.domain.UserViaRole;
 import com.example.nexus.rbac.domain.Role;
-import com.example.nexus.rbac.domain.RolePermissionName;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.UserRole;
 import java.lang.reflect.Method;
@@ -28,10 +33,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.repository.CrudRepository;
 
 /**
@@ -113,36 +119,14 @@ class JpaUserRoleAssignmentAdapterTest {
   }
 
   @Test
-  void should_returnTrue_when_lockActiveAdminAssignmentReturnsNonEmptyList() {
-    // M5 is now a native query taking byte[] (03-design.md §7.2 step 1 / MC-5) -- byte[] has no
-    // content equals(), so argument matching uses any(byte[].class) rather than the converted
-    // literal (this test pins the true/false mapping, not the exact byte content).
-    UserRole row = mock(UserRole.class);
-    when(userRoleRepository.lockActiveAdminAssignment(
-            any(byte[].class), any(byte[].class), any(byte[].class)))
-        .thenReturn(List.of(row));
+  void should_delegateToRoleRepository_when_findingRolePermissionIdsForTenantRoles_M10prime() {
+    RolePermissionRef pair = new RolePermissionRef(roleId, UUID.randomUUID());
+    when(roleRepository.findRolePermissionIdsByTenantRoles(tenantId)).thenReturn(List.of(pair));
 
-    assertThat(adapter.hasActiveAdminAssignment(userId, roleId, tenantId)).isTrue();
-  }
-
-  @Test
-  void should_returnFalse_when_lockActiveAdminAssignmentReturnsEmptyList() {
-    when(userRoleRepository.lockActiveAdminAssignment(
-            any(byte[].class), any(byte[].class), any(byte[].class)))
-        .thenReturn(List.of());
-
-    assertThat(adapter.hasActiveAdminAssignment(userId, roleId, tenantId)).isFalse();
-  }
-
-  @Test
-  void should_delegateToRoleRepository_when_findingPermissionNamesForTenantRoles() {
-    RolePermissionName pair = new RolePermissionName(roleId, "role:write");
-    when(roleRepository.findPermissionNamesByTenantRoles(tenantId)).thenReturn(List.of(pair));
-
-    List<RolePermissionName> result = adapter.findPermissionNamesForTenantRoles(tenantId);
+    List<RolePermissionRef> result = adapter.findRolePermissionIdsForTenantRoles(tenantId);
 
     assertThat(result).containsExactly(pair);
-    verify(roleRepository).findPermissionNamesByTenantRoles(tenantId);
+    verify(roleRepository).findRolePermissionIdsByTenantRoles(tenantId);
   }
 
   @Test
@@ -162,42 +146,6 @@ class JpaUserRoleAssignmentAdapterTest {
     List<ActiveAssignmentHolder> result = adapter.lockActiveAssignmentHolders(tenantId, roleIds);
 
     assertThat(result).containsExactly(new ActiveAssignmentHolder(assignmentId, userId, roleId));
-  }
-
-  @Test
-  void should_returnTrue_when_lockActiveAssignmentOfAnyRoleReturnsNonEmptyList() {
-    UserRole row = mock(UserRole.class);
-    when(userRoleRepository.lockActiveAssignmentOfAnyRole(
-            any(byte[].class), any(), any(byte[].class)))
-        .thenReturn(List.of(row));
-
-    boolean result = adapter.hasActiveAssignmentOfAnyRole(userId, List.of(roleId), tenantId);
-
-    assertThat(result).isTrue();
-  }
-
-  @Test
-  void should_returnFalse_when_lockActiveAssignmentOfAnyRoleReturnsEmptyList() {
-    when(userRoleRepository.lockActiveAssignmentOfAnyRole(
-            any(byte[].class), any(), any(byte[].class)))
-        .thenReturn(List.of());
-
-    boolean result = adapter.hasActiveAssignmentOfAnyRole(userId, List.of(roleId), tenantId);
-
-    assertThat(result).isFalse();
-  }
-
-  @Test
-  void should_delegateToUserRoleRepository_when_findingPermissionNamesForActiveAssignmentsOfUser() {
-    RolePermissionName pair = new RolePermissionName(roleId, "user:write");
-    when(userRoleRepository.findPermissionNamesForActiveAssignmentsOfUser(userId, tenantId))
-        .thenReturn(List.of(pair));
-
-    List<RolePermissionName> result =
-        adapter.findPermissionNamesForActiveAssignmentsOfUser(userId, tenantId);
-
-    assertThat(result).containsExactly(pair);
-    verify(userRoleRepository).findPermissionNamesForActiveAssignmentsOfUser(userId, tenantId);
   }
 
   @Test
@@ -287,51 +235,64 @@ class JpaUserRoleAssignmentAdapterTest {
   void should_delegateToRepository_when_findingActiveAssignmentViews() {
     ActiveRoleAssignment view =
         new ActiveRoleAssignment(userId, roleId, "MEMBER", Instant.now(), assignedBy);
-    when(userRoleRepository.findActiveAssignmentViews(userId, tenantId))
-        .thenReturn(List.of(view));
+    when(userRoleRepository.findActiveAssignmentViews(userId, tenantId, PageRequest.of(2, 5)))
+        .thenReturn(new PageImpl<>(List.of(view), PageRequest.of(2, 5), 11));
 
-    assertThat(adapter.findActiveAssignmentViews(userId, tenantId)).containsExactly(view);
+    PageResult<ActiveRoleAssignment> result =
+        adapter.findActiveAssignmentViews(userId, tenantId, 2, 5);
+
+    assertThat(result.items()).containsExactly(view);
+    assertThat(result.totalElements()).isEqualTo(11);
+    assertThat(result.page()).isEqualTo(2);
+    assertThat(result.totalPages()).isEqualTo(3);
   }
 
   @Test
-  void should_saveAndFlushNewUserRoleAndReturnItsId_when_noConstraintViolation() {
+  void should_insertConditionallyAndReturnTheGeneratedId_when_roleIsLive() {
     UUID generatedId = UUID.randomUUID();
-    UUID savedId = UUID.randomUUID();
     when(idGenerator.newId()).thenReturn(generatedId);
-    UserRole saved = new UserRole(savedId, userId, roleId, tenantId, assignedBy);
-    when(userRoleRepository.saveAndFlush(any(UserRole.class))).thenReturn(saved);
+    when(userRoleRepository.assignIfRoleLive(
+            any(byte[].class), any(byte[].class), any(byte[].class), any(byte[].class),
+            any(byte[].class)))
+        .thenReturn(1);
 
     UUID result = adapter.assign(userId, roleId, tenantId, assignedBy);
 
-    assertThat(result).isEqualTo(savedId);
-    ArgumentCaptor<UserRole> captor = ArgumentCaptor.forClass(UserRole.class);
-    verify(userRoleRepository).saveAndFlush(captor.capture());
-    assertThat(captor.getValue().getId()).isEqualTo(generatedId);
-    assertThat(captor.getValue().getUserId()).isEqualTo(userId);
-    assertThat(captor.getValue().getRoleId()).isEqualTo(roleId);
-    assertThat(captor.getValue().getTenantId()).isEqualTo(tenantId);
-    assertThat(captor.getValue().getAssignedBy()).isEqualTo(assignedBy);
+    assertThat(result).isEqualTo(generatedId);
+    verify(userRoleRepository)
+        .assignIfRoleLive(
+            toBytes(generatedId), toBytes(userId), toBytes(roleId), toBytes(tenantId),
+            toBytes(assignedBy));
+  }
+
+  /** RC-36.1: zero rows means the role is deleted or foreign, the same 404 as a missing role. */
+  @Test
+  void should_throwRoleNotFound_when_conditionalInsertInsertsNothing() {
+    when(idGenerator.newId()).thenReturn(UUID.randomUUID());
+    when(userRoleRepository.assignIfRoleLive(
+            any(byte[].class), any(byte[].class), any(byte[].class), any(byte[].class),
+            any(byte[].class)))
+        .thenReturn(0);
+
+    assertThatThrownBy(() -> adapter.assign(userId, roleId, tenantId, assignedBy))
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND")
+        .hasMessage("No such role");
   }
 
   /**
-   * The TOCTOU-backstop test (see class Javadoc): {@code uq_user_role_active} rejecting a
-   * concurrent duplicate insert surfaces to this adapter as a {@link
-   * DataIntegrityViolationException} from {@code saveAndFlush(...)} — this must be translated into
-   * a clean {@link DuplicateRoleAssignmentException}, never left to propagate as an untranslated
-   * 500-shaped exception.
-   *
-   * <p>{@code saveAndFlush}, deliberately not {@code save}, is what this test pins: a plain {@code
-   * save()} only queues the INSERT in Hibernate's persistence context, so the constraint violation
-   * would not actually surface until some LATER auto-flush-triggering call (e.g. {@code
-   * RoleAssignmentService#assign}'s own M4a re-read immediately afterwards) — outside this
-   * method's {@code try/catch} entirely. A real 8-thread concurrency IT ({@code
-   * RoleAssignmentIT#should_allowExactlyOneWinner_when_eightConcurrentAssignsRaceForSameUserAndRole})
-   * caught exactly that bug against real MySQL before this fix.
+   * The TOCTOU-backstop test: {@code uq_user_role_active} rejecting a concurrent duplicate insert
+   * surfaces to this adapter as a {@link DataIntegrityViolationException} from the INSERT, which is
+   * executed synchronously inside this method (a deferred flush would let it escape the translation
+   * as a 500; a real 8-thread concurrency IT caught exactly that bug against MySQL). It must be
+   * translated into a clean {@link DuplicateRoleAssignmentException}.
    */
   @Test
-  void should_throwDuplicateRoleAssignmentException_when_saveAndFlushThrowsDataIntegrityViolation() {
+  void should_throwDuplicateRoleAssignmentException_when_insertThrowsDataIntegrityViolation() {
     when(idGenerator.newId()).thenReturn(UUID.randomUUID());
-    when(userRoleRepository.saveAndFlush(any(UserRole.class)))
+    when(userRoleRepository.assignIfRoleLive(
+            any(byte[].class), any(byte[].class), any(byte[].class), any(byte[].class),
+            any(byte[].class)))
         .thenThrow(new DataIntegrityViolationException("uq_user_role_active violated"));
 
     assertThatThrownBy(() -> adapter.assign(userId, roleId, tenantId, assignedBy))
@@ -339,22 +300,65 @@ class JpaUserRoleAssignmentAdapterTest {
         .hasFieldOrPropertyWithValue("code", "RBAC_004");
   }
 
-  @Test
-  void should_delegateToRoleRepository_when_findingPermissionNamesForRole() {
-    when(roleRepository.findPermissionNamesByRole(roleId))
-        .thenReturn(List.of("user:write", "role:write"));
-
-    List<String> result = adapter.findPermissionNamesForRole(roleId);
-
-    assertThat(result).containsExactly("user:write", "role:write");
-    verify(roleRepository).findPermissionNamesByRole(roleId);
+  private static byte[] toBytes(UUID uuid) {
+    return java.nio.ByteBuffer.allocate(16)
+        .putLong(uuid.getMostSignificantBits())
+        .putLong(uuid.getLeastSignificantBits())
+        .array();
   }
 
   @Test
-  void should_returnEmptyList_when_roleHasNoPermissions() {
-    when(roleRepository.findPermissionNamesByRole(roleId)).thenReturn(List.of());
+  void should_pageActiveRoleHoldersForTheTenant_when_findingRoleHolders() {
+    RoleHolder holder = new RoleHolder(userId, UUID.randomUUID(), Instant.now(), assignedBy);
+    when(userRoleRepository.findActiveRoleHoldersPage(roleId, tenantId, PageRequest.of(1, 2)))
+        .thenReturn(new PageImpl<>(List.of(holder), PageRequest.of(1, 2), 3));
 
-    assertThat(adapter.findPermissionNamesForRole(roleId)).isEmpty();
+    PageResult<RoleHolder> result = adapter.findActiveRoleHolders(roleId, tenantId, 1, 2);
+
+    assertThat(result.items()).containsExactly(holder);
+    assertThat(result.totalElements()).isEqualTo(3);
+    assertThat(result.totalPages()).isEqualTo(2);
+  }
+
+  /** One user holding the permission through two roles appears once, with both role ids. */
+  @Test
+  void should_listAUserOnceWithEveryRole_when_findingPermissionHolders() {
+    UUID permissionId = UUID.randomUUID();
+    UUID otherUser = UUID.randomUUID();
+    UUID roleA = UUID.randomUUID();
+    UUID roleB = UUID.randomUUID();
+    when(userRoleRepository.findPermissionHolderUserIdsPage(
+            permissionId, tenantId, PageRequest.of(0, 20)))
+        .thenReturn(new PageImpl<>(List.of(userId, otherUser), PageRequest.of(0, 20), 2));
+    when(userRoleRepository.findPermissionHolderRoles(
+            permissionId, tenantId, List.of(userId, otherUser)))
+        .thenReturn(
+            List.of(
+                new UserViaRole(userId, roleA),
+                new UserViaRole(userId, roleB),
+                new UserViaRole(otherUser, roleA)));
+
+    PageResult<PermissionHolder> result = adapter.findPermissionHolders(permissionId, tenantId, 0, 20);
+
+    assertThat(result.items())
+        .containsExactly(
+            new PermissionHolder(userId, List.of(roleA, roleB)),
+            new PermissionHolder(otherUser, List.of(roleA)));
+    assertThat(result.totalElements()).isEqualTo(2);
+  }
+
+  @Test
+  void should_skipTheRoleQuery_when_noUserHoldsThePermission() {
+    UUID permissionId = UUID.randomUUID();
+    when(userRoleRepository.findPermissionHolderUserIdsPage(
+            permissionId, tenantId, PageRequest.of(0, 20)))
+        .thenReturn(new PageImpl<>(List.of(), PageRequest.of(0, 20), 0));
+
+    PageResult<PermissionHolder> result = adapter.findPermissionHolders(permissionId, tenantId, 0, 20);
+
+    assertThat(result.items()).isEmpty();
+    assertThat(result.totalElements()).isZero();
+    verify(userRoleRepository, never()).findPermissionHolderRoles(any(), any(), any());
   }
 
   @Test
@@ -407,5 +411,38 @@ class JpaUserRoleAssignmentAdapterTest {
     List<UUID> result = adapter.findActiveUserIdsForRole(roleId);
 
     assertThat(result).containsExactly(user1, user2);
+  }
+
+  @Test
+  void should_delegateToUserRoleRepository_when_findingHeldAdminDefiningRoleIds_M16() {
+    when(userRoleRepository.findHeldAdminDefiningRoleIds(userId, tenantId))
+        .thenReturn(List.of(roleId));
+
+    assertThat(adapter.findHeldAdminDefiningRoleIds(userId, tenantId)).containsExactly(roleId);
+  }
+
+  @Test
+  void should_delegateToUserRoleRepository_when_findingActiveHoldersForRole() {
+    HolderProvenance holder = new HolderProvenance(userId, assignedBy);
+    when(userRoleRepository.findActiveHoldersByRole(roleId, tenantId))
+        .thenReturn(List.of(holder));
+
+    assertThat(adapter.findActiveHoldersForRole(roleId, tenantId)).containsExactly(holder);
+  }
+
+  @Test
+  void should_returnDistinctUserIds_when_findingActiveHolderUserIdsForRoles() {
+    when(userRoleRepository.findActiveHolderUserIdsByRoles(List.of(roleId), tenantId))
+        .thenReturn(List.of(userId, assignedBy));
+
+    assertThat(adapter.findActiveHolderUserIdsForRoles(tenantId, List.of(roleId)))
+        .containsExactlyInAnyOrder(userId, assignedBy);
+  }
+
+  @Test
+  void should_notReadAndReturnEmpty_when_findingActiveHolderUserIdsForNoRoles() {
+    assertThat(adapter.findActiveHolderUserIdsForRoles(tenantId, List.of())).isEmpty();
+
+    verify(userRoleRepository, never()).findActiveHolderUserIdsByRoles(any(), any());
   }
 }

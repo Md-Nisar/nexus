@@ -30,7 +30,7 @@ import com.example.nexus.rbac.application.port.out.UserDirectoryPort;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.Role;
-import com.example.nexus.rbac.domain.RolePermissionName;
+import com.example.nexus.rbac.domain.RolePermissionRef;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.ArrayList;
@@ -76,6 +76,14 @@ class BootstrapAdminServiceTest {
 
   private static final ChangeRef CHANGE_REF = new ChangeRef("OPS-42");
 
+  // The fixture catalogue: three permission ids. A role carrying all three is admin-defining; a
+  // role carrying fewer is not (ADR-0021 D3).
+  private static final UUID PERMISSION_A = UUID.fromString("00000000-0000-7000-8000-00000000000a");
+  private static final UUID PERMISSION_B = UUID.fromString("00000000-0000-7000-8000-00000000000b");
+  private static final UUID PERMISSION_C = UUID.fromString("00000000-0000-7000-8000-00000000000c");
+  private static final java.util.Set<UUID> CATALOGUE =
+      java.util.Set.of(PERMISSION_A, PERMISSION_B, PERMISSION_C);
+
   private final UUID tenantId = UUID.randomUUID();
   private final UUID targetUserId = UUID.randomUUID();
   private final UUID tenantAdminRoleId = UUID.randomUUID();
@@ -115,8 +123,9 @@ class BootstrapAdminServiceTest {
         .thenReturn(Optional.of(tenantAdminRoleId));
     when(userRoleAssignmentPort.findRole(tenantAdminRoleId))
         .thenReturn(Optional.of(role(tenantAdminRoleId, "TENANT_ADMIN", true)));
-    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId))
-        .thenReturn(allDangerous(tenantAdminRoleId));
+    when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(CATALOGUE);
+    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId))
+        .thenReturn(wholeCatalogue(tenantAdminRoleId));
     when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), anyList()))
         .thenReturn(List.of());
     when(userRoleAssignmentPort.assign(targetUserId, tenantAdminRoleId, tenantId, targetUserId))
@@ -193,12 +202,13 @@ class BootstrapAdminServiceTest {
     verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
   }
 
+  /** T-019: a tenant whose only administrator holds a custom admin-defining role is refused. */
   @Test
-  void should_refuseWithExit5_when_lockedRowsHoldAFullyAdminEquivalentCustomRole() {
+  void should_refuseWithExit5_when_lockedRowsHoldACustomAdminDefiningRole() {
     UUID customRoleId = UUID.randomUUID();
-    List<RolePermissionName> permissions = new ArrayList<>(allDangerous(tenantAdminRoleId));
-    permissions.addAll(allDangerous(customRoleId));
-    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId)).thenReturn(permissions);
+    List<RolePermissionRef> permissions = new ArrayList<>(wholeCatalogue(tenantAdminRoleId));
+    permissions.addAll(wholeCatalogue(customRoleId));
+    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId)).thenReturn(permissions);
     when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), anyList()))
         .thenReturn(
             List.of(new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), customRoleId)));
@@ -243,7 +253,7 @@ class BootstrapAdminServiceTest {
 
     service.grantFirstAdmin(targetUserId, CHANGE_REF);
 
-    verify(userRoleAssignmentPort, never()).findPermissionNamesForTenantRoles(any());
+    verify(userRoleAssignmentPort, never()).findRolePermissionIdsForTenantRoles(any());
     verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
     verify(userDirectoryPort, never()).lockUserStatuses(any(), any());
     verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
@@ -360,16 +370,17 @@ class BootstrapAdminServiceTest {
   // ---------------------------------------------------------------------------------------------
 
   /**
-   * A-6: the zero-admin precondition is the ADR-0018 CALLER-QUALIFYING population. A holder of a
-   * role carrying only ONE dangerous permission is locked (it is in the ANY lock set) but is not
-   * an administrator, so the tenant still has zero administrators.
+   * A-6 (re-scoped by US-018 T-019): the zero-admin precondition is the one definition of
+   * "administrator", a holder of a role carrying every permission of the catalogue. A holder of a
+   * role one permission short is not an administrator, so the tenant still has zero administrators
+   * and the grant goes ahead.
    */
   @Test
-  void should_grant_when_onlyHoldersOfASingleDangerousPermissionRoleExist() {
+  void should_grant_when_onlyHoldersOfARoleOnePermissionShortOfTheCatalogueExist() {
     UUID partialRoleId = UUID.randomUUID();
-    List<RolePermissionName> permissions = new ArrayList<>(allDangerous(tenantAdminRoleId));
-    permissions.add(new RolePermissionName(partialRoleId, "tenant:write"));
-    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId)).thenReturn(permissions);
+    List<RolePermissionRef> permissions = new ArrayList<>(wholeCatalogue(tenantAdminRoleId));
+    permissions.add(new RolePermissionRef(partialRoleId, PERMISSION_A));
+    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId)).thenReturn(permissions);
     when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), anyList()))
         .thenReturn(
             List.of(new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), partialRoleId)));
@@ -434,8 +445,8 @@ class BootstrapAdminServiceTest {
     service.grantFirstAdmin(targetUserId, CHANGE_REF);
 
     InOrder inOrder = inOrder(userRoleAssignmentPort, rbacAuditPort);
-    inOrder.verify(userRoleAssignmentPort).findPermissionNamesForTenantRoles(tenantId);
     inOrder.verify(userRoleAssignmentPort).findRoleIdByName(tenantId, "TENANT_ADMIN");
+    inOrder.verify(userRoleAssignmentPort).findRolePermissionIdsForTenantRoles(tenantId);
     inOrder.verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), anyList());
     inOrder.verify(userRoleAssignmentPort).assign(targetUserId, tenantAdminRoleId, tenantId, targetUserId);
     inOrder.verify(rbacAuditPort).recordBreakGlassGrant(any());
@@ -443,25 +454,25 @@ class BootstrapAdminServiceTest {
   }
 
   /**
-   * The lock set is the ANY-admin-equivalent ids plus TENANT_ADMIN, sorted by UNSIGNED byte-wise
-   * order (MC-E). The fixture ids have the high bit set on one side, so a signed {@link
-   * UUID#compareTo} order would differ.
+   * The lock set is the admin-defining ids plus TENANT_ADMIN, sorted by UNSIGNED byte-wise order
+   * (MC-E). The fixture ids have the high bit set on one side, so a signed {@link UUID#compareTo}
+   * order would differ. A role that is one permission short, or benign, is not in the set.
    */
   @Test
-  void should_lockTheAscendingUnsignedBytewiseSetOfAdminEquivalentIdsPlusTenantAdmin_inTheTargetsTenant() {
+  void should_lockTheAscendingUnsignedBytewiseSetOfAdminDefiningIdsPlusTenantAdmin_inTheTargetsTenant() {
     UUID highBitAdmin = UUID.fromString("f0000000-0000-7000-8000-000000000001");
     UUID lowPartial = UUID.fromString("10000000-0000-7000-8000-000000000002");
     UUID midFull = UUID.fromString("70000000-0000-7000-8000-000000000003");
-    UUID nonDangerous = UUID.fromString("20000000-0000-7000-8000-000000000004");
+    UUID benignRole = UUID.fromString("20000000-0000-7000-8000-000000000004");
     when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
         .thenReturn(Optional.of(highBitAdmin));
     when(userRoleAssignmentPort.findRole(highBitAdmin))
         .thenReturn(Optional.of(role(highBitAdmin, "TENANT_ADMIN", true)));
-    List<RolePermissionName> permissions = new ArrayList<>(allDangerous(highBitAdmin));
-    permissions.addAll(allDangerous(midFull));
-    permissions.add(new RolePermissionName(lowPartial, "role:write"));
-    permissions.add(new RolePermissionName(nonDangerous, "user:read"));
-    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId)).thenReturn(permissions);
+    List<RolePermissionRef> permissions = new ArrayList<>(wholeCatalogue(highBitAdmin));
+    permissions.addAll(wholeCatalogue(midFull));
+    permissions.add(new RolePermissionRef(lowPartial, PERMISSION_A));
+    permissions.add(new RolePermissionRef(benignRole, PERMISSION_B));
+    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId)).thenReturn(permissions);
     when(userRoleAssignmentPort.assign(targetUserId, highBitAdmin, tenantId, targetUserId))
         .thenReturn(newAssignmentId);
 
@@ -470,7 +481,7 @@ class BootstrapAdminServiceTest {
     @SuppressWarnings("unchecked")
     ArgumentCaptor<List<UUID>> lockSet = ArgumentCaptor.forClass(List.class);
     verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), lockSet.capture());
-    assertThat(lockSet.getValue()).containsExactly(lowPartial, midFull, highBitAdmin);
+    assertThat(lockSet.getValue()).containsExactly(midFull, highBitAdmin);
   }
 
   /**
@@ -742,11 +753,11 @@ class BootstrapAdminServiceTest {
   }
 
   @Test
-  void should_grant_when_everyAdministratorIncludingAFullyAdminEquivalentCustomRoleHolderIsDisabled() {
+  void should_grant_when_everyAdministratorIncludingACustomAdminDefiningRoleHolderIsDisabled() {
     UUID customRoleId = UUID.randomUUID();
-    List<RolePermissionName> permissions = new ArrayList<>(allDangerous(tenantAdminRoleId));
-    permissions.addAll(allDangerous(customRoleId));
-    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId)).thenReturn(permissions);
+    List<RolePermissionRef> permissions = new ArrayList<>(wholeCatalogue(tenantAdminRoleId));
+    permissions.addAll(wholeCatalogue(customRoleId));
+    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId)).thenReturn(permissions);
     UUID disabledNamed = UUID.randomUUID();
     UUID disabledCustom = UUID.randomUUID();
     lockedHolders(holder(disabledNamed, tenantAdminRoleId), holder(disabledCustom, customRoleId));
@@ -805,16 +816,16 @@ class BootstrapAdminServiceTest {
   }
 
   /**
-   * The statuses are read by a locking read of the target and the caller-qualifying holders only
-   * (a holder of a single-dangerous-permission role is not an administrator and is not read), in
-   * the target's tenant, after the set lock and before the insert.
+   * The statuses are read by a locking read of the target and the administrator holders only (a
+   * holder of a role one permission short of the catalogue is not an administrator and is not
+   * read), in the target's tenant, after the set lock and before the insert.
    */
   @Test
-  void should_lockStatusesOfTargetAndCallerQualifyingHolders_afterTheSetLock_beforeTheInsert() {
+  void should_lockStatusesOfTargetAndAdministratorHolders_afterTheSetLock_beforeTheInsert() {
     UUID partialRoleId = UUID.randomUUID();
-    List<RolePermissionName> permissions = new ArrayList<>(allDangerous(tenantAdminRoleId));
-    permissions.add(new RolePermissionName(partialRoleId, "tenant:write"));
-    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId)).thenReturn(permissions);
+    List<RolePermissionRef> permissions = new ArrayList<>(wholeCatalogue(tenantAdminRoleId));
+    permissions.add(new RolePermissionRef(partialRoleId, PERMISSION_A));
+    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId)).thenReturn(permissions);
     UUID disabledAdmin = UUID.randomUUID();
     UUID partialHolder = UUID.randomUUID();
     lockedHolders(holder(disabledAdmin, tenantAdminRoleId), holder(partialHolder, partialRoleId));
@@ -1056,10 +1067,11 @@ class BootstrapAdminServiceTest {
     return new Role(id, tenantId, name, "test role", systemRole);
   }
 
-  private static List<RolePermissionName> allDangerous(UUID roleId) {
+  /** A role carrying every permission of the fixture catalogue: admin-defining (ADR-0021 D3). */
+  private static List<RolePermissionRef> wholeCatalogue(UUID roleId) {
     return List.of(
-        new RolePermissionName(roleId, "role:write"),
-        new RolePermissionName(roleId, "user:write"),
-        new RolePermissionName(roleId, "tenant:write"));
+        new RolePermissionRef(roleId, PERMISSION_A),
+        new RolePermissionRef(roleId, PERMISSION_B),
+        new RolePermissionRef(roleId, PERMISSION_C));
   }
 }

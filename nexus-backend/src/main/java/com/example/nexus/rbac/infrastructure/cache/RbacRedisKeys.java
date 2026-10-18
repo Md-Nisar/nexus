@@ -11,6 +11,9 @@ import java.util.UUID;
  * {keyPrefix}:rbac:epoch:{tenantId}:{userId}
  * {keyPrefix}:rbac:roleset:{tenantId}:{userId}:{epoch}
  * {keyPrefix}:rbac:permset:{tenantId}:{userId}:{epoch}
+ * {keyPrefix}:rbac:throttle:{tenantId}:{actorUserId}              (denial window, sorted set)
+ * {keyPrefix}:rbac:throttle:{tenantId}:{actorUserId}:until        (throttled-until marker)
+ * {keyPrefix}:rbac:throttle:{tenantId}:{actorUserId}:suppressed   (suppressed-denial count)
  * }</pre>
  *
  * <p>A cache entry is keyed by the epoch it was computed under (Decision 17). The scripts receive
@@ -52,5 +55,20 @@ final class RbacRedisKeys {
   /** {@link #permset} without the epoch; a script appends the epoch it read. */
   String permsetStem(UUID tenantId, UUID userId) {
     return rbacPrefix + "permset:" + tenantId + ":" + userId + ":";
+  }
+
+  /** The actor's denial-throttle sliding window (US-018 B8). */
+  String throttle(UUID tenantId, UUID actorUserId) {
+    return rbacPrefix + "throttle:" + tenantId + ":" + actorUserId;
+  }
+
+  /** The actor's throttled-until marker; present exactly while the actor is throttled. */
+  String throttleUntil(UUID tenantId, UUID actorUserId) {
+    return throttle(tenantId, actorUserId) + ":until";
+  }
+
+  /** The count of denials suppressed since this throttle episode began. */
+  String throttleSuppressed(UUID tenantId, UUID actorUserId) {
+    return throttle(tenantId, actorUserId) + ":suppressed";
   }
 }

@@ -1,4 +1,4 @@
-# US-018 pending items (backlog): M7 (P-1, P-2) and M5 (merge conditions; O-7, L-1, L-2 closed)
+# US-018 pending items (backlog): M7 (P-1, P-2: both decided 2026-10-18, see 18-closure-record.md) and M5 (merge conditions; O-7, L-1, L-2 closed)
 
 **Recorded:** 2026-10-11. Open decisions from the pre-PR security re-review (`13-security-review-pre-PR-rereview.md`) that were not closed on branch `ccr-4e9e7cbe-4vl9v6`. They are tracked here for later; they do not block opening the M7 PR as a draft, but each is a decision needed before the M7 PR merges unless the PR author or approver explicitly defers it.
 
@@ -25,7 +25,7 @@ By decision on 2026-10-11, the repeat `/security-review` and the Docker-only che
 
 # M5 (A7 break-glass CLI): merge conditions and open items
 
-**Recorded:** 2026-10-15, from `07-security-review-M5.md` (APPROVED with conditions) and `08-test-audit-M5.md`. T-007 and T-008 are implemented, code-reviewed, security-reviewed and test-validated on `ccr-047fcb60-fqvz6w`; the M5 PR is not merged. The items below are what stands between that and a merge.
+**Recorded:** 2026-10-15 (M5 merged as PR #91 on 2026-10-16), from `07-security-review-M5.md` (APPROVED with conditions) and `08-test-audit-M5.md`. T-007 and T-008 are implemented, code-reviewed, security-reviewed and test-validated on `ccr-047fcb60-fqvz6w`; the M5 PR is not merged. The items below are what stands between that and a merge.
 
 ## Merge conditions
 

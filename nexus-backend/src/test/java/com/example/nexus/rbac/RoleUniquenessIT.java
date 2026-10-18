@@ -51,6 +51,31 @@ class RoleUniquenessIT {
         .isInstanceOf(DataAccessException.class);
   }
 
+  /** US-018 T-031 (V10): a soft-deleted role frees its name; two live roles still collide. */
+  @Test
+  void should_allowReuseOfName_when_theFirstRoleIsSoftDeleted() {
+    UUID tenantId = uuidGenerator.newId();
+    UUID first = uuidGenerator.newId();
+    String name = "Auditor-" + UUID.randomUUID();
+    insertRole(first, tenantId, name);
+
+    assertThatThrownBy(() -> insertRole(uuidGenerator.newId(), tenantId, name))
+        .isInstanceOf(DataAccessException.class);
+
+    jdbc.update("UPDATE roles SET deleted_at = CURRENT_TIMESTAMP(6) WHERE id = ?", toBytes(first));
+    insertRole(uuidGenerator.newId(), tenantId, name);
+
+    Integer live =
+        jdbc.queryForObject(
+            "SELECT COUNT(*) FROM roles WHERE tenant_id = ? AND name = ? AND deleted_at IS NULL",
+            Integer.class,
+            toBytes(tenantId),
+            name);
+    assertThat(live).isEqualTo(1);
+    assertThatThrownBy(() -> insertRole(uuidGenerator.newId(), tenantId, name))
+        .isInstanceOf(DataAccessException.class);
+  }
+
   @Test
   void should_allowSameName_when_differentTenants() {
     UUID tenantA = uuidGenerator.newId();

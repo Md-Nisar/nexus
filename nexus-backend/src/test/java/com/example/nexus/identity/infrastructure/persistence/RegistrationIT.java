@@ -41,10 +41,35 @@ class RegistrationIT {
   @Autowired private UserRegistrationPort userRegistrationPort;
   @Autowired private EmailBlindIndexService emailBlindIndexService;
   @Autowired private AuthTokenPort authTokenPort;
+  @Autowired private org.springframework.jdbc.core.JdbcTemplate jdbc;
 
   private static final UUID TENANT_ID =
       UUID.fromString("00000000-0000-7000-8000-000000000001");
   private static final String STRONG_PASS = "ValidPassphrase_99!"; // EXAMPLE
+
+  /**
+   * US-018 C5 (FR-C5.a): registration assigns no role. A new user has zero {@code user_roles} rows,
+   * revoked or active. Pins the behaviour so a future change to {@code RegisterUserUseCase} that
+   * assigns a role fails here instead of silently granting permissions to every registrant.
+   */
+  @Test
+  void register_newUser_assignsNoRole() {
+    String email = "reg-norole-" + UUID.randomUUID() + "@example.com";
+
+    registerUserUseCase.register(TENANT_ID, email, STRONG_PASS, RequestContext.UNKNOWN);
+
+    User user =
+        userRegistrationPort
+            .findByTenantAndEmailHmac(TENANT_ID, emailBlindIndexService.blindIndex(email))
+            .orElseThrow();
+    java.nio.ByteBuffer id = java.nio.ByteBuffer.allocate(16);
+    id.putLong(user.getId().getMostSignificantBits());
+    id.putLong(user.getId().getLeastSignificantBits());
+    Integer rows =
+        jdbc.queryForObject(
+            "SELECT COUNT(*) FROM user_roles WHERE user_id = ?", Integer.class, (Object) id.array());
+    assertThat(rows).isZero();
+  }
 
   /**
    * Verifies happy path end-to-end: new user registration creates a PENDING user record

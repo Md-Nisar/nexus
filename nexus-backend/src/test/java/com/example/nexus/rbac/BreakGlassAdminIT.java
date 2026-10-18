@@ -554,15 +554,15 @@ class BreakGlassAdminIT {
   }
 
   /**
-   * ADR-0018 caller-qualifying population against real data: a holder of a custom role carrying
-   * all three dangerous permissions IS an administrator, so break-glass refuses (exit 5).
+   * ADR-0021 against real data: a holder of a custom role carrying the whole permission catalogue
+   * IS an administrator (admin-defining role), so break-glass refuses (exit 5).
    */
   @Test
-  void should_refuseWithExit5_when_aCustomRoleCarryingAllThreeDangerousPermissionsIsHeld() {
+  void should_refuseWithExit5_when_aCustomRoleCarryingTheWholeCatalogueIsHeld() {
     UUID tenantId = uuidGenerator.newId();
     Role tenantAdmin = seedSystemTenantAdminRole(tenantId);
-    Role custom =
-        seedCustomRole(tenantId, "qa-full-admin", "role:write", "user:write", "tenant:write");
+    Role custom = seedCustomRole(tenantId, "qa-full-admin");
+    grantWholeCatalogue(custom);
     User holder = seedActiveUser(tenantId, "custom-admin");
     seedAssignment(tenantId, custom.getId(), holder.getId());
     User target = seedActiveUser(tenantId, "custom-admin-target");
@@ -573,12 +573,18 @@ class BreakGlassAdminIT {
     assertThat(countActive(tenantId, tenantAdmin.getId())).isZero();
   }
 
-  /** The converse: a role with only two of the three is not an administrator; the grant goes. */
+  /**
+   * The converse: a custom role that lost admin-defining status (one catalogue permission short,
+   * as after a detach) no longer makes its holder an administrator; the grant goes.
+   */
   @Test
-  void should_grant_when_theOnlyHeldCustomRoleCarriesTwoOfTheThreeDangerousPermissions() {
+  void should_grant_when_theOnlyHeldCustomRoleLostAdminDefiningStatus() {
     UUID tenantId = uuidGenerator.newId();
     Role tenantAdmin = seedSystemTenantAdminRole(tenantId);
-    Role custom = seedCustomRole(tenantId, "qa-partial-admin", "role:write", "user:write");
+    Role custom = seedCustomRole(tenantId, "qa-partial-admin");
+    grantWholeCatalogue(custom);
+    jdbc.update(
+        "DELETE FROM role_permissions WHERE role_id = ? LIMIT 1", toBytes(custom.getId()));
     User holder = seedActiveUser(tenantId, "partial-admin");
     seedAssignment(tenantId, custom.getId(), holder.getId());
     User target = seedActiveUser(tenantId, "partial-admin-target");
@@ -587,6 +593,42 @@ class BreakGlassAdminIT {
 
     assertThat(exitCode).isZero();
     assertThat(countActive(tenantId, tenantAdmin.getId())).isEqualTo(1);
+  }
+
+  /** The three legacy dangerous permissions alone no longer make a role administrator-defining. */
+  @Test
+  void should_grant_when_theOnlyHeldCustomRoleCarriesTheThreeFormerDangerousPermissions() {
+    UUID tenantId = uuidGenerator.newId();
+    Role tenantAdmin = seedSystemTenantAdminRole(tenantId);
+    Role custom =
+        seedCustomRole(tenantId, "qa-three", "role:write", "user:write", "tenant:write");
+    User holder = seedActiveUser(tenantId, "three-holder");
+    seedAssignment(tenantId, custom.getId(), holder.getId());
+    User target = seedActiveUser(tenantId, "three-holder-target");
+
+    int exitCode = runCli(target.getId().toString(), freshChangeRef());
+
+    assertThat(exitCode).isZero();
+    assertThat(countActive(tenantId, tenantAdmin.getId())).isEqualTo(1);
+  }
+
+  /**
+   * US-018 T-026 (RC-36.3): the CLI's role lookup filters soft-deleted roles. A (forged) soft-deleted
+   * system TENANT_ADMIN is not found, so the grant is refused with exit 4 and nothing is inserted.
+   */
+  @Test
+  void should_refuseWithExit4_when_theSystemTenantAdminRoleIsSoftDeleted() {
+    UUID tenantId = uuidGenerator.newId();
+    Role systemAdmin = seedSystemTenantAdminRole(tenantId);
+    jdbc.update(
+        "UPDATE roles SET deleted_at = CURRENT_TIMESTAMP(6) WHERE id = ?",
+        toBytes(systemAdmin.getId()));
+    User target = seedActiveUser(tenantId, "deleted-admin-role-target");
+
+    int exitCode = runCli(target.getId().toString(), freshChangeRef());
+
+    assertThat(exitCode).isEqualTo(4);
+    assertThat(countActive(tenantId, systemAdmin.getId())).isZero();
   }
 
   /** A tenant-created role named {@code TENANT_ADMIN} is not the system role: exit 4, no grant. */
@@ -1309,6 +1351,13 @@ class BreakGlassAdminIT {
           permissionName);
     }
     return role;
+  }
+
+  private void grantWholeCatalogue(Role role) {
+    jdbc.update(
+        "INSERT INTO role_permissions (role_id, permission_id) "
+            + "SELECT UUID_TO_BIN(?), id FROM permissions",
+        role.getId().toString());
   }
 
   private void setUserStatus(UUID userId, String status) {

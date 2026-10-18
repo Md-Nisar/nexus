@@ -13,7 +13,7 @@ import com.example.nexus.common.security.DenialReason;
  * <ul>
  *   <li><b>Group A (atomic):</b> {@link #recordRoleAssigned}, {@link #recordRoleRevoked}, {@link
  *       #recordRoleCreated}, {@link #recordRolePermissionGranted}, {@link
- *       #recordRolePermissionRevoked}, {@link #recordBreakGlassGrant} — called INLINE, inside
+ *       #recordRolePermissionRevoked}, {@link #recordRoleDeleted}, {@link #recordRoleUpdated}, {@link #recordBreakGlassGrant} — called INLINE, inside
  *       the caller's own mutation transaction, after the mutation and before the method returns.
  *       These join that
  *       transaction ({@code SecureEventService#recordEventInCurrentTransaction}, {@code MANDATORY})
@@ -56,9 +56,9 @@ public interface RbacAuditPort {
    * <p>Called INLINE, before the caller throws, from a transaction that is about to roll back:
    * durability rests entirely on the implementation committing in an independent
    * ({@code REQUIRES_NEW}) transaction. Scoped to the 403 authorization denials
-   * ({@code CROSS_TENANT_TARGET}, {@code NOT_TENANT_ADMIN}, and from US-018 {@code
-   * SELF_ASSIGNMENT} and {@code GRANT_EXCEEDS_CALLER}); never called for the 409 conflicts
-   * or the 404s, and never from a read path — an "assignment denied" event for a read is a
+   * ({@code NOT_TENANT_ADMIN}, and from US-018 {@code SELF_ASSIGNMENT}, {@code
+   * GRANT_EXCEEDS_CALLER} and the revoke-subset denial); never called for the 409 conflicts or
+   * the 404s (a cross-tenant target is a 404 from US-018 B1 and writes no row, R1-5), and never from a read path — an "assignment denied" event for a read is a
    * semantic mislabel, and would also widen the emitting population to every {@code user:read}
    * holder rather than the {@code user:role:assign} holders this event type is scoped to.
    *
@@ -104,6 +104,21 @@ public interface RbacAuditPort {
    * caller's transaction and MUST THROW on failure.
    */
   void recordRolePermissionRevoked(RoleAuditEvent event);
+
+  /**
+   * Records a successful role soft delete (US-018 C1, {@code ROLE_DELETED}; Group A — atomic). Joins
+   * the caller's transaction and MUST THROW on failure, so a lost audit row rolls the delete back.
+   * {@code event.permissionId()}/{@code event.permissionName()} are {@code null}.
+   */
+  void recordRoleDeleted(RoleAuditEvent event);
+
+  /**
+   * Records a successful role rename or description change (US-018 C1, {@code ROLE_UPDATED}; Group
+   * A — atomic). Joins the caller's transaction and MUST THROW on failure, so a lost audit row rolls
+   * the update back. The row carries the changed field names and the old and new name, never the
+   * description text.
+   */
+  void recordRoleUpdated(RoleUpdateAuditEvent event);
 
   /**
    * Records a successful break-glass first-administrator grant ({@code ROLE_BREAK_GLASS_GRANT}

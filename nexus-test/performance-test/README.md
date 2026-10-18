@@ -9,7 +9,7 @@ Plain k6 JavaScript: no custom framework, no build step.
 performance-test/
 ├── tests/                  # Entry points: one file = one runnable test = scenario(s) + workload + thresholds
 │   ├── smoke/              #   platform-health.js, user-profile.js
-│   ├── load/               #   platform-health.js, rbac-read.js, epoch-check-latency.js, detach-refresh-storm.js, refresh-junk-flood.js
+│   ├── load/               #   platform-health.js, rbac-read.js, epoch-check-latency.js, detach-refresh-storm.js, refresh-junk-flood.js, permission-cache-benchmark.js
 │   ├── stress/             #   platform-health.js
 │   ├── spike/              #   platform-health.js
 │   └── soak/               #   platform-health.js
@@ -112,6 +112,7 @@ BASE_URL=http://localhost:1000 npm run wait-for-ready        # optional arg: tim
 | load (RBAC read)    | `... npm run test:load:rbac-read`                                                         | same profile                                      | 6.5m       |
 | load (epoch check)  | `... npm run test:load:epoch-check` (see below)                                           | 200 requests/s for 5m (`RATE`, `DURATION`)        | 5m         |
 | load (detach storm) | `... npm run test:load:detach-refresh-storm` (write path, see below)                      | 200 holders, attacker 100/min, about 3m + seeding | 8-10m      |
+| load (cache bench)  | `... npm run test:load:permission-cache-benchmark` (write path, see below)                | 50 refreshes/s for 5m, 200 accounts, plus seeding | 8-10m      |
 | load (junk flood)   | `... npm run test:load:refresh-junk-flood` (write path, see below)                        | 10 valid users, junk 400/min, about 2m + 65s      | 6-8m       |
 | stress              | `BASE_URL=http://localhost:1000 npm run test:stress`                                      | steps ⅓ → ⅔ → peak 30 VUs, 2m at peak             | 10m        |
 | spike               | `BASE_URL=http://localhost:1000 npm run test:spike`                                       | baseline 5 → jump to 50 VUs for 1m → recover      | 4.5m       |
@@ -210,6 +211,39 @@ scenarios enforce this: they refuse to start unless `BASE_URL` is `localhost`, a
 a compose host name (no dot), unless `ALLOW_WRITE_SCENARIO=true` is set. The seeded accounts get a
 random password per run, so none is committed or reusable; if `setup()` fails after assigning the
 role, the scenario revokes the assignments it made.
+
+### Permission cache benchmark (US-018 T-023, B6, write path)
+
+`tests/load/permission-cache-benchmark.js` measures one arm of the keep-or-remove decision for the
+Redis permission cache (design §10.6, ADR-0022 addendum). It refreshes tokens at `CACHE_BENCH_RATE`
+(50) per second for `CACHE_BENCH_DURATION` (5m) from `CACHE_BENCH_ACCOUNTS` (200) accounts that
+hold 1 to 5 roles, so every refresh mints and resolves permissions. Like the detach storm it
+registers accounts (they cannot be deleted; assignments are revoked in teardown), so it needs
+MailHog (`MAILHOG_URL`), a login IP limit high enough for the seeding, and a disposable target.
+
+1. **Raise the per-IP refresh total** for the run (`nexus.security.rate-limit.refresh-ip-max-attempts`):
+   50 requests/s from one IP is 3000 per minute against the default 300. The per-family limit
+   (30 per 60 s) is respected by spreading the load over 200 accounts (15 per minute each).
+2. **Cache ON arm:** start the backend normally and run
+   `CACHE_ARM=on MAILHOG_URL=... npm run test:load:permission-cache-benchmark`, saving the summary
+   as `results/on-<n>.json`.
+3. **Cache OFF arm:** restart the same build with `nexus.rbac.permission-cache.bypass=true`
+   (`NEXUS_RBAC_PERMISSION_CACHE_BYPASS=true`; a pass-through adapter that never stores or returns a
+   set; the application refuses to start with it under the `prod` profile) and run with
+   `CACHE_ARM=off`, saving `results/off-<n>.json`.
+4. Repeat each arm at least three times, on the **staging topology** (a shared CI runner's numbers
+   are meaningless), keeping the access-token lifetime (900 s) and the login rate limit in mind
+   between runs. Record the MySQL queries per second attributable to minting during each run
+   (for example the `Questions` delta of `SHOW GLOBAL STATUS` over the run window minus the idle
+   baseline).
+5. Apply the rule:
+   `node utils/cache-benchmark-verdict-cli.mjs --on results/on-1.json,... --off results/off-1.json,... [--qps-on ... --qps-off ...]`.
+   **Keep** only if refresh p95 drops by at least 5 ms or the QPS drops by at least 30%, and the
+   effect exceeds the run-to-run spread; otherwise, and when inconclusive, **remove**. The rule is
+   unit-tested in `utils/cache-benchmark-verdict.test.mjs` (`node --test utils/`).
+
+The thresholds only check that a run was valid (no dropped arrivals, no failed refresh); speed is
+the measurement, not a gate. Record the numbers and the decision in the ADR-0022 addendum.
 
 ### Test categories: purpose and when to use them
 

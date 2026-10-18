@@ -1,7 +1,9 @@
 package com.example.nexus.rbac.application.port.out;
 
+import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.RoleView;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -40,24 +42,39 @@ public interface RoleManagementPort {
   Optional<RoleView> findRole(UUID roleId);
 
   /**
-   * Q1 — AC2. All roles in a tenant, {@code ORDER BY name} for a stable unpaginated contract
-   * (D11). Served by {@code uq_roles_tenant_name}'s leftmost {@code tenant_id} prefix — no new
-   * index.
+   * Q1 — AC2, paginated by US-018 C2. One page of the LIVE roles in a tenant, {@code ORDER BY name,
+   * id}: a total order, so pages neither overlap nor skip rows under concurrent writes. Served by
+   * {@code uq_roles_tenant_name}'s leftmost {@code tenant_id} prefix — no new index. Non-locking.
+   *
+   * @param page 0-based, {@code >= 0}
+   * @param size {@code >= 1}
    */
-  List<RoleView> findRolesInTenant(UUID tenantId);
+  PageResult<RoleView> findRolesInTenant(UUID tenantId, int page, int size);
 
   /**
-   * Q3 — AC11. Resolves the tenant's admin role id by {@code (tenantId, name)}. MUST use a plain
-   * {@code r.name = :name} predicate and rely on {@code utf8mb4_0900_ai_ci} for
-   * case-insensitivity, so {@code uq_roles_tenant_name} is used as an index. MUST NOT wrap the
-   * column in {@code UPPER()} — that de-sargonises AC11's write hot path. Returns the id only,
-   * never the entity. Empty ⇒ the caller MUST fail closed (R-10).
+   * C1 — soft-deletes a role: a targeted single-column {@code UPDATE roles SET deleted_at = ? WHERE
+   * id = ? AND tenant_id = ? AND deleted_at IS NULL}, never a load-mutate-save (the {@code nexus_app}
+   * grant is column-scoped). Returns the affected-row count: {@code 1} = deleted, {@code 0} = already
+   * deleted, missing or in another tenant (the caller maps 0 to 404). The statement takes an X lock
+   * on the role row, which is what a concurrent assign's conditional INSERT queues behind.
    */
-  Optional<UUID> findRoleIdByName(UUID tenantId, String name);
+  int softDeleteRole(UUID roleId, UUID tenantId, Instant deletedAt);
 
   /**
-   * Q12 — RC-4's per-tenant cap check. Count of roles in the tenant, served by {@code
-   * uq_roles_tenant_name}'s leftmost prefix — same index as Q1, no new cost.
+   * C1 PATCH — rewrites a live role's {@code name} and {@code description}: a targeted two-column
+   * {@code UPDATE ... WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL}, never a
+   * load-mutate-save (the {@code nexus_app} grant is column-scoped to exactly these columns and
+   * {@code deleted_at}). The caller passes the values to store (current values for an unchanged
+   * field). Returns the affected-row count: {@code 0} means the role is deleted, missing or in
+   * another tenant (the caller maps it to 404). Implementations translate the {@code
+   * uq_roles_tenant_active_name} / {@code uq_roles_tenant_name} violation into {@code
+   * DuplicateRoleNameException} (RBAC_006), never exposing the driver's message.
+   */
+  int updateRole(UUID roleId, UUID tenantId, String name, String description);
+
+  /**
+   * Q12 — RC-4's per-tenant cap check. Count of LIVE (not soft-deleted) roles in the tenant, served
+   * by {@code uq_roles_tenant_name}'s leftmost prefix — same index as Q1, no new cost.
    */
   long countRolesInTenant(UUID tenantId);
 
@@ -66,8 +83,11 @@ public interface RoleManagementPort {
   /** Q4 — AC4's 404 and AC11's name lookup, served by one PK read. */
   Optional<PermissionView> findPermission(UUID permissionId);
 
-  /** Q5 — AC6. All seeded permissions, {@code ORDER BY name}. Deliberately NOT cached (§5.6). */
-  List<PermissionView> findAllPermissions();
+  /**
+   * Q5 — AC6, paginated by US-018 C2. One page of the seeded permissions, {@code ORDER BY name}
+   * ({@code name} is unique). Deliberately NOT cached (§5.6). Non-locking.
+   */
+  PageResult<PermissionView> findAllPermissions(int page, int size);
 
   // --- role_permissions ------------------------------------------------------
 

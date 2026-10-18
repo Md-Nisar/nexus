@@ -1,6 +1,7 @@
 package com.example.nexus.rbac.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.nexus.TestcontainersConfiguration;
 import com.example.nexus.identity.domain.EmailCipher;
@@ -21,6 +22,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 /**
@@ -160,33 +162,35 @@ class RoleResolutionServiceIT {
   }
 
   /**
-   * US-010 AC9 / threat-model T-S1 — defense-in-depth: even if a future assignment-time bug (e.g.
-   * US-012) ever wrote a {@code user_roles.tenant_id} that does NOT match the assigned role's own
-   * {@code tenant_id} (a data-integrity bug the schema itself does not prevent — no FK ties the
-   * two), the read path must still refuse to resolve it, rather than trusting the denormalized
-   * {@code user_roles.tenant_id} alone.
+   * US-018 B2 / TS-12 (threat T-D21; replaces US-010 AC9's T-S1 read-path test, which deliberately
+   * inserted a mismatched row): the database itself now refuses a {@code user_roles} row whose
+   * {@code tenant_id} differs from the assigned role's own {@code tenant_id} (V8's composite FK),
+   * so a future assignment-time bug fails loudly at write time instead of leaking permissions. The
+   * read path's own {@code r.tenantId} cross-check in {@link JpaUserRoleRepository} stays as
+   * defense in depth.
    */
   @Test
-  void should_excludeRole_when_userRolesTenantIdMismatchesTheRolesOwnTenant() {
+  void should_rejectRow_when_userRolesTenantIdMismatchesTheRolesOwnTenant() {
     UUID otherTenantId = uuidGenerator.newId();
     User user = seedUser("role-res-mismatched-tenant");
     Role otherTenantRole =
         roleRepository.save(
             new Role(uuidGenerator.newId(), otherTenantId, "MISMATCHED_ROLE", null, false));
+
     // Deliberately inconsistent: user_roles claims BOOTSTRAP_TENANT_ID, but the role it points to
     // actually belongs to otherTenantId.
-    userRoleRepository.save(
-        new UserRole(
-            uuidGenerator.newId(), user.getId(), otherTenantRole.getId(), BOOTSTRAP_TENANT_ID,
-            user.getId()));
+    assertThatThrownBy(
+            () ->
+                userRoleRepository.saveAndFlush(
+                    new UserRole(
+                        uuidGenerator.newId(), user.getId(), otherTenantRole.getId(),
+                        BOOTSTRAP_TENANT_ID, user.getId())))
+        .isInstanceOf(DataIntegrityViolationException.class)
+        .hasMessageContaining("fk_user_roles_role_tenant");
 
-    ResolvedPermissions resolved =
-        roleResolutionService.resolve(user.getId(), BOOTSTRAP_TENANT_ID, 0L);
-
-    assertThat(resolved.roles())
-        .as("a role whose own tenant_id differs from user_roles.tenant_id must never resolve")
+    assertThat(roleResolutionService.resolve(user.getId(), BOOTSTRAP_TENANT_ID, 0L).roles())
+        .as("nothing was written, so nothing resolves")
         .isEmpty();
-    assertThat(resolved.permissions()).isEmpty();
   }
 
   /**

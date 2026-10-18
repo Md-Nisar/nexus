@@ -163,6 +163,11 @@ public class TestcontainersConfiguration {
                         "GRANT SELECT, INSERT ON nexus.user_roles TO 'nexus_app'@'%'");
                     statement.execute(
                         "GRANT UPDATE (revoked_at) ON nexus.user_roles TO 'nexus_app'@'%'");
+                    // US-018 C1 (V9): column-scoped, byte-consistent with 02-grants-post-schema.sql
+                    // and nexus-app-provisioning.md. RolesPrivilegeIT revokes and re-applies it.
+                    statement.execute(
+                        "GRANT UPDATE (name, description, deleted_at) ON nexus.roles TO"
+                            + " 'nexus_app'@'%'");
                     statement.execute("FLUSH PRIVILEGES");
                 } catch (SQLException e) {
                     throw new IllegalStateException(

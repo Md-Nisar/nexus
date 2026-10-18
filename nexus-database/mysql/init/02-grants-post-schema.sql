@@ -34,4 +34,8 @@ GRANT SELECT, INSERT, DELETE ON nexus.role_permissions TO 'nexus_app'@'%';
 GRANT SELECT, INSERT         ON nexus.user_roles       TO 'nexus_app'@'%';
 GRANT UPDATE (revoked_at)    ON nexus.user_roles       TO 'nexus_app'@'%';
 
+-- US-018 C1 (V9, soft delete and PATCH of custom roles): column-scoped, the ADR 0015 D7 precedent.
+-- No DELETE and no table-level UPDATE on roles; is_system_role, tenant_id and id stay unwritable.
+GRANT UPDATE (name, description, deleted_at) ON nexus.roles TO 'nexus_app'@'%';
+
 FLUSH PRIVILEGES;

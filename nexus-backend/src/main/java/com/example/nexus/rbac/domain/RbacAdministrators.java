@@ -1,5 +1,9 @@
 package com.example.nexus.rbac.domain;
 
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -23,5 +27,43 @@ public final class RbacAdministrators {
    */
   public static boolean isAdminDefining(Set<UUID> rolePermissionIds, Set<UUID> catalogueIds) {
     return !catalogueIds.isEmpty() && rolePermissionIds.containsAll(catalogueIds);
+  }
+
+  /**
+   * The ids of the roles, among the {@code (roleId, permissionId)} rows given, that are
+   * admin-defining. Evaluated per role over ids (M10', M13). A role with no row is never
+   * admin-defining here, which is correct: it carries nothing, and an empty catalogue yields an
+   * empty set.
+   */
+  public static Set<UUID> adminDefiningRoleIds(
+      Collection<RolePermissionRef> rolePermissions, Set<UUID> catalogueIds) {
+    Set<UUID> adminDefining = new HashSet<>();
+    permissionIdsByRole(rolePermissions)
+        .forEach(
+            (roleId, permissionIds) -> {
+              if (isAdminDefining(permissionIds, catalogueIds)) {
+                adminDefining.add(roleId);
+              }
+            });
+    return Set.copyOf(adminDefining);
+  }
+
+  /**
+   * Whether the holder of {@code heldRolePermissions} (M13: one row per permission of each role the
+   * user actively holds) is an administrator: some single role among them is admin-defining. Never
+   * the union across roles (03-design.md §2.1): the whole catalogue held across two partial roles
+   * does not qualify.
+   */
+  public static boolean isAdministrator(
+      Collection<RolePermissionRef> heldRolePermissions, Set<UUID> catalogueIds) {
+    return !adminDefiningRoleIds(heldRolePermissions, catalogueIds).isEmpty();
+  }
+
+  private static Map<UUID, Set<UUID>> permissionIdsByRole(Collection<RolePermissionRef> rows) {
+    Map<UUID, Set<UUID>> byRole = new HashMap<>();
+    for (RolePermissionRef row : rows) {
+      byRole.computeIfAbsent(row.roleId(), id -> new HashSet<>()).add(row.permissionId());
+    }
+    return byRole;
   }
 }

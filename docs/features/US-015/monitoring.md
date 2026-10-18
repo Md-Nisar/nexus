@@ -17,7 +17,7 @@
 | Rate / error rate / latency per endpoint | Micrometer `http.server.requests{uri, method, status, outcome}` — covers all six new URIs |
 | 409 trend lines for `RBAC_003` / `RBAC_005` / `RBAC_006` | `nexus.domain.conflict{code}` in `handleConflict` |
 | AC11 denials | `nexus.rbac.permission_denied{permission="role:write", reason="NOT_TENANT_ADMIN"}` + WARN, from `handleInsufficientPermission` |
-| Cross-tenant probes | same counter, `reason="CROSS_TENANT_TARGET"` |
+| Cross-tenant probes | same counter, `reason="CROSS_TENANT_TARGET"`. **Amended by US-018 B1 (M8):** a cross-tenant role id is now a 404 `ROLE_NOT_FOUND`, byte-identical to a genuine not-found; the service increments this series and logs WARN `RBAC_CROSS_TENANT_TARGET` itself, and writes no audit row |
 | `traceId` / `correlationId` | `CorrelationIdFilter` + MDC; lands in `auth_events.metadata.traceId` |
 | `userId` / `tenantId` MDC | `JwtAuthenticationFilter`, via `AuthenticationDetailKeys` |
 | Audit-write loss | `nexus.rbac.audit_write_failed{operation}` gains `createRole`, `grantPermission`, `revokePermission`; ERROR log `event=RBAC_AUDIT_WRITE_LOST` |
@@ -72,7 +72,7 @@ Per `03-design.md` §9.6, copied verbatim (all 10 panels, including the two RC-7
 | Authorization denials by `permission` × `reason` | `nexus_rbac_permission_denied_total` |
 | Domain conflicts by `code` | `nexus_domain_conflict_total{code=~"RBAC_00[356]"}` |
 | **Dangerous-permission grants** | `nexus_rbac_dangerous_permission_granted_total` by `permission` |
-| **Self-role-assignment rate (RC-7)** | `nexus_rbac_self_role_assignment_total`, overlaid with `nexus_rbac_dangerous_permission_granted_total`. **Amended by US-016 T-021:** grouped `by (tenantId, privileged, callerIsAdmin)` (was `by (tenantId)` only) |
+| **Self-role-assignment rate (RC-7)** | `nexus_rbac_self_role_assignment_total`, overlaid with `nexus_rbac_dangerous_permission_granted_total`. **Amended by US-016 T-021:** grouped `by (privileged, callerIsAdmin)`. **Amended by US-018 B3 (M8):** no RBAC meter carries a `tenantId` tag any more (unbounded cardinality); attribute by `tenantId` in the WARN logs instead |
 | Priority-lane depth **by event type** | existing `AuthEventRetryBuffer` gauges — §9.4's review trigger |
 | Audit-write failures | `nexus_rbac_audit_write_failed_total{operation}` |
 | Roles per tenant (growth watch, D11 revisit trigger) | ad-hoc SQL panel, weekly |

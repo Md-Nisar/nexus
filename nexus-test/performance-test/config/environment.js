@@ -49,6 +49,14 @@ function optionalPositiveNumber(name) {
   return value;
 }
 
+function cacheBenchmarkArm() {
+  const raw = __ENV.CACHE_ARM || 'on';
+  if (raw !== 'on' && raw !== 'off') {
+    throw new Error(`CACHE_ARM must be "on" or "off", got "${raw}"`);
+  }
+  return raw;
+}
+
 function optionalInt(name, fallback) {
   return optionalPositiveInt(name) ?? fallback;
 }
@@ -111,6 +119,20 @@ export const config = Object.freeze({
     floodPerMinute: optionalInt('JUNK_FLOOD_PER_MINUTE', 400),
     validUsers: optionalInt('JUNK_VALID_USERS', 10),
     floodSeconds: optionalInt('JUNK_FLOOD_SECONDS', 120),
+  }),
+
+  // US-018 T-023 (tests/load/permission-cache-benchmark.js): refresh at a fixed rate with the
+  // permission cache on or off. The arm label is informational; the cache is switched on the
+  // BACKEND (nexus.rbac.permission-cache.bypass), so the label must match how it was started.
+  cacheBenchmark: Object.freeze({
+    mailhogUrl: (__ENV.MAILHOG_URL || '').replace(/\/+$/, '') || undefined,
+    arm: cacheBenchmarkArm(),
+    rate: optionalInt('CACHE_BENCH_RATE', 50),
+    duration: __ENV.CACHE_BENCH_DURATION || '5m',
+    // Each account is refreshed by exactly one VU (a rotated token is single-use), and one family
+    // may be refreshed 30 times per 60 s, so accounts >= rate * 60 / 30 keeps the family limit out.
+    accounts: optionalInt('CACHE_BENCH_ACCOUNTS', 200),
+    vus: optionalInt('CACHE_BENCH_VUS', 50),
   }),
 
   // Credentials are only ever read from the environment — never commit them.

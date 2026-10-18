@@ -145,7 +145,7 @@ describe('permissionGuard route-table contract', () => {
           {
             path: 'roles',
             canActivate: [permissionGuard],
-            data: { permission: 'roles:read' },
+            data: { permission: 'role:read' },
             children: [],
           },
         ],
@@ -160,7 +160,7 @@ describe('permissionGuard route-table contract', () => {
       {
         path: 'roles',
         canActivate: [permissionGuard],
-        data: { permission: 'roles:read' },
+        data: { permission: 'role:read' },
         children: [],
       },
     ];
@@ -188,7 +188,7 @@ describe('permissionGuard route-table contract', () => {
       {
         path: 'admin',
         canActivateChild: [permissionGuard],
-        data: { permission: 'roles:read' },
+        data: { permission: 'role:read' },
         children: [],
       },
     ];
@@ -204,7 +204,7 @@ describe('permissionGuard route-table contract', () => {
         path: 'admin',
         canActivate: [authGuard],
         canActivateChild: [permissionGuard],
-        data: { permission: 'roles:read' },
+        data: { permission: 'role:read' },
         children: [],
       },
     ];
@@ -221,7 +221,7 @@ describe('permissionGuard route-table contract', () => {
           {
             path: 'roles',
             canActivate: [permissionGuard],
-            data: { permission: 'roles:read' },
+            data: { permission: 'role:read' },
             children: [],
           },
         ],
@@ -248,7 +248,7 @@ describe('permissionGuard router integration', () => {
           {
             path: 'test-gated',
             canActivate,
-            data: { permission: 'roles:read' },
+            data: { permission: 'role:read' },
             component: StubGatedComponent,
           },
           { path: 'access-denied', component: StubAccessDeniedComponent },
@@ -266,7 +266,7 @@ describe('permissionGuard router integration', () => {
 
   it('allows navigation to the gated route when the user holds the permission', async () => {
     stub.session.set(createAuthSession());
-    stub.permissions.set(['roles:read']);
+    stub.permissions.set(['role:read']);
     configureTestRoutes([authGuard, permissionGuard]);
 
     const harness = await RouterTestingHarness.create();

@@ -9,6 +9,7 @@ import com.example.nexus.rbac.application.port.out.BreakGlassAuditEvent;
 import com.example.nexus.rbac.application.port.out.RbacAuditEvent;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.RoleAuditEvent;
+import com.example.nexus.rbac.application.port.out.RoleUpdateAuditEvent;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.util.LinkedHashMap;
@@ -26,7 +27,7 @@ import tools.jackson.databind.ObjectMapper;
  * <ul>
  *   <li><b>Group A (atomic)</b> — {@link #recordRoleAssigned}, {@link #recordRoleRevoked}, {@link
  *       #recordRoleCreated}, {@link #recordRolePermissionGranted}, {@link
- *       #recordRolePermissionRevoked} — delegates to {@link
+ *       #recordRolePermissionRevoked}, {@link #recordRoleDeleted}, {@link #recordRoleUpdated} — delegates to {@link
  *       SecureEventService#recordEventInCurrentTransaction(AuthEvent)} ({@code MANDATORY}: joins
  *       the caller's own mutation transaction) and propagates any failure, including a metadata
  *       JSON-serialization failure.
@@ -145,6 +146,55 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
   @Override
   public void recordRolePermissionGranted(RoleAuditEvent event) {
     recordAtomic(event, AuthEventType.ROLE_PERMISSION_GRANTED, "grantedBy", "grantPermission");
+  }
+
+  /** @see #recordRoleCreated(RoleAuditEvent) */
+  @Override
+  public void recordRoleDeleted(RoleAuditEvent event) {
+    recordAtomic(event, AuthEventType.ROLE_DELETED, "deletedBy", "deleteRole");
+  }
+
+  /**
+   * Records a role update (Group A — atomic). The metadata names the changed fields and the old and
+   * new role name; the description text is never written (T-T9/RC-3), and a null old/new name is
+   * omitted, as everywhere in this adapter.
+   */
+  @Override
+  public void recordRoleUpdated(RoleUpdateAuditEvent event) {
+    try {
+      Map<String, Object> metadata = new LinkedHashMap<>();
+      String traceId = event.requestContext() != null ? event.requestContext().traceId() : null;
+      if (traceId != null) {
+        metadata.put("traceId", traceId);
+      }
+      metadata.put("roleId", event.roleId().toString());
+      if (event.roleName() != null) {
+        metadata.put("roleName", event.roleName());
+      }
+      metadata.put("changedFields", event.changedFields());
+      if (event.oldName() != null) {
+        metadata.put("oldName", event.oldName());
+      }
+      if (event.newName() != null) {
+        metadata.put("newName", event.newName());
+      }
+      if (event.actorUserId() != null) {
+        metadata.put("updatedBy", event.actorUserId().toString());
+      }
+
+      AuthEvent authEvent =
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.ROLE_UPDATED, "SUCCESS")
+              .withTenantId(event.tenantId())
+              .withIpAddress(event.requestContext() != null ? event.requestContext().ipAddress() : null)
+              .withUserAgent(event.requestContext() != null ? event.requestContext().userAgent() : null)
+              .withMetadata(objectMapper.writeValueAsString(metadata));
+
+      secureEventService.recordEventInCurrentTransaction(authEvent);
+    } catch (RuntimeException e) {
+      logAtomicAuditWriteFailed(
+          event.tenantId(), event.actorUserId(), event.roleId(), "updateRole", e);
+      throw e;
+    }
   }
 
   /** @see #recordRoleCreated(RoleAuditEvent) */

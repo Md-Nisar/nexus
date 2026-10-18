@@ -861,14 +861,14 @@ US-018 (one story, 12 PRs)
 **Threats owned:** T-E33 (RC-25), T-E34 (RC-26), T-E36 (RC-28), T-E32 (RC-23.2, R1-1 / RC-50(a)), T-E35 (RES-14 via RC-27.1), RC-50(b), RES-27, RES-28, RES-42.
 
 **Merge checklist (M3):**
-- [ ] **Step B re-pass** signs off each ledger row (design §5.1, TM §5) against the code.
-- [ ] **RES-26:** the Platform Security Owner confirms the story owner's Gate 2 acceptance at this re-pass (TM §13.8); review date 2026-11-27 and Epic-3 hard expiry unchanged.
+- [ ] **Step B re-pass** signs off each ledger row (design §5.1, TM §5) against the code. Prepared in `15-threat-model-repass-M3.md` (code location and proving test per row, gaps stated); the sign-off itself is pending.
+- [ ] **RES-26 (sign-off deferred, not a code item):** the Platform Security Owner confirms the story owner's Gate 2 acceptance at this re-pass (TM §13.8); review date 2026-11-27 and Epic-3 hard expiry unchanged.
 - [ ] M4 and M7 merged. ~~M2 soaked in staging for ≥ 1 sprint with no `RbacAdministrators` anomalies~~ waived for the merge on 2026-10-05 (no environment); the soak and the anomaly check are now conditions on the first staging deployment.
-- [ ] **Harness C** (`LastAdminLockoutIT`) passes repeatedly with the re-scoped lock set, the benign thread and the **RC-25.3** race case; **MC-H'** green.
-- [ ] **Zero-admin sweep** under the new definition in every environment where either parent flag was ever `true`, done forensically (US-017 RC-21 pattern); a remediation ticket or written acceptance per affected tenant before production deploy.
-- [ ] **RES-6:** Ops retention sign-off for `RBAC_ATTACH_ESCALATES_NON_ADMIN_ASSIGNED_HOLDERS`, `RBAC_SELF_ASSIGN_ADMIN_DISAGREEMENT`, `RBAC_ATTACH_PROVENANCE_REFUSED` and the role-subset denial WARN (design §2.3; A-8).
-- [ ] RES-13 closed at this merge (A3 + role-subset); RES-28 and RES-42 accepted as recorded.
-- [ ] Alert content (docs pass): `nexus_rbac_gate_bypass_canary` re-pointed at `self_assign_admin_disagreement` (page); the `self_role_assignment_total` ticket dropped; row 13 ticket/page and row 14 page; `admin_role_assigned{selfTarget}` ticket.
+- [ ] **Harness C** (`LastAdminLockoutIT`) passes repeatedly with the re-scoped lock set, the benign thread and the **RC-25.3** race case; **MC-H'** green. Written and compile-checked, **not run** (no Docker in the M3 session): deferred to the first run with Docker / first deployment.
+- [ ] (deferred to first deployment; environment query) **Zero-admin sweep** under the new definition in every environment where either parent flag was ever `true`, done forensically (US-017 RC-21 pattern); a remediation ticket or written acceptance per affected tenant before production deploy.
+- [ ] (deferred to first deployment; Ops) **RES-6:** Ops retention sign-off for `RBAC_ATTACH_ESCALATES_NON_ADMIN_ASSIGNED_HOLDERS`, `RBAC_SELF_ASSIGN_ADMIN_DISAGREEMENT`, `RBAC_ATTACH_PROVENANCE_REFUSED` and the role-subset denial WARN (design §2.3; A-8).
+- [x] RES-13 closed at this merge (A3 + role-subset: code and tests in T-016/T-017); RES-28 and RES-42 accepted as recorded (see 09-technical.md section 14).
+- [x] Alert content (docs pass, monitoring.md section 4a, runbook.md section 12): `nexus_rbac_gate_bypass_canary` re-pointed at `self_assign_admin_disagreement` (page); the `self_role_assignment_total` ticket dropped; row 13 ticket/page and row 14 page; `admin_role_assigned{selfTarget}` ticket.
 
 ### T-016 — Assign and revoke decide "administrator" from the set lock's own rows, and revoke-subset replaces the T-E17 gates (ledger rows 1–6, 10)
 
@@ -1055,15 +1055,15 @@ US-018 (one story, 12 PRs)
 
 **Threats owned:** T-R13 (RC-39.2, RC-50(c)), T-D18 (RC-33.1), T-I18 (RC-33.2), T-T19 (RC-40.3), T-D21 (RC-40.4), T-T21 (RC-48.1 scanner), T-D25 (RC-49.1), RC-45.1 (shared-store half), RC-54(b), RC-34.2 (B6 consideration).
 
-**Merge checklist (M8):**
-- [ ] **V8 pre-flight** (`SELECT COUNT(*) FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.tenant_id <> r.tenant_id`) = 0 in **every** environment before deploy (A-9). Non-zero → stop; remediation needs a DBA exception procedure with Security sign-off.
-- [ ] **Maintenance window** booked for V8 (`ALGORITHM=COPY`; writes to `user_roles` blocked, reads continue).
-- [ ] Runbook (docs pass): a failed V7/V8 is recovered by **`flyway repair` then a re-run, as the Flyway DDL user**; `nexus_app` grants are not widened (RC-49.1, RES-44).
-- [ ] `require-shared-store=true` present in `application-prod.yml` and checked by the runbook; RES-11 closed at deploy.
-- [ ] **RES-6:** Ops retention sign-off for `RBAC_CROSS_TENANT_TARGET` and `RBAC_DENIAL_THROTTLED`.
-- [ ] Cross-tenant **rate ticket alert** at `max(5 × 7-day baseline, 20 per 15 min)` defined (RC-39.2, RC-50(c)); RES-34 accepted.
-- [ ] Exit criteria: TS-11 and TS-12 green; the **pool-pressure k6** re-run green (T-024).
-- [ ] Docs pass: US-012 and US-015 API docs describe the 404; `US-015/monitoring.md:75` no longer groups by `tenantId`; ADR-0023 (B4) accepted; ADR-0022 carries the B6 addendum (T-023).
+**Merge checklist (M8)** (status 2026-10-16, implementer; environment and Ops items are *deferred to the first deployment* per the 2026-10-05 decision and stay required before production):
+- [ ] **V8 pre-flight** (`SELECT COUNT(*) FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.tenant_id <> r.tenant_id;`) = 0 in **every** environment before deploy (A-9). Non-zero -> stop; remediation needs a DBA exception procedure with Security sign-off. *Deferred to first deployment (no environment); the query and the stop rule are in `runbook.md` 13 and the V8 header.*
+- [ ] **Maintenance window** booked for V8 (`ALGORITHM=COPY`; writes to `user_roles` blocked, reads continue). *Deferred to first deployment; stated in `runbook.md` 13 and the V8 header.*
+- [x] Runbook (docs pass): a failed V7/V8 is recovered by **`flyway repair` then a re-run, as the Flyway DDL user**; `nexus_app` grants are not widened (RC-49.1, RES-44). *`runbook.md` 13.*
+- [ ] `require-shared-store=true` present in `application-prod.yml` and checked by the runbook; RES-11 closed at deploy. *Code, default `false` and the startup assertion are done and the runbook check is written (`runbook.md` 13); the `application-prod.yml` line is a **human edit** (hook-protected), exact text in `16-threat-model-repass-M8.md` section 2, and production also needs `nexus.security.rate-limit.store-type: redis`. RES-11 closes at deploy.*
+- [ ] **RES-6:** Ops retention sign-off for `RBAC_CROSS_TENANT_TARGET` and `RBAC_DENIAL_THROTTLED`. *Deferred to first deployment (Ops action); stated in `monitoring.md` 8.*
+- [x] Cross-tenant **rate ticket alert** at `max(5 x 7-day baseline, 20 per 15 min)` defined (RC-39.2, RC-50(c)); RES-34 accepted. *Defined in `monitoring.md` 8; creating it in a monitoring system is an Ops action, deferred to first deployment.*
+- [ ] Exit criteria: TS-11 and TS-12 green; the **pool-pressure k6** re-run green (T-024). *TS-11 (`CrossTenantNotFoundEquivalenceIT`) and TS-12 (`RoleResolutionServiceIT`, `RbacSchemaMigrationIT`) are written and compile but were not run (no Docker). The k6 scripts are written and syntax-checked but were not run (no k6, no staging topology). Deferred to first deployment.*
+- [ ] Docs pass: US-012 and US-015 API docs describe the 404 *(done: `US-012/api-spec.json`, `US-012/monitoring.md`, `US-015/monitoring.md`)*; `US-015/monitoring.md:75` no longer groups by `tenantId` *(done)*; ADR-0023 (B4) accepted *(not done: still "Proposed"; the acceptance is the owners' decision)*; ADR-0022 carries the B6 addendum (T-023) *(done: rule recorded, measurement deferred, no numbers)*.
 
 ### T-020 — Cross-tenant targets return a byte-identical 404, and no RBAC metric carries a tenant tag (B1, B3)
 
@@ -1282,13 +1282,13 @@ US-018 (one story, 12 PRs)
 **Threats owned:** T-T17 (RC-35), T-T18 (RC-36), T-T20 (RC-46), T-I17 (RC-38), T-I19 (RC-40.7), T-D25 (RC-49.2), RC-37.5, RES-37, RES-45, L-5.
 
 **Merge checklist (M9):**
-- [ ] **Maintenance window** booked for V9 (`ALGORITHM=COPY` on `roles`; create/PATCH/DELETE blocked; recovery `flyway repair` then a re-run, RC-49).
-- [ ] **Grants** `GRANT UPDATE (name, description, deleted_at) ON nexus.roles` applied per environment; the three ADR-0014 D6 artifacts byte-consistent.
-- [ ] **`RolesPrivilegeIT` green as `nexus_app`** under both grant sets (RC-36.2).
-- [ ] **RC-36.4 detector** `deletedRoleActiveAssignments` live, paging on > 0.
-- [ ] `RoleDeleteConcurrencyIT` green, including the holder-less admin-defining case with **no 500** (RC-46.2); MC-9 green.
-- [ ] **`audit:read` pre-deploy detection query** (custom roles carrying it, by tenant, ids only); a non-zero production count reviewed with Security before the flag flips (RC-38.3).
-- [ ] Docs pass: C3 API docs and ADR-0021 state the administrator-roster disclosure (RES-37); the access-review runbook says reviewers are administrators or use the `ROLE_BREAK_GLASS_GRANT` join for `assignedBy = userId` rows (RC-37.5, R1-4); API changelog for C2 paging.
+- [ ] **Maintenance window** booked for V9 (`ALGORITHM=COPY` on `roles`; create/PATCH/DELETE blocked; recovery `flyway repair` then a re-run, RC-49). *(deferred to first deployment; ITs written, not run: no Docker)*
+- [ ] **Grants** `GRANT UPDATE (name, description, deleted_at) ON nexus.roles` applied per environment; the three ADR-0014 D6 artifacts byte-consistent. *(deferred to first deployment; ITs written, not run: no Docker)*
+- [ ] **`RolesPrivilegeIT` green as `nexus_app`** under both grant sets (RC-36.2). *(deferred to first deployment; ITs written, not run: no Docker)*
+- [ ] **RC-36.4 detector** `deletedRoleActiveAssignments` live, paging on > 0. *(code done in T-026; the paging alert itself is deferred to first deployment)*
+- [ ] `RoleDeleteConcurrencyIT` green, including the holder-less admin-defining case with **no 500** (RC-46.2); MC-9 green. *(deferred to first deployment; ITs written, not run: no Docker)*
+- [ ] **`audit:read` pre-deploy detection query** (custom roles carrying it, by tenant, ids only); a non-zero production count reviewed with Security before the flag flips (RC-38.3). *(query written in `runbook.md` 14; run deferred to first deployment)*
+- [x] Docs pass: C3 API docs and ADR-0021 state the administrator-roster disclosure (RES-37); the access-review runbook says reviewers are administrators or use the `ROLE_BREAK_GLASS_GRANT` join for `assignedBy = userId` rows (RC-37.5, R1-4); API changelog for C2 paging.
 - [ ] RES-45 accepted (Low, Architect); revisit if the C1 1213 rate is ever non-zero.
 
 ### T-025 — A custom role with no active holders can be soft-deleted, and a concurrent assign can never attach a holder to a deleted role (C1 DELETE)

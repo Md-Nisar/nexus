@@ -15,6 +15,7 @@ import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 /**
@@ -51,11 +52,17 @@ import org.springframework.stereotype.Component;
  * authorization control, and an unavailable throttle must never block the gate's own authoritative
  * decision.
  *
- * <p>Deliberately a plain {@code @Component}, not gated by {@code @ConditionalOnProperty}: unlike
- * {@link InMemoryRateLimitStore}/{@code RedisRateLimitStore} (interchangeable alternatives), this
- * is the single implementation of an {@code rbac} port; a missing bean would break construction of
- * any consumer of {@link RoleChangeThrottlePort}.
+ * <p>Selected only for {@code nexus.security.rate-limit.store-type=memory} (the default): with
+ * {@code redis}, {@code rbac.infrastructure.cache.RedisRoleChangeThrottleAdapter} keeps the window
+ * and the throttled-until marker in Redis instead, so the throttle is shared across replicas
+ * (US-018 B8, closing RES-11). Exactly one implementation of the {@code rbac} port is active in any
+ * configuration. Production must not run this one: {@code
+ * nexus.rbac.throttle.require-shared-store=true} fails startup with {@code memory}.
  */
+@ConditionalOnProperty(
+    name = "nexus.security.rate-limit.store-type",
+    havingValue = "memory",
+    matchIfMissing = true)
 @Component
 public class RateLimitRoleChangeThrottleAdapter implements RoleChangeThrottlePort {
 
@@ -63,6 +70,8 @@ public class RateLimitRoleChangeThrottleAdapter implements RoleChangeThrottlePor
   private static final String KEY_PREFIX = "RBAC_DENY:";
 
   private final ConcurrentHashMap<String, Instant> throttledUntil = new ConcurrentHashMap<>();
+  // Denials suppressed while throttled (B8), per key; reset when a new throttle episode begins.
+  private final ConcurrentHashMap<String, Integer> suppressed = new ConcurrentHashMap<>();
   private final RateLimitStore rateLimitStore;
   private final Clock clock;
   private final int maxDenials;
@@ -111,6 +120,7 @@ public class RateLimitRoleChangeThrottleAdapter implements RoleChangeThrottlePor
           throttled[0] = true;
           return until;
         }
+        suppressed.remove(k);
         return null; // window has passed - evict on read
       });
       return throttled[0];
@@ -137,10 +147,24 @@ public class RateLimitRoleChangeThrottleAdapter implements RoleChangeThrottlePor
         isTransition[0] = !alreadyThrottled;
         return newUntil;
       });
+      if (isTransition[0]) {
+        suppressed.remove(key);
+      }
       return isTransition[0];
     } catch (RuntimeException e) {
       log.warn("rbac denial-throttle recordDenial failed, failing safe (not throttled)", e);
       return false;
+    }
+  }
+
+  @Override
+  public int recordSuppressedDenial(UUID tenantId, UUID actorUserId) {
+    try {
+      String key = key(tenantId, actorUserId);
+      return suppressed.merge(key, 1, Integer::sum);
+    } catch (RuntimeException e) {
+      log.warn("rbac denial-throttle recordSuppressedDenial failed", e);
+      return 0;
     }
   }
 
@@ -149,6 +173,7 @@ public class RateLimitRoleChangeThrottleAdapter implements RoleChangeThrottlePor
     Instant now = clock.instant();
     throttledUntil.forEach((key, until) ->
         throttledUntil.computeIfPresent(key, (k, u) -> u.isAfter(now) ? u : null));
+    suppressed.keySet().removeIf(key -> !throttledUntil.containsKey(key));
   }
 
   private static String key(UUID tenantId, UUID actorUserId) {

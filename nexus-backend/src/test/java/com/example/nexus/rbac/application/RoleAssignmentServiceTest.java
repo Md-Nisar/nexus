@@ -3,6 +3,7 @@ package com.example.nexus.rbac.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
@@ -31,19 +32,17 @@ import com.example.nexus.rbac.domain.ActiveAssignmentRef;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
 import com.example.nexus.rbac.domain.LastAdminRoleException;
+import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
-import com.example.nexus.rbac.domain.RolePermissionName;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import java.lang.reflect.Method;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -63,24 +62,31 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
- * Unit tests for {@link RoleAssignmentService} — the only place AC4 (tenant isolation), AC5
- * (last-admin lockout), and AC8 (self-escalation guard) are enforced (03-design.md §4.2).
+ * Unit tests for {@link RoleAssignmentService} — the only place tenant isolation, the grant-subset
+ * rules (A2, A4, revoke-subset), the last-admin lockout and the set lock are enforced (ADR-0021).
  *
- * <p>Test strategy: every branch of {@code assign}/{@code revoke}/{@code listActive} — happy
- * path, every 404/403/409 error branch, the {@code equalsIgnoreCase} case-variant matching for
- * {@code TENANT_ADMIN} (T-E7/R-9), the actor-agnostic AC5 lockout, the T-E8 tenant-check-not-
- * bypassed-by-the-repository assertion, and the inline-vs-deferred side-effect fallback
- * (03-design.md §3.1 step 7).
+ * <p>US-018 M3 (T-016, T-018) rewrote this class around the one definition of "administrator" (a
+ * role carrying every permission of the catalogue). The name-based and ANY/ALL tests, the canary
+ * tests built on the non-locking user read, and the retired counters' tests are retired here, each
+ * against the control that now enforces its assertion and a test of that control in this class;
+ * the mapping is in {@code docs/features/US-018/15-threat-model-repass-M3.md}.
+ *
+ * <p>Fixture catalogue: two permissions, {@link #P1} and {@link #P2}. A role carrying both is
+ * admin-defining. The baseline (set up for every test, lenient) is the narrowest state in which a
+ * test not about a given rule still reaches the rule it exercises: the caller holds only {@code
+ * user:role:assign} (L-1), the target role is in the tenant and carries no permissions (EC7).
  */
 @ExtendWith(MockitoExtension.class)
 @Tag("UnitTest")
 class RoleAssignmentServiceTest {
 
-  // T-010 (D14): the two throttle @Value fields, used only as WARN fields at the transition
-  // (A-4) -- fixed test values, not stubbed, since no test asserts a specific bound being
-  // enforced by these numbers themselves (that is RateLimitRoleChangeThrottleAdapterTest's job).
   private static final int MAX_DENIALS = 5;
   private static final int WINDOW_SECONDS = 60;
+
+  private static final UUID USER_ROLE_ASSIGN_ID = RbacSeededPermissionIds.USER_ROLE_ASSIGN;
+  private static final UUID P1 = UUID.fromString("00000000-0000-7000-8000-000000000001");
+  private static final UUID P2 = UUID.fromString("00000000-0000-7000-8000-000000000002");
+  private static final Set<UUID> CATALOGUE = Set.of(P1, P2);
 
   @Mock private UserRoleAssignmentPort userRoleAssignmentPort;
   @Mock private UserDirectoryPort userDirectoryPort;
@@ -116,20 +122,18 @@ class RoleAssignmentServiceTest {
     actor = new RoleChangeActor(actorId, tenantId);
     ctx = RequestContext.UNKNOWN;
 
-    // Baseline for 07-security-review.md L-1/L-2 (lenient; any test may override): M13 holds
-    // ONLY user:role:assign -- the endpoint permission every caller of assign()/revoke() passed
-    // @RequiresPermission with -- and M14 reports the target role as in-tenant with NO
-    // permissions (EC7). This is the narrowest state in which a test not about L-1/L-2/A2 still
-    // reaches the gate it exercises; it grants nothing beyond the endpoint permission, so A2,
-    // revoke-subset and A4 still deny on any permissioned target or self-target. The L-1/L-2
-    // tests override these stubs to prove the deny paths.
     Mockito.lenient()
         .when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(any(), any()))
         .thenReturn(List.of(new RolePermissionRef(UUID.randomUUID(), USER_ROLE_ASSIGN_ID)));
     Mockito.lenient()
         .when(userRoleAssignmentPort.findPermissionIdsForRole(any(), any()))
         .thenReturn(Optional.of(Set.of()));
+    Mockito.lenient().when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(CATALOGUE);
   }
+
+  // ---------------------------------------------------------------------------------------
+  // Fixtures
+  // ---------------------------------------------------------------------------------------
 
   /** {@code refs} plus the caller's {@code user:role:assign} grant (L-1), through its own role. */
   private static List<RolePermissionRef> withUserRoleAssign(List<RolePermissionRef> refs) {
@@ -138,62 +142,169 @@ class RoleAssignmentServiceTest {
     return all;
   }
 
+  private Role role(String name) {
+    return new Role(roleId, tenantId, name, "desc", false);
+  }
+
   private Role memberRole() {
-    return new Role(roleId, tenantId, "MEMBER", "desc", false);
+    return role("MEMBER");
   }
 
-  private Role adminRole(String name) {
-    return new Role(roleId, tenantId, name, "desc", false);
+  private static RolePermissionRef ref(UUID roleId, UUID permissionId) {
+    return new RolePermissionRef(roleId, permissionId);
   }
 
-  private Role customRole(String name) {
-    return new Role(roleId, tenantId, name, "desc", false);
+  private static List<RolePermissionRef> wholeCatalogue(UUID roleId) {
+    return List.of(ref(roleId, P1), ref(roleId, P2));
+  }
+
+  private static DenialReason reasonOf(Throwable e) {
+    return ((InsufficientPermissionException) e).getReason();
+  }
+
+  private void stubTargetUserAndRole(UUID target, Role role) {
+    when(userDirectoryPort.findTenantId(target)).thenReturn(Optional.of(tenantId));
+    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
+  }
+
+  private void stubBenignAssignTarget() {
+    stubTargetUserAndRole(targetUserId, memberRole());
+  }
+
+  private void stubBenignSelfAssignTarget() {
+    stubTargetUserAndRole(actorId, memberRole());
+  }
+
+  private void stubSuccessfulInsert() {
+    stubSuccessfulInsertFor(targetUserId);
+  }
+
+  private void stubSuccessfulSelfInsert() {
+    stubSuccessfulInsertFor(actorId);
+  }
+
+  private void stubSuccessfulInsertFor(UUID target) {
+    when(userRoleAssignmentPort.hasActiveAssignment(target, roleId)).thenReturn(false);
+    when(userRoleAssignmentPort.assign(target, roleId, tenantId, actorId))
+        .thenReturn(UUID.randomUUID());
+    when(userRoleAssignmentPort.findActiveAssignmentView(target, roleId, tenantId))
+        .thenReturn(
+            Optional.of(new ActiveRoleAssignment(target, roleId, "MEMBER", Instant.now(), actorId)));
+  }
+
+  /** M13: the caller holds one role carrying the whole catalogue (an administrator) plus assign. */
+  private void stubCallerIsAdministrator() {
+    UUID adminDefiningRoleId = UUID.randomUUID();
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(withUserRoleAssign(wholeCatalogue(adminDefiningRoleId)));
+  }
+
+  /** M13: the caller holds the whole catalogue only across two partial roles (a union-holder). */
+  private void stubCallerIsUnionHolder() {
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(
+            withUserRoleAssign(
+                List.of(ref(UUID.randomUUID(), P1), ref(UUID.randomUUID(), P2))));
+  }
+
+  /** Like {@link #stubCallerIsAdministrator()}, for tests where the read must not be required. */
+  private void lenientCallerIsAdministrator() {
+    UUID adminDefiningRoleId = UUID.randomUUID();
+    Mockito.lenient()
+        .when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(withUserRoleAssign(wholeCatalogue(adminDefiningRoleId)));
+  }
+
+  /** Like {@link #stubCallerIsUnionHolder()}, for tests where the read must not be required. */
+  private void lenientCallerIsUnionHolder() {
+    Mockito.lenient()
+        .when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(
+            withUserRoleAssign(
+                List.of(ref(UUID.randomUUID(), P1), ref(UUID.randomUUID(), P2))));
+  }
+
+  /** M13: the caller holds {@code P1} only (not an administrator, not a union-holder). */
+  private void stubCallerHoldsP1Only() {
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(withUserRoleAssign(List.of(ref(UUID.randomUUID(), P1))));
+  }
+
+  /**
+   * The target role (id {@link #roleId}) carries the whole catalogue, so it is admin-defining. M10'
+   * lists it plus {@code otherAdminDefiningRoleIds}, each carrying the whole catalogue, and M11
+   * returns {@code lockedHolders}.
+   */
+  private void stubAdminDefiningTarget(
+      List<ActiveAssignmentHolder> lockedHolders, UUID... otherAdminDefiningRoleIds) {
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(CATALOGUE));
+    List<RolePermissionRef> tenantRows = new ArrayList<>(wholeCatalogue(roleId));
+    for (UUID other : otherAdminDefiningRoleIds) {
+      tenantRows.addAll(wholeCatalogue(other));
+    }
+    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId))
+        .thenReturn(tenantRows);
+    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
+        .thenReturn(lockedHolders);
+  }
+
+  private static ActiveAssignmentHolder holder(UUID userId, UUID roleId) {
+    return new ActiveAssignmentHolder(UUID.randomUUID(), userId, roleId);
+  }
+
+  private ActiveAssignmentRef stubRevokeTarget(Role role) {
+    return stubRevokeTargetFor(targetUserId, role);
+  }
+
+  private ActiveAssignmentRef stubRevokeTargetFor(UUID target, Role role) {
+    when(userDirectoryPort.findTenantId(target)).thenReturn(Optional.of(tenantId));
+    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
+    ActiveAssignmentRef ref =
+        new ActiveAssignmentRef(UUID.randomUUID(), Instant.now().minusSeconds(60));
+    when(userRoleAssignmentPort.findActiveAssignmentRef(target, roleId, tenantId))
+        .thenReturn(Optional.of(ref));
+    return ref;
+  }
+
+  private ActiveAssignmentRef stubBenignRevokeTarget() {
+    return stubRevokeTarget(memberRole());
   }
 
   // ---------------------------------------------------------------------------------------
-  // assign()
+  // assign(): tenant isolation, errors, side effects
   // ---------------------------------------------------------------------------------------
 
   @Test
   void should_insertReReadAndFireSideEffects_when_happyPath() {
-    Role role = memberRole();
     Instant assignedAt = Instant.now();
-    UUID userRoleId = UUID.randomUUID();
     ActiveRoleAssignment view =
         new ActiveRoleAssignment(targetUserId, roleId, "MEMBER", assignedAt, actorId);
-
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
+    stubBenignAssignTarget();
     when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
     when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
-        .thenReturn(userRoleId);
+        .thenReturn(UUID.randomUUID());
     when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
         .thenReturn(Optional.of(view));
 
     ActiveRoleAssignment result = service.assign(actor, targetUserId, roleId, ctx);
 
     assertThat(result).isEqualTo(view);
-    verify(userRoleAssignmentPort, never())
-        .hasActiveAssignmentOfAnyRole(any(), any(), any()); // not TENANT_ADMIN, guard skipped
-
-    // US-018 A6: the audit write now happens INLINE, before registerPostCommitSideEffects even
-    // runs -- it precedes the cache eviction, the reverse of the pre-A6 post-commit order.
+    // A6: the audit write happens INLINE, before the cache eviction.
     InOrder inOrder = Mockito.inOrder(rbacAuditPort, permissionCachePort);
     inOrder
         .verify(rbacAuditPort)
         .recordRoleAssigned(
             new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx));
     inOrder.verify(permissionCachePort).evict(tenantId, targetUserId);
-    // MC-4 (RC-40.5): within this one call, Group A fires and Group B never does -- the ordering
-    // invariant (no Group B call follows a Group A call) holds trivially for a successful call.
+    // MC-4 (RC-40.5): Group A fires and Group B never does within one successful call.
     verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
     verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
   }
 
-  // Load-bearing (US-014 Decision 2): this and the other 404/409 negative assertions in this
-  // file are now proof of the 403-only ROLE_ASSIGNMENT_DENIED scope, not incidental. Do not
-  // weaken -- defense-in-depth only, the catch type in RoleAssignmentService is the structural
-  // control.
+  // Load-bearing (US-014 Decision 2): this and the other 404/409 negative assertions in this file
+  // are proof of the 403-only ROLE_ASSIGNMENT_DENIED scope, not incidental. Do not weaken --
+  // defense-in-depth only, the catch type in RoleAssignmentService is the structural control.
   @Test
   void should_throwResourceNotFound_when_targetUserNotFound() {
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.empty());
@@ -207,77 +318,63 @@ class RoleAssignmentServiceTest {
   }
 
   @Test
-  void should_throwCrossTenantTarget_when_assignTargetTenantMismatch() {
+  void should_throwSameNotFoundAndWriteNoDenialRow_when_assignTargetTenantMismatch() {
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(otherTenantId));
 
     assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "USER_NOT_FOUND")
+        .hasMessage("No such user");
 
     verify(userRoleAssignmentPort, never()).findRole(any());
-    verify(rbacAuditPort)
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, null, actorId, ctx),
-            DenialReason.CROSS_TENANT_TARGET, "assign");
-    verifyNoInteractions(permissionCachePort);
+    verifyNoInteractions(permissionCachePort, rbacAuditPort);
+    assertThat(
+            meterRegistry
+                .get("nexus.rbac.permission_denied")
+                .tag("permission", "user:role:assign")
+                .tag("reason", "CROSS_TENANT_TARGET")
+                .counter()
+                .count())
+        .isEqualTo(1.0);
   }
 
-  /**
-   * US-014 Phase 8 test-coverage audit: {@code recordDenial}'s own {@code catch (RuntimeException)}
-   * (defense-in-depth atop {@link RbacAuditPort}'s "must never throw" contract) is untested by any
-   * existing test -- every other test mocks {@code rbacAuditPort} to succeed silently. Proves the
-   * real denial ({@code CROSS_TENANT_TARGET}) still wins and is not masked or replaced by the audit
-   * port's contract violation.
-   */
   @Test
   void should_stillThrowOriginalDenialException_when_rbacAuditPortViolatesNeverThrowContract() {
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(otherTenantId));
+    stubBenignSelfAssignTarget();
+    stubCallerHoldsP1Only();
     doThrow(new RuntimeException("audit port broke its never-throw contract"))
         .when(rbacAuditPort)
         .recordRoleAssignmentDenied(any(), any(), any());
 
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
         .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.SELF_ASSIGNMENT));
   }
 
-  /**
-   * Companion to the test above: the defensive catch must also make the contract violation
-   * operationally visible via an ERROR log carrying the {@code RBAC_AUDIT_DENIAL_CALL_SITE_FAILED}
-   * marker, mirroring {@code RbacAuthEventAdapterTest}'s {@code RBAC_AUDIT_WRITE_LOST} pattern.
-   */
   @Test
   void should_logErrorWithCallSiteFailedMarker_when_rbacAuditPortViolatesNeverThrowContract() {
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(otherTenantId));
+    stubBenignSelfAssignTarget();
+    stubCallerHoldsP1Only();
     doThrow(new RuntimeException("audit port broke its never-throw contract"))
         .when(rbacAuditPort)
         .recordRoleAssignmentDenied(any(), any(), any());
 
     ListAppender<ILoggingEvent> appender = startLogCapture();
     try {
-      assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+      assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
           .isInstanceOf(InsufficientPermissionException.class);
 
       var errorEvents = appender.list.stream().filter(e -> e.getLevel() == Level.ERROR).toList();
       assertThat(errorEvents).hasSize(1);
-      Map<String, Object> keyValues = keyValueMap(errorEvents.get(0));
-      assertThat(keyValues)
+      assertThat(keyValueMap(errorEvents.get(0)))
           .containsEntry("event", "RBAC_AUDIT_DENIAL_CALL_SITE_FAILED")
           .containsEntry("tenantId", tenantId)
-          .containsEntry("targetUserId", targetUserId);
+          .containsEntry("targetUserId", actorId);
     } finally {
       stopLogCapture(appender);
     }
   }
 
-  // Load-bearing (US-014 Decision 2) -- see the comment on
-  // should_throwResourceNotFound_when_targetUserNotFound above.
   @Test
   void should_throwResourceNotFound_when_assignRoleNotFound() {
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
@@ -291,682 +388,31 @@ class RoleAssignmentServiceTest {
   }
 
   @Test
-  void should_throwCrossTenantTarget_when_assignRoleTenantMismatch() {
+  void should_throwSameNotFoundAndWriteNoDenialRow_when_assignRoleTenantMismatch() {
     Role foreignRole = new Role(roleId, otherTenantId, "MEMBER", "desc", false);
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
     when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(foreignRole));
 
     assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND")
+        .hasMessage("No such role");
 
     verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
-    verify(rbacAuditPort)
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, null, actorId, ctx),
-            DenialReason.CROSS_TENANT_TARGET, "assign");
-    verifyNoInteractions(permissionCachePort);
+    verifyNoInteractions(permissionCachePort, rbacAuditPort);
+    assertThat(
+            meterRegistry
+                .get("nexus.rbac.permission_denied")
+                .tag("permission", "user:role:assign")
+                .tag("reason", "CROSS_TENANT_TARGET")
+                .counter()
+                .count())
+        .isEqualTo(1.0);
   }
 
-  @Test
-  void should_throwNotTenantAdmin_when_grantingTenantAdminAndCallerNotActiveAdmin() {
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    // M8: on the name-match path, the tenant's TENANT_ADMIN role IS the target role (§5.4);
-    // without this stub M8 returns Optional.empty() and the test would pass for the wrong
-    // reason (fail-closed on empty M8, not the admin check).
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
-    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
-    verify(rbacAuditPort)
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, "TENANT_ADMIN", actorId, ctx),
-            DenialReason.NOT_TENANT_ADMIN, "assign");
-    verifyNoInteractions(permissionCachePort);
-  }
-
-  /**
-   * Proves the AC8 guard compares role names via {@code equalsIgnoreCase}, not {@code .equals()}
-   * — {@code roles.name}'s collation makes {@code uq_roles_tenant_name} case-insensitive, so a
-   * case-sensitive Java compare would silently disable this guard for a differently-cased row
-   * (R-9). If the implementation used {@code .equals()}, this case-variant name would skip the
-   * admin check entirely and the assignment would proceed instead of throwing.
-   */
-  @Test
-  void should_throwNotTenantAdmin_when_roleNameIsDifferentCaseVariantOfTenantAdmin() {
-    Role role = adminRole("tenant_admin");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verify(userRoleAssignmentPort).hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId);
-    verify(rbacAuditPort)
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, "tenant_admin", actorId, ctx),
-            DenialReason.NOT_TENANT_ADMIN, "assign");
-    verifyNoInteractions(permissionCachePort);
-  }
-
-  /**
-   * AC8 positive path: caller DOES hold an active admin assignment. Verifies {@code
-   * hasActiveAssignmentOfAnyRole} (M5b) is invoked with the resolved role's own id (never a
-   * hardcoded or actor-derived value — T-E7) and that the flow proceeds to the
-   * duplicate-check/insert path.
-   */
-  @Test
-  void should_proceedToInsert_when_grantingTenantAdminAndCallerIsActiveAdmin() {
-    Role role = adminRole("TENANT_ADMIN");
-    Instant assignedAt = Instant.now();
-    UUID userRoleId = UUID.randomUUID();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(targetUserId, roleId, "TENANT_ADMIN", assignedAt, actorId);
-
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
-        .thenReturn(userRoleId);
-    when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
-
-    ActiveRoleAssignment result = service.assign(actor, targetUserId, roleId, ctx);
-
-    assertThat(result).isEqualTo(view);
-    verify(userRoleAssignmentPort).hasActiveAssignmentOfAnyRole(actorId, List.of(role.getId()), tenantId);
-    verify(userRoleAssignmentPort).assign(targetUserId, roleId, tenantId, actorId);
-    verify(permissionCachePort).evict(tenantId, targetUserId);
-    verify(rbacAuditPort)
-        .recordRoleAssigned(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, "TENANT_ADMIN", actorId, ctx));
-  }
-
-  // ---------------------------------------------------------------------------------------
-  // T-008: the unified privilege gate on assign() -- dangerous-permission path (D4, D5, D15,
-  // D17, FR-1). The name-match path's regression contract is covered by the three tests above;
-  // this block covers the NEW carriesDangerousPermission() half and the shared throw site.
-  // ---------------------------------------------------------------------------------------
-
-  @Test
-  void should_throwNotTenantAdmin_when_roleCarriesOneDangerousPermissionAndCallerNotActiveAdmin() {
-    Role role = customRole("BILLING_ADMIN");
-    UUID adminRoleId = UUID.randomUUID(); // MC-3(a): deliberately != roleId
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    // MC-2: the correct (locking, assignment-based) helper is used, never the redaction helper.
-    verify(userRoleAssignmentPort).hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId);
-    verify(userRoleAssignmentPort, never()).findActiveAssignmentViews(any(), any());
-    // MC-3(a): the caller's admin status is checked against M8's role, never the target role.
-    verify(userRoleAssignmentPort, never()).hasActiveAssignmentOfAnyRole(any(), eq(List.of(roleId)), any());
-    // MC-3(b): the caller's own id is checked, never the target's.
-    verify(userRoleAssignmentPort, never())
-        .hasActiveAssignmentOfAnyRole(eq(targetUserId), any(), any());
-    verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
-    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
-    verify(rbacAuditPort)
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, "BILLING_ADMIN", actorId, ctx),
-            DenialReason.NOT_TENANT_ADMIN, "assign");
-    verifyNoInteractions(permissionCachePort);
-  }
-
-  @Test
-  void should_throwNotTenantAdmin_when_roleCarriesAllThreeDangerousPermissionsAndCallerNotActiveAdmin() {
-    Role role = customRole("SUPER_CUSTOM");
-    UUID adminRoleId = UUID.randomUUID();
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("role:write", "user:write", "tenant:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    // Edge Case 3, dangerous-only variant: even with all three dangerous permissions present,
-    // exactly one denial/audit row/metric increment -- structural (a single `||`), not ordering.
-    verify(rbacAuditPort, times(1))
-        .recordRoleAssignmentDenied(any(), eq(DenialReason.NOT_TENANT_ADMIN), eq("assign"));
-    verify(userRoleAssignmentPort, never()).hasActiveAssignmentOfAnyRole(any(), eq(List.of(roleId)), any());
-    verify(userRoleAssignmentPort, never())
-        .hasActiveAssignmentOfAnyRole(eq(targetUserId), any(), any());
-  }
-
-  /**
-   * Proves {@code carriesDangerousPermission} delegates to {@code RbacDangerousPermissions
-   * .contains}, which is case-insensitive (mirrors the role-name case-variant proof above).
-   */
-  @Test
-  void should_throwNotTenantAdmin_when_roleCarriesCaseVariantDangerousPermissionName() {
-    Role role = customRole("BILLING_ADMIN");
-    UUID adminRoleId = UUID.randomUUID();
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("User:Write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verify(userRoleAssignmentPort).hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId);
-    verify(userRoleAssignmentPort, never()).hasActiveAssignmentOfAnyRole(any(), eq(List.of(roleId)), any());
-    verify(userRoleAssignmentPort, never())
-        .hasActiveAssignmentOfAnyRole(eq(targetUserId), any(), any());
-  }
-
-  @Test
-  void should_proceedToInsert_when_roleCarriesOnlyNonDangerousPermission() {
-    Role role = customRole("BILLING_VIEWER");
-    Instant assignedAt = Instant.now();
-    UUID userRoleId = UUID.randomUUID();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(targetUserId, roleId, "BILLING_VIEWER", assignedAt, actorId);
-
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId)).thenReturn(List.of("user:read"));
-    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
-        .thenReturn(userRoleId);
-    when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
-
-    ActiveRoleAssignment result = service.assign(actor, targetUserId, roleId, ctx);
-
-    assertThat(result).isEqualTo(view);
-    verify(userRoleAssignmentPort, never()).findRoleIdByName(any(), any());
-    verify(userRoleAssignmentPort, never()).hasActiveAssignmentOfAnyRole(any(), any(), any());
-    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
-  }
-
-  /** Edge Case 1: an empty permission set means NOT privileged -- the gate must not fire. */
-  @Test
-  void should_proceedToInsert_when_roleCarriesNoPermissions() {
-    Role role = customRole("EMPTY_ROLE");
-    Instant assignedAt = Instant.now();
-    UUID userRoleId = UUID.randomUUID();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(targetUserId, roleId, "EMPTY_ROLE", assignedAt, actorId);
-
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId)).thenReturn(List.of());
-    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
-        .thenReturn(userRoleId);
-    when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
-
-    ActiveRoleAssignment result = service.assign(actor, targetUserId, roleId, ctx);
-
-    assertThat(result).isEqualTo(view);
-    verify(userRoleAssignmentPort, never()).findRoleIdByName(any(), any());
-    verify(userRoleAssignmentPort, never()).hasActiveAssignmentOfAnyRole(any(), any(), any());
-    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
-  }
-
-  @Test
-  void should_proceedToInsert_when_roleCarriesDangerousPermissionAndCallerIsActiveAdmin() {
-    Role role = customRole("BILLING_ADMIN");
-    UUID adminRoleId = UUID.randomUUID();
-    Instant assignedAt = Instant.now();
-    UUID userRoleId = UUID.randomUUID();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(targetUserId, roleId, "BILLING_ADMIN", assignedAt, actorId);
-
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
-        .thenReturn(userRoleId);
-    when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
-
-    ActiveRoleAssignment result = service.assign(actor, targetUserId, roleId, ctx);
-
-    assertThat(result).isEqualTo(view);
-    verify(userRoleAssignmentPort).hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId);
-    verify(userRoleAssignmentPort, never()).hasActiveAssignmentOfAnyRole(any(), eq(List.of(roleId)), any());
-    verify(userRoleAssignmentPort, never())
-        .hasActiveAssignmentOfAnyRole(eq(targetUserId), any(), any());
-    verify(userRoleAssignmentPort).assign(targetUserId, roleId, tenantId, actorId);
-    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
-  }
-
-  /** R-10/T-E18 precedent, extended: an empty M8 must fail closed WITHOUT ever calling M5. */
-  @Test
-  void should_denyWithoutCallingHasActiveAdminAssignment_when_tenantHasNoSeededTenantAdminRole() {
-    Role role = customRole("BILLING_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.empty());
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verify(userRoleAssignmentPort, never()).hasActiveAssignmentOfAnyRole(any(), any(), any());
-    verify(rbacAuditPort)
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, "BILLING_ADMIN", actorId, ctx),
-            DenialReason.NOT_TENANT_ADMIN, "assign");
-  }
-
-  @Test
-  void should_propagateAndWriteNothing_when_findPermissionNamesForRoleThrows() {
-    Role role = customRole("BILLING_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenThrow(new RuntimeException("db down"));
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(RuntimeException.class)
-        .hasMessage("db down");
-
-    verify(userRoleAssignmentPort, never()).findRoleIdByName(any(), any());
-    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
-    verifyNoInteractions(rbacAuditPort, permissionCachePort);
-  }
-
-  @Test
-  void should_propagateAndWriteNothing_when_findRoleIdByNameThrows() {
-    Role role = customRole("BILLING_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenThrow(new RuntimeException("db down"));
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(RuntimeException.class)
-        .hasMessage("db down");
-
-    verify(userRoleAssignmentPort, never()).hasActiveAssignmentOfAnyRole(any(), any(), any());
-    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
-    verifyNoInteractions(rbacAuditPort, permissionCachePort);
-  }
-
-  @Test
-  void should_propagateAndWriteNothing_when_hasActiveAssignmentOfAnyRoleThrows() {
-    Role role = customRole("BILLING_ADMIN");
-    UUID adminRoleId = UUID.randomUUID();
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId))
-        .thenThrow(new RuntimeException("db down"));
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(RuntimeException.class)
-        .hasMessage("db down");
-
-    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
-    verifyNoInteractions(rbacAuditPort, permissionCachePort);
-  }
-
-  /**
-   * Edge Case 3, name-match variant: the seeded TENANT_ADMIN role satisfies BOTH halves of the
-   * unified condition (it is literally named TENANT_ADMIN and carries all 7 permissions). The
-   * name-first short-circuit means {@code carriesDangerousPermission} (M7) is never evaluated,
-   * so exactly one denial/audit row/metric increment is structural, not an ordering rule.
-   */
-  @Test
-  void should_recordExactlyOneDenialAuditAndMetric_when_roleIsNamedTenantAdminAndCallerNotActiveAdmin() {
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class);
-
-    verify(userRoleAssignmentPort, never()).findPermissionNamesForRole(any());
-    verify(rbacAuditPort, times(1)).recordRoleAssignmentDenied(any(), any(), any());
-    Counter counter = meterRegistry.find("nexus.rbac.privileged_role_change_blocked").counter();
-    assertThat(counter).isNotNull();
-    assertThat(counter.count()).isEqualTo(1.0);
-  }
-
-  /** Gate ordering vs. the 409 branch (§6.2 check 5 precedes check 7), dangerous-permission path. */
-  @Test
-  void should_notCheckDuplicateAssignment_when_dangerousRoleAndCallerNotActiveAdmin() {
-    Role role = customRole("BILLING_ADMIN");
-    UUID adminRoleId = UUID.randomUUID();
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class);
-
-    verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
-    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
-  }
-
-  @Test
-  void should_logWarnWithOperationAndMatchedOnRoleName_when_grantingTenantAdminAndCallerNotActiveAdmin() {
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(false);
-
-    ListAppender<ILoggingEvent> appender = startLogCapture();
-    try {
-      assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-          .isInstanceOf(InsufficientPermissionException.class);
-
-      var warnEvents =
-          appender.list.stream()
-              .filter(e -> e.getLevel() == Level.WARN)
-              .filter(
-                  e -> "RBAC_PRIVILEGED_ROLE_CHANGE_BLOCKED".equals(keyValueMap(e).get("event")))
-              .toList();
-      assertThat(warnEvents).hasSize(1);
-      Map<String, Object> keyValues = keyValueMap(warnEvents.get(0));
-      assertThat(keyValues)
-          .containsEntry("operation", "assign")
-          .containsEntry("matchedOn", "ROLE_NAME")
-          .containsEntry("tenantId", tenantId)
-          .containsEntry("targetUserId", targetUserId)
-          .containsEntry("actorUserId", actorId)
-          .containsEntry("roleId", roleId)
-          .containsEntry("roleName", "TENANT_ADMIN");
-    } finally {
-      stopLogCapture(appender);
-    }
-  }
-
-  @Test
-  void should_logWarnWithOperationAndMatchedOnDangerousPermission_when_dangerousRoleAndCallerNotActiveAdmin() {
-    Role role = customRole("BILLING_ADMIN");
-    UUID adminRoleId = UUID.randomUUID();
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(false);
-
-    ListAppender<ILoggingEvent> appender = startLogCapture();
-    try {
-      assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-          .isInstanceOf(InsufficientPermissionException.class);
-
-      var warnEvents =
-          appender.list.stream()
-              .filter(e -> e.getLevel() == Level.WARN)
-              .filter(
-                  e -> "RBAC_PRIVILEGED_ROLE_CHANGE_BLOCKED".equals(keyValueMap(e).get("event")))
-              .toList();
-      assertThat(warnEvents).hasSize(1);
-      Map<String, Object> keyValues = keyValueMap(warnEvents.get(0));
-      assertThat(keyValues)
-          .containsEntry("operation", "assign")
-          .containsEntry("matchedOn", "DANGEROUS_PERMISSION")
-          .containsEntry("roleName", "BILLING_ADMIN");
-    } finally {
-      stopLogCapture(appender);
-    }
-  }
-
-  @Test
-  void should_incrementPrivilegedRoleChangeBlockedCounter_withMatchedOnRoleNameTag_when_grantingTenantAdminAndCallerNotActiveAdmin() {
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class);
-
-    Counter counter =
-        meterRegistry
-            .find("nexus.rbac.privileged_role_change_blocked")
-            .tags("operation", "assign", "matchedOn", "ROLE_NAME")
-            .counter();
-    assertThat(counter).isNotNull();
-    assertThat(counter.count()).isEqualTo(1.0);
-  }
-
-  @Test
-  void should_incrementPrivilegedRoleChangeBlockedCounter_withMatchedOnDangerousPermissionTag_when_dangerousRoleAndCallerNotActiveAdmin() {
-    Role role = customRole("BILLING_ADMIN");
-    UUID adminRoleId = UUID.randomUUID();
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class);
-
-    Counter counter =
-        meterRegistry
-            .find("nexus.rbac.privileged_role_change_blocked")
-            .tags("operation", "assign", "matchedOn", "DANGEROUS_PERMISSION")
-            .counter();
-    assertThat(counter).isNotNull();
-    assertThat(counter.count()).isEqualTo(1.0);
-  }
-
-  /** MC-3's deliberate FR-4 exception: self-assignment is the one case where the two axes collapse. */
-  @Test
-  void should_throwNotTenantAdmin_when_actorSelfAssignsDangerousRoleAndIsNotActiveAdmin() {
-    Role role = customRole("BILLING_ADMIN");
-    UUID adminRoleId = UUID.randomUUID();
-    when(userDirectoryPort.findTenantId(actorId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
-    assertThat(meterRegistry.find("nexus.rbac.self_role_assignment").counter()).isNull();
-  }
-
-  @Test
-  void should_tagPrivilegedTrueAndCallerIsAdminTrue_when_actorSelfAssignsDangerousRoleAndIsActiveAdmin() {
-    Role role = customRole("BILLING_ADMIN");
-    UUID adminRoleId = UUID.randomUUID();
-    Instant assignedAt = Instant.now();
-    UUID userRoleId = UUID.randomUUID();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(actorId, roleId, "BILLING_ADMIN", assignedAt, actorId);
-
-    when(userDirectoryPort.findTenantId(actorId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.hasActiveAssignment(actorId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(actorId, roleId, tenantId, actorId)).thenReturn(userRoleId);
-    when(userRoleAssignmentPort.findActiveAssignmentView(actorId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
-    // M-2 (07-security-review.md), re-derived per US-017 D24/RC-17.1: callerIsAdmin is
-    // independently re-derived via callerHoldsActiveAdminEquivalentRole's M12-driven predicate,
-    // not inferred from `privileged` -- stub it to agree with the M5b locking read above so this
-    // success path still tags callerIsAdmin="true". The view's roleName alone ("TENANT_ADMIN")
-    // is sufficient (isFullyAdminEquivalent's name-match half), so findPermissionNamesForActive
-    // AssignmentsOfUser (M12) is left unstubbed (default empty list).
-    when(userRoleAssignmentPort.findActiveAssignmentViews(actorId, tenantId))
-        .thenReturn(
-            List.of(new ActiveRoleAssignment(actorId, adminRoleId, "TENANT_ADMIN", assignedAt, actorId)));
-    // US-018 A4: a self-assignment needs an administrator caller (an admin-defining role in M13).
-    stubCallerIsAdministrator();
-
-    ActiveRoleAssignment result = service.assign(actor, actorId, roleId, ctx);
-
-    assertThat(result).isEqualTo(view);
-    Counter counter =
-        meterRegistry
-            .find("nexus.rbac.self_role_assignment")
-            .tags("tenantId", tenantId.toString(), "privileged", "true", "callerIsAdmin", "true")
-            .counter();
-    assertThat(counter).isNotNull();
-    assertThat(counter.count()).isEqualTo(1.0);
-  }
-
-  /**
-   * M-2 (07-security-review.md, RC-11.2), re-derived per US-017 D24/RC-17.1: proves {@code
-   * callerIsAdmin="false"} is still reachable on the {@code privileged="true"} series -- the
-   * exact value the canary alert ({@code nexus_rbac_gate_bypass_canary}) fires on. Simulates the
-   * two independent mechanisms disagreeing: M5b's locking read ({@code
-   * hasActiveAssignmentOfAnyRole}) says the caller qualifies (so the gate passes and {@code
-   * assign()} still succeeds), but the M12-driven canary ({@code
-   * callerHoldsActiveAdminEquivalentRole}) shows no active assignment at all for that same actor
-   * -- a T-E22-class disagreement, no longer definitionally unemittable.
-   */
-  @Test
-  void should_tagCallerIsAdminFalse_when_gateAndCanaryDisagree() {
-    Role role = customRole("BILLING_ADMIN");
-    UUID adminRoleId = UUID.randomUUID();
-    Instant assignedAt = Instant.now();
-    UUID userRoleId = UUID.randomUUID();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(actorId, roleId, "BILLING_ADMIN", assignedAt, actorId);
-
-    when(userDirectoryPort.findTenantId(actorId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.hasActiveAssignment(actorId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(actorId, roleId, tenantId, actorId)).thenReturn(userRoleId);
-    when(userRoleAssignmentPort.findActiveAssignmentView(actorId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
-    when(userRoleAssignmentPort.findActiveAssignmentViews(actorId, tenantId)).thenReturn(List.of());
-    // US-018 A4: a self-assignment needs an administrator caller (an admin-defining role in M13).
-    stubCallerIsAdministrator();
-
-    ActiveRoleAssignment result = service.assign(actor, actorId, roleId, ctx);
-
-    assertThat(result).isEqualTo(view);
-    Counter counter =
-        meterRegistry
-            .find("nexus.rbac.self_role_assignment")
-            .tags("tenantId", tenantId.toString(), "privileged", "true", "callerIsAdmin", "false")
-            .counter();
-    assertThat(counter).isNotNull();
-    assertThat(counter.count()).isEqualTo(1.0);
-  }
-
-  // Load-bearing (US-014 Decision 2) -- see the comment on
-  // should_throwResourceNotFound_when_targetUserNotFound above.
   @Test
   void should_throwDuplicateRoleAssignment_when_activeAssignmentAlreadyExists() {
-    Role role = memberRole();
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
+    stubBenignAssignTarget();
     when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(true);
 
     assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
@@ -978,66 +424,34 @@ class RoleAssignmentServiceTest {
   }
 
   /**
-   * Inline-vs-afterCommit fallback (03-design.md §3.1 step 7): a plain Mockito unit test has no
-   * active Spring transaction synchronization, so {@code registerPostCommitSideEffects} must run
-   * the cache-evict side effect inline, synchronously, before {@code assign(...)} returns. The
-   * audit write (US-018 A6) is unconditional now -- it is called inline, before {@code
-   * registerPostCommitSideEffects} even runs, regardless of synchronization state -- so this test
-   * no longer exercises the fallback for it, only for the cache eviction.
+   * Inline-vs-afterCommit fallback: a plain Mockito unit test has no active Spring transaction
+   * synchronization, so the cache-evict side effect must run inline before {@code assign(...)}
+   * returns.
    */
   @Test
   void should_fireSideEffectsInlineSynchronously_when_noActiveTransactionSynchronization() {
     assertThat(TransactionSynchronizationManager.isSynchronizationActive())
         .as("sanity check: a plain unit test has no active transaction synchronization")
         .isFalse();
-
-    Role role = memberRole();
-    Instant assignedAt = Instant.now();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(targetUserId, roleId, "MEMBER", assignedAt, actorId);
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
-        .thenReturn(UUID.randomUUID());
-    when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
 
     service.assign(actor, targetUserId, roleId, ctx);
 
-    // By the time assign() has returned, the side effects must already have fired -- there is
-    // no pending afterCommit callback to wait for.
     verify(permissionCachePort, times(1)).evict(tenantId, targetUserId);
     verify(rbacAuditPort, times(1)).recordRoleAssigned(any());
   }
 
-  /**
-   * Complements the test above: when a transaction synchronization IS active (as it would be
-   * under a real {@code @Transactional} call), the cache-eviction side effect must be deferred to
-   * {@code afterCommit} rather than fired inline. The audit write (US-018 A6) is the opposite now:
-   * it fires inline, inside the transaction, regardless of synchronization state -- it is never
-   * deferred to {@code afterCommit}.
-   */
+  /** The audit fires inline, inside the transaction; only the eviction waits for afterCommit. */
   @Test
   void should_deferOnlyCacheEvictionUntilAfterCommit_when_transactionSynchronizationActive() {
-    Role role = memberRole();
-    Instant assignedAt = Instant.now();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(targetUserId, roleId, "MEMBER", assignedAt, actorId);
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
-        .thenReturn(UUID.randomUUID());
-    when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
 
     TransactionSynchronizationManager.initSynchronization();
     try {
       service.assign(actor, targetUserId, roleId, ctx);
 
-      // US-018 A6: the audit write already happened, inline, before assign() returned -- only
-      // the cache eviction is still pending afterCommit.
       verify(rbacAuditPort).recordRoleAssigned(any());
       verifyNoInteractions(permissionCachePort);
 
@@ -1052,148 +466,813 @@ class RoleAssignmentServiceTest {
     }
   }
 
-  // ---------------------------------------------------------------------------------------
-  // RC-7 (T-005): nexus.rbac.self_role_assignment — unconditional exploitation-side signal
-  // ---------------------------------------------------------------------------------------
-
-  /**
-   * 03-design.md §9.2/§10.2 (RC-7): unconditional, no dangerous-permission lookup. Proves the
-   * counter fires whenever {@code targetUserId == actor.userId()} AND that {@code assign()}'s
-   * outcome is unchanged -- same successful result as the non-self happy path.
-   */
   @Test
-  void should_incrementSelfRoleAssignmentCounter_andStillSucceed_when_actorAssignsRoleToSelf() {
-    Role role = memberRole();
-    Instant assignedAt = Instant.now();
-    UUID userRoleId = UUID.randomUUID();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(actorId, roleId, "MEMBER", assignedAt, actorId);
-
-    when(userDirectoryPort.findTenantId(actorId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.hasActiveAssignment(actorId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(actorId, roleId, tenantId, actorId))
-        .thenReturn(userRoleId);
-    when(userRoleAssignmentPort.findActiveAssignmentView(actorId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
-    // US-018 A4: a self-assignment needs an administrator caller (an admin-defining role in M13).
-    stubCallerIsAdministrator();
-
-    ActiveRoleAssignment result = service.assign(actor, actorId, roleId, ctx);
-
-    assertThat(result).isEqualTo(view);
-    Counter counter = meterRegistry.find("nexus.rbac.self_role_assignment").counter();
-    assertThat(counter).isNotNull();
-    assertThat(counter.count()).isEqualTo(1.0);
-    // D7/D15 (§9.2): a non-dangerous role never reaches the gate, so callerIsAdmin is "n_a",
-    // never "false" -- that unreachability on the success path is the bypass canary's premise.
-    assertThat(counter.getId().getTag("privileged")).isEqualTo("false");
-    assertThat(counter.getId().getTag("callerIsAdmin")).isEqualTo("n_a");
-  }
-
-  /** Complements the test above: a non-self assignment must never increment the counter. */
-  @Test
-  void should_notIncrementSelfRoleAssignmentCounter_when_targetIsDifferentUser() {
-    Role role = memberRole();
-    Instant assignedAt = Instant.now();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(targetUserId, roleId, "MEMBER", assignedAt, actorId);
-
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
-        .thenReturn(UUID.randomUUID());
-    when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
+  void should_neverInvalidate_when_assignSucceeds() {
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
 
     service.assign(actor, targetUserId, roleId, ctx);
 
-    assertThat(meterRegistry.find("nexus.rbac.self_role_assignment").counter()).isNull();
+    verifyNoInteractions(permissionFreshness);
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // T-016 (rows 1, 4, 6): classification and the set lock on assign
+  // ---------------------------------------------------------------------------------------
+
+  /** Row 4: a benign target takes no lock and does not read the tenant's roles (M10'). */
+  @Test
+  void should_takeNoLockAndReadNoTenantRoles_when_targetIsNotAdminDefining() {
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(Set.of(P1)));
+    stubCallerHoldsP1Only();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
+    verify(userRoleAssignmentPort, never()).findRolePermissionIdsForTenantRoles(any());
+    assertThat(meterRegistry.find("nexus.rbac.privileged_revoke_lock_hold").timers()).isEmpty();
+  }
+
+  /** Row 1 and 4: an admin-defining target is classified, then M10' and M11 run before any decision. */
+  @Test
+  void should_takeM10PrimeThenM11BeforeEveryDecisionRead_when_targetIsAdminDefining() {
+    stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(holder(actorId, roleId)));
+    stubCallerIsAdministrator();
+    stubSuccessfulInsert();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    InOrder inOrder = Mockito.inOrder(userRoleAssignmentPort);
+    inOrder.verify(userRoleAssignmentPort).findPermissionIdsForRole(roleId, tenantId);
+    inOrder.verify(userRoleAssignmentPort).findCatalogueIds();
+    inOrder.verify(userRoleAssignmentPort).findRolePermissionIdsForTenantRoles(tenantId);
+    inOrder.verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), any());
+    inOrder
+        .verify(userRoleAssignmentPort)
+        .findHeldRolePermissionIdsForAuthorization(actorId, tenantId);
+    inOrder.verify(userRoleAssignmentPort).hasActiveAssignment(targetUserId, roleId);
+    inOrder.verify(userRoleAssignmentPort).assign(targetUserId, roleId, tenantId, actorId);
+  }
+
+  /** A role named TENANT_ADMIN that carries nothing is not admin-defining: no lock (row 1). */
+  @Test
+  void should_takeNoLock_when_roleIsNamedTenantAdminButCarriesNoPermissions() {
+    stubTargetUserAndRole(targetUserId, role("TENANT_ADMIN"));
+    stubSuccessfulInsert();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
+  }
+
+  /** Row 1: a role one permission short of the catalogue is not admin-defining: no lock. */
+  @Test
+  void should_takeNoLock_when_roleIsOnePermissionShortOfTheCatalogue() {
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(Set.of(P1)));
+    stubCallerHoldsP1Only();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
+  }
+
+  /** An empty catalogue makes no role admin-defining (fail closed): no lock. */
+  @Test
+  void should_takeNoLock_when_catalogueReadReturnsEmpty() {
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+    when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(Set.of());
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(Set.of(P1)));
+    stubCallerHoldsP1Only();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
+  }
+
+  @Test
+  void should_propagateAndWriteNothing_when_m10PrimeReadThrows() {
+    stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(CATALOGUE));
+    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId))
+        .thenThrow(new RuntimeException("db down"));
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(RuntimeException.class)
+        .hasMessage("db down");
+
+    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+    verifyNoInteractions(rbacAuditPort, permissionCachePort);
+  }
+
+  @Test
+  void should_propagateRecordErrorTimerAndWriteNothing_when_setLockedDecisionReadThrows() {
+    stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(holder(actorId, roleId)));
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenThrow(new RuntimeException("db down"));
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(RuntimeException.class)
+        .hasMessage("db down");
+
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+    assertThat(
+            meterRegistry
+                .find("nexus.rbac.privileged_revoke_lock_hold")
+                .tags("operation", "assign", "outcome", "error")
+                .timer())
+        .isNotNull();
+    verifyNoInteractions(rbacAuditPort, permissionCachePort);
   }
 
   /**
-   * The counter must be accompanied by a WARN log (design §9.2), mirroring the file's existing
-   * {@code RBAC_LAST_ADMIN_REVOCATION_BLOCKED} structured-WARN convention.
+   * Row 1: a partial administrator may now propagate exactly what they hold. The caller holds the
+   * whole catalogue across two roles (the union) and assigns an admin-defining role to ANOTHER
+   * user: A2 passes. This is the intended loosening of ADR-0021, recorded as RES-27's snapshot
+   * residual in the M3 re-pass.
    */
   @Test
-  void should_logWarnWithSelfRoleAssignmentMarker_when_actorAssignsRoleToSelf() {
-    Role role = memberRole();
-    Instant assignedAt = Instant.now();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(actorId, roleId, "MEMBER", assignedAt, actorId);
+  void should_assignAdminDefiningRoleToAnotherUser_when_callerHoldsTheWholeCatalogueThroughTheUnion() {
+    stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of());
+    stubCallerIsUnionHolder();
+    stubSuccessfulInsert();
 
-    when(userDirectoryPort.findTenantId(actorId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.hasActiveAssignment(actorId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(actorId, roleId, tenantId, actorId))
-        .thenReturn(UUID.randomUUID());
-    when(userRoleAssignmentPort.findActiveAssignmentView(actorId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
-    // US-018 A4: a self-assignment needs an administrator caller (an admin-defining role in M13).
-    stubCallerIsAdministrator();
+    service.assign(actor, targetUserId, roleId, ctx);
 
-    ListAppender<ILoggingEvent> appender = startLogCapture();
-    try {
-      service.assign(actor, actorId, roleId, ctx);
-
-      var warnEvents = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
-      assertThat(warnEvents).hasSize(1);
-      Map<String, Object> keyValues = keyValueMap(warnEvents.get(0));
-      assertThat(keyValues)
-          .containsEntry("event", "RBAC_SELF_ROLE_ASSIGNMENT")
-          .containsEntry("tenantId", tenantId)
-          .containsEntry("targetUserId", actorId)
-          .containsEntry("roleId", roleId);
-    } finally {
-      stopLogCapture(appender);
-    }
+    verify(userRoleAssignmentPort).assign(targetUserId, roleId, tenantId, actorId);
   }
 
   // ---------------------------------------------------------------------------------------
-  // revoke()
+  // T-016 (row 1, RC-25.1, RC-25.3): A4's administrator status comes from M11's rows
+  // ---------------------------------------------------------------------------------------
+
+  /**
+   * RC-25.1: M13 (the snapshot) still says the caller is an administrator, but M11's locked rows
+   * no longer contain the caller (the role was revoked while this request waited on the lock). A4
+   * decides from M11: 403 SELF_ASSIGNMENT, the timer closes as denied, and nothing is written.
+   */
+  @Test
+  void should_denySelfAssignment_when_m13SaysAdministratorButLockedRowsDoNot_RC25() {
+    stubTargetUserAndRole(actorId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(holder(UUID.randomUUID(), roleId)));
+    stubCallerIsAdministrator();
+
+    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.SELF_ASSIGNMENT));
+
+    verify(rbacAuditPort, times(1))
+        .recordRoleAssignmentDenied(
+            new RbacAuditEvent(tenantId, actorId, roleId, "ADMIN_LIKE", actorId, ctx),
+            DenialReason.SELF_ASSIGNMENT, "assign");
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+    verify(userRoleAssignmentPort, never()).findHeldAdminDefiningRoleIds(any(), any());
+    assertThat(
+            meterRegistry
+                .find("nexus.rbac.privileged_revoke_lock_hold")
+                .tags("operation", "assign", "outcome", "denied")
+                .timer())
+        .isNotNull();
+  }
+
+  /**
+   * RC-25.1, the other direction: M13 says the caller is only a union-holder, but M11's current
+   * rows show the caller as an active holder of an admin-defining role. The locked rows win, so
+   * the self-assignment is allowed. (A2 still compares against M13's union.)
+   */
+  @Test
+  void should_allowSelfAssignment_when_lockedRowsShowCallerAsAdministratorEvenThoughM13DoesNot() {
+    UUID callersAdminRoleId = UUID.randomUUID();
+    stubTargetUserAndRole(actorId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(holder(actorId, callersAdminRoleId)), callersAdminRoleId);
+    stubCallerIsUnionHolder();
+    stubSuccessfulSelfInsert();
+    when(userRoleAssignmentPort.findHeldAdminDefiningRoleIds(actorId, tenantId))
+        .thenReturn(List.of(callersAdminRoleId));
+
+    service.assign(actor, actorId, roleId, ctx);
+
+    verify(userRoleAssignmentPort).assign(actorId, roleId, tenantId, actorId);
+  }
+
+  /** A holder of the TARGET role (itself admin-defining) counts: the target is in the lock set. */
+  @Test
+  void should_treatTheCallerAsAdministrator_when_callerHoldsTheAdminDefiningTargetRoleItself() {
+    stubTargetUserAndRole(actorId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(holder(actorId, roleId)));
+    stubCallerIsAdministrator();
+    stubSuccessfulSelfInsert();
+    when(userRoleAssignmentPort.findHeldAdminDefiningRoleIds(actorId, tenantId))
+        .thenReturn(List.of(roleId));
+
+    service.assign(actor, actorId, roleId, ctx);
+
+    verify(userRoleAssignmentPort).assign(actorId, roleId, tenantId, actorId);
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // A4 on a benign target (the caller's status comes from M13's per-role rows)
   // ---------------------------------------------------------------------------------------
 
   @Test
-  void should_revokeAndFireSideEffectsWithRecordRoleRevoked_when_happyPathNonAdmin() {
-    Role role = memberRole();
-    UUID refId = UUID.randomUUID();
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.revoke(eq(refId), any())).thenReturn(1);
+  void should_assign_when_administratorSelfAssignsABenignRole() {
+    stubBenignSelfAssignTarget();
+    stubSuccessfulSelfInsert();
+    stubCallerIsAdministrator();
+    when(userRoleAssignmentPort.findHeldAdminDefiningRoleIds(actorId, tenantId))
+        .thenReturn(List.of(UUID.randomUUID()));
+
+    ActiveRoleAssignment result = service.assign(actor, actorId, roleId, ctx);
+
+    assertThat(result.userId()).isEqualTo(actorId);
+    verify(userRoleAssignmentPort).assign(actorId, roleId, tenantId, actorId);
+    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
+  }
+
+  @Test
+  void should_denySelfAssignmentWithOneDenialRow_when_callerIsNotAnAdministrator() {
+    stubBenignSelfAssignTarget();
+    stubCallerHoldsP1Only();
+
+    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.SELF_ASSIGNMENT));
+
+    verify(rbacAuditPort, times(1))
+        .recordRoleAssignmentDenied(
+            new RbacAuditEvent(tenantId, actorId, roleId, "MEMBER", actorId, ctx),
+            DenialReason.SELF_ASSIGNMENT, "assign");
+    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
+    verify(throttlePort, times(1)).recordDenial(tenantId, actorId);
+    verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+    verifyNoInteractions(permissionCachePort);
+  }
+
+  /** §2.1: the union of two partial roles is NOT an administrator; per role fails closed. */
+  @Test
+  void should_denySelfAssignment_when_catalogueSplitAcrossTwoRoles() {
+    stubBenignSelfAssignTarget();
+    stubCallerIsUnionHolder();
+
+    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.SELF_ASSIGNMENT));
+
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+  }
+
+  @Test
+  void should_denySelfAssignment_when_catalogueReadReturnsEmpty() {
+    stubBenignSelfAssignTarget();
+    when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(Set.of());
+    stubCallerHoldsP1Only();
+
+    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.SELF_ASSIGNMENT));
+  }
+
+  @Test
+  void should_propagateAndNotSave_when_catalogueReadThrows() {
+    stubBenignSelfAssignTarget();
+    IllegalStateException readFailure = new IllegalStateException("db down");
+    when(userRoleAssignmentPort.findCatalogueIds()).thenThrow(readFailure);
+
+    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx)).isSameAs(readFailure);
+
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+    verifyNoInteractions(rbacAuditPort, permissionCachePort);
+  }
+
+  @Test
+  void should_reportUserRoleAssignAsRequiredPermission_when_selfAssignmentDenied() {
+    stubBenignSelfAssignTarget();
+    stubCallerHoldsP1Only();
+
+    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
+        .satisfies(
+            e ->
+                assertThat(((InsufficientPermissionException) e).getRequiredPermission())
+                    .isEqualTo("user:role:assign"));
+  }
+
+  @Test
+  void should_logWarnWithIdsOnly_when_selfAssignmentDenied() {
+    stubBenignSelfAssignTarget();
+    stubCallerHoldsP1Only();
+    ListAppender<ILoggingEvent> logs = startLogCapture();
+
+    try {
+      assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
+          .isInstanceOf(InsufficientPermissionException.class);
+    } finally {
+      stopLogCapture(logs);
+    }
+
+    ILoggingEvent warn =
+        logs.list.stream()
+            .filter(e -> "RBAC_SELF_ASSIGNMENT_DENIED".equals(keyValueMap(e).get("event")))
+            .findFirst()
+            .orElseThrow();
+    assertThat(warn.getLevel()).isEqualTo(Level.WARN);
+    assertThat(keyValueMap(warn))
+        .containsOnlyKeys("event", "tenantId", "actorUserId", "roleId")
+        .containsEntry("tenantId", tenantId)
+        .containsEntry("actorUserId", actorId)
+        .containsEntry("roleId", roleId);
+  }
+
+  /** §4.4: A4 and A2 take their inputs from the same single M13 read. */
+  @Test
+  void should_readM13ExactlyOnce_when_selfTargetPassesA4AndA2() {
+    stubBenignSelfAssignTarget();
+    stubSuccessfulSelfInsert();
+    stubCallerIsAdministrator();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(Set.of(P1)));
+    when(userRoleAssignmentPort.findHeldAdminDefiningRoleIds(actorId, tenantId))
+        .thenReturn(List.of(UUID.randomUUID()));
+
+    service.assign(actor, actorId, roleId, ctx);
+
+    verify(userRoleAssignmentPort, times(1))
+        .findHeldRolePermissionIdsForAuthorization(actorId, tenantId);
+  }
+
+  /** The earlier gate wins and reports once: A4 before A2. */
+  @Test
+  void should_reportSelfAssignmentOnce_when_A4AndA2BothApply() {
+    stubBenignSelfAssignTarget();
+    stubCallerHoldsP1Only();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(Set.of(P2)));
+
+    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.SELF_ASSIGNMENT));
+
+    verify(rbacAuditPort, times(1)).recordRoleAssignmentDenied(any(), any(), any());
+    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
+    verify(throttlePort, times(1)).recordDenial(tenantId, actorId);
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // A2 (grant-subset on assign)
+  // ---------------------------------------------------------------------------------------
+
+  @Test
+  void should_deny403GrantExceedsCaller_when_targetRoleCarriesPermissionCallerLacks() {
+    stubBenignAssignTarget();
+    // Not admin-defining (the catalogue is P1 and P2): a plain A2 denial, no set lock.
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(Set.of(P1, UUID.randomUUID())));
+    stubCallerHoldsP1Only();
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
+    verify(throttlePort).recordDenial(tenantId, actorId);
+    verifyNoInteractions(permissionCachePort);
+  }
+
+  @Test
+  void should_assign_when_targetPermissionsSubsetOfCallerUnion() {
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(Set.of(P1)));
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(
+            withUserRoleAssign(
+                List.of(ref(UUID.randomUUID(), P1), ref(UUID.randomUUID(), UUID.randomUUID()))));
+
+    ActiveRoleAssignment result = service.assign(actor, targetUserId, roleId, ctx);
+
+    assertThat(result.roleId()).isEqualTo(roleId);
+    verify(userRoleAssignmentPort).assign(targetUserId, roleId, tenantId, actorId);
+    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
+  }
+
+  @Test
+  void should_assign_when_targetRoleHasNoPermissions() {
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    // EC7: an empty role grants nothing, so it passes even for a caller holding nothing else.
+    verify(userRoleAssignmentPort).assign(targetUserId, roleId, tenantId, actorId);
+  }
+
+  @Test
+  void should_propagateAndNotSave_when_heldPermissionReadThrows() {
+    stubBenignAssignTarget();
+    IllegalStateException readFailure = new IllegalStateException("db down");
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenThrow(readFailure);
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isSameAs(readFailure);
+
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+    verifyNoInteractions(rbacAuditPort, permissionCachePort);
+  }
+
+  @Test
+  void should_recordMissingCountAndNoIds_when_grantExceedsCaller() {
+    UUID lackedA = UUID.randomUUID();
+    UUID lackedB = UUID.randomUUID();
+    stubBenignAssignTarget();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(Set.of(P1, lackedA, lackedB)));
+    stubCallerHoldsP1Only();
+    ListAppender<ILoggingEvent> logs = startLogCapture();
+
+    try {
+      assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+          .isInstanceOf(InsufficientPermissionException.class);
+    } finally {
+      stopLogCapture(logs);
+    }
+
+    verify(rbacAuditPort, times(1))
+        .recordRoleAssignmentDenied(
+            new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx),
+            DenialReason.GRANT_EXCEEDS_CALLER, "assign", 2);
+    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
+
+    ILoggingEvent warn =
+        logs.list.stream()
+            .filter(e -> "RBAC_GRANT_EXCEEDS_CALLER".equals(keyValueMap(e).get("event")))
+            .findFirst()
+            .orElseThrow();
+    assertThat(warn.getLevel()).isEqualTo(Level.WARN);
+    Map<String, Object> fields = keyValueMap(warn);
+    assertThat(fields)
+        .containsEntry("tenantId", tenantId)
+        .containsEntry("actorUserId", actorId)
+        .containsEntry("targetUserId", targetUserId)
+        .containsEntry("roleId", roleId)
+        .containsEntry("missingCount", 2);
+    assertThat(fields.values()).doesNotContain(lackedA, lackedB, P1);
+    assertThat(warn.getFormattedMessage())
+        .doesNotContain(lackedA.toString())
+        .doesNotContain(lackedB.toString());
+  }
+
+  @Test
+  void should_reportUserRoleAssignAsRequiredPermission_when_grantExceedsCaller() {
+    stubBenignAssignTarget();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(Set.of(UUID.randomUUID())));
+
+    // The endpoint permission, never the missing one: no oracle on the role's contents.
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .satisfies(
+            e ->
+                assertThat(((InsufficientPermissionException) e).getRequiredPermission())
+                    .isEqualTo("user:role:assign"));
+  }
+
+  @Test
+  void should_reportGrantExceedsCallerOnceAndNeverCheckDuplicate_when_A2AndDuplicateBothApply() {
+    stubBenignAssignTarget();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(Set.of(P1, UUID.randomUUID())));
+    stubCallerHoldsP1Only();
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    verify(rbacAuditPort, times(1))
+        .recordRoleAssignmentDenied(
+            any(), eq(DenialReason.GRANT_EXCEEDS_CALLER), eq("assign"), eq(1));
+    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
+    verify(throttlePort, times(1)).recordDenial(tenantId, actorId);
+    verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // L-1 (the endpoint permission must still be held, fresh M13) and L-2 (M14 fails closed)
+  // ---------------------------------------------------------------------------------------
+
+  @Test
+  void should_deny403PermissionAbsentBeforeA2_when_assignCallerNoLongerHoldsUserRoleAssign() {
+    stubBenignAssignTarget();
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(List.of(ref(UUID.randomUUID(), P1)));
+    // A2 alone would pass: the target role carries only what the caller holds.
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(Set.of(P1)));
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> {
+              assertThat(e.getReason()).isEqualTo(DenialReason.PERMISSION_ABSENT);
+              assertThat(e.getRequiredPermission()).isEqualTo("user:role:assign");
+            });
+
+    verify(rbacAuditPort, times(1))
+        .recordRoleAssignmentDenied(
+            new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx),
+            DenialReason.PERMISSION_ABSENT, "assign");
+    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
+    verify(throttlePort, times(1)).recordDenial(tenantId, actorId);
+    verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+    verifyNoInteractions(permissionCachePort);
+  }
+
+  @Test
+  void should_deny403PermissionAbsentBeforeA4_when_selfAssignWithoutUserRoleAssign() {
+    stubBenignSelfAssignTarget();
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(List.of());
+
+    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.PERMISSION_ABSENT));
+
+    verify(rbacAuditPort, times(1)).recordRoleAssignmentDenied(any(), any(), any());
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+  }
+
+  @Test
+  void should_logEndpointPermissionNotHeldWarnWithIdsOnly_when_l1Denies() {
+    stubBenignAssignTarget();
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(List.of());
+    ListAppender<ILoggingEvent> logs = startLogCapture();
+
+    try {
+      assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+          .isInstanceOf(InsufficientPermissionException.class);
+    } finally {
+      stopLogCapture(logs);
+    }
+
+    ILoggingEvent warn =
+        logs.list.stream()
+            .filter(e -> "RBAC_ENDPOINT_PERMISSION_NOT_HELD".equals(keyValueMap(e).get("event")))
+            .findFirst()
+            .orElseThrow();
+    assertThat(warn.getLevel()).isEqualTo(Level.WARN);
+    assertThat(keyValueMap(warn))
+        .containsOnlyKeys("event", "tenantId", "actorUserId", "targetUserId", "roleId", "operation")
+        .containsEntry("operation", "assign");
+  }
+
+  @Test
+  void should_throwRoleNotFoundAndNotSave_when_m14ReportsRoleNotInTenantOnAssign() {
+    stubBenignAssignTarget();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND");
+
+    verifyNoInteractions(rbacAuditPort);
+    verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // T-018 (row 7, RC-28.1): the independent check on a successful self-target assignment
+  // ---------------------------------------------------------------------------------------
+
+  /** RC-28.1: A4 passed, the independent per-role statement says "not an administrator". */
+  @Test
+  void should_emitErrorAndCountDisagreement_when_independentCheckDisagreesWithA4() {
+    stubBenignSelfAssignTarget();
+    stubSuccessfulSelfInsert();
+    stubCallerIsAdministrator();
+    when(userRoleAssignmentPort.findHeldAdminDefiningRoleIds(actorId, tenantId))
+        .thenReturn(List.of());
+    ListAppender<ILoggingEvent> logs = startLogCapture();
+
+    try {
+      service.assign(actor, actorId, roleId, ctx);
+    } finally {
+      stopLogCapture(logs);
+    }
+
+    ILoggingEvent error =
+        logs.list.stream()
+            .filter(e -> "RBAC_SELF_ASSIGN_ADMIN_DISAGREEMENT".equals(keyValueMap(e).get("event")))
+            .findFirst()
+            .orElseThrow();
+    assertThat(error.getLevel()).isEqualTo(Level.ERROR);
+    assertThat(keyValueMap(error))
+        .containsOnlyKeys("event", "tenantId", "actorUserId", "roleId")
+        .containsEntry("tenantId", tenantId)
+        .containsEntry("actorUserId", actorId)
+        .containsEntry("roleId", roleId);
+    Counter counter = meterRegistry.find("nexus.rbac.self_assign_admin_disagreement").counter();
+    assertThat(counter).isNotNull();
+    assertThat(counter.count()).isEqualTo(1.0);
+    // Never consulted for authorization: the request still succeeded.
+    verify(userRoleAssignmentPort).assign(actorId, roleId, tenantId, actorId);
+  }
+
+  @Test
+  void should_emitNothing_when_independentCheckAgreesWithA4() {
+    stubBenignSelfAssignTarget();
+    stubSuccessfulSelfInsert();
+    stubCallerIsAdministrator();
+    when(userRoleAssignmentPort.findHeldAdminDefiningRoleIds(actorId, tenantId))
+        .thenReturn(List.of(UUID.randomUUID()));
+    ListAppender<ILoggingEvent> logs = startLogCapture();
+
+    try {
+      service.assign(actor, actorId, roleId, ctx);
+    } finally {
+      stopLogCapture(logs);
+    }
+
+    assertThat(logs.list.stream().filter(e -> e.getLevel() == Level.ERROR)).isEmpty();
+    assertThat(meterRegistry.find("nexus.rbac.self_assign_admin_disagreement").counter()).isNull();
+  }
+
+  /** US-017 RES-25's lesson: the read happens BEFORE the insert, never after. */
+  @Test
+  void should_runTheIndependentCheckBeforeTheInsert_notAfter() {
+    stubBenignSelfAssignTarget();
+    stubSuccessfulSelfInsert();
+    stubCallerIsAdministrator();
+    when(userRoleAssignmentPort.findHeldAdminDefiningRoleIds(actorId, tenantId))
+        .thenReturn(List.of(UUID.randomUUID()));
+
+    service.assign(actor, actorId, roleId, ctx);
+
+    InOrder inOrder = Mockito.inOrder(userRoleAssignmentPort);
+    inOrder.verify(userRoleAssignmentPort).findHeldAdminDefiningRoleIds(actorId, tenantId);
+    inOrder.verify(userRoleAssignmentPort).assign(actorId, roleId, tenantId, actorId);
+  }
+
+  @Test
+  void should_notRunTheIndependentCheck_when_targetIsAnotherUser() {
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    verify(userRoleAssignmentPort, never()).findHeldAdminDefiningRoleIds(any(), any());
+  }
+
+  /** It is never consulted for authorization: A4's denial happens without reading it. */
+  @Test
+  void should_notRunTheIndependentCheck_when_selfAssignmentIsDenied() {
+    stubBenignSelfAssignTarget();
+    stubCallerHoldsP1Only();
+
+    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
+        .isInstanceOf(InsufficientPermissionException.class);
+
+    verify(userRoleAssignmentPort, never()).findHeldAdminDefiningRoleIds(any(), any());
+  }
+
+  @Test
+  void should_notRunTheIndependentCheck_when_assignmentIsADuplicate() {
+    stubBenignSelfAssignTarget();
+    stubCallerIsAdministrator();
+    when(userRoleAssignmentPort.hasActiveAssignment(actorId, roleId)).thenReturn(true);
+
+    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
+        .isInstanceOf(DuplicateRoleAssignmentException.class);
+
+    verify(userRoleAssignmentPort, never()).findHeldAdminDefiningRoleIds(any(), any());
+  }
+
+  @Test
+  void should_propagateAndNotInsert_when_independentCheckReadThrows() {
+    stubBenignSelfAssignTarget();
+    stubCallerIsAdministrator();
+    when(userRoleAssignmentPort.hasActiveAssignment(actorId, roleId)).thenReturn(false);
+    when(userRoleAssignmentPort.findHeldAdminDefiningRoleIds(actorId, tenantId))
+        .thenThrow(new RuntimeException("db down"));
+
+    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
+        .isInstanceOf(RuntimeException.class)
+        .hasMessage("db down");
+
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // T-018 (row 9): admin_role_assigned{selfTarget}, and the retired meters stay gone
+  // ---------------------------------------------------------------------------------------
+
+  @Test
+  void should_countAdminRoleAssignedWithSelfTargetFalse_when_anAdminDefiningRoleIsAssignedToAnotherUser() {
+    stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(holder(actorId, roleId)));
+    stubCallerIsAdministrator();
+    stubSuccessfulInsert();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    Counter counter =
+        meterRegistry.find("nexus.rbac.admin_role_assigned").tag("selfTarget", "false").counter();
+    assertThat(counter).isNotNull();
+    assertThat(counter.count()).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_countAdminRoleAssignedWithSelfTargetTrue_when_anAdministratorAssignsAnAdminDefiningRoleToSelf() {
+    stubTargetUserAndRole(actorId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(holder(actorId, roleId)));
+    stubCallerIsAdministrator();
+    stubSuccessfulSelfInsert();
+    when(userRoleAssignmentPort.findHeldAdminDefiningRoleIds(actorId, tenantId))
+        .thenReturn(List.of(roleId));
+
+    service.assign(actor, actorId, roleId, ctx);
+
+    Counter counter =
+        meterRegistry.find("nexus.rbac.admin_role_assigned").tag("selfTarget", "true").counter();
+    assertThat(counter).isNotNull();
+    assertThat(counter.count()).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_notCountAdminRoleAssigned_when_targetRoleIsNotAdminDefining() {
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    assertThat(meterRegistry.find("nexus.rbac.admin_role_assigned").counter()).isNull();
+  }
+
+  @Test
+  void should_notEmitAnyRetiredMeter_when_assigningAnAdminDefiningRole() {
+    stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(holder(actorId, roleId)));
+    stubCallerIsAdministrator();
+    stubSuccessfulInsert();
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    assertThat(
+            meterRegistry.getMeters().stream()
+                .map(meter -> meter.getId().getName())
+                .filter(
+                    name ->
+                        name.equals("nexus.rbac.self_role_assignment")
+                            || name.equals("nexus.rbac.privileged_role_change_allowed")
+                            || name.equals("nexus.rbac.privileged_role_change_blocked")
+                            || name.equals("nexus.rbac.admin_minted_by_non_named_admin")))
+        .isEmpty();
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // revoke(): tenant isolation, errors, side effects
+  // ---------------------------------------------------------------------------------------
+
+  @Test
+  void should_revokeAndFireSideEffectsWithRecordRoleRevoked_when_happyPathBenign() {
+    ActiveAssignmentRef ref = stubBenignRevokeTarget();
+    when(userRoleAssignmentPort.revoke(eq(ref.id()), any())).thenReturn(1);
 
     service.revoke(actor, targetUserId, roleId, ctx);
 
     verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
-    // US-018 A6: the audit write now happens INLINE, before registerPostCommitSideEffects even
-    // runs -- it precedes the cache eviction, the reverse of the pre-A6 post-commit order.
+    verify(userRoleAssignmentPort, never()).findRolePermissionIdsForTenantRoles(any());
     InOrder inOrder = Mockito.inOrder(rbacAuditPort, permissionCachePort);
     inOrder
         .verify(rbacAuditPort)
         .recordRoleRevoked(
             new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx));
     inOrder.verify(permissionCachePort).evict(tenantId, targetUserId);
-    // MC-4 (RC-40.5): within this one call, Group A fires and Group B never does.
     verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
     verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
   }
-
-  // ---------------------------------------------------------------------------------------
-  // US-018 T-009 MC-7b: revoke() bumps the target's permission epoch after commit only
-  // ---------------------------------------------------------------------------------------
 
   @Test
   void should_invalidateUserOnlyInsideAfterCommit_when_revokeInsideSynchronization() {
     stubHappyPathRevoke();
     boolean[] insideAfterCommit = {false};
-    doAnswer(invocation -> {
-      assertThat(insideAfterCommit[0])
-          .as("invalidateUser called with an active synchronization outside afterCommit (MC-7b)")
-          .isTrue();
-      return null;
-    }).when(permissionFreshness).invalidateUser(any(), any(), any());
+    doAnswer(
+            invocation -> {
+              assertThat(insideAfterCommit[0])
+                  .as("invalidateUser called with an active synchronization outside afterCommit")
+                  .isTrue();
+              return null;
+            })
+        .when(permissionFreshness)
+        .invalidateUser(any(), any(), any());
 
     TransactionSynchronizationManager.initSynchronization();
     try {
@@ -1250,35 +1329,11 @@ class RoleAssignmentServiceTest {
     verify(permissionFreshness, never()).invalidateUser(tenantId, actorId, "revoke");
   }
 
-  @Test
-  void should_neverInvalidate_when_assignSucceeds() {
-    Role role = memberRole();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(targetUserId, roleId, "MEMBER", Instant.now(), actorId);
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
-        .thenReturn(UUID.randomUUID());
-    when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
-
-    service.assign(actor, targetUserId, roleId, ctx);
-
-    verifyNoInteractions(permissionFreshness);
-  }
-
   private void stubHappyPathRevoke() {
-    UUID refId = UUID.randomUUID();
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(memberRole()));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.revoke(eq(refId), any())).thenReturn(1);
+    ActiveAssignmentRef ref = stubBenignRevokeTarget();
+    when(userRoleAssignmentPort.revoke(eq(ref.id()), any())).thenReturn(1);
   }
 
-  // Load-bearing (US-014 Decision 2) -- see the comment on
-  // should_throwResourceNotFound_when_targetUserNotFound above.
   @Test
   void should_throwResourceNotFound_when_revokeTargetUserNotFound() {
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.empty());
@@ -1291,25 +1346,46 @@ class RoleAssignmentServiceTest {
   }
 
   @Test
-  void should_throwCrossTenantTarget_when_revokeTargetTenantMismatch() {
+  void should_throwSameNotFoundAndWriteNoDenialRow_when_revokeTargetTenantMismatch() {
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(otherTenantId));
 
     assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "USER_NOT_FOUND")
+        .hasMessage("No such user");
 
-    verify(rbacAuditPort)
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, null, actorId, ctx),
-            DenialReason.CROSS_TENANT_TARGET, "revoke");
-    verifyNoInteractions(permissionCachePort);
+    verifyNoInteractions(permissionCachePort, rbacAuditPort);
+    assertThat(
+            meterRegistry
+                .get("nexus.rbac.permission_denied")
+                .tag("permission", "user:role:assign")
+                .tag("reason", "CROSS_TENANT_TARGET")
+                .counter()
+                .count())
+        .isEqualTo(1.0);
   }
 
-  // Load-bearing (US-014 Decision 2) -- see the comment on
-  // should_throwResourceNotFound_when_targetUserNotFound above.
+  @Test
+  void should_logCrossTenantWarnWithoutForeignIds_when_revokeTargetCrossTenant() {
+    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(otherTenantId));
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
+          .isInstanceOf(ResourceNotFoundException.class);
+
+      var warns = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
+      assertThat(warns).hasSize(1);
+      assertThat(keyValueMap(warns.get(0)))
+          .containsOnlyKeys("event", "tenantId", "actorUserId", "targetKind", "operation")
+          .containsEntry("event", "RBAC_CROSS_TENANT_TARGET")
+          .containsEntry("targetKind", "user")
+          .containsEntry("operation", "revoke");
+    } finally {
+      stopLogCapture(appender);
+    }
+  }
+
   @Test
   void should_throwResourceNotFound_when_revokeRoleNotFound() {
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
@@ -1323,39 +1399,36 @@ class RoleAssignmentServiceTest {
   }
 
   @Test
-  void should_throwCrossTenantTarget_when_revokeRoleTenantMismatch() {
+  void should_throwSameNotFoundAndWriteNoDenialRow_when_revokeRoleTenantMismatch() {
     Role foreignRole = new Role(roleId, otherTenantId, "MEMBER", "desc", false);
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
     when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(foreignRole));
 
     assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND")
+        .hasMessage("No such role");
 
     verify(userRoleAssignmentPort, never()).findActiveAssignmentRef(any(), any(), any());
-    verify(rbacAuditPort)
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, null, actorId, ctx),
-            DenialReason.CROSS_TENANT_TARGET, "revoke");
-    verifyNoInteractions(permissionCachePort);
+    verifyNoInteractions(permissionCachePort, rbacAuditPort);
+    assertThat(
+            meterRegistry
+                .get("nexus.rbac.permission_denied")
+                .tag("permission", "user:role:assign")
+                .tag("reason", "CROSS_TENANT_TARGET")
+                .counter()
+                .count())
+        .isEqualTo(1.0);
   }
 
   /**
-   * The real ordering in {@link RoleAssignmentService#revoke} resolves the M3 assignment-ref
-   * FIRST, ahead of the admin-lockout check — this covers "never assigned"/"already revoked"
-   * identically for admin and non-admin roles. So the lockout-guard port method must never be
-   * called for a non-admin role...
+   * The assignment lookup (M3) runs before the throttle and every authorization read: a missing
+   * assignment is a 404 for a benign and an admin-defining role alike, and no lock is ever taken.
    */
-  // Load-bearing (US-014 Decision 2) -- see the comment on
-  // should_throwResourceNotFound_when_targetUserNotFound above.
   @Test
-  void should_neverCallLockActiveAssignmentIds_when_nonAdminRoleAssignmentNotFound() {
-    Role role = memberRole();
+  void should_neverLockOrClassify_when_assignmentNotFound() {
     when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
+    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role("TENANT_ADMIN")));
     when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
         .thenReturn(Optional.empty());
 
@@ -1364,314 +1437,15 @@ class RoleAssignmentServiceTest {
         .hasFieldOrPropertyWithValue("code", "ROLE_ASSIGNMENT_NOT_FOUND");
 
     verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
+    verify(userRoleAssignmentPort, never()).findPermissionIdsForRole(any(), any());
     verify(userRoleAssignmentPort, never()).revoke(any(), any());
     verifyNoInteractions(permissionCachePort, rbacAuditPort);
   }
 
-  /**
-   * ...and, per the real (read, not assumed) ordering in the source, this is ALSO true for an
-   * admin role: {@code findActiveAssignmentRef} (M3) is resolved before {@code
-   * lockActiveAssignmentHolders} (M11) is ever reached, so a not-found assignment short-circuits
-   * before the lockout guard runs, even when the role being revoked is {@code TENANT_ADMIN}.
-   *
-   * <p>This is also Edge Case 11 (404 before 403): the target role here is the literally-named
-   * {@code TENANT_ADMIN}, which would otherwise trigger the privilege gate (and, for a
-   * non-qualifying caller, a 403) -- the 404 from M3 fires first regardless, since M3 is resolved
-   * ahead of every privilege-gate read.
-   */
-  // Load-bearing (US-014 Decision 2) -- see the comment on
-  // should_throwResourceNotFound_when_targetUserNotFound above.
-  @Test
-  void should_neverCallLockActiveAssignmentIds_when_adminRoleAssignmentNotFound() {
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.empty());
-
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(ResourceNotFoundException.class)
-        .hasFieldOrPropertyWithValue("code", "ROLE_ASSIGNMENT_NOT_FOUND");
-
-    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
-    verify(userRoleAssignmentPort, never()).revoke(any(), any());
-    verifyNoInteractions(permissionCachePort, rbacAuditPort);
-  }
-
-  /** AC5, actor-agnostic variant 1: the actor is revoking their OWN last-admin assignment. */
-  // Load-bearing (US-014 Decision 2) -- see the comment on
-  // should_throwResourceNotFound_when_targetUserNotFound above.
-  @Test
-  void should_throwLastAdminRoleException_when_lockedSetSizeOneContainsTargetRef_selfRevoke() {
-    UUID refId = UUID.randomUUID();
-    Role role = adminRole("TENANT_ADMIN");
-    // Actor revoking their own assignment: target == actor.
-    when(userDirectoryPort.findTenantId(actorId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(actorId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    // US-017 D5/D6: M11 locks the union set (here just {roleId}, since the tenant has no other
-    // admin-equivalent role) and returns the DISTINCT HOLDER rows, not a list of ids.
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(List.of(new ActiveAssignmentHolder(refId, actorId, roleId)));
-    // The privilege gate now runs ahead of AC5 -- the caller must pass it (M5b) to reach the
-    // lockout guard at all (design §6.4/§7.2).
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(true);
-
-    assertThatThrownBy(() -> service.revoke(actor, actorId, roleId, ctx))
-        .isInstanceOf(LastAdminRoleException.class)
-        .hasFieldOrPropertyWithValue("code", "RBAC_002");
-
-    verify(userRoleAssignmentPort, never()).revoke(any(), any());
-    verifyNoInteractions(permissionCachePort, rbacAuditPort);
-  }
-
-  /**
-   * AC5, actor-agnostic variant 2: a DIFFERENT admin revokes someone else's last-admin
-   * assignment. The guard must fire identically -- it is not conditioned on self-revocation.
-   *
-   * <p>T-009 / design §6.4: once the privilege gate is wired in, this exact state (the actor
-   * holds an active admin assignment while the LOCKED set contains only the TARGET's ref, never
-   * the actor's own) is proven unreachable in production -- M1's predicate is a superset of M5's,
-   * so the actor's own row would necessarily also be in {@code lockedActiveAdminIds} whenever M5
-   * returns true. Mockito can still construct the state artificially, and this test is
-   * deliberately kept: it is the unit-level proof that the AC5 guard itself performs no
-   * actor/target comparison (it only checks {@code size() <= 1 && contains(ref.id())}),
-   * independent of whether the state is reachable. See design §6.4 for the reachability proof.
-   */
-  // Load-bearing (US-014 Decision 2) -- see the comment on
-  // should_throwResourceNotFound_when_targetUserNotFound above.
-  @Test
-  void should_throwLastAdminRoleException_when_lockedSetSizeOneContainsTargetRef_differentAdminRevoking_syntheticStateSeeDesign64() {
-    UUID refId = UUID.randomUUID();
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(List.of(new ActiveAssignmentHolder(refId, targetUserId, roleId)));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(true);
-
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(LastAdminRoleException.class)
-        .hasFieldOrPropertyWithValue("code", "RBAC_002");
-
-    verify(userRoleAssignmentPort, never()).revoke(any(), any());
-    verifyNoInteractions(permissionCachePort, rbacAuditPort);
-  }
-
-  @Test
-  void should_revokeSuccessfully_when_lockedSetSizeTwoOrMore() {
-    UUID refId = UUID.randomUUID();
-    UUID otherAdminRefId = UUID.randomUUID();
-    UUID otherAdminUserId = UUID.randomUUID();
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(
-            List.of(
-                new ActiveAssignmentHolder(refId, targetUserId, roleId),
-                new ActiveAssignmentHolder(otherAdminRefId, otherAdminUserId, roleId)));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.revoke(eq(refId), any())).thenReturn(1);
-
-    service.revoke(actor, targetUserId, roleId, ctx);
-
-    verify(userRoleAssignmentPort).revoke(eq(refId), any());
-    verify(permissionCachePort).evict(tenantId, targetUserId);
-    verify(rbacAuditPort)
-        .recordRoleRevoked(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, "TENANT_ADMIN", actorId, ctx));
-  }
-
-  /**
-   * Different-case {@code TENANT_ADMIN} still enters the lockout-guard code path on revoke
-   * (mirrors the assign-side {@code equalsIgnoreCase} proof) -- {@code lockActiveAssignmentHolders}
-   * must be invoked even though the persisted role name is not the exact-case constant.
-   */
-  @Test
-  void should_invokeLockoutGuard_when_revokeRoleNameIsDifferentCaseVariantOfTenantAdmin() {
-    UUID refId = UUID.randomUUID();
-    UUID otherAdminRefId = UUID.randomUUID();
-    UUID otherAdminUserId = UUID.randomUUID();
-    Role role = adminRole("Tenant_Admin");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(
-            List.of(
-                new ActiveAssignmentHolder(refId, targetUserId, roleId),
-                new ActiveAssignmentHolder(otherAdminRefId, otherAdminUserId, roleId)));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.revoke(eq(refId), any())).thenReturn(1);
-
-    service.revoke(actor, targetUserId, roleId, ctx);
-
-    verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), any());
-    verify(userRoleAssignmentPort).revoke(eq(refId), any());
-  }
-
-  /**
-   * MC-D (design §11.2) / Edge Case 1: one user holding TWO admin-equivalent roles must be
-   * counted ONCE, and excluding the row being revoked (by {@code assignmentId}, NEVER by {@code
-   * userId}) must still leave that user counted as a holder via their OTHER admin-equivalent
-   * role's row. A naive row-count, or a userId-based exclusion, would wrongly lock this out.
-   */
-  @Test
-  void should_notLockOut_when_targetUserHoldsAnotherAdminEquivalentRoleViaADifferentAssignment_MCD_EdgeCase1() {
-    UUID refId = UUID.randomUUID();
-    UUID otherAssignmentId = UUID.randomUUID();
-    UUID adminRoleId = UUID.randomUUID();
-    Role role = customRole("BILLING_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId)).thenReturn(List.of("user:write"));
-    // A present M8 id, not empty: this test's subject is the AC5/MC-D lockout math, not the
-    // caller gate, so the caller-qualifying set must be non-empty or D9's fail-closed-without-
-    // read short-circuit denies before the (broadly stubbed) caller check below is ever reached.
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    // The SAME targetUserId holds two rows: the one being revoked (refId, the BILLING_ADMIN
-    // role being revoked -- ANY-qualifying only, not caller-qualifying by itself) and one
-    // other, unrelated CALLER-QUALIFYING assignment (otherAssignmentId, the literal admin role
-    // adminRoleId) -- counted once, not twice, and excluding refId by ASSIGNMENT id leaves the
-    // user's other row intact and caller-qualifying (H-1: must be caller-qualifying, not merely
-    // ANY, for MC-D's "counts once via the other row" point to still hold post-fix).
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(
-            List.of(
-                new ActiveAssignmentHolder(refId, targetUserId, roleId),
-                new ActiveAssignmentHolder(otherAssignmentId, targetUserId, adminRoleId)));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(any(), any(), any())).thenReturn(true);
-    when(userRoleAssignmentPort.revoke(eq(refId), any())).thenReturn(1);
-
-    service.revoke(actor, targetUserId, roleId, ctx);
-
-    verify(userRoleAssignmentPort).revoke(eq(refId), any());
-    verify(rbacAuditPort).recordRoleRevoked(any());
-  }
-
-  /** Edge Case 2: two DIFFERENT users, two different admin-equivalent roles -- revoking one
-   *  user's assignment must not lock out the tenant; the other user's holder row remains. */
-  @Test
-  void should_notLockOut_when_aDifferentUserHoldsAnotherAdminEquivalentRole_EdgeCase2() {
-    UUID refId = UUID.randomUUID();
-    UUID otherAssignmentId = UUID.randomUUID();
-    UUID otherHolderUserId = UUID.randomUUID();
-    UUID adminRoleId = UUID.randomUUID();
-    Role role = customRole("BILLING_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId)).thenReturn(List.of("user:write"));
-    // A present M8 id, not empty -- see the identical note on EdgeCase1 above: this test's
-    // subject is the AC5/MC-D lockout math, not the caller gate.
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    // H-1: otherHolderUserId's row must be caller-qualifying (the literal admin role
-    // adminRoleId), not merely another ANY-qualifying custom role, for "should not lock out" to
-    // still hold post-fix.
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(
-            List.of(
-                new ActiveAssignmentHolder(refId, targetUserId, roleId),
-                new ActiveAssignmentHolder(otherAssignmentId, otherHolderUserId, adminRoleId)));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(any(), any(), any())).thenReturn(true);
-    when(userRoleAssignmentPort.revoke(eq(refId), any())).thenReturn(1);
-
-    service.revoke(actor, targetUserId, roleId, ctx);
-
-    verify(userRoleAssignmentPort).revoke(eq(refId), any());
-  }
-
-  private static boolean invokeWouldLeaveTenantWithoutCallerQualifyingHolder(
-      List<ActiveAssignmentHolder> lockedHolders,
-      UUID revokedAssignmentId,
-      Set<UUID> callerQualifyingRoleIds)
-      throws Exception {
-    Method method =
-        RoleAssignmentService.class.getDeclaredMethod(
-            "wouldLeaveTenantWithoutCallerQualifyingHolder", List.class, UUID.class, Set.class);
-    method.setAccessible(true);
-    return (boolean) method.invoke(null, lockedHolders, revokedAssignmentId, callerQualifyingRoleIds);
-  }
-
-  /**
-   * Edge Case 3: the D5 predicate must be deterministic -- the same set of locked-holder rows
-   * must produce the same lockout decision regardless of the list's iteration/insertion order.
-   */
-  @Test
-  void should_produceSameResult_regardlessOfLockedHoldersListOrder_EdgeCase3() throws Exception {
-    UUID refId = UUID.randomUUID();
-    UUID otherAssignmentId = UUID.randomUUID();
-    UUID otherUserId = UUID.randomUUID();
-    UUID otherRoleId = UUID.randomUUID();
-    Set<UUID> callerQualifyingRoleIds = Set.of(otherRoleId);
-    List<ActiveAssignmentHolder> naturalOrder =
-        List.of(
-            new ActiveAssignmentHolder(refId, targetUserId, roleId),
-            new ActiveAssignmentHolder(otherAssignmentId, otherUserId, otherRoleId));
-    List<ActiveAssignmentHolder> reversedOrder =
-        List.of(
-            new ActiveAssignmentHolder(otherAssignmentId, otherUserId, otherRoleId),
-            new ActiveAssignmentHolder(refId, targetUserId, roleId));
-
-    boolean naturalOrderResult =
-        invokeWouldLeaveTenantWithoutCallerQualifyingHolder(naturalOrder, refId, callerQualifyingRoleIds);
-    boolean reversedOrderResult =
-        invokeWouldLeaveTenantWithoutCallerQualifyingHolder(
-            reversedOrder, refId, callerQualifyingRoleIds);
-
-    assertThat(naturalOrderResult).isFalse();
-    assertThat(reversedOrderResult).isEqualTo(naturalOrderResult);
-  }
-
-  /**
-   * Edge Case 6: a tenant with NO admin-equivalent role at all means {@code privileged} is false
-   * -- the widened lockout gate does not apply (already covered structurally by the
-   * "carriesNoPermissions"/"carriesOnlyNonDangerousPermission" tests below, restated here by name
-   * for traceability to the requirements' edge-case numbering).
-   */
-
-  /**
-   * Edge Case 10: a plain, unprivileged revoke (negative baseline) -- already covered
-   * structurally by {@code should_revokeSuccessfully_when_revokedRoleCarriesOnlyNonDangerousPermission}
-   * below, which asserts no M8/M10/M11/M5b call and a normal success outcome; restated here by
-   * name for traceability to the requirements' edge-case numbering.
-   */
-
-  // Load-bearing (US-014 Decision 2) -- see the comment on
-  // should_throwResourceNotFound_when_targetUserNotFound above.
   @Test
   void should_throwResourceNotFound_when_revokeLosesRaceAndZeroRowsAffected() {
-    Role role = memberRole();
-    UUID refId = UUID.randomUUID();
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.revoke(eq(refId), any())).thenReturn(0);
+    ActiveAssignmentRef ref = stubBenignRevokeTarget();
+    when(userRoleAssignmentPort.revoke(eq(ref.id()), any())).thenReturn(0);
 
     assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
         .isInstanceOf(ResourceNotFoundException.class)
@@ -1680,428 +1454,44 @@ class RoleAssignmentServiceTest {
     verifyNoInteractions(permissionCachePort, rbacAuditPort);
   }
 
-  // ---------------------------------------------------------------------------------------
-  // T-009: the unified privilege gate on revoke() -- pinned lock order (D2), the AC5 interaction
-  // (D1: 403 before 409), and the D18 lock-hold timer. AC5 itself and the case-variant lockout
-  // match are covered by the tests above (updated with the two new gate stubs); this block
-  // covers the NEW gate call site on revoke(), the dangerous-permission path, the 403-before-409
-  // ordering, the InOrder lock-ordering proof, and the D18 timer's four outcomes.
-  // ---------------------------------------------------------------------------------------
-
+  /** Fail closed on revoke: a failing classification read is never treated as "allow". */
   @Test
-  void should_throwNotTenantAdmin_when_revokingTenantAdminAndCallerNotActiveAdmin() {
-    UUID refId = UUID.randomUUID();
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(
-            List.of(
-                new ActiveAssignmentHolder(refId, targetUserId, roleId),
-                new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID())));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verify(userRoleAssignmentPort, never()).revoke(any(), any());
-    verify(rbacAuditPort)
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, "TENANT_ADMIN", actorId, ctx),
-            DenialReason.NOT_TENANT_ADMIN, "revoke");
-    verifyNoInteractions(permissionCachePort);
-
-    // D18: the timer started right after M11 (lockActiveAssignmentHolders) returns must be
-    // stopped with outcome=denied at this throw site.
-    var timer =
-        meterRegistry
-            .find("nexus.rbac.privileged_revoke_lock_hold")
-            .tags("outcome", "denied")
-            .timer();
-    assertThat(timer).isNotNull();
-    assertThat(timer.count()).isEqualTo(1L);
-  }
-
-  @Test
-  void should_throwNotTenantAdmin_when_revokeRoleNameIsDifferentCaseVariantOfTenantAdmin() {
-    UUID refId = UUID.randomUUID();
-    Role role = adminRole("tenant_admin");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(
-            List.of(
-                new ActiveAssignmentHolder(refId, targetUserId, roleId),
-                new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID())));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verify(userRoleAssignmentPort).hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId);
-    verify(rbacAuditPort)
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, "tenant_admin", actorId, ctx),
-            DenialReason.NOT_TENANT_ADMIN, "revoke");
-    verifyNoInteractions(permissionCachePort);
-  }
-
-  @Test
-  void should_throwNotTenantAdmin_when_revokingRoleCarriesOneDangerousPermissionAndCallerNotActiveAdmin() {
-    UUID refId = UUID.randomUUID();
-    Role role = customRole("BILLING_ADMIN");
-    UUID adminRoleId = UUID.randomUUID(); // MC-3(a): deliberately != roleId
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(
-            List.of(
-                new ActiveAssignmentHolder(refId, targetUserId, roleId),
-                new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID())));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(
-            actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    // MC-2: the correct (locking, assignment-based) helper is used, never the redaction helper.
-    verify(userRoleAssignmentPort)
-        .hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId);
-    verify(userRoleAssignmentPort, never()).findActiveAssignmentViews(any(), any());
-    // MC-3(a): the caller's admin status is checked against M8's role, never the target role.
-    verify(userRoleAssignmentPort, never())
-        .hasActiveAssignmentOfAnyRole(any(), eq(List.of(roleId)), any());
-    // MC-3(b): the caller's own id is checked, never the target's.
-    verify(userRoleAssignmentPort, never())
-        .hasActiveAssignmentOfAnyRole(eq(targetUserId), any(), any());
-    // D5/D6/§7.2: the widened gate acquires M11 on EVERY privileged path, including a dangerous
-    // custom role that does not name-match TENANT_ADMIN -- the pre-US-017 "no lock on this path"
-    // behaviour this assertion used to encode no longer holds (FR-1).
-    verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), any());
-    verify(userRoleAssignmentPort, never()).revoke(any(), any());
-    verify(rbacAuditPort)
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, "BILLING_ADMIN", actorId, ctx),
-            DenialReason.NOT_TENANT_ADMIN, "revoke");
-    verifyNoInteractions(permissionCachePort);
-    // D18: the widened gate now starts the lock-hold timer on this path too (privileged, not
-    // merely nameMatch) -- it must be stopped with outcome=denied at the gate's throw site.
-    var timer =
-        meterRegistry
-            .find("nexus.rbac.privileged_revoke_lock_hold")
-            .tags("outcome", "denied")
-            .timer();
-    assertThat(timer).isNotNull();
-    assertThat(timer.count()).isEqualTo(1L);
-  }
-
-  @Test
-  void should_throwNotTenantAdmin_when_revokingRoleCarriesAllThreeDangerousPermissionsAndCallerNotActiveAdmin() {
-    UUID refId = UUID.randomUUID();
-    Role role = customRole("SUPER_CUSTOM");
-    UUID adminRoleId = UUID.randomUUID();
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("role:write", "user:write", "tenant:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(
-            actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    // Edge Case 3, dangerous-only variant: exactly one denial/audit row/metric increment.
-    verify(rbacAuditPort, times(1))
-        .recordRoleAssignmentDenied(any(), eq(DenialReason.NOT_TENANT_ADMIN), eq("revoke"));
-    verify(userRoleAssignmentPort, never())
-        .hasActiveAssignmentOfAnyRole(any(), eq(List.of(roleId)), any());
-    verify(userRoleAssignmentPort, never())
-        .hasActiveAssignmentOfAnyRole(eq(targetUserId), any(), any());
-  }
-
-  /**
-   * Proves {@code carriesDangerousPermission} delegates to {@code RbacDangerousPermissions
-   * .contains}, which is case-insensitive (mirrors the role-name case-variant proof above).
-   */
-  @Test
-  void should_throwNotTenantAdmin_when_revokingRoleCarriesCaseVariantDangerousPermissionName() {
-    UUID refId = UUID.randomUUID();
-    Role role = customRole("BILLING_ADMIN");
-    UUID adminRoleId = UUID.randomUUID();
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("User:Write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(
-            actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verify(userRoleAssignmentPort)
-        .hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId);
-    verify(userRoleAssignmentPort, never())
-        .hasActiveAssignmentOfAnyRole(any(), eq(List.of(roleId)), any());
-    verify(userRoleAssignmentPort, never())
-        .hasActiveAssignmentOfAnyRole(eq(targetUserId), any(), any());
-  }
-
-  @Test
-  void should_revokeSuccessfully_when_revokedRoleCarriesOnlyNonDangerousPermission() {
-    UUID refId = UUID.randomUUID();
-    Role role = customRole("BILLING_VIEWER");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId)).thenReturn(List.of("user:read"));
-    when(userRoleAssignmentPort.revoke(eq(refId), any())).thenReturn(1);
-
-    service.revoke(actor, targetUserId, roleId, ctx);
-
-    verify(userRoleAssignmentPort, never()).findRoleIdByName(any(), any());
-    verify(userRoleAssignmentPort, never()).hasActiveAssignmentOfAnyRole(any(), any(), any());
-    // Benign path (not privileged -- only a non-dangerous permission): +0, M11 never acquired
-    // (D5/§7.2's "one condition, one call site" property).
-    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
-    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
-    verify(rbacAuditPort)
-        .recordRoleRevoked(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, "BILLING_VIEWER", actorId, ctx));
-  }
-
-  /** Edge Case 1: an empty permission set means NOT privileged -- the gate must not fire. */
-  @Test
-  void should_revokeSuccessfully_when_revokedRoleCarriesNoPermissions() {
-    UUID refId = UUID.randomUUID();
-    Role role = customRole("EMPTY_ROLE");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId)).thenReturn(List.of());
-    when(userRoleAssignmentPort.revoke(eq(refId), any())).thenReturn(1);
-
-    service.revoke(actor, targetUserId, roleId, ctx);
-
-    verify(userRoleAssignmentPort, never()).findRoleIdByName(any(), any());
-    verify(userRoleAssignmentPort, never()).hasActiveAssignmentOfAnyRole(any(), any(), any());
-    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
-  }
-
-  @Test
-  void should_revokeSuccessfully_when_revokedRoleCarriesDangerousPermissionAndCallerIsActiveAdmin() {
-    UUID refId = UUID.randomUUID();
-    Role role = customRole("BILLING_ADMIN");
-    UUID adminRoleId = UUID.randomUUID();
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    // H-1: the remaining holder must hold the caller-qualifying (literal admin) role for this
-    // success outcome to still hold post-fix.
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(
-            List.of(
-                new ActiveAssignmentHolder(refId, targetUserId, roleId),
-                new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), adminRoleId)));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(
-            actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.revoke(eq(refId), any())).thenReturn(1);
-
-    service.revoke(actor, targetUserId, roleId, ctx);
-
-    verify(userRoleAssignmentPort)
-        .hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId);
-    verify(userRoleAssignmentPort, never())
-        .hasActiveAssignmentOfAnyRole(any(), eq(List.of(roleId)), any());
-    verify(userRoleAssignmentPort, never())
-        .hasActiveAssignmentOfAnyRole(eq(targetUserId), any(), any());
-    // D5/D6/§7.2: the widened gate acquires M11 on every privileged path, including this
-    // dangerous-custom-role path -- the pre-US-017 "no lock here" behaviour no longer holds.
-    verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), any());
-    verify(userRoleAssignmentPort).revoke(eq(refId), any());
-    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
-  }
-
-  /** R-10/T-E18 precedent, extended to revoke: an empty M8 (with no fully-admin-equivalent
-   *  custom role either) must fail closed WITHOUT calling M5b. */
-  @Test
-  void should_denyWithoutCallingHasActiveAssignmentOfAnyRole_when_tenantHasNoSeededTenantAdminRoleOnRevoke() {
-    UUID refId = UUID.randomUUID();
-    Role role = customRole("BILLING_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.empty());
-
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verify(userRoleAssignmentPort, never()).hasActiveAssignmentOfAnyRole(any(), any(), any());
-    verify(rbacAuditPort)
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, "BILLING_ADMIN", actorId, ctx),
-            DenialReason.NOT_TENANT_ADMIN, "revoke");
-  }
-
-  @Test
-  void should_propagateAndWriteNothing_when_findPermissionNamesForRoleThrowsDuringRevoke() {
-    UUID refId = UUID.randomUUID();
-    Role role = customRole("BILLING_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
+  void should_propagateAndWriteNothing_when_revokeClassificationReadThrows() {
+    stubBenignRevokeTarget();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
         .thenThrow(new RuntimeException("db down"));
 
     assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
         .isInstanceOf(RuntimeException.class)
         .hasMessage("db down");
 
-    // M7 throws before `privileged` is even computed -- neither M10/M8/M11 nor the caller gate
-    // is ever reached on this path, so the lock is never acquired (unaffected by D5/D6's
-    // widening, which only widens WHEN the lock fires, never makes it fire before `privileged`
-    // is known).
-    verify(userRoleAssignmentPort, never()).findRoleIdByName(any(), any());
     verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
     verify(userRoleAssignmentPort, never()).revoke(any(), any());
     verifyNoInteractions(rbacAuditPort, permissionCachePort);
   }
 
   @Test
-  void should_propagateAndWriteNothing_when_findRoleIdByNameThrowsDuringRevoke() {
-    UUID refId = UUID.randomUUID();
-    Role role = customRole("BILLING_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
+  void should_propagateAndWriteNothing_when_revokeTenantRoleSetReadThrows() {
+    stubRevokeTarget(role("ADMIN_LIKE"));
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(CATALOGUE));
+    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId))
         .thenThrow(new RuntimeException("db down"));
 
     assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
         .isInstanceOf(RuntimeException.class)
         .hasMessage("db down");
 
-    verify(userRoleAssignmentPort, never()).hasActiveAssignmentOfAnyRole(any(), any(), any());
-    verify(userRoleAssignmentPort, never()).revoke(any(), any());
-    verifyNoInteractions(rbacAuditPort, permissionCachePort);
-  }
-
-  /**
-   * Edge Case 12: {@code resolveAdminEquivalentRoles}'s M10 read ({@code
-   * findPermissionNamesForTenantRoles}) throwing must propagate uncaught out of {@code revoke()}
-   * -- fail closed, never swallowed and never silently treated as "allow the revoke." M10 runs
-   * before M8 inside {@code resolveAdminEquivalentRoles}, so this exception surfaces before M8,
-   * M11, and the caller gate are ever reached.
-   */
-  @Test
-  void should_propagateUncaught_when_findPermissionNamesForTenantRolesThrowsDuringRevoke_EdgeCase12() {
-    UUID refId = UUID.randomUUID();
-    Role role = customRole("BILLING_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId))
-        .thenThrow(new RuntimeException("db down"));
-
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(RuntimeException.class)
-        .hasMessage("db down");
-
-    verify(userRoleAssignmentPort, never()).findRoleIdByName(any(), any());
     verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
-    verify(userRoleAssignmentPort, never()).hasActiveAssignmentOfAnyRole(any(), any(), any());
     verify(userRoleAssignmentPort, never()).revoke(any(), any());
     verifyNoInteractions(rbacAuditPort, permissionCachePort);
-    assertThat(meterRegistry.find("nexus.rbac.privileged_revoke_lock_hold").timers()).isEmpty();
   }
 
-  /** D18: an unexpected propagating failure on the nameMatch path must be tagged outcome=error. */
   @Test
-  void should_propagateAndRecordErrorOutcome_when_hasActiveAssignmentOfAnyRoleThrowsDuringRevoke() {
-    UUID refId = UUID.randomUUID();
-    UUID otherAdminRefId = UUID.randomUUID();
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(
-            List.of(
-                new ActiveAssignmentHolder(refId, targetUserId, roleId),
-                new ActiveAssignmentHolder(otherAdminRefId, UUID.randomUUID(), UUID.randomUUID())));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
+  void should_propagateRecordErrorTimerAndWriteNothing_when_revokeDecisionReadThrows() {
+    stubRevokeTarget(role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(holder(actorId, roleId)));
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
         .thenThrow(new RuntimeException("db down"));
 
     assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
@@ -2109,2225 +1499,27 @@ class RoleAssignmentServiceTest {
         .hasMessage("db down");
 
     verify(userRoleAssignmentPort, never()).revoke(any(), any());
-    verifyNoInteractions(rbacAuditPort, permissionCachePort);
-
-    var timer =
-        meterRegistry
-            .find("nexus.rbac.privileged_revoke_lock_hold")
-            .tags("outcome", "error")
-            .timer();
-    assertThat(timer).isNotNull();
-    assertThat(timer.count()).isEqualTo(1L);
-  }
-
-  /**
-   * Edge Case 3, name-match variant for revoke: the seeded TENANT_ADMIN role satisfies BOTH
-   * halves of the unified condition. The name-first short-circuit means {@code
-   * carriesDangerousPermission} (M7) is never evaluated on this path.
-   */
-  @Test
-  void should_recordExactlyOneDenialAuditAndMetric_when_revokedRoleIsNamedTenantAdminAndCallerNotActiveAdmin() {
-    UUID refId = UUID.randomUUID();
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(
-            List.of(
-                new ActiveAssignmentHolder(refId, targetUserId, roleId),
-                new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID())));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class);
-
-    verify(userRoleAssignmentPort, never()).findPermissionNamesForRole(any());
-    verify(rbacAuditPort, times(1)).recordRoleAssignmentDenied(any(), any(), any());
-    Counter counter = meterRegistry.find("nexus.rbac.privileged_role_change_blocked").counter();
-    assertThat(counter).isNotNull();
-    assertThat(counter.count()).isEqualTo(1.0);
-  }
-
-  @Test
-  void should_logWarnWithOperationAndMatchedOnRoleName_when_revokingTenantAdminAndCallerNotActiveAdmin() {
-    UUID refId = UUID.randomUUID();
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(
-            List.of(
-                new ActiveAssignmentHolder(refId, targetUserId, roleId),
-                new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID())));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(false);
-
-    ListAppender<ILoggingEvent> appender = startLogCapture();
-    try {
-      assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-          .isInstanceOf(InsufficientPermissionException.class);
-
-      var warnEvents =
-          appender.list.stream()
-              .filter(e -> e.getLevel() == Level.WARN)
-              .filter(
-                  e -> "RBAC_PRIVILEGED_ROLE_CHANGE_BLOCKED".equals(keyValueMap(e).get("event")))
-              .toList();
-      assertThat(warnEvents).hasSize(1);
-      Map<String, Object> keyValues = keyValueMap(warnEvents.get(0));
-      assertThat(keyValues)
-          .containsEntry("operation", "revoke")
-          .containsEntry("matchedOn", "ROLE_NAME")
-          .containsEntry("tenantId", tenantId)
-          .containsEntry("targetUserId", targetUserId)
-          .containsEntry("actorUserId", actorId)
-          .containsEntry("roleId", roleId)
-          .containsEntry("roleName", "TENANT_ADMIN");
-    } finally {
-      stopLogCapture(appender);
-    }
-  }
-
-  @Test
-  void should_logWarnWithOperationAndMatchedOnDangerousPermission_when_revokingDangerousRoleAndCallerNotActiveAdmin() {
-    UUID refId = UUID.randomUUID();
-    Role role = customRole("BILLING_ADMIN");
-    UUID adminRoleId = UUID.randomUUID();
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(
-            actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(false);
-
-    ListAppender<ILoggingEvent> appender = startLogCapture();
-    try {
-      assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-          .isInstanceOf(InsufficientPermissionException.class);
-
-      var warnEvents =
-          appender.list.stream()
-              .filter(e -> e.getLevel() == Level.WARN)
-              .filter(
-                  e -> "RBAC_PRIVILEGED_ROLE_CHANGE_BLOCKED".equals(keyValueMap(e).get("event")))
-              .toList();
-      assertThat(warnEvents).hasSize(1);
-      Map<String, Object> keyValues = keyValueMap(warnEvents.get(0));
-      assertThat(keyValues)
-          .containsEntry("operation", "revoke")
-          .containsEntry("matchedOn", "DANGEROUS_PERMISSION")
-          .containsEntry("roleName", "BILLING_ADMIN");
-    } finally {
-      stopLogCapture(appender);
-    }
-  }
-
-  @Test
-  void should_incrementPrivilegedRoleChangeBlockedCounter_withMatchedOnRoleNameTag_when_revokingTenantAdminAndCallerNotActiveAdmin() {
-    UUID refId = UUID.randomUUID();
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(
-            List.of(
-                new ActiveAssignmentHolder(refId, targetUserId, roleId),
-                new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID())));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class);
-
-    Counter counter =
-        meterRegistry
-            .find("nexus.rbac.privileged_role_change_blocked")
-            .tags("operation", "revoke", "matchedOn", "ROLE_NAME")
-            .counter();
-    assertThat(counter).isNotNull();
-    assertThat(counter.count()).isEqualTo(1.0);
-  }
-
-  @Test
-  void should_incrementPrivilegedRoleChangeBlockedCounter_withMatchedOnDangerousPermissionTag_when_revokingDangerousRoleAndCallerNotActiveAdmin() {
-    UUID refId = UUID.randomUUID();
-    Role role = customRole("BILLING_ADMIN");
-    UUID adminRoleId = UUID.randomUUID();
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(
-            actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class);
-
-    Counter counter =
-        meterRegistry
-            .find("nexus.rbac.privileged_role_change_blocked")
-            .tags("operation", "revoke", "matchedOn", "DANGEROUS_PERMISSION")
-            .counter();
-    assertThat(counter).isNotNull();
-    assertThat(counter.count()).isEqualTo(1.0);
-  }
-
-  /** MC-3's deliberate FR-4 exception: self-revocation is the one case where the two axes collapse. */
-  @Test
-  void should_throwNotTenantAdmin_when_actorSelfRevokesDangerousRoleAndIsNotActiveAdmin() {
-    UUID refId = UUID.randomUUID();
-    Role role = customRole("BILLING_ADMIN");
-    UUID adminRoleId = UUID.randomUUID();
-    when(userDirectoryPort.findTenantId(actorId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(actorId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(
-            actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.revoke(actor, actorId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verify(userRoleAssignmentPort, never()).revoke(any(), any());
-  }
-
-  /**
-   * D1 / design §6.2 check 5 precedes check 6 / Edge Case 9: a non-admin revoking the tenant's
-   * last active admin must see 403 NOT_TENANT_ADMIN, never 409 RBAC_002 -- the 403 must win even
-   * though the locked holder set also satisfies AC5's "would leave the tenant without a holder"
-   * condition.
-   */
-  @Test
-  void should_throwInsufficientPermission_notLastAdminRoleException_when_nonAdminRevokesTenantsLastAdmin_EdgeCase9() {
-    UUID refId = UUID.randomUUID();
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    // Single distinct holder (the row being revoked) -- AC5 WOULD fire if the gate ever let
-    // execution reach the wouldLeaveTenantWithoutCallerQualifyingHolder check.
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(List.of(new ActiveAssignmentHolder(refId, targetUserId, roleId)));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(false); // caller is NOT an active admin
-
-    ListAppender<ILoggingEvent> appender = startLogCapture();
-    try {
-      assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-          .isInstanceOf(InsufficientPermissionException.class)
-          .satisfies(
-              e ->
-                  assertThat(((InsufficientPermissionException) e).getReason())
-                      .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-      assertThat(
-              appender.list.stream()
-                  .filter(
-                      e ->
-                          "RBAC_LAST_ADMIN_REVOCATION_BLOCKED".equals(keyValueMap(e).get("event")))
-                  .toList())
-          .as("the AC5 lockout guard must never run once the gate has already denied")
-          .isEmpty();
-    } finally {
-      stopLogCapture(appender);
-    }
-
-    verify(userRoleAssignmentPort, never()).revoke(any(), any());
-  }
-
-  /** D2, pinned lock order: M11's X lock must be acquired strictly before M5b's S read. */
-  @Test
-  void should_invokeLockActiveAssignmentHoldersBeforeHasActiveAssignmentOfAnyRole_when_revokingTenantAdminAndCallerIsActiveAdmin() {
-    UUID refId = UUID.randomUUID();
-    UUID otherAdminRefId = UUID.randomUUID();
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(
-            List.of(
-                new ActiveAssignmentHolder(refId, targetUserId, roleId),
-                new ActiveAssignmentHolder(otherAdminRefId, UUID.randomUUID(), roleId)));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.revoke(eq(refId), any())).thenReturn(1);
-
-    service.revoke(actor, targetUserId, roleId, ctx);
-
-    InOrder inOrder = Mockito.inOrder(userRoleAssignmentPort);
-    inOrder.verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), any());
-    inOrder.verify(userRoleAssignmentPort).hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId);
-  }
-
-  /** D18: the AC5 lockout throw must stop the timer with outcome=lockout. */
-  @Test
-  void should_recordLockHoldTimerOutcomeLockout_when_differentAdminRevokesTenantsLastAdmin() {
-    UUID refId = UUID.randomUUID();
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    // Single distinct holder (the row being revoked): excluding it leaves zero holders.
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(List.of(new ActiveAssignmentHolder(refId, targetUserId, roleId)));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(true);
-
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(LastAdminRoleException.class);
-
-    var timer =
-        meterRegistry
-            .find("nexus.rbac.privileged_revoke_lock_hold")
-            .tags("outcome", "lockout")
-            .timer();
-    assertThat(timer).isNotNull();
-    assertThat(timer.count()).isEqualTo(1L);
-  }
-
-  /** D18: a successful revoke on the nameMatch path must stop the timer with outcome=revoked. */
-  @Test
-  void should_recordLockHoldTimerOutcomeRevoked_when_revokeSucceedsOnNameMatchPath() {
-    UUID refId = UUID.randomUUID();
-    UUID otherAdminRefId = UUID.randomUUID();
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(
-            List.of(
-                new ActiveAssignmentHolder(refId, targetUserId, roleId),
-                new ActiveAssignmentHolder(otherAdminRefId, UUID.randomUUID(), roleId)));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.revoke(eq(refId), any())).thenReturn(1);
-
-    service.revoke(actor, targetUserId, roleId, ctx);
-
-    var timer =
-        meterRegistry
-            .find("nexus.rbac.privileged_revoke_lock_hold")
-            .tags("outcome", "revoked")
-            .timer();
-    assertThat(timer).isNotNull();
-    assertThat(timer.count()).isEqualTo(1L);
-  }
-
-  /**
-   * MC-E, {@code revoke()} half (D6/RC-20.7): the role-id list passed to M11 must be sorted by
-   * UNSIGNED byte-wise order of the 16-byte representation -- explicitly NOT {@link
-   * UUID#compareTo}, which compares {@code mostSigBits} as a SIGNED {@code long}. {@code
-   * lowBitRoleId} has {@code mostSigBits = 1L} (small, positive under both signed and unsigned
-   * interpretation); {@code highBitRoleId} has {@code mostSigBits = Long.MIN_VALUE} (its bit
-   * pattern's top bit set -- the largest possible value unsigned, but the smallest, most
-   * negative, value signed). Ascending UNSIGNED order is therefore {@code [lowBitRoleId,
-   * highBitRoleId]}; ascending SIGNED ({@code UUID.compareTo}) order is the reverse. An MC-E that
-   * merely asserted "the list is sorted" would pass under either comparator and give false
-   * assurance about the one property D6's deadlock-freedom argument rests on.
-   */
-  @Test
-  void should_sortLockSetByUnsignedBytewiseOrder_notUuidCompareTo_when_revoking_MCE() {
-    UUID lowBitRoleId = new UUID(1L, 0L);
-    UUID highBitRoleId = new UUID(Long.MIN_VALUE, 0L);
-    assertThat(lowBitRoleId.compareTo(highBitRoleId))
-        .as("fixture precondition: signed UUID.compareTo must rank lowBitRoleId AFTER highBitRoleId")
-        .isGreaterThan(0);
-
-    UUID refId = UUID.randomUUID();
-    Role role = new Role(lowBitRoleId, tenantId, "BILLING_ADMIN", "desc", false);
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(lowBitRoleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, lowBitRoleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(lowBitRoleId))
-        .thenReturn(List.of("user:write"));
-    // M10: a second tenant role (highBitRoleId) also carries one dangerous permission, so it
-    // joins adminEquivalentIds -- deliberately NOT fully-admin-equivalent, so the caller-
-    // qualifying set (M5b) stays empty and the gate fails closed without an extra stub.
-    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId))
-        .thenReturn(List.of(new RolePermissionName(highBitRoleId, "user:write")));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.empty());
-
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, lowBitRoleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class);
-
-    @SuppressWarnings("unchecked")
-    ArgumentCaptor<List<UUID>> lockSetCaptor = ArgumentCaptor.forClass(List.class);
-    verify(userRoleAssignmentPort)
-        .lockActiveAssignmentHolders(eq(tenantId), lockSetCaptor.capture());
-    List<UUID> lockSet = lockSetCaptor.getValue();
-
-    assertThat(lockSet).containsExactly(lowBitRoleId, highBitRoleId);
-    assertThat(lockSet)
-        .as("must NOT equal UUID.compareTo's (signed) ascending order")
-        .isNotEqualTo(List.of(highBitRoleId, lowBitRoleId));
-    verify(userRoleAssignmentPort, never()).hasActiveAssignmentOfAnyRole(any(), any(), any());
-  }
-
-  // ---------------------------------------------------------------------------------------
-  // T-006(d)/(e): MC-F (M5b's argument shape) and MC-G (the redaction/canary helpers never
-  // feeding an authorization decision) -- both asserted on both verbs (design §11.2).
-  // ---------------------------------------------------------------------------------------
-
-  /**
-   * MC-F, {@code revoke()} half (design §11.2): every M5b ({@code hasActiveAssignmentOfAnyRole})
-   * call underlying {@code requireCallerHoldsAdminEquivalentRole} must be made with {@code
-   * actor.userId()} and a role-id list drawn ONLY from the caller-qualifying set ({@code
-   * fullyAdminEquivalentIds ∪ namedAdminRoleId}) -- never {@code targetUserId} and never the
-   * target role id alone (T-E22's two fail-open axes, re-exposed by M5b's widened arity). The
-   * named-admin branch is stubbed to fail so BOTH sequential M5b calls fire, capturing one
-   * invocation per set.
-   */
-  @Test
-  void should_callM5bOnlyWithActorIdAndCallerQualifyingRoleIds_when_revokingPrivilegedRole_MCF() {
-    UUID refId = UUID.randomUUID();
-    Role role = customRole("BILLING_ADMIN");
-    UUID namedAdminRoleId = UUID.randomUUID();
-    UUID fullyRoleId = UUID.randomUUID();
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId)).thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId))
-        .thenReturn(
-            List.of(
-                new RolePermissionName(fullyRoleId, "role:write"),
-                new RolePermissionName(fullyRoleId, "user:write"),
-                new RolePermissionName(fullyRoleId, "tenant:write")));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(namedAdminRoleId));
-    // Two OTHER distinct holders besides the target, so this revoke never trips AC5's lockout --
-    // this test's subject is MC-F, not the lockout math. The other holder must be
-    // caller-qualifying (H-1) for the revoke to actually succeed as stubbed below.
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(
-            List.of(
-                new ActiveAssignmentHolder(refId, targetUserId, roleId),
-                new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), fullyRoleId)));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(namedAdminRoleId), tenantId))
-        .thenReturn(false);
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(fullyRoleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.revoke(eq(refId), any())).thenReturn(1);
-
-    service.revoke(actor, targetUserId, roleId, ctx);
-
-    ArgumentCaptor<UUID> callerIdCaptor = ArgumentCaptor.forClass(UUID.class);
-    @SuppressWarnings("unchecked")
-    ArgumentCaptor<List<UUID>> roleIdsCaptor = ArgumentCaptor.forClass(List.class);
-    verify(userRoleAssignmentPort, times(2))
-        .hasActiveAssignmentOfAnyRole(callerIdCaptor.capture(), roleIdsCaptor.capture(), eq(tenantId));
-
-    Set<UUID> callerQualifyingSet = Set.of(namedAdminRoleId, fullyRoleId);
-    assertThat(callerIdCaptor.getAllValues())
-        .as("M5b's caller argument must always be actor.userId(), never targetUserId")
-        .allMatch(actorId::equals);
-    assertThat(roleIdsCaptor.getAllValues())
-        .as("every M5b call's role-id list must be drawn only from the caller-qualifying set,"
-            + " never the target role id alone")
-        .allSatisfy(
-            roleIds -> {
-              assertThat(roleIds).isNotEqualTo(List.of(roleId));
-              assertThat(callerQualifyingSet).containsAll(roleIds);
-            });
-  }
-
-  /**
-   * MC-G, {@code revoke()} half (design §11.2): on a privileged revoke targeting a DIFFERENT
-   * user, neither the {@code listActive} redaction helper ({@code callerHoldsActiveTenantAdmin})
-   * nor the canary's M12 read ({@code findPermissionNamesForActiveAssignmentsOfUser}) may be
-   * invoked -- {@code revoke()} has no canary code path at all, so this pins that a future
-   * refactor cannot introduce one. The gate's ONLY determination is M5b, a fresh locking read
-   * (T-E7). Asserted per-verb, not at class level, since three similarly-named boolean helpers
-   * now exist on this class (MC-2 carried forward per D14/D17).
-   */
-  @Test
-  void should_neverInvokeRedactionOrCanaryPortReads_when_revokingPrivilegedRoleFromAnotherUser_MCG() {
-    UUID refId = UUID.randomUUID();
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(
-            List.of(
-                new ActiveAssignmentHolder(refId, targetUserId, roleId),
-                new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), roleId)));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.revoke(eq(refId), any())).thenReturn(1);
-
-    service.revoke(actor, targetUserId, roleId, ctx);
-
-    verify(userRoleAssignmentPort, never()).findActiveAssignmentViews(any(), any());
-    verify(userRoleAssignmentPort, never()).findPermissionNamesForActiveAssignmentsOfUser(any(), any());
-  }
-
-  // ---------------------------------------------------------------------------------------
-  // T-003: assign()'s RES-10 fix (D7), the shared caller-gate split query, the re-derived
-  // canary (D24/RC-17.1), the D23 promotion signal, and the new instrumentation.
-  // ---------------------------------------------------------------------------------------
-
-  /**
-   * MC-E, {@code assign()} half (D6/RC-20.7, T-003(e)): sibling of the {@code revoke()} half
-   * above -- the SAME ascending unsigned byte-wise order must hold for the lock set built on
-   * {@code assign()}'s privileged path, now that D7's RES-10 fix makes {@code assign()} acquire
-   * M11 too.
-   */
-  @Test
-  void should_sortLockSetByUnsignedBytewiseOrder_notUuidCompareTo_when_assigning_MCE() {
-    UUID lowBitRoleId = new UUID(1L, 0L);
-    UUID highBitRoleId = new UUID(Long.MIN_VALUE, 0L);
-    assertThat(lowBitRoleId.compareTo(highBitRoleId))
-        .as("fixture precondition: signed UUID.compareTo must rank lowBitRoleId AFTER highBitRoleId")
-        .isGreaterThan(0);
-
-    Role role = new Role(lowBitRoleId, tenantId, "BILLING_ADMIN", "desc", false);
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(lowBitRoleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(lowBitRoleId))
-        .thenReturn(List.of("user:write"));
-    // Deliberately NOT fully-admin-equivalent (§7.2's caller-qualifying set stays empty), so the
-    // gate fails closed without an extra stub -- mirrors the revoke() half's fixture exactly.
-    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId))
-        .thenReturn(List.of(new RolePermissionName(highBitRoleId, "user:write")));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.empty());
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, lowBitRoleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class);
-
-    @SuppressWarnings("unchecked")
-    ArgumentCaptor<List<UUID>> lockSetCaptor = ArgumentCaptor.forClass(List.class);
-    verify(userRoleAssignmentPort)
-        .lockActiveAssignmentHolders(eq(tenantId), lockSetCaptor.capture());
-    List<UUID> lockSet = lockSetCaptor.getValue();
-
-    assertThat(lockSet).containsExactly(lowBitRoleId, highBitRoleId);
-    assertThat(lockSet)
-        .as("must NOT equal UUID.compareTo's (signed) ascending order")
-        .isNotEqualTo(List.of(highBitRoleId, lowBitRoleId));
-    verify(userRoleAssignmentPort, never()).hasActiveAssignmentOfAnyRole(any(), any(), any());
-  }
-
-  /**
-   * D7/RES-10 fix, §7.2/§7.3: on {@code assign()}'s privileged path, M11 ({@code
-   * lockActiveAssignmentHolders}) MUST be acquired strictly before M5b ({@code
-   * hasActiveAssignmentOfAnyRole}) -- the whole point of the fix. A caller who ultimately
-   * qualifies proves the ORDER, not just that both eventually run. Also proves the gate's own
-   * path never touches M12 (A-3/MC-H's gate-only half) -- this is a non-self-assignment, so the
-   * canary code path is never reached at all.
-   */
-  @Test
-  void should_acquireM11BeforeM5b_when_assigningPrivilegedRole() {
-    Role role = customRole("BILLING_ADMIN");
-    UUID adminRoleId = UUID.randomUUID();
-    Instant assignedAt = Instant.now();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(targetUserId, roleId, "BILLING_ADMIN", assignedAt, actorId);
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId)).thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
-        .thenReturn(UUID.randomUUID());
-    when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
-
-    service.assign(actor, targetUserId, roleId, ctx);
-
-    InOrder inOrder = Mockito.inOrder(userRoleAssignmentPort);
-    inOrder.verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), any());
-    inOrder
-        .verify(userRoleAssignmentPort)
-        .hasActiveAssignmentOfAnyRole(eq(actorId), eq(List.of(adminRoleId)), eq(tenantId));
-    verify(userRoleAssignmentPort, never())
-        .findPermissionNamesForActiveAssignmentsOfUser(any(), any());
-  }
-
-  /**
-   * MC-F, {@code assign()} half (design §11.2): every M5b ({@code hasActiveAssignmentOfAnyRole})
-   * call underlying {@code requireCallerHoldsAdminEquivalentRole} must be made with {@code
-   * actor.userId()} and a role-id list drawn ONLY from the caller-qualifying set ({@code
-   * fullyAdminEquivalentIds ∪ namedAdminRoleId}) -- never {@code targetUserId} and never the
-   * target role id alone. Sibling of the {@code revoke()} half below.
-   */
-  @Test
-  void should_callM5bOnlyWithActorIdAndCallerQualifyingRoleIds_when_assigningPrivilegedRole_MCF() {
-    Role role = customRole("BILLING_ADMIN");
-    UUID namedAdminRoleId = UUID.randomUUID();
-    UUID fullyRoleId = UUID.randomUUID();
-    Instant assignedAt = Instant.now();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(targetUserId, roleId, "BILLING_ADMIN", assignedAt, actorId);
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId)).thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId))
-        .thenReturn(
-            List.of(
-                new RolePermissionName(fullyRoleId, "role:write"),
-                new RolePermissionName(fullyRoleId, "user:write"),
-                new RolePermissionName(fullyRoleId, "tenant:write")));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(namedAdminRoleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(namedAdminRoleId), tenantId))
-        .thenReturn(false);
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(fullyRoleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
-        .thenReturn(UUID.randomUUID());
-    when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
-
-    service.assign(actor, targetUserId, roleId, ctx);
-
-    ArgumentCaptor<UUID> callerIdCaptor = ArgumentCaptor.forClass(UUID.class);
-    @SuppressWarnings("unchecked")
-    ArgumentCaptor<List<UUID>> roleIdsCaptor = ArgumentCaptor.forClass(List.class);
-    verify(userRoleAssignmentPort, times(2))
-        .hasActiveAssignmentOfAnyRole(callerIdCaptor.capture(), roleIdsCaptor.capture(), eq(tenantId));
-
-    Set<UUID> callerQualifyingSet = Set.of(namedAdminRoleId, fullyRoleId);
-    assertThat(callerIdCaptor.getAllValues())
-        .as("M5b's caller argument must always be actor.userId(), never targetUserId")
-        .allMatch(actorId::equals);
-    assertThat(roleIdsCaptor.getAllValues())
-        .as("every M5b call's role-id list must be drawn only from the caller-qualifying set,"
-            + " never the target role id alone")
-        .allSatisfy(
-            roleIds -> {
-              assertThat(roleIds).isNotEqualTo(List.of(roleId));
-              assertThat(callerQualifyingSet).containsAll(roleIds);
-            });
-  }
-
-  /**
-   * MC-G, {@code assign()} half (design §11.2): on a privileged assignment targeting a DIFFERENT
-   * user (so the T-003(b) canary code path is never reached at all), neither the {@code
-   * listActive} redaction helper ({@code callerHoldsActiveTenantAdmin}) nor the canary's M12 read
-   * ({@code findPermissionNamesForActiveAssignmentsOfUser}) may be invoked. The gate's ONLY
-   * determination is M5b, a fresh locking read (T-E7). Asserted per-verb, not at class level,
-   * since three similarly-named boolean helpers now exist on this class (MC-2 carried forward
-   * per D14/D17).
-   */
-  @Test
-  void should_neverInvokeRedactionOrCanaryPortReads_when_assigningPrivilegedRoleToAnotherUser_MCG() {
-    Role role = adminRole("TENANT_ADMIN");
-    Instant assignedAt = Instant.now();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(targetUserId, roleId, "TENANT_ADMIN", assignedAt, actorId);
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
-        .thenReturn(UUID.randomUUID());
-    when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
-
-    service.assign(actor, targetUserId, roleId, ctx);
-
-    verify(userRoleAssignmentPort, never()).findActiveAssignmentViews(any(), any());
-    verify(userRoleAssignmentPort, never()).findPermissionNamesForActiveAssignmentsOfUser(any(), any());
-  }
-
-  /**
-   * US-017 §9.2/D23: {@code privileged_role_change_allowed}'s {@code ROLE_NAME} population. The
-   * log companion (RC-16.3) and the D23 promotion signal are both {@code
-   * ALL_DANGEROUS_PERMISSIONS}-only, so neither must fire here.
-   */
-  @Test
-  void should_incrementPrivilegedRoleChangeAllowedCounter_withCallerMatchedOnRoleName_when_assigningAndCallerIsNamedAdmin() {
-    Role role = customRole("BILLING_ADMIN");
-    UUID adminRoleId = UUID.randomUUID();
-    Instant assignedAt = Instant.now();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(targetUserId, roleId, "BILLING_ADMIN", assignedAt, actorId);
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId)).thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
-        .thenReturn(UUID.randomUUID());
-    when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
-
-    ListAppender<ILoggingEvent> appender = startLogCapture();
-    try {
-      service.assign(actor, targetUserId, roleId, ctx);
-
-      Counter counter =
-          meterRegistry
-              .find("nexus.rbac.privileged_role_change_allowed")
-              .tags("operation", "assign", "callerMatchedOn", "ROLE_NAME")
-              .counter();
-      assertThat(counter).isNotNull();
-      assertThat(counter.count()).isEqualTo(1.0);
-
-      assertThat(
-              appender.list.stream()
-                  .anyMatch(
-                      e ->
-                          "RBAC_PRIVILEGED_ROLE_CHANGE_ALLOWED".equals(keyValueMap(e).get("event"))))
-          .as("the log companion is ALL_DANGEROUS_PERMISSIONS-only")
-          .isFalse();
-      assertThat(
-              appender.list.stream()
-                  .anyMatch(
-                      e ->
-                          "RBAC_ADMIN_MINTED_BY_NON_NAMED_ADMIN".equals(keyValueMap(e).get("event"))))
-          .isFalse();
-      assertThat(meterRegistry.find("nexus.rbac.admin_minted_by_non_named_admin").counter()).isNull();
-    } finally {
-      stopLogCapture(appender);
-    }
-  }
-
-  /**
-   * US-017 §9.2/D23/RC-16.3: {@code privileged_role_change_allowed}'s {@code
-   * ALL_DANGEROUS_PERMISSIONS} population -- the new FR-3 population this signal exists to make
-   * visible -- plus its log companion (a subject the metric alone cannot provide, T-R11). D23
-   * itself must NOT fire: the target role is not the literal {@code TENANT_ADMIN}.
-   */
-  @Test
-  void should_incrementPrivilegedRoleChangeAllowedCounterAndLogCompanion_withCallerMatchedOnAllDangerousPermissions_when_assigningAndCallerHoldsFullyAdminEquivalentCustomRole() {
-    Role role = customRole("BILLING_ADMIN");
-    UUID fullyRoleId = UUID.randomUUID();
-    Instant assignedAt = Instant.now();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(targetUserId, roleId, "BILLING_ADMIN", assignedAt, actorId);
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId)).thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId))
-        .thenReturn(
-            List.of(
-                new RolePermissionName(fullyRoleId, "role:write"),
-                new RolePermissionName(fullyRoleId, "user:write"),
-                new RolePermissionName(fullyRoleId, "tenant:write")));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN")).thenReturn(Optional.empty());
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(fullyRoleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
-        .thenReturn(UUID.randomUUID());
-    when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
-
-    ListAppender<ILoggingEvent> appender = startLogCapture();
-    try {
-      service.assign(actor, targetUserId, roleId, ctx);
-
-      Counter counter =
-          meterRegistry
-              .find("nexus.rbac.privileged_role_change_allowed")
-              .tags("operation", "assign", "callerMatchedOn", "ALL_DANGEROUS_PERMISSIONS")
-              .counter();
-      assertThat(counter).isNotNull();
-      assertThat(counter.count()).isEqualTo(1.0);
-
-      var companionEvents =
-          appender.list.stream()
-              .filter(
-                  e -> "RBAC_PRIVILEGED_ROLE_CHANGE_ALLOWED".equals(keyValueMap(e).get("event")))
-              .toList();
-      assertThat(companionEvents).hasSize(1);
-      Map<String, Object> keyValues = keyValueMap(companionEvents.get(0));
-      assertThat(keyValues)
-          .containsEntry("tenantId", tenantId)
-          .containsEntry("actorUserId", actorId)
-          .containsEntry("targetUserId", targetUserId)
-          .containsEntry("roleId", roleId)
-          .containsEntry("roleName", "BILLING_ADMIN")
-          .containsEntry("operation", "assign");
-
-      assertThat(
-              appender.list.stream()
-                  .anyMatch(
-                      e ->
-                          "RBAC_ADMIN_MINTED_BY_NON_NAMED_ADMIN".equals(keyValueMap(e).get("event"))))
-          .as("D23 is TENANT_ADMIN-target-only; this target role is not TENANT_ADMIN")
-          .isFalse();
-      assertThat(meterRegistry.find("nexus.rbac.admin_minted_by_non_named_admin").counter()).isNull();
-    } finally {
-      stopLogCapture(appender);
-    }
-  }
-
-  /**
-   * US-017 D23/RC-16.2, the promotion signal's true-positive: a caller who does NOT themselves
-   * hold the literal {@code TENANT_ADMIN} role is minting a NEW one via a fully-admin-equivalent
-   * custom role -- the single most sensitive operation FR-3 newly permits, and the one for which
-   * the re-derived canary would otherwise report {@code callerIsAdmin=true} with no other signal.
-   */
-  @Test
-  void should_emitAdminMintedWarnAndCounter_when_assigningTenantAdminAndCallerHoldsFullyAdminEquivalentCustomRoleButIsNotNamedAdmin() {
-    Role role = adminRole("TENANT_ADMIN");
-    UUID fullyRoleId = UUID.randomUUID();
-    Instant assignedAt = Instant.now();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(targetUserId, roleId, "TENANT_ADMIN", assignedAt, actorId);
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN")).thenReturn(Optional.of(roleId));
-    // The caller does NOT hold the literal TENANT_ADMIN role themselves -- they are minting it.
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(false);
-    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId))
-        .thenReturn(
-            List.of(
-                new RolePermissionName(fullyRoleId, "role:write"),
-                new RolePermissionName(fullyRoleId, "user:write"),
-                new RolePermissionName(fullyRoleId, "tenant:write")));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(fullyRoleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
-        .thenReturn(UUID.randomUUID());
-    when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
-
-    ListAppender<ILoggingEvent> appender = startLogCapture();
-    try {
-      service.assign(actor, targetUserId, roleId, ctx);
-
-      var warnEvents =
-          appender.list.stream()
-              .filter(e -> e.getLevel() == Level.WARN)
-              .filter(
-                  e ->
-                      "RBAC_ADMIN_MINTED_BY_NON_NAMED_ADMIN".equals(keyValueMap(e).get("event")))
-              .toList();
-      assertThat(warnEvents).hasSize(1);
-      Map<String, Object> keyValues = keyValueMap(warnEvents.get(0));
-      assertThat(keyValues)
-          .containsEntry("tenantId", tenantId)
-          .containsEntry("actorUserId", actorId)
-          .containsEntry("targetUserId", targetUserId)
-          .containsEntry("roleId", roleId);
-
-      Counter counter =
-          meterRegistry
-              .find("nexus.rbac.admin_minted_by_non_named_admin")
-              .tags("selfTarget", "false")
-              .counter();
-      assertThat(counter).isNotNull();
-      assertThat(counter.count()).isEqualTo(1.0);
-    } finally {
-      stopLogCapture(appender);
-    }
-  }
-
-  /**
-   * US-017 D23's negative case (threat-model §9.5 item 3 residual): a caller who IS the literal
-   * {@code TENANT_ADMIN} granting {@code TENANT_ADMIN} to someone else is the ordinary, expected
-   * path -- not a promotion, and must not page.
-   */
-  @Test
-  void should_notEmitAdminMintedWarn_when_assigningTenantAdminAndCallerIsNamedAdmin() {
-    Role role = adminRole("TENANT_ADMIN");
-    Instant assignedAt = Instant.now();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(targetUserId, roleId, "TENANT_ADMIN", assignedAt, actorId);
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN")).thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
-        .thenReturn(UUID.randomUUID());
-    when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
-
-    ListAppender<ILoggingEvent> appender = startLogCapture();
-    try {
-      service.assign(actor, targetUserId, roleId, ctx);
-
-      assertThat(
-              appender.list.stream()
-                  .anyMatch(
-                      e ->
-                          "RBAC_ADMIN_MINTED_BY_NON_NAMED_ADMIN".equals(keyValueMap(e).get("event"))))
-          .isFalse();
-      assertThat(meterRegistry.find("nexus.rbac.admin_minted_by_non_named_admin").counter()).isNull();
-    } finally {
-      stopLogCapture(appender);
-    }
-  }
-
-  /** RES-17/RC-20.4 (A-2): {@code assign()}'s half -- recorded on every privileged assign. */
-  @Test
-  void should_recordLockSetSizeDistributionSummary_when_assigningPrivilegedRole() {
-    Role role = customRole("BILLING_ADMIN");
-    UUID adminRoleId = UUID.randomUUID();
-    Instant assignedAt = Instant.now();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(targetUserId, roleId, "BILLING_ADMIN", assignedAt, actorId);
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId)).thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(
-            List.of(
-                new ActiveAssignmentHolder(UUID.randomUUID(), actorId, adminRoleId),
-                new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), roleId)));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
-        .thenReturn(UUID.randomUUID());
-    when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
-
-    service.assign(actor, targetUserId, roleId, ctx);
-
-    DistributionSummary summary =
-        meterRegistry.find("nexus.rbac.admin_equivalent_lock_set_size").summary();
-    assertThat(summary).isNotNull();
-    assertThat(summary.count()).isEqualTo(1L);
-    assertThat(summary.totalAmount()).isEqualTo(2.0);
-  }
-
-  /** RES-17/RC-20.4 (A-2): {@code revoke()}'s half -- recorded on every privileged revoke too. */
-  @Test
-  void should_recordLockSetSizeDistributionSummary_when_revokingPrivilegedRole() {
-    UUID refId = UUID.randomUUID();
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(
-            List.of(
-                new ActiveAssignmentHolder(refId, targetUserId, roleId),
-                new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), roleId),
-                new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), roleId)));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.revoke(eq(refId), any())).thenReturn(1);
-
-    service.revoke(actor, targetUserId, roleId, ctx);
-
-    DistributionSummary summary =
-        meterRegistry.find("nexus.rbac.admin_equivalent_lock_set_size").summary();
-    assertThat(summary).isNotNull();
-    assertThat(summary.count()).isEqualTo(1L);
-    assertThat(summary.totalAmount()).isEqualTo(3.0);
-  }
-
-  /**
-   * US-017 D24/RC-17.1, A-3/MC-H: the re-derived canary's self-assignment success path via the
-   * {@code ALL_DANGEROUS_PERMISSIONS} route (the gate's success test above already covers the
-   * {@code ROLE_NAME} route via name-match). Proves {@code callerHoldsActiveAdminEquivalentRole}
-   * answers from M12 (a distinct, user-scoped read, driven by a DIFFERENT role than the target --
-   * {@code fullyRoleId} vs. {@code roleId} -- and a DIFFERENT role name, "SUPER_CUSTOM") and that
-   * the gate's own M10 read is invoked exactly once, never doubled by the canary.
-   */
-  @Test
-  void should_tagCallerIsAdminTrueViaM12_when_actorSelfAssignsDangerousRoleAndHoldsFullyAdminEquivalentCustomRole() {
-    Role role = customRole("BILLING_ADMIN");
-    UUID fullyRoleId = UUID.randomUUID();
-    Instant assignedAt = Instant.now();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(actorId, roleId, "BILLING_ADMIN", assignedAt, actorId);
-    when(userDirectoryPort.findTenantId(actorId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId)).thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId))
-        .thenReturn(
-            List.of(
-                new RolePermissionName(fullyRoleId, "role:write"),
-                new RolePermissionName(fullyRoleId, "user:write"),
-                new RolePermissionName(fullyRoleId, "tenant:write")));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN")).thenReturn(Optional.empty());
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(fullyRoleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.hasActiveAssignment(actorId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(actorId, roleId, tenantId, actorId)).thenReturn(UUID.randomUUID());
-    when(userRoleAssignmentPort.findActiveAssignmentView(actorId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
-    // M12: the canary's OWN, distinct read -- the caller's own active assignment of the SAME
-    // fully-dangerous custom role, under a DIFFERENT role name than the target role.
-    when(userRoleAssignmentPort.findActiveAssignmentViews(actorId, tenantId))
-        .thenReturn(
-            List.of(new ActiveRoleAssignment(actorId, fullyRoleId, "SUPER_CUSTOM", assignedAt, actorId)));
-    when(userRoleAssignmentPort.findPermissionNamesForActiveAssignmentsOfUser(actorId, tenantId))
-        .thenReturn(
-            List.of(
-                new RolePermissionName(fullyRoleId, "role:write"),
-                new RolePermissionName(fullyRoleId, "user:write"),
-                new RolePermissionName(fullyRoleId, "tenant:write")));
-    // US-018 A4: a self-assignment needs an administrator caller (an admin-defining role in M13).
-    stubCallerIsAdministrator();
-
-    ActiveRoleAssignment result = service.assign(actor, actorId, roleId, ctx);
-
-    assertThat(result).isEqualTo(view);
-    Counter counter =
-        meterRegistry
-            .find("nexus.rbac.self_role_assignment")
-            .tags("tenantId", tenantId.toString(), "privileged", "true", "callerIsAdmin", "true")
-            .counter();
-    assertThat(counter).isNotNull();
-    assertThat(counter.count()).isEqualTo(1.0);
-
-    // A-3/MC-H: the canary's M12-derived answer must come from a DISTINCT port call from the
-    // gate's M10-derived set -- exactly one M10 call (the gate's), and a separate M12 call
-    // (the canary's own).
-    verify(userRoleAssignmentPort, times(1)).findPermissionNamesForTenantRoles(tenantId);
-    verify(userRoleAssignmentPort).findPermissionNamesForActiveAssignmentsOfUser(actorId, tenantId);
-  }
-
-  /**
-   * M-1 regression (07-security-review.md, 2026-09-24): the canary's M4/M12 reads
-   * ({@code callerHoldsActiveAdminEquivalentRole}) MUST happen BEFORE the INSERT, never after.
-   * Reading them post-commit meant that, on a self-assignment of a role that is itself fully
-   * admin-equivalent, the read would see the row this very request just created, making
-   * {@code callerIsAdmin=true} unconditionally reachable and {@code callerIsAdmin=false}
-   * structurally UNREACHABLE for exactly the highest-severity target -- the one case the canary
-   * most needs to catch a gate bypass for. This is an ordering proof: Mockito's stubbed return
-   * values are the same regardless of call order, so only an {@link InOrder} verification can
-   * distinguish the fixed code from the pre-fix code.
-   */
-  @Test
-  void should_readCanaryStateBeforeTheInsert_notAfter_when_selfAssigningATenantAdminRole_M1() {
-    Role role = adminRole("TENANT_ADMIN");
-    Instant assignedAt = Instant.now();
-    UUID userRoleId = UUID.randomUUID();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(actorId, roleId, "TENANT_ADMIN", assignedAt, actorId);
-
-    when(userDirectoryPort.findTenantId(actorId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN")).thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(true);
-    when(userRoleAssignmentPort.hasActiveAssignment(actorId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(actorId, roleId, tenantId, actorId)).thenReturn(userRoleId);
-    when(userRoleAssignmentPort.findActiveAssignmentView(actorId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
-    // Caller held NOTHING before this request -- the realistic pre-insert state for an actor
-    // whose only qualifying assignment is the one this very call is about to create.
-    when(userRoleAssignmentPort.findActiveAssignmentViews(actorId, tenantId)).thenReturn(List.of());
-    // US-018 A4 passes from M13 (an independent read from the canary's views/M12 above), so the
-    // canary still observes the pre-insert state it is meant to.
-    stubCallerIsAdministrator();
-
-    service.assign(actor, actorId, roleId, ctx);
-
-    InOrder inOrder = Mockito.inOrder(userRoleAssignmentPort);
-    inOrder.verify(userRoleAssignmentPort).findActiveAssignmentViews(actorId, tenantId);
-    inOrder.verify(userRoleAssignmentPort).assign(actorId, roleId, tenantId, actorId);
-
-    // The pre-insert read correctly found nothing, so the canary must report false even though
-    // the row this request itself created (a literal TENANT_ADMIN) would make a POST-insert read
-    // report true -- proving the fix, not merely the wiring.
-    Counter counter =
-        meterRegistry
-            .find("nexus.rbac.self_role_assignment")
-            .tags("tenantId", tenantId.toString(), "privileged", "true", "callerIsAdmin", "false")
-            .counter();
-    assertThat(counter).isNotNull();
-    assertThat(counter.count()).isEqualTo(1.0);
-  }
-
-  // ---------------------------------------------------------------------------------------
-  // listActive()
-  // ---------------------------------------------------------------------------------------
-
-  @Test
-  void should_redactAssignedByOnEveryElement_when_callerNotActiveAdmin() {
-    Instant now = Instant.now();
-    UUID otherRoleId = UUID.randomUUID();
-    UUID grantor1 = UUID.randomUUID();
-    UUID grantor2 = UUID.randomUUID();
-    List<ActiveRoleAssignment> stored =
-        List.of(
-            new ActiveRoleAssignment(targetUserId, roleId, "MEMBER", now, grantor1),
-            new ActiveRoleAssignment(targetUserId, otherRoleId, "BILLING_ADMIN", now, grantor2));
-
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findActiveAssignmentViews(targetUserId, tenantId))
-        .thenReturn(stored);
-    when(userRoleAssignmentPort.findActiveAssignmentViews(actorId, tenantId))
-        .thenReturn(List.of()); // caller holds no active TENANT_ADMIN
-
-    List<ActiveRoleAssignment> result = service.listActive(actor, targetUserId);
-
-    assertThat(result)
-        .containsExactly(
-            new ActiveRoleAssignment(targetUserId, roleId, "MEMBER", now, null),
-            new ActiveRoleAssignment(targetUserId, otherRoleId, "BILLING_ADMIN", now, null));
-  }
-
-  @Test
-  void should_preserveAssignedBy_when_callerIsActiveAdmin() {
-    Instant now = Instant.now();
-    UUID otherRoleId = UUID.randomUUID();
-    UUID grantor = UUID.randomUUID();
-    List<ActiveRoleAssignment> stored =
-        List.of(new ActiveRoleAssignment(targetUserId, roleId, "MEMBER", now, grantor));
-
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findActiveAssignmentViews(targetUserId, tenantId))
-        .thenReturn(stored);
-    when(userRoleAssignmentPort.findActiveAssignmentViews(actorId, tenantId))
-        .thenReturn(
-            List.of(
-                new ActiveRoleAssignment(
-                    actorId, otherRoleId, "TENANT_ADMIN", now, UUID.randomUUID())));
-
-    List<ActiveRoleAssignment> result = service.listActive(actor, targetUserId);
-
-    assertThat(result).containsExactlyElementsOf(stored);
-  }
-
-  @Test
-  void should_throwResourceNotFound_when_listActiveTargetUserNotFound() {
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.empty());
-
-    assertThatThrownBy(() -> service.listActive(actor, targetUserId))
-        .isInstanceOf(ResourceNotFoundException.class)
-        .hasFieldOrPropertyWithValue("code", "USER_NOT_FOUND");
-
-    verify(userRoleAssignmentPort, never()).findActiveAssignmentViews(any(), any());
-  }
-
-  /**
-   * T-E8 fix verification: the tenant check must happen BEFORE, and must not be replaced by,
-   * M4's own tenant predicate -- without this explicit check a cross-tenant probe would silently
-   * return {@code 200 {"data":[]}} instead of a 403. Asserts {@code findActiveAssignmentViews} is
-   * never invoked once the tenant mismatch is detected.
-   */
-  @Test
-  void should_throwCrossTenantTarget_andNeverCallFindActiveAssignmentViews_when_listActiveTargetTenantMismatch() {
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(otherTenantId));
-
-    assertThatThrownBy(() -> service.listActive(actor, targetUserId))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
-
-    verify(userRoleAssignmentPort, never()).findActiveAssignmentViews(any(), any());
-    // Load-bearing (US-014 T-E14): listActive's 403 is deliberately excluded from AC4 — this
-    // is the binding, build-blocking control on that exclusion, not the RequestContext-shaped
-    // barrier alone. If this assertion is ever removed, a read-path denial could mislabel a GET
-    // and widen the emitting population from TENANT_ADMIN to every user:read holder.
-    verifyNoInteractions(rbacAuditPort);
-  }
-
-  // ---------------------------------------------------------------------------------------
-  // T-010: the denial throttle at check 3.5 (D14, MC-7)
-  // ---------------------------------------------------------------------------------------
-
-  @Test
-  void should_throwWithNoPortOrAuditInteractionsAndIncrementCounter_when_throttled_assign() {
-    Role role = memberRole();
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verify(userRoleAssignmentPort, never()).findPermissionNamesForRole(any());
-    verify(userRoleAssignmentPort, never()).findRoleIdByName(any(), any());
-    verify(userRoleAssignmentPort, never()).hasActiveAssignmentOfAnyRole(any(), any(), any());
-    verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
-    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
-    verifyNoInteractions(rbacAuditPort);
-    verifyNoInteractions(permissionCachePort);
-
-    Counter counter =
-        meterRegistry.find("nexus.rbac.denial_throttled").tags("operation", "assign").counter();
-    assertThat(counter).isNotNull();
-    assertThat(counter.count()).isEqualTo(1.0);
-    assertThat(meterRegistry.find("nexus.rbac.privileged_role_change_blocked").counter()).isNull();
-  }
-
-  @Test
-  void should_throwWithNoLockOrGateOrAuditInteractionsAndIncrementCounter_when_throttled_revoke() {
-    UUID refId = UUID.randomUUID();
-    Role role = memberRole();
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
-
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    // Throttled at check 3.5, before nameMatch/privileged is even computed -- neither the lock
-    // nor the gate is ever reached.
-    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
-    verify(userRoleAssignmentPort, never()).findPermissionNamesForRole(any());
-    verify(userRoleAssignmentPort, never()).findRoleIdByName(any(), any());
-    verify(userRoleAssignmentPort, never()).hasActiveAssignmentOfAnyRole(any(), any(), any());
-    verify(userRoleAssignmentPort, never()).revoke(any(), any());
-    verifyNoInteractions(rbacAuditPort);
-    verifyNoInteractions(permissionCachePort);
-
-    Counter counter =
-        meterRegistry.find("nexus.rbac.denial_throttled").tags("operation", "revoke").counter();
-    assertThat(counter).isNotNull();
-    assertThat(counter.count()).isEqualTo(1.0);
-    assertThat(meterRegistry.find("nexus.rbac.privileged_revoke_lock_hold").timers()).isEmpty();
-  }
-
-  @Test
-  void should_callRecordDenialOnThrottlePort_when_gateDeniesPrivilegedAssign() {
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class);
-
-    verify(throttlePort).recordDenial(tenantId, actorId);
-  }
-
-  @Test
-  void should_callRecordDenialOnThrottlePort_when_gateDeniesPrivilegedRevoke() {
-    UUID refId = UUID.randomUUID();
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(
-            List.of(
-                new ActiveAssignmentHolder(refId, targetUserId, roleId),
-                new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID())));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class);
-
-    verify(throttlePort).recordDenial(tenantId, actorId);
-  }
-
-  @Test
-  void should_emitDenialThrottleEngagedWarnExactlyOnce_when_recordDenialReturnsTrue() {
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(false);
-    when(throttlePort.recordDenial(tenantId, actorId)).thenReturn(true);
-
-    ListAppender<ILoggingEvent> appender = startLogCapture();
-    try {
-      assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-          .isInstanceOf(InsufficientPermissionException.class);
-
-      var engagedWarnings =
-          appender.list.stream()
-              .filter(e -> e.getLevel() == Level.WARN)
-              .filter(e -> "RBAC_DENIAL_THROTTLE_ENGAGED".equals(keyValueMap(e).get("event")))
-              .toList();
-      assertThat(engagedWarnings).hasSize(1);
-      Map<String, Object> keyValues = keyValueMap(engagedWarnings.get(0));
-      assertThat(keyValues)
-          .containsEntry("tenantId", tenantId)
-          .containsEntry("actorUserId", actorId)
-          .containsEntry("operation", "assign")
-          .containsEntry("maxDenials", MAX_DENIALS)
-          .containsEntry("windowSeconds", WINDOW_SECONDS);
-    } finally {
-      stopLogCapture(appender);
-    }
-  }
-
-  @Test
-  void should_notEmitDenialThrottleEngagedWarn_when_recordDenialReturnsFalse() {
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(false);
-    when(throttlePort.recordDenial(tenantId, actorId)).thenReturn(false);
-
-    ListAppender<ILoggingEvent> appender = startLogCapture();
-    try {
-      assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-          .isInstanceOf(InsufficientPermissionException.class);
-
-      boolean anyEngagedWarn =
-          appender.list.stream()
-              .anyMatch(e -> "RBAC_DENIAL_THROTTLE_ENGAGED".equals(keyValueMap(e).get("event")));
-      assertThat(anyEngagedWarn).isFalse();
-    } finally {
-      stopLogCapture(appender);
-    }
-  }
-
-  @Test
-  void should_proceedWithNormalFlow_when_isThrottledThrows() {
-    Role role = memberRole();
-    Instant assignedAt = Instant.now();
-    UUID userRoleId = UUID.randomUUID();
-    ActiveRoleAssignment view =
-        new ActiveRoleAssignment(targetUserId, roleId, "MEMBER", assignedAt, actorId);
-
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(throttlePort.isThrottled(tenantId, actorId)).thenThrow(new RuntimeException("store down"));
-    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
-        .thenReturn(userRoleId);
-    when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(view));
-
-    ActiveRoleAssignment result = service.assign(actor, targetUserId, roleId, ctx);
-
-    assertThat(result).isEqualTo(view);
-  }
-
-  @Test
-  void should_stillThrowRealDenialException_when_recordDenialThrows() {
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(roleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(roleId), tenantId))
-        .thenReturn(false);
-    when(throttlePort.recordDenial(tenantId, actorId))
-        .thenThrow(new RuntimeException("throttle store down"));
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verify(rbacAuditPort)
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, "TENANT_ADMIN", actorId, ctx),
-            DenialReason.NOT_TENANT_ADMIN, "assign");
-  }
-
-  @Test
-  void should_return403_when_actorThrottledAndGateWouldAlsoHaveDenied() {
-    UUID refId = UUID.randomUUID();
-    Role role = adminRole("TENANT_ADMIN");
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(refId, Instant.now())));
-    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
-
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
-    verify(userRoleAssignmentPort, never()).findRoleIdByName(any(), any());
-    verify(userRoleAssignmentPort, never()).hasActiveAssignmentOfAnyRole(any(), any(), any());
-    verify(userRoleAssignmentPort, never()).revoke(any(), any());
-    verifyNoInteractions(rbacAuditPort);
-  }
-
-  // ---------------------------------------------------------------------------------------
-  // resolveAdminEquivalentRoles (T-001(f)) — private, no caller until T-002/T-003; exercised via
-  // reflection rather than by widening its visibility (03-design.md §7.2).
-  // ---------------------------------------------------------------------------------------
-
-  private RoleAssignmentService.AdminEquivalentRoles invokeResolveAdminEquivalentRoles(
-      Role targetRole, boolean nameMatch) throws Exception {
-    Method method =
-        RoleAssignmentService.class.getDeclaredMethod(
-            "resolveAdminEquivalentRoles", UUID.class, Role.class, boolean.class);
-    method.setAccessible(true);
-    return (RoleAssignmentService.AdminEquivalentRoles)
-        method.invoke(service, tenantId, targetRole, nameMatch);
-  }
-
-  @Test
-  void should_returnEmptySetsAndEmptyNamedAdminRoleId_when_tenantHasNoAdminEquivalentRoles()
-      throws Exception {
-    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId))
-        .thenReturn(List.of());
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.empty());
-
-    RoleAssignmentService.AdminEquivalentRoles roles =
-        invokeResolveAdminEquivalentRoles(customRole("CUSTOM"), false);
-
-    assertThat(roles.adminEquivalentIds()).isEmpty();
-    assertThat(roles.fullyAdminEquivalentIds()).isEmpty();
-    assertThat(roles.namedAdminRoleId()).isEmpty();
-  }
-
-  @Test
-  void should_populateAdminEquivalentIdsOnly_when_tenantHasOneRoleCarryingASingleDangerousPermission()
-      throws Exception {
-    UUID dangerousRoleId = UUID.randomUUID();
-    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId))
-        .thenReturn(List.of(new RolePermissionName(dangerousRoleId, "user:write")));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.empty());
-
-    RoleAssignmentService.AdminEquivalentRoles roles =
-        invokeResolveAdminEquivalentRoles(customRole("CUSTOM"), false);
-
-    assertThat(roles.adminEquivalentIds()).containsExactly(dangerousRoleId);
-    assertThat(roles.fullyAdminEquivalentIds()).isEmpty();
-  }
-
-  @Test
-  void should_populateBothAdminEquivalentAndFullyAdminEquivalentIds_when_tenantHasOneRoleCarryingAllThreeDangerousPermissions()
-      throws Exception {
-    UUID fullyDangerousRoleId = UUID.randomUUID();
-    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId))
-        .thenReturn(
-            List.of(
-                new RolePermissionName(fullyDangerousRoleId, "role:write"),
-                new RolePermissionName(fullyDangerousRoleId, "user:write"),
-                new RolePermissionName(fullyDangerousRoleId, "tenant:write")));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.empty());
-
-    RoleAssignmentService.AdminEquivalentRoles roles =
-        invokeResolveAdminEquivalentRoles(customRole("CUSTOM"), false);
-
-    assertThat(roles.adminEquivalentIds()).containsExactly(fullyDangerousRoleId);
-    assertThat(roles.fullyAdminEquivalentIds()).containsExactly(fullyDangerousRoleId);
-  }
-
-  @Test
-  void should_populateNamedAdminRoleId_when_tenantAdminRoleExistsByName() throws Exception {
-    UUID namedAdminRoleId = UUID.randomUUID();
-    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId))
-        .thenReturn(List.of());
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(namedAdminRoleId));
-
-    RoleAssignmentService.AdminEquivalentRoles roles =
-        invokeResolveAdminEquivalentRoles(adminRole("TENANT_ADMIN"), true);
-
-    assertThat(roles.namedAdminRoleId()).contains(namedAdminRoleId);
-  }
-
-  @Test
-  void should_returnEmptyNamedAdminRoleId_when_tenantAdminRoleDoesNotExist() throws Exception {
-    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId))
-        .thenReturn(List.of());
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.empty());
-
-    RoleAssignmentService.AdminEquivalentRoles roles =
-        invokeResolveAdminEquivalentRoles(customRole("CUSTOM"), false);
-
-    assertThat(roles.namedAdminRoleId()).isEmpty();
-  }
-
-  @Test
-  void should_callPortExactlyOnceForM10AndOnceForM8_when_resolvingAdminEquivalentRoles()
-      throws Exception {
-    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId))
-        .thenReturn(List.of(new RolePermissionName(UUID.randomUUID(), "user:write")));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.empty());
-
-    invokeResolveAdminEquivalentRoles(customRole("CUSTOM"), false);
-
-    verify(userRoleAssignmentPort, times(1)).findPermissionNamesForTenantRoles(tenantId);
-    verify(userRoleAssignmentPort, times(1)).findRoleIdByName(tenantId, "TENANT_ADMIN");
-  }
-
-  // ---------------------------------------------------------------------------------------
-  // US-018 T-001: A1 (user:role:assign) and A2 grant-subset on assign() (ADR-0021 D2,
-  // 03-design.md §4.3, §4.4). The setUp baseline M13 holds only user:role:assign (L-1), which
-  // means DENY for any permissioned target: never "fix" a red test here by defaulting to allow.
-  // ---------------------------------------------------------------------------------------
-
-  private void stubBenignAssignTarget() {
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(memberRole()));
-  }
-
-  private void stubSuccessfulInsert() {
-    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
-        .thenReturn(UUID.randomUUID());
-    when(userRoleAssignmentPort.findActiveAssignmentView(targetUserId, roleId, tenantId))
-        .thenReturn(
-            Optional.of(
-                new ActiveRoleAssignment(targetUserId, roleId, "MEMBER", Instant.now(), actorId)));
-  }
-
-  @Test
-  void should_deny403GrantExceedsCaller_when_targetRoleCarriesPermissionCallerLacks() {
-    UUID held = UUID.randomUUID();
-    UUID lacked = UUID.randomUUID();
-    stubBenignAssignTarget();
-    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId)).thenReturn(Optional.of(Set.of(held, lacked)));
-    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
-        .thenReturn(withUserRoleAssign(List.of(new RolePermissionRef(UUID.randomUUID(), held))));
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
-
-    verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
-    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
-    verify(throttlePort).recordDenial(tenantId, actorId);
-    verifyNoInteractions(permissionCachePort);
-  }
-
-  @Test
-  void should_assign_when_targetPermissionsSubsetOfCallerUnion() {
-    UUID p1 = UUID.randomUUID();
-    UUID p2 = UUID.randomUUID();
-    stubBenignAssignTarget();
-    stubSuccessfulInsert();
-    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId)).thenReturn(Optional.of(Set.of(p1, p2)));
-    // The union spans two of the caller's roles: A2 is a grant bound over the UNION.
-    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
-        .thenReturn(withUserRoleAssign(
-            List.of(
-                new RolePermissionRef(UUID.randomUUID(), p1),
-                new RolePermissionRef(UUID.randomUUID(), p2),
-                new RolePermissionRef(UUID.randomUUID(), UUID.randomUUID()))));
-
-    ActiveRoleAssignment result = service.assign(actor, targetUserId, roleId, ctx);
-
-    assertThat(result.roleId()).isEqualTo(roleId);
-    verify(userRoleAssignmentPort).assign(targetUserId, roleId, tenantId, actorId);
-    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
-  }
-
-  @Test
-  void should_assign_when_targetRoleHasNoPermissions() {
-    stubBenignAssignTarget();
-    stubSuccessfulInsert();
-    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId)).thenReturn(Optional.of(Set.of()));
-
-    service.assign(actor, targetUserId, roleId, ctx);
-
-    // EC7: an empty role grants nothing, so it passes even for a caller holding nothing.
-    verify(userRoleAssignmentPort).assign(targetUserId, roleId, tenantId, actorId);
-  }
-
-  @Test
-  void should_propagateAndNotSave_when_heldPermissionReadThrows() {
-    stubBenignAssignTarget();
-    // T-002: M13 is read once, before A4 and A2, so M14 is never reached when it throws.
-    IllegalStateException readFailure = new IllegalStateException("db down");
-    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
-        .thenThrow(readFailure);
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isSameAs(readFailure);
-
-    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+    assertThat(
+            meterRegistry
+                .find("nexus.rbac.privileged_revoke_lock_hold")
+                .tags("operation", "revoke", "outcome", "error")
+                .timer())
+        .isNotNull();
     verifyNoInteractions(rbacAuditPort, permissionCachePort);
   }
 
-  @Test
-  void should_recordMissingCountAndNoIds_when_grantExceedsCaller() {
-    UUID held = UUID.randomUUID();
-    UUID lackedA = UUID.randomUUID();
-    UUID lackedB = UUID.randomUUID();
-    stubBenignAssignTarget();
-    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
-        .thenReturn(Optional.of(Set.of(held, lackedA, lackedB)));
-    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
-        .thenReturn(withUserRoleAssign(List.of(new RolePermissionRef(UUID.randomUUID(), held))));
-    ListAppender<ILoggingEvent> logs = startLogCapture();
-
-    try {
-      assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-          .isInstanceOf(InsufficientPermissionException.class);
-    } finally {
-      stopLogCapture(logs);
-    }
-
-    verify(rbacAuditPort, times(1))
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx),
-            DenialReason.GRANT_EXCEEDS_CALLER,
-            "assign",
-            2);
-    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
-
-    ILoggingEvent warn =
-        logs.list.stream()
-            .filter(e -> "RBAC_GRANT_EXCEEDS_CALLER".equals(keyValueMap(e).get("event")))
-            .findFirst()
-            .orElseThrow();
-    assertThat(warn.getLevel()).isEqualTo(Level.WARN);
-    Map<String, Object> fields = keyValueMap(warn);
-    assertThat(fields)
-        .containsEntry("tenantId", tenantId)
-        .containsEntry("actorUserId", actorId)
-        .containsEntry("targetUserId", targetUserId)
-        .containsEntry("roleId", roleId)
-        .containsEntry("missingCount", 2);
-    assertThat(fields.values()).doesNotContain(lackedA, lackedB, held);
-    assertThat(warn.getFormattedMessage())
-        .doesNotContain(lackedA.toString())
-        .doesNotContain(lackedB.toString());
-  }
-
-  @Test
-  void should_reportUserRoleAssignAsRequiredPermission_when_grantExceedsCaller() {
-    stubBenignAssignTarget();
-    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
-        .thenReturn(Optional.of(Set.of(UUID.randomUUID())));
-
-    // The endpoint permission, never the missing one: no oracle on the role's contents.
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getRequiredPermission())
-                    .isEqualTo("user:role:assign"));
-  }
-
-  @Test
-  void should_reportUserRoleAssignAsRequiredPermission_when_revokeTargetCrossTenant() {
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(otherTenantId));
-
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getRequiredPermission())
-                    .isEqualTo("user:role:assign"));
-  }
-
-  @Test
-  void should_reportUserRoleAssignAsRequiredPermission_when_throttled() {
-    stubBenignAssignTarget();
-    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getRequiredPermission())
-                    .isEqualTo("user:role:assign"));
-  }
-
-  @Test
-  void should_checkThrottleBeforeGrantSubsetReads_when_assigning() {
-    stubBenignAssignTarget();
-    stubSuccessfulInsert();
-
-    service.assign(actor, targetUserId, roleId, ctx);
-
-    // EC8: throttle timing must not be usable to probe role contents.
-    // Two independent orderings, so the relative order of M13 and M14 is not pinned.
-    InOrder targetRead = Mockito.inOrder(throttlePort, userRoleAssignmentPort);
-    targetRead.verify(throttlePort).isThrottled(tenantId, actorId);
-    targetRead.verify(userRoleAssignmentPort).findPermissionIdsForRole(roleId, tenantId);
-    targetRead.verify(userRoleAssignmentPort).hasActiveAssignment(targetUserId, roleId);
-    InOrder callerRead = Mockito.inOrder(throttlePort, userRoleAssignmentPort);
-    callerRead.verify(throttlePort).isThrottled(tenantId, actorId);
-    callerRead
-        .verify(userRoleAssignmentPort)
-        .findHeldRolePermissionIdsForAuthorization(actorId, tenantId);
-    callerRead.verify(userRoleAssignmentPort).hasActiveAssignment(targetUserId, roleId);
-  }
-
-  @Test
-  void should_denyNotTenantAdminBeforeGrantSubset_when_legacyGateFires() {
-    Role role = customRole("BILLING_ADMIN");
-    UUID adminRoleId = UUID.randomUUID();
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(false);
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verify(userRoleAssignmentPort, never()).findPermissionIdsForRole(any(), any());
-    verify(userRoleAssignmentPort, never()).findHeldRolePermissionIdsForAuthorization(any(), any());
-    verify(rbacAuditPort, times(1))
-        .recordRoleAssignmentDenied(any(), eq(DenialReason.NOT_TENANT_ADMIN), eq("assign"));
-    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
-  }
-
-  /**
-   * MC-2, behavioural half (the structural half is {@code HexagonalArchitectureTest}): even when
-   * M12 would report the caller as holding everything, A2 decides from M13 alone, and M12 is never
-   * read on the decision path.
-   */
-  @Test
-  void should_denyGrantExceedsCaller_when_m12ReportsFullHoldingsButM13HoldsOnlyUserRoleAssign() {
-    UUID permissionId = UUID.randomUUID();
-    stubBenignAssignTarget();
-    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId)).thenReturn(Optional.of(Set.of(permissionId)));
-    Mockito.lenient()
-        .when(userRoleAssignmentPort.findPermissionNamesForActiveAssignmentsOfUser(actorId, tenantId))
-        .thenReturn(List.of(new RolePermissionName(UUID.randomUUID(), "role:write")));
-    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
-        .thenReturn(withUserRoleAssign(List.of()));
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
-
-    verify(userRoleAssignmentPort, never())
-        .findPermissionNamesForActiveAssignmentsOfUser(any(), any());
-  }
-
   // ---------------------------------------------------------------------------------------
-  // US-018 T-002: A4 self-assignment and the Decision 6 denial precedence (03-design.md §2.1,
-  // §4.4): tenant 404s -> throttle -> legacy gate (M2) -> A4 -> A2 -> duplicate 409. One
-  // ROLE_ASSIGNMENT_DENIED row per request, carrying the first reason; the throttle itself writes
-  // none (§4.1). The setUp baseline M13 holds only user:role:assign, so the caller is NOT an
-  // administrator.
+  // T-016 (row 2, rows 3 and 5): revoke-subset, the administrator requirement, the lockout
   // ---------------------------------------------------------------------------------------
 
-  private static final UUID CATALOGUE_P1 = UUID.randomUUID();
-  private static final UUID CATALOGUE_P2 = UUID.randomUUID();
-
-  /** The caller holds one role carrying the whole (two-permission) catalogue: an administrator. */
-  private void stubCallerIsAdministrator() {
-    UUID adminDefiningRoleId = UUID.randomUUID();
-    when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(Set.of(CATALOGUE_P1, CATALOGUE_P2));
-    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
-        .thenReturn(withUserRoleAssign(
-            List.of(
-                new RolePermissionRef(adminDefiningRoleId, CATALOGUE_P1),
-                new RolePermissionRef(adminDefiningRoleId, CATALOGUE_P2))));
-  }
-
-  /** The caller holds {@code CATALOGUE_P1} only: not an administrator. */
-  private void stubCallerIsNotAdministrator() {
-    when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(Set.of(CATALOGUE_P1, CATALOGUE_P2));
-    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
-        .thenReturn(withUserRoleAssign(List.of(new RolePermissionRef(UUID.randomUUID(), CATALOGUE_P1))));
-  }
-
-  private void stubBenignSelfAssignTarget() {
-    when(userDirectoryPort.findTenantId(actorId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(memberRole()));
-  }
-
-  private void stubSuccessfulSelfInsert() {
-    when(userRoleAssignmentPort.hasActiveAssignment(actorId, roleId)).thenReturn(false);
-    when(userRoleAssignmentPort.assign(actorId, roleId, tenantId, actorId))
-        .thenReturn(UUID.randomUUID());
-    when(userRoleAssignmentPort.findActiveAssignmentView(actorId, roleId, tenantId))
-        .thenReturn(
-            Optional.of(new ActiveRoleAssignment(actorId, roleId, "MEMBER", Instant.now(), actorId)));
-  }
-
-  /** A privileged target the legacy gate denies: carries user:write, caller holds no admin role. */
-  private void stubLegacyGateDenies(UUID target) {
-    UUID namedAdminRoleId = UUID.randomUUID();
-    when(userDirectoryPort.findTenantId(target)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(customRole("BILLING_ADMIN")));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId)).thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(namedAdminRoleId));
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(
-            actorId, List.of(namedAdminRoleId), tenantId))
-        .thenReturn(false);
-  }
-
-  private static DenialReason reasonOf(Throwable e) {
-    return ((InsufficientPermissionException) e).getReason();
-  }
-
-  // -- each gate alone ----------------------------------------------------------------------
-
-  @Test
-  void should_denyThrottledWithNoAuditAndNoGrantSubsetReads_when_onlyThrottleFires() {
-    stubBenignAssignTarget();
-    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verifyNoInteractions(rbacAuditPort);
-    verify(throttlePort, never()).recordDenial(any(), any());
-    verify(userRoleAssignmentPort, never()).findHeldRolePermissionIdsForAuthorization(any(), any());
-    verify(userRoleAssignmentPort, never()).findPermissionIdsForRole(any(), any());
-    verify(userRoleAssignmentPort, never()).findCatalogueIds();
-  }
-
-  @Test
-  void should_denyNotTenantAdminWithOneDenialRow_when_onlyLegacyGateFires() {
-    stubLegacyGateDenies(targetUserId);
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verify(rbacAuditPort, times(1))
-        .recordRoleAssignmentDenied(any(), eq(DenialReason.NOT_TENANT_ADMIN), eq("assign"));
-    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
-    verify(throttlePort, times(1)).recordDenial(tenantId, actorId);
-    verify(userRoleAssignmentPort, never()).findCatalogueIds();
-  }
-
-  @Test
-  void should_denySelfAssignmentWithOneDenialRow_when_onlyA4Fires() {
-    stubBenignSelfAssignTarget();
-    stubCallerIsNotAdministrator();
-
-    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.SELF_ASSIGNMENT));
-
-    verify(rbacAuditPort, times(1))
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, actorId, roleId, "MEMBER", actorId, ctx),
-            DenialReason.SELF_ASSIGNMENT,
-            "assign");
-    verify(throttlePort, times(1)).recordDenial(tenantId, actorId);
-    verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
-    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
-    verifyNoInteractions(permissionCachePort);
-  }
-
-  @Test
-  void should_recordDenialWithoutMissingCount_when_selfAssignmentDenied() {
-    stubBenignSelfAssignTarget();
-    stubCallerIsNotAdministrator();
-
-    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class);
-
-    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
-  }
-
-  @Test
-  void should_reportUserRoleAssignAsRequiredPermission_when_selfAssignmentDenied() {
-    stubBenignSelfAssignTarget();
-    stubCallerIsNotAdministrator();
-
-    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getRequiredPermission())
-                    .isEqualTo("user:role:assign"));
-  }
-
-  @Test
-  void should_logWarnWithIdsOnly_when_selfAssignmentDenied() {
-    stubBenignSelfAssignTarget();
-    stubCallerIsNotAdministrator();
-    ListAppender<ILoggingEvent> logs = startLogCapture();
-
-    try {
-      assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
-          .isInstanceOf(InsufficientPermissionException.class);
-    } finally {
-      stopLogCapture(logs);
-    }
-
-    ILoggingEvent warn =
-        logs.list.stream()
-            .filter(e -> "RBAC_SELF_ASSIGNMENT_DENIED".equals(keyValueMap(e).get("event")))
-            .findFirst()
-            .orElseThrow();
-    assertThat(warn.getLevel()).isEqualTo(Level.WARN);
-    assertThat(keyValueMap(warn))
-        .containsOnlyKeys("event", "tenantId", "actorUserId", "roleId")
-        .containsEntry("tenantId", tenantId)
-        .containsEntry("actorUserId", actorId)
-        .containsEntry("roleId", roleId);
-  }
-
-  // -- ordered pairs: the earlier gate wins, with exactly one denial row --------------------
-
-  @Test
-  void should_reportThrottleWithNoAuditAndNoM13OrCatalogueRead_when_throttledAndSelfNonAdmin() {
-    // A4 would also fire: the baseline M13 (user:role:assign only) makes the caller a non-administrator.
-    stubBenignSelfAssignTarget();
-    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
-
-    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verifyNoInteractions(rbacAuditPort);
-    verify(throttlePort, never()).recordDenial(any(), any());
-    verify(userRoleAssignmentPort, never()).findHeldRolePermissionIdsForAuthorization(any(), any());
-    verify(userRoleAssignmentPort, never()).findCatalogueIds();
-  }
-
-  @Test
-  void should_reportNotTenantAdminOnceAndNeverReadCatalogue_when_legacyGateAndA4BothApply() {
-    // Self-target by a non-administrator: A4 would also fire.
-    stubLegacyGateDenies(actorId);
-
-    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verify(rbacAuditPort, times(1)).recordRoleAssignmentDenied(any(), any(), any());
-    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
-    verify(throttlePort, times(1)).recordDenial(tenantId, actorId);
-    verify(userRoleAssignmentPort, never()).findHeldRolePermissionIdsForAuthorization(any(), any());
-    verify(userRoleAssignmentPort, never()).findCatalogueIds();
-  }
-
-  @Test
-  void should_reportSelfAssignmentOnceAndNeverReadM14_when_A4AndA2BothApply() {
-    stubBenignSelfAssignTarget();
-    stubCallerIsNotAdministrator();
-    // A2 would also fire: the target carries a permission the caller lacks.
-    Mockito.lenient()
-        .when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
-        .thenReturn(Optional.of(Set.of(CATALOGUE_P2)));
-
-    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.SELF_ASSIGNMENT));
-
-    verify(rbacAuditPort, times(1)).recordRoleAssignmentDenied(any(), any(), any());
-    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
-    verify(throttlePort, times(1)).recordDenial(tenantId, actorId);
-    verify(userRoleAssignmentPort, never()).findPermissionIdsForRole(any(), any());
-  }
-
-  @Test
-  void should_reportGrantExceedsCallerOnceAndNeverCheckDuplicate_when_A2AndDuplicateBothApply() {
-    UUID held = UUID.randomUUID();
-    stubBenignAssignTarget();
-    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
-        .thenReturn(Optional.of(Set.of(held, UUID.randomUUID())));
-    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
-        .thenReturn(withUserRoleAssign(List.of(new RolePermissionRef(UUID.randomUUID(), held))));
-    // The duplicate 409 would also fire if reached.
-    Mockito.lenient()
-        .when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId))
-        .thenReturn(true);
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
-
-    verify(rbacAuditPort, times(1))
-        .recordRoleAssignmentDenied(
-            any(), eq(DenialReason.GRANT_EXCEEDS_CALLER), eq("assign"), eq(1));
-    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
-    verify(throttlePort, times(1)).recordDenial(tenantId, actorId);
-    verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
-  }
-
-  @Test
-  void should_reportNotTenantAdminOnce_when_legacyGateAndA2BothApply() {
-    stubLegacyGateDenies(targetUserId);
-    // A2 would also fire: the target carries a permission the caller does not hold.
-    Mockito.lenient()
-        .when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
-        .thenReturn(Optional.of(Set.of(UUID.randomUUID())));
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verify(rbacAuditPort, times(1)).recordRoleAssignmentDenied(any(), any(), any());
-    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
-    verify(throttlePort, times(1)).recordDenial(tenantId, actorId);
-    verify(userRoleAssignmentPort, never()).findPermissionIdsForRole(any(), any());
-  }
-
-  @Test
-  void should_reportThrottleWithNoAuditAndNoM13OrM14Read_when_throttledAndA2WouldFire() {
-    stubBenignAssignTarget();
-    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
-    Mockito.lenient()
-        .when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
-        .thenReturn(Optional.of(Set.of(UUID.randomUUID())));
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verifyNoInteractions(rbacAuditPort);
-    verify(throttlePort, never()).recordDenial(any(), any());
-    verify(userRoleAssignmentPort, never()).findHeldRolePermissionIdsForAuthorization(any(), any());
-    verify(userRoleAssignmentPort, never()).findPermissionIdsForRole(any(), any());
-  }
-
-  // -- A4 decision ----------------------------------------------------------------------------
-
-  @Test
-  void should_neverReadCatalogue_when_targetIsAnotherUser() {
-    stubBenignAssignTarget();
-    stubSuccessfulInsert();
-
-    service.assign(actor, targetUserId, roleId, ctx);
-
-    verify(userRoleAssignmentPort, never()).findCatalogueIds();
-  }
-
-  @Test
-  void should_assign_when_administratorSelfAssigns() {
-    stubBenignSelfAssignTarget();
-    stubSuccessfulSelfInsert();
-    stubCallerIsAdministrator();
-
-    ActiveRoleAssignment result = service.assign(actor, actorId, roleId, ctx);
-
-    assertThat(result.userId()).isEqualTo(actorId);
-    verify(userRoleAssignmentPort).assign(actorId, roleId, tenantId, actorId);
-    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
-  }
-
-  /** §2.1: the union of two partial roles is NOT an administrator; per role fails closed. */
-  @Test
-  void should_denySelfAssignment_when_catalogueSplitAcrossTwoRoles() {
-    stubBenignSelfAssignTarget();
-    when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(Set.of(CATALOGUE_P1, CATALOGUE_P2));
-    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
-        .thenReturn(withUserRoleAssign(
-            List.of(
-                new RolePermissionRef(UUID.randomUUID(), CATALOGUE_P1),
-                new RolePermissionRef(UUID.randomUUID(), CATALOGUE_P2))));
-
-    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.SELF_ASSIGNMENT));
-
-    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
-  }
-
-  /**
-   * US-017 RES-13 regression: a caller holding the three dangerous permissions (but NOT the whole
-   * catalogue) passes the legacy privileged gate, so A4 is the only control that denies the
-   * self-assignment of a privileged role. The lock-hold timer must close with outcome=denied.
-   */
-  @Test
-  void should_denySelfAssignmentOfPrivilegedRole_when_legacyGatePassesButCallerHoldsPartOfCatalogue() {
-    UUID adminRoleId = UUID.randomUUID();
-    UUID heldRoleId = UUID.randomUUID();
-    Set<UUID> catalogue = new HashSet<>();
-    for (int i = 0; i < 9; i++) {
-      catalogue.add(UUID.randomUUID());
-    }
-    List<UUID> catalogueList = List.copyOf(catalogue);
-    when(userDirectoryPort.findTenantId(actorId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(customRole("BILLING_ADMIN")));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("role:write", "user:write", "tenant:write"));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    // The legacy gate (M5b) passes: the caller qualifies as an administrator by that test.
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(eq(actorId), any(), eq(tenantId)))
-        .thenReturn(true);
-    // M13: one role carrying four of the nine catalogue permissions -- not admin-defining.
-    when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(catalogue);
-    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
-        .thenReturn(withUserRoleAssign(
-            catalogueList.subList(0, 4).stream()
-                .map(permissionId -> new RolePermissionRef(heldRoleId, permissionId))
-                .toList()));
-
-    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.SELF_ASSIGNMENT));
-
-    verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), any());
-    verify(rbacAuditPort, times(1))
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, actorId, roleId, "BILLING_ADMIN", actorId, ctx),
-            DenialReason.SELF_ASSIGNMENT,
-            "assign");
-    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
-    verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
-    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
-    var timer =
-        meterRegistry
-            .find("nexus.rbac.privileged_revoke_lock_hold")
-            .tags("outcome", "denied")
-            .timer();
-    assertThat(timer).isNotNull();
-    assertThat(timer.count()).isEqualTo(1L);
-  }
-
-  @Test
-  void should_denySelfAssignment_when_catalogueReadReturnsEmpty() {
-    stubBenignSelfAssignTarget();
-    when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(Set.of());
-    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
-        .thenReturn(withUserRoleAssign(List.of(new RolePermissionRef(UUID.randomUUID(), CATALOGUE_P1))));
-
-    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.SELF_ASSIGNMENT));
-  }
-
-  @Test
-  void should_propagateAndNotSave_when_catalogueReadThrows() {
-    stubBenignSelfAssignTarget();
-    IllegalStateException readFailure = new IllegalStateException("db down");
-    when(userRoleAssignmentPort.findCatalogueIds()).thenThrow(readFailure);
-
-    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx)).isSameAs(readFailure);
-
-    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
-    verifyNoInteractions(rbacAuditPort, permissionCachePort);
-  }
-
-  /** §4.4: A4 and A2 take their inputs from the same single M13 read. */
-  @Test
-  void should_readM13ExactlyOnce_when_selfTargetPassesA4AndA2() {
-    stubBenignSelfAssignTarget();
-    stubSuccessfulSelfInsert();
-    stubCallerIsAdministrator();
-    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
-        .thenReturn(Optional.of(Set.of(CATALOGUE_P1)));
-
-    service.assign(actor, actorId, roleId, ctx);
-
-    verify(userRoleAssignmentPort, times(1))
-        .findHeldRolePermissionIdsForAuthorization(actorId, tenantId);
-  }
-
-  // ---------------------------------------------------------------------------------------
-  // US-018 07-security-review.md M-1, L-1, L-2: revoke-subset pulled into M2, the fresh
-  // endpoint-permission check (user:role:assign must still be in M13), and M14's fail-closed
-  // Optional. Each test overrides the setUp baseline it needs.
-  // ---------------------------------------------------------------------------------------
-
-  private static final UUID USER_ROLE_ASSIGN_ID = RbacSeededPermissionIds.USER_ROLE_ASSIGN;
-
-  /**
-   * M13: the caller holds {@code user:role:assign} through one role, plus {@code
-   * heldPermissionIds}, each through its own role.
-   */
-  private void stubCallerHoldsAssignPermissionAnd(UUID... heldPermissionIds) {
-    List<RolePermissionRef> refs = new ArrayList<>();
-    refs.add(new RolePermissionRef(UUID.randomUUID(), USER_ROLE_ASSIGN_ID));
-    for (UUID heldPermissionId : heldPermissionIds) {
-      refs.add(new RolePermissionRef(UUID.randomUUID(), heldPermissionId));
-    }
-    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
-        .thenReturn(refs);
-  }
-
-  /** A benign (MEMBER) revoke target that is actively held, so the 404 does not fire. */
-  private ActiveAssignmentRef stubBenignRevokeTarget() {
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId)).thenReturn(Optional.of(memberRole()));
-    ActiveAssignmentRef ref =
-        new ActiveAssignmentRef(UUID.randomUUID(), Instant.now().minusSeconds(60));
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(ref));
-    return ref;
-  }
-
-  // -- M-1: revoke-subset -------------------------------------------------------------------
-
+  /** Revoke-subset, union part: the role carries a permission the caller lacks (GRANT_EXCEEDS_CALLER). */
   @Test
   void should_deny403GrantExceedsCallerWithOneDenialRow_when_revokeTargetCarriesPermissionCallerLacks() {
-    UUID held = UUID.randomUUID();
-    stubBenignRevokeTarget();
-    stubCallerHoldsAssignPermissionAnd(held);
+    ActiveAssignmentRef ref = stubBenignRevokeTarget();
+    stubCallerHoldsP1Only();
+    // Not admin-defining (the catalogue is P1 and P2): the union check alone decides.
     when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
-        .thenReturn(Optional.of(Set.of(held, UUID.randomUUID())));
+        .thenReturn(Optional.of(Set.of(P1, UUID.randomUUID())));
 
     assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
         .isInstanceOfSatisfying(
@@ -4340,23 +1532,19 @@ class RoleAssignmentServiceTest {
     verify(rbacAuditPort, times(1))
         .recordRoleAssignmentDenied(
             new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx),
-            DenialReason.GRANT_EXCEEDS_CALLER,
-            "revoke",
-            1);
+            DenialReason.GRANT_EXCEEDS_CALLER, "revoke", 1);
     verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
     verify(throttlePort, times(1)).recordDenial(tenantId, actorId);
-    verify(userRoleAssignmentPort, never()).revoke(any(), any());
+    verify(userRoleAssignmentPort, never()).revoke(eq(ref.id()), any());
     verifyNoInteractions(permissionCachePort);
   }
 
   @Test
   void should_revoke_when_revokeTargetPermissionsWithinCallerHoldings() {
-    UUID p1 = UUID.randomUUID();
-    UUID p2 = UUID.randomUUID();
     ActiveAssignmentRef ref = stubBenignRevokeTarget();
-    stubCallerHoldsAssignPermissionAnd(p1, p2);
+    stubCallerHoldsP1Only();
     when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
-        .thenReturn(Optional.of(Set.of(p1, p2)));
+        .thenReturn(Optional.of(Set.of(P1)));
     when(userRoleAssignmentPort.revoke(eq(ref.id()), any())).thenReturn(1);
 
     service.revoke(actor, targetUserId, roleId, ctx);
@@ -4365,16 +1553,12 @@ class RoleAssignmentServiceTest {
     verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
     verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
     verify(rbacAuditPort)
-        .recordRoleRevoked(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx));
+        .recordRoleRevoked(new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx));
   }
 
   @Test
   void should_revoke_when_revokeTargetRoleHasNoPermissions() {
     ActiveAssignmentRef ref = stubBenignRevokeTarget();
-    stubCallerHoldsAssignPermissionAnd();
-    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
-        .thenReturn(Optional.of(Set.of()));
     when(userRoleAssignmentPort.revoke(eq(ref.id()), any())).thenReturn(1);
 
     service.revoke(actor, targetUserId, roleId, ctx);
@@ -4383,84 +1567,518 @@ class RoleAssignmentServiceTest {
   }
 
   /**
-   * M-1 placement: after the legacy gate passes, revoke-subset (403) runs BEFORE the last-admin
-   * lockout (409), so the 409 never tells a caller who could not revoke this role anything.
+   * Behaviour change (T-016 risk): a caller without {@code user:read} can no longer revoke MEMBER,
+   * which carries it. The fixture models MEMBER with {@code P1} and the caller holding only
+   * {@code user:role:assign}.
    */
   @Test
-  void should_denyGrantExceedsCallerBeforeLastAdminLockout_when_privilegedRevokeExceedsHoldings() {
-    UUID adminRoleId = UUID.randomUUID();
-    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
-    when(userRoleAssignmentPort.findRole(roleId))
-        .thenReturn(Optional.of(customRole("BILLING_ADMIN")));
-    ActiveAssignmentRef ref = new ActiveAssignmentRef(UUID.randomUUID(), Instant.now());
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(ref));
-    when(userRoleAssignmentPort.findPermissionNamesForRole(roleId))
-        .thenReturn(List.of("user:write"));
-    when(userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId))
-        .thenReturn(List.of(new RolePermissionName(roleId, "user:write")));
-    when(userRoleAssignmentPort.findRoleIdByName(tenantId, "TENANT_ADMIN"))
-        .thenReturn(Optional.of(adminRoleId));
-    // The only locked holder is the assignment being revoked: the 409 would fire if reached.
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(List.of(new ActiveAssignmentHolder(ref.id(), targetUserId, roleId)));
-    // The legacy gate passes: the caller holds the named TENANT_ADMIN role.
-    when(userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(
-            actorId, List.of(adminRoleId), tenantId))
-        .thenReturn(true);
-    stubCallerHoldsAssignPermissionAnd();
+  void should_deny403_when_callerWithoutTheMemberPermissionRevokesMember() {
+    stubBenignRevokeTarget();
     when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
-        .thenReturn(Optional.of(Set.of(UUID.randomUUID())));
+        .thenReturn(Optional.of(Set.of(P1)));
+
+    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    verify(userRoleAssignmentPort, never()).revoke(any(), any());
+  }
+
+  /**
+   * RC-26.2 (T-E34): a union-holder passes the subset comparison on an admin-defining role but is
+   * not an administrator by M11's rows, so they cannot strip an administrator. The reason is
+   * NOT_TENANT_ADMIN (A-13), one denial row, one throttle denial; the timer closes as denied.
+   */
+  @Test
+  void should_deny403NotTenantAdmin_when_unionHolderRevokesAnAdminDefiningRole_RC262() {
+    ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(
+        List.of(
+            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId),
+            holder(UUID.randomUUID(), roleId)));
+    lenientCallerIsUnionHolder();
+
+    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> {
+              assertThat(e.getReason()).isEqualTo(DenialReason.NOT_TENANT_ADMIN);
+              assertThat(e.getRequiredPermission()).isEqualTo("user:role:assign");
+            });
+
+    verify(rbacAuditPort, times(1))
+        .recordRoleAssignmentDenied(
+            new RbacAuditEvent(tenantId, targetUserId, roleId, "ADMIN_LIKE", actorId, ctx),
+            DenialReason.NOT_TENANT_ADMIN, "revoke");
+    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
+    verify(throttlePort, times(1)).recordDenial(tenantId, actorId);
+    verify(userRoleAssignmentPort, never()).revoke(any(), any());
+    assertThat(meterRegistry.find("nexus.rbac.last_admin_lockout_blocked").counter()).isNull();
+    assertThat(
+            meterRegistry
+                .find("nexus.rbac.privileged_revoke_lock_hold")
+                .tags("operation", "revoke", "outcome", "denied")
+                .timer())
+        .isNotNull();
+  }
+
+  /** The administrator comes from M11's rows even when M13 says otherwise (RC-25.1). */
+  @Test
+  void should_deny403NotTenantAdmin_when_m13SaysAdministratorButLockedRowsDoNotContainTheCaller() {
+    ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(
+        List.of(
+            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId),
+            holder(UUID.randomUUID(), roleId)));
+    lenientCallerIsAdministrator();
+
+    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
+
+    verify(userRoleAssignmentPort, never()).revoke(any(), any());
+  }
+
+  /**
+   * The administrator requirement comes first and needs no holdings read: a caller who is not an
+   * administrator of an admin-defining role gets NOT_TENANT_ADMIN whatever else they lack (A-13),
+   * and the live holdings (M13) are never read.
+   */
+  @Test
+  void should_denyNotTenantAdminWithoutReadingHoldings_when_callerIsNotAnAdministratorAndLacksPermissions() {
+    ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(new ActiveAssignmentHolder(ref.id(), targetUserId, roleId)));
+
+    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
+
+    verify(userRoleAssignmentPort, never()).findHeldRolePermissionIdsForAuthorization(any(), any());
+    verify(rbacAuditPort, times(1)).recordRoleAssignmentDenied(any(), any(), any());
+  }
+
+  /** An administrator who nevertheless lacks a permission of the role gets GRANT_EXCEEDS_CALLER. */
+  @Test
+  void should_denyGrantExceedsCaller_when_theAdministratorsLiveHoldingsLackAPermissionOfTheRole() {
+    ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(
+        List.of(
+            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId), holder(actorId, roleId)));
+    stubCallerHoldsP1Only();
+
+    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    verify(rbacAuditPort, times(1))
+        .recordRoleAssignmentDenied(any(), eq(DenialReason.GRANT_EXCEEDS_CALLER), eq("revoke"), eq(1));
+    verify(userRoleAssignmentPort, never()).revoke(any(), any());
+  }
+
+  /**
+   * ADR-0017 D4: 403 always precedes 409. A non-administrator revoking the tenant's last
+   * administrator gets 403; the lockout never tells them it is the last one.
+   */
+  @Test
+  void should_return403NotLockoutConflict_when_nonAdministratorRevokesTheLastAdministrator() {
+    ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(new ActiveAssignmentHolder(ref.id(), targetUserId, roleId)));
+    lenientCallerIsUnionHolder();
 
     assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
         .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
 
     assertThat(meterRegistry.find("nexus.rbac.last_admin_lockout_blocked").counter()).isNull();
+  }
+
+  /** AC5: the actor revokes their OWN last administrator assignment. */
+  @Test
+  void should_throwLastAdminRoleException_when_administratorRevokesTheirOwnLastAssignment() {
+    ActiveAssignmentRef ref = stubRevokeTargetFor(actorId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(new ActiveAssignmentHolder(ref.id(), actorId, roleId)));
+    stubCallerIsAdministrator();
+
+    assertThatThrownBy(() -> service.revoke(actor, actorId, roleId, ctx))
+        .isInstanceOf(LastAdminRoleException.class)
+        .hasFieldOrPropertyWithValue("code", "RBAC_002");
+
+    verify(userRoleAssignmentPort, never()).revoke(any(), any());
+    verifyNoInteractions(permissionCachePort, rbacAuditPort);
+    Counter counter = meterRegistry.find("nexus.rbac.last_admin_lockout_blocked").counter();
+    assertThat(counter).isNotNull();
+    assertThat(counter.count()).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_revokeSuccessfully_when_anotherDistinctAdministratorRemains() {
+    ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(
+        List.of(
+            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId),
+            holder(actorId, roleId)));
+    stubCallerIsAdministrator();
+    when(userRoleAssignmentPort.revoke(eq(ref.id()), any())).thenReturn(1);
+
+    service.revoke(actor, targetUserId, roleId, ctx);
+
+    verify(userRoleAssignmentPort).revoke(eq(ref.id()), any());
+    verify(permissionCachePort).evict(tenantId, targetUserId);
+    verify(rbacAuditPort)
+        .recordRoleRevoked(
+            new RbacAuditEvent(tenantId, targetUserId, roleId, "ADMIN_LIKE", actorId, ctx));
+  }
+
+  /**
+   * MC-D / Edge Case 1: one user holding TWO admin-defining roles is counted ONCE, and excluding
+   * the row being revoked (by assignment id, never by user id) still leaves that user counted
+   * through their other admin-defining assignment: not a lockout.
+   */
+  @Test
+  void should_notLockOut_when_targetUserHoldsAnotherAdminDefiningRoleViaADifferentAssignment_MCD() {
+    UUID otherAdminRoleId = UUID.randomUUID();
+    ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(
+        List.of(
+            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId),
+            new ActiveAssignmentHolder(UUID.randomUUID(), targetUserId, otherAdminRoleId),
+            holder(actorId, otherAdminRoleId)),
+        otherAdminRoleId);
+    stubCallerIsAdministrator();
+    when(userRoleAssignmentPort.revoke(eq(ref.id()), any())).thenReturn(1);
+
+    service.revoke(actor, targetUserId, roleId, ctx);
+
+    verify(userRoleAssignmentPort).revoke(eq(ref.id()), any());
+  }
+
+  /** A different user holding another admin-defining role also prevents a lockout. */
+  @Test
+  void should_notLockOut_when_aDifferentUserHoldsAnotherAdminDefiningRole() {
+    UUID otherAdminRoleId = UUID.randomUUID();
+    ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(
+        List.of(
+            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId),
+            holder(actorId, otherAdminRoleId)),
+        otherAdminRoleId);
+    stubCallerIsAdministrator();
+    when(userRoleAssignmentPort.revoke(eq(ref.id()), any())).thenReturn(1);
+
+    service.revoke(actor, targetUserId, roleId, ctx);
+
+    verify(userRoleAssignmentPort).revoke(eq(ref.id()), any());
+  }
+
+  /**
+   * Row 5: the population is the holders of admin-defining roles, nothing narrower or wider. A
+   * locked holder of a role that is NOT admin-defining (it is in the lock set only as the target
+   * would be) does not prevent the lockout.
+   */
+  @Test
+  void should_throwLastAdminRoleException_when_theOnlyOtherLockedHolderIsNotAnAdministrator() {
+    UUID notAdminDefiningRoleId = UUID.randomUUID();
+    ActiveAssignmentRef ref = stubRevokeTargetFor(actorId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(
+        List.of(
+            new ActiveAssignmentHolder(ref.id(), actorId, roleId),
+            holder(UUID.randomUUID(), notAdminDefiningRoleId)));
+    stubCallerIsAdministrator();
+
+    assertThatThrownBy(() -> service.revoke(actor, actorId, roleId, ctx))
+        .isInstanceOf(LastAdminRoleException.class);
+  }
+
+  /** Edge Case 3: the lockout predicate is deterministic regardless of the rows' order. */
+  @Test
+  void should_produceSameResult_regardlessOfLockedHoldersListOrder_EdgeCase3() {
+    UUID refId = UUID.randomUUID();
+    UUID otherUserId = UUID.randomUUID();
+    UUID otherRoleId = UUID.randomUUID();
+    Set<UUID> adminDefiningRoleIds = Set.of(otherRoleId);
+    ActiveAssignmentHolder revoked = new ActiveAssignmentHolder(refId, targetUserId, roleId);
+    ActiveAssignmentHolder other =
+        new ActiveAssignmentHolder(UUID.randomUUID(), otherUserId, otherRoleId);
+
+    boolean natural =
+        RoleAssignmentService.wouldLeaveTenantWithoutAdministrator(
+            List.of(revoked, other), refId, adminDefiningRoleIds);
+    boolean reversed =
+        RoleAssignmentService.wouldLeaveTenantWithoutAdministrator(
+            List.of(other, revoked), refId, adminDefiningRoleIds);
+
+    assertThat(natural).isFalse();
+    assertThat(reversed).isEqualTo(natural);
+  }
+
+  @Test
+  void should_excludeNoRow_when_revokedAssignmentIdIsNull_breakGlassUse() {
+    ActiveAssignmentHolder holder = new ActiveAssignmentHolder(UUID.randomUUID(), targetUserId, roleId);
+
+    assertThat(
+            RoleAssignmentService.wouldLeaveTenantWithoutAdministrator(
+                List.of(holder), null, Set.of(roleId)))
+        .isFalse();
+    assertThat(
+            RoleAssignmentService.wouldLeaveTenantWithoutAdministrator(
+                List.of(), null, Set.of(roleId)))
+        .isTrue();
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // Lock set: ascending unsigned byte-wise order (MC-E), size summary, hold timer (row 10)
+  // ---------------------------------------------------------------------------------------
+
+  /**
+   * MC-E, {@code revoke()} half: the role-id list passed to M11 is sorted by UNSIGNED byte-wise
+   * order of the 16-byte representation, explicitly NOT {@link UUID#compareTo}, which compares
+   * {@code mostSigBits} as a SIGNED {@code long}. {@code lowBitRoleId} has {@code mostSigBits = 1L};
+   * {@code highBitRoleId} has {@code Long.MIN_VALUE}. Unsigned ascending is {@code [low, high]};
+   * signed ascending is the reverse. A test that only asserted "sorted" would pass under either.
+   */
+  @Test
+  void should_sortLockSetByUnsignedBytewiseOrder_notUuidCompareTo_when_revoking_MCE() {
+    UUID lowBitRoleId = new UUID(1L, 0L);
+    UUID highBitRoleId = new UUID(Long.MIN_VALUE, 0L);
+    assertThat(lowBitRoleId.compareTo(highBitRoleId))
+        .as("fixture precondition: signed UUID.compareTo must rank lowBitRoleId AFTER highBitRoleId")
+        .isGreaterThan(0);
+    roleId = lowBitRoleId;
+
+    ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(
+        List.of(new ActiveAssignmentHolder(ref.id(), targetUserId, lowBitRoleId), holder(actorId, highBitRoleId)),
+        highBitRoleId);
+    stubCallerIsAdministrator();
+    when(userRoleAssignmentPort.revoke(eq(ref.id()), any())).thenReturn(1);
+
+    service.revoke(actor, targetUserId, lowBitRoleId, ctx);
+
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<UUID>> lockSetCaptor = ArgumentCaptor.forClass(List.class);
+    verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), lockSetCaptor.capture());
+    assertThat(lockSetCaptor.getValue()).containsExactly(lowBitRoleId, highBitRoleId);
+    assertThat(lockSetCaptor.getValue())
+        .as("must NOT equal UUID.compareTo's (signed) ascending order")
+        .isNotEqualTo(List.of(highBitRoleId, lowBitRoleId));
+  }
+
+  /** MC-E, {@code assign()} half: the same order for the set lock taken on assign. */
+  @Test
+  void should_sortLockSetByUnsignedBytewiseOrder_notUuidCompareTo_when_assigning_MCE() {
+    UUID lowBitRoleId = new UUID(1L, 0L);
+    UUID highBitRoleId = new UUID(Long.MIN_VALUE, 0L);
+    roleId = lowBitRoleId;
+    stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(holder(actorId, highBitRoleId)), highBitRoleId);
+    stubCallerIsAdministrator();
+    stubSuccessfulInsert();
+
+    service.assign(actor, targetUserId, lowBitRoleId, ctx);
+
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<UUID>> lockSetCaptor = ArgumentCaptor.forClass(List.class);
+    verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), lockSetCaptor.capture());
+    assertThat(lockSetCaptor.getValue()).containsExactly(lowBitRoleId, highBitRoleId);
+  }
+
+  @Test
+  void should_includeTheTargetRoleOnce_when_buildingTheLockSet() {
+    UUID other = UUID.randomUUID();
+
+    List<UUID> lockSet = RoleAssignmentService.buildAscendingLockSet(Set.of(other, roleId), roleId);
+
+    assertThat(lockSet).containsExactlyInAnyOrder(other, roleId).doesNotHaveDuplicates();
+  }
+
+  @Test
+  void should_includeTheTargetRole_when_noRoleIsAdminDefiningYet() {
+    assertThat(RoleAssignmentService.buildAscendingLockSet(Set.of(), roleId))
+        .containsExactly(roleId);
+  }
+
+  @Test
+  void should_readM10PrimeOnceAndDecideByCatalogue_when_resolvingAdminDefiningRoleIds() {
+    UUID adminRole = UUID.randomUUID();
+    UUID shortRole = UUID.randomUUID();
+    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId))
+        .thenReturn(
+            List.of(ref(adminRole, P1), ref(adminRole, P2), ref(shortRole, P1)));
+
+    Set<UUID> ids =
+        RoleAssignmentService.resolveAdminDefiningRoleIds(
+            userRoleAssignmentPort, tenantId, CATALOGUE);
+
+    assertThat(ids).containsExactly(adminRole);
+    verify(userRoleAssignmentPort, times(1)).findRolePermissionIdsForTenantRoles(tenantId);
+  }
+
+  @Test
+  void should_recordLockHoldTimerOutcomeLockout_when_administratorRevokesTheirOwnLastAssignment() {
+    ActiveAssignmentRef ref = stubRevokeTargetFor(actorId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(new ActiveAssignmentHolder(ref.id(), actorId, roleId)));
+    stubCallerIsAdministrator();
+
+    assertThatThrownBy(() -> service.revoke(actor, actorId, roleId, ctx))
+        .isInstanceOf(LastAdminRoleException.class);
+
+    var timer =
+        meterRegistry.find("nexus.rbac.privileged_revoke_lock_hold").tags("outcome", "lockout").timer();
+    assertThat(timer).isNotNull();
+    assertThat(timer.count()).isEqualTo(1L);
+  }
+
+  @Test
+  void should_recordLockHoldTimerOutcomeRevoked_when_adminDefiningRevokeSucceeds() {
+    ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(
+        List.of(new ActiveAssignmentHolder(ref.id(), targetUserId, roleId), holder(actorId, roleId)));
+    stubCallerIsAdministrator();
+    when(userRoleAssignmentPort.revoke(eq(ref.id()), any())).thenReturn(1);
+
+    service.revoke(actor, targetUserId, roleId, ctx);
+
+    var timer =
+        meterRegistry.find("nexus.rbac.privileged_revoke_lock_hold").tags("outcome", "revoked").timer();
+    assertThat(timer).isNotNull();
+    assertThat(timer.count()).isEqualTo(1L);
+  }
+
+  @Test
+  void should_recordLockHoldTimerOutcomeAssigned_when_adminDefiningAssignSucceeds() {
+    stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(holder(actorId, roleId)));
+    stubCallerIsAdministrator();
+    stubSuccessfulInsert();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
     var timer =
         meterRegistry
             .find("nexus.rbac.privileged_revoke_lock_hold")
-            .tags("operation", "revoke", "outcome", "denied")
+            .tags("operation", "assign", "outcome", "assigned")
             .timer();
     assertThat(timer).isNotNull();
     assertThat(timer.count()).isEqualTo(1L);
+  }
+
+  @Test
+  void should_recordLockHoldTimerOutcomeConflict_when_adminDefiningAssignIsADuplicate() {
+    stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(holder(actorId, roleId)));
+    stubCallerIsAdministrator();
+    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(true);
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(DuplicateRoleAssignmentException.class);
+
+    assertThat(
+            meterRegistry
+                .find("nexus.rbac.privileged_revoke_lock_hold")
+                .tags("outcome", "conflict")
+                .timer())
+        .isNotNull();
+  }
+
+  @Test
+  void should_recordLockSetSizeDistributionSummary_when_assigningAdminDefiningRole() {
+    stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(
+        List.of(holder(actorId, roleId), holder(UUID.randomUUID(), roleId)));
+    stubCallerIsAdministrator();
+    stubSuccessfulInsert();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    DistributionSummary summary =
+        meterRegistry.find("nexus.rbac.admin_equivalent_lock_set_size").summary();
+    assertThat(summary).isNotNull();
+    assertThat(summary.count()).isEqualTo(1L);
+    assertThat(summary.totalAmount()).isEqualTo(2.0);
+  }
+
+  @Test
+  void should_recordLockSetSizeDistributionSummary_when_revokingAdminDefiningRole() {
+    ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(
+        List.of(
+            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId),
+            holder(actorId, roleId),
+            holder(UUID.randomUUID(), roleId)));
+    stubCallerIsAdministrator();
+    when(userRoleAssignmentPort.revoke(eq(ref.id()), any())).thenReturn(1);
+
+    service.revoke(actor, targetUserId, roleId, ctx);
+
+    DistributionSummary summary =
+        meterRegistry.find("nexus.rbac.admin_equivalent_lock_set_size").summary();
+    assertThat(summary).isNotNull();
+    assertThat(summary.count()).isEqualTo(1L);
+    assertThat(summary.totalAmount()).isEqualTo(3.0);
+  }
+
+  /** Revoke acquires M10' then M11 strictly before the decision reads (the order the proof needs). */
+  @Test
+  void should_takeM10PrimeAndM11BeforeTheDecisionReads_when_revokingAdminDefiningRole() {
+    ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(
+        List.of(new ActiveAssignmentHolder(ref.id(), targetUserId, roleId), holder(actorId, roleId)));
+    stubCallerIsAdministrator();
+    when(userRoleAssignmentPort.revoke(eq(ref.id()), any())).thenReturn(1);
+
+    service.revoke(actor, targetUserId, roleId, ctx);
+
+    InOrder inOrder = Mockito.inOrder(userRoleAssignmentPort);
+    inOrder.verify(userRoleAssignmentPort).findActiveAssignmentRef(targetUserId, roleId, tenantId);
+    inOrder.verify(userRoleAssignmentPort).findPermissionIdsForRole(roleId, tenantId);
+    inOrder.verify(userRoleAssignmentPort).findRolePermissionIdsForTenantRoles(tenantId);
+    inOrder.verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), any());
+    inOrder
+        .verify(userRoleAssignmentPort)
+        .findHeldRolePermissionIdsForAuthorization(actorId, tenantId);
+    inOrder.verify(userRoleAssignmentPort).revoke(eq(ref.id()), any());
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // L-1 and L-2 on revoke
+  // ---------------------------------------------------------------------------------------
+
+  @Test
+  void should_deny403PermissionAbsentBeforeRevokeSubset_when_revokeCallerNoLongerHoldsUserRoleAssign() {
+    stubBenignRevokeTarget();
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(List.of(ref(UUID.randomUUID(), P1)));
+
+    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> {
+              assertThat(e.getReason()).isEqualTo(DenialReason.PERMISSION_ABSENT);
+              assertThat(e.getRequiredPermission()).isEqualTo("user:role:assign");
+            });
+
+    verify(rbacAuditPort, times(1))
+        .recordRoleAssignmentDenied(
+            new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx),
+            DenialReason.PERMISSION_ABSENT, "revoke");
+    verify(throttlePort, times(1)).recordDenial(tenantId, actorId);
     verify(userRoleAssignmentPort, never()).revoke(any(), any());
   }
 
   @Test
-  void should_neverReadM13OrM14_when_revokeThrottled() {
+  void should_throwRoleNotFoundAndNotRevoke_when_m14ReportsRoleNotInTenantOnRevoke() {
     stubBenignRevokeTarget();
-    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.empty());
 
     assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND");
 
-    verify(userRoleAssignmentPort, never()).findHeldRolePermissionIdsForAuthorization(any(), any());
-    verify(userRoleAssignmentPort, never()).findPermissionIdsForRole(any(), any());
     verifyNoInteractions(rbacAuditPort);
-  }
-
-  @Test
-  void should_reportNotTenantAdminOnceAndNeverReadM13_when_revokeLegacyGateDenies() {
-    stubLegacyGateDenies(targetUserId);
-    when(userRoleAssignmentPort.findActiveAssignmentRef(targetUserId, roleId, tenantId))
-        .thenReturn(Optional.of(new ActiveAssignmentRef(UUID.randomUUID(), Instant.now())));
-
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
-
-    verify(rbacAuditPort, times(1))
-        .recordRoleAssignmentDenied(any(), eq(DenialReason.NOT_TENANT_ADMIN), eq("revoke"));
-    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
-    verify(userRoleAssignmentPort, never()).findHeldRolePermissionIdsForAuthorization(any(), any());
-    verify(userRoleAssignmentPort, never()).findPermissionIdsForRole(any(), any());
+    verify(userRoleAssignmentPort, never()).revoke(any(), any());
   }
 
   @Test
   void should_logGrantExceedsCallerWarnWithRevokeOperation_when_revokeSubsetDenies() {
     UUID lacked = UUID.randomUUID();
     stubBenignRevokeTarget();
-    stubCallerHoldsAssignPermissionAnd();
     when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
         .thenReturn(Optional.of(Set.of(lacked)));
     ListAppender<ILoggingEvent> logs = startLogCapture();
@@ -4484,90 +2102,15 @@ class RoleAssignmentServiceTest {
     assertThat(keyValueMap(warn).values()).doesNotContain(lacked);
   }
 
-  // -- L-1: the endpoint permission must still be held (fresh M13) ---------------------------
-
   @Test
-  void should_deny403PermissionAbsentBeforeA2_when_assignCallerNoLongerHoldsUserRoleAssign() {
-    UUID held = UUID.randomUUID();
-    stubBenignAssignTarget();
-    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
-        .thenReturn(List.of(new RolePermissionRef(UUID.randomUUID(), held)));
-    // A2 alone would pass: the target role carries only what the caller holds.
-    Mockito.lenient()
-        .when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
-        .thenReturn(Optional.of(Set.of(held)));
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOfSatisfying(
-            InsufficientPermissionException.class,
-            e -> {
-              assertThat(e.getReason()).isEqualTo(DenialReason.PERMISSION_ABSENT);
-              assertThat(e.getRequiredPermission()).isEqualTo("user:role:assign");
-            });
-
-    verify(rbacAuditPort, times(1))
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx),
-            DenialReason.PERMISSION_ABSENT,
-            "assign");
-    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
-    verify(throttlePort, times(1)).recordDenial(tenantId, actorId);
-    verify(userRoleAssignmentPort, never()).findPermissionIdsForRole(any(), any());
-    verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
-    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
-    verifyNoInteractions(permissionCachePort);
-  }
-
-  @Test
-  void should_deny403PermissionAbsentBeforeA4AndNeverReadCatalogue_when_selfAssignWithoutUserRoleAssign() {
-    stubBenignSelfAssignTarget();
-    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
-        .thenReturn(List.of());
-
-    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.PERMISSION_ABSENT));
-
-    verify(rbacAuditPort, times(1)).recordRoleAssignmentDenied(any(), any(), any());
-    verify(userRoleAssignmentPort, never()).findCatalogueIds();
-    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
-  }
-
-  @Test
-  void should_deny403PermissionAbsentBeforeRevokeSubset_when_revokeCallerNoLongerHoldsUserRoleAssign() {
-    stubBenignRevokeTarget();
-    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
-        .thenReturn(List.of(new RolePermissionRef(UUID.randomUUID(), UUID.randomUUID())));
-    Mockito.lenient()
-        .when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
-        .thenReturn(Optional.of(Set.of()));
-
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .isInstanceOfSatisfying(
-            InsufficientPermissionException.class,
-            e -> {
-              assertThat(e.getReason()).isEqualTo(DenialReason.PERMISSION_ABSENT);
-              assertThat(e.getRequiredPermission()).isEqualTo("user:role:assign");
-            });
-
-    verify(rbacAuditPort, times(1))
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx),
-            DenialReason.PERMISSION_ABSENT,
-            "revoke");
-    verify(throttlePort, times(1)).recordDenial(tenantId, actorId);
-    verify(userRoleAssignmentPort, never()).findPermissionIdsForRole(any(), any());
-    verify(userRoleAssignmentPort, never()).revoke(any(), any());
-  }
-
-  @Test
-  void should_logEndpointPermissionNotHeldWarnWithIdsOnly_when_l1Denies() {
-    stubBenignAssignTarget();
-    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
-        .thenReturn(List.of());
+  void should_logAdministratorRequiredWarnWithIdsOnly_when_revokeOfAdminDefiningRoleDenied() {
+    ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(new ActiveAssignmentHolder(ref.id(), targetUserId, roleId)));
+    lenientCallerIsUnionHolder();
     ListAppender<ILoggingEvent> logs = startLogCapture();
 
     try {
-      assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+      assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
           .isInstanceOf(InsufficientPermissionException.class);
     } finally {
       stopLogCapture(logs);
@@ -4575,63 +2118,437 @@ class RoleAssignmentServiceTest {
 
     ILoggingEvent warn =
         logs.list.stream()
-            .filter(e -> "RBAC_ENDPOINT_PERMISSION_NOT_HELD".equals(keyValueMap(e).get("event")))
+            .filter(e -> "RBAC_ADMINISTRATOR_REQUIRED_DENIED".equals(keyValueMap(e).get("event")))
             .findFirst()
             .orElseThrow();
     assertThat(warn.getLevel()).isEqualTo(Level.WARN);
     assertThat(keyValueMap(warn))
         .containsOnlyKeys(
-            "event", "tenantId", "actorUserId", "targetUserId", "roleId", "operation")
-        .containsEntry("operation", "assign");
-  }
-
-  // -- L-2: M14 fails closed ----------------------------------------------------------------
-
-  @Test
-  void should_denyCrossTenantTargetAndNotSave_when_m14ReportsRoleNotInTenantOnAssign() {
-    stubBenignAssignTarget();
-    stubCallerHoldsAssignPermissionAnd();
-    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
-        .thenReturn(Optional.empty());
-
-    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
-        .isInstanceOfSatisfying(
-            InsufficientPermissionException.class,
-            e -> {
-              assertThat(e.getReason()).isEqualTo(DenialReason.CROSS_TENANT_TARGET);
-              assertThat(e.getRequiredPermission()).isEqualTo("user:role:assign");
-            });
-
-    // The denial row never carries a role name on a tenant-mismatch path.
-    verify(rbacAuditPort, times(1))
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, null, actorId, ctx),
-            DenialReason.CROSS_TENANT_TARGET,
-            "assign");
-    verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
-    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
-  }
-
-  @Test
-  void should_denyCrossTenantTargetAndNotRevoke_when_m14ReportsRoleNotInTenantOnRevoke() {
-    stubBenignRevokeTarget();
-    stubCallerHoldsAssignPermissionAnd();
-    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
-        .thenReturn(Optional.empty());
-
-    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
-        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.CROSS_TENANT_TARGET));
-
-    verify(rbacAuditPort, times(1))
-        .recordRoleAssignmentDenied(
-            new RbacAuditEvent(tenantId, targetUserId, roleId, null, actorId, ctx),
-            DenialReason.CROSS_TENANT_TARGET,
-            "revoke");
-    verify(userRoleAssignmentPort, never()).revoke(any(), any());
+            "event", "tenantId", "targetUserId", "actorUserId", "roleId", "operation");
   }
 
   // ---------------------------------------------------------------------------------------
-  // Log-capture helpers (mirrors RbacAuthEventAdapterTest's pattern)
+  // listActive(): assignedBy redaction by the one definition of "administrator" (row 16)
+  // ---------------------------------------------------------------------------------------
+
+  private static PageResult<ActiveRoleAssignment> page(List<ActiveRoleAssignment> items) {
+    return new PageResult<>(items, items.size(), 0, 20);
+  }
+
+  @Test
+  void should_redactAssignedByOnEveryElement_when_callerIsNotAnAdministrator() {
+    Instant now = Instant.now();
+    UUID otherRoleId = UUID.randomUUID();
+    List<ActiveRoleAssignment> stored =
+        List.of(
+            new ActiveRoleAssignment(targetUserId, roleId, "MEMBER", now, UUID.randomUUID()),
+            new ActiveRoleAssignment(targetUserId, otherRoleId, "BILLING", now, UUID.randomUUID()));
+    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
+    when(userRoleAssignmentPort.findActiveAssignmentViews(targetUserId, tenantId, 0, 20))
+        .thenReturn(page(stored));
+    stubCallerHoldsP1Only();
+
+    PageResult<ActiveRoleAssignment> result = service.listActive(actor, targetUserId, 0, 20);
+
+    assertThat(result.items())
+        .containsExactly(
+            new ActiveRoleAssignment(targetUserId, roleId, "MEMBER", now, null),
+            new ActiveRoleAssignment(targetUserId, otherRoleId, "BILLING", now, null));
+  }
+
+  /** Row 16: a union-holder is NOT an administrator, so they get the redacted shape. */
+  @Test
+  void should_redactAssignedBy_when_callerHoldsTheWholeCatalogueOnlyThroughTheUnion() {
+    Instant now = Instant.now();
+    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
+    when(userRoleAssignmentPort.findActiveAssignmentViews(targetUserId, tenantId, 0, 20))
+        .thenReturn(
+            page(
+                List.of(
+                    new ActiveRoleAssignment(
+                        targetUserId, roleId, "MEMBER", now, UUID.randomUUID()))));
+    stubCallerIsUnionHolder();
+
+    assertThat(service.listActive(actor, targetUserId, 0, 20).items())
+        .extracting(ActiveRoleAssignment::assignedBy)
+        .containsOnlyNulls();
+  }
+
+  /** Row 16: an administrator sees assignedBy, whatever their admin role is named. */
+  @Test
+  void should_preserveAssignedBy_when_callerIsAnAdministrator() {
+    Instant now = Instant.now();
+    List<ActiveRoleAssignment> stored =
+        List.of(new ActiveRoleAssignment(targetUserId, roleId, "MEMBER", now, UUID.randomUUID()));
+    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
+    when(userRoleAssignmentPort.findActiveAssignmentViews(targetUserId, tenantId, 0, 20))
+        .thenReturn(page(stored));
+    stubCallerIsAdministrator();
+
+    assertThat(service.listActive(actor, targetUserId, 0, 20).items())
+        .containsExactlyElementsOf(stored);
+  }
+
+  @Test
+  void should_redactAssignedBy_when_catalogueReadReturnsEmpty() {
+    Instant now = Instant.now();
+    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(tenantId));
+    when(userRoleAssignmentPort.findActiveAssignmentViews(targetUserId, tenantId, 0, 20))
+        .thenReturn(
+            page(
+                List.of(
+                    new ActiveRoleAssignment(
+                        targetUserId, roleId, "MEMBER", now, UUID.randomUUID()))));
+    when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(Set.of());
+    stubCallerIsAdministrator();
+
+    assertThat(service.listActive(actor, targetUserId, 0, 20).items())
+        .extracting(ActiveRoleAssignment::assignedBy)
+        .containsOnlyNulls();
+  }
+
+  @Test
+  void should_throwResourceNotFound_when_listActiveTargetUserNotFound() {
+    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> service.listActive(actor, targetUserId, 0, 20))
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "USER_NOT_FOUND");
+
+    verify(userRoleAssignmentPort, never()).findActiveAssignmentViews(any(), any(), anyInt(), anyInt());
+  }
+
+  @Test
+  void should_throwSameNotFoundAndReadNothing_when_listActiveTargetTenantMismatch() {
+    when(userDirectoryPort.findTenantId(targetUserId)).thenReturn(Optional.of(otherTenantId));
+
+    assertThatThrownBy(() -> service.listActive(actor, targetUserId, 0, 20))
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "USER_NOT_FOUND")
+        .hasMessage("No such user");
+
+    verify(userRoleAssignmentPort, never()).findActiveAssignmentViews(any(), any(), anyInt(), anyInt());
+    verify(userRoleAssignmentPort, never()).findHeldRolePermissionIdsForAuthorization(any(), any());
+    verifyNoInteractions(rbacAuditPort);
+    assertThat(
+            meterRegistry
+                .get("nexus.rbac.permission_denied")
+                .tag("permission", "user:read")
+                .tag("reason", "CROSS_TENANT_TARGET")
+                .counter()
+                .count())
+        .isEqualTo(1.0);
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // The denial throttle (D14, MC-7; US-018 B8): after the 404s and the classification, before the
+  // caller's own authorization reads. Blocks only set-lock and self-target requests.
+  // ---------------------------------------------------------------------------------------
+
+  private double deniedThrottledCount(String operation) {
+    Counter counter =
+        meterRegistry.find("nexus.rbac.denial_throttled").tags("operation", operation).counter();
+    return counter == null ? 0.0 : counter.count();
+  }
+
+  /** A benign target the caller cannot grant: the role carries P2, the caller holds P1 only. */
+  private void stubBenignAssignTargetCallerLacksIt() {
+    stubBenignAssignTarget();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(Set.of(P2)));
+    stubCallerHoldsP1Only();
+  }
+
+  @Test
+  void should_assignNormally_when_throttledAndTargetIsBenign() {
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
+
+    ActiveRoleAssignment result = service.assign(actor, targetUserId, roleId, ctx);
+
+    assertThat(result.roleId()).isEqualTo(roleId);
+    assertThat(deniedThrottledCount("assign")).isZero();
+    verify(rbacAuditPort)
+        .recordRoleAssigned(new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx));
+  }
+
+  @Test
+  void should_revokeNormally_when_throttledAndTargetIsBenign() {
+    stubHappyPathRevoke();
+    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
+
+    service.revoke(actor, targetUserId, roleId, ctx);
+
+    assertThat(deniedThrottledCount("revoke")).isZero();
+    verify(rbacAuditPort)
+        .recordRoleRevoked(new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx));
+  }
+
+  @Test
+  void should_blockBeforeTheSetLockWithNoAuditRow_when_throttledAndTargetIsAdminDefining_assign() {
+    stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(CATALOGUE));
+    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .satisfies(
+            e -> {
+              assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN);
+              assertThat(((InsufficientPermissionException) e).getRequiredPermission())
+                  .isEqualTo("user:role:assign");
+            });
+
+    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
+    verify(userRoleAssignmentPort, never()).findHeldRolePermissionIdsForAuthorization(any(), any());
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+    verify(throttlePort, never()).recordDenial(any(), any());
+    verifyNoInteractions(rbacAuditPort, permissionCachePort);
+    assertThat(deniedThrottledCount("assign")).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_blockBeforeTheSetLockWithNoAuditRow_when_throttledAndTargetIsAdminDefining_revoke() {
+    stubRevokeTarget(role("ADMIN_LIKE"));
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(CATALOGUE));
+    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
+
+    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
+
+    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
+    verify(userRoleAssignmentPort, never()).revoke(any(), any());
+    verifyNoInteractions(rbacAuditPort, permissionCachePort);
+    assertThat(deniedThrottledCount("revoke")).isEqualTo(1.0);
+    assertThat(meterRegistry.find("nexus.rbac.privileged_revoke_lock_hold").timers()).isEmpty();
+  }
+
+  @Test
+  void should_blockWithNoAuditAndNoCallerReads_when_throttledAndSelfTargetNonAdmin() {
+    stubBenignSelfAssignTarget();
+    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
+
+    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
+
+    verifyNoInteractions(rbacAuditPort);
+    verify(throttlePort, never()).recordDenial(any(), any());
+    verify(userRoleAssignmentPort, never()).findHeldRolePermissionIdsForAuthorization(any(), any());
+    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
+    assertThat(deniedThrottledCount("assign")).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_blockSelfTargetRevoke_when_throttled() {
+    stubRevokeTargetFor(actorId, memberRole());
+    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
+
+    assertThatThrownBy(() -> service.revoke(actor, actorId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
+
+    verify(userRoleAssignmentPort, never()).revoke(any(), any());
+    verifyNoInteractions(rbacAuditPort);
+  }
+
+  /** Classification (M14, M15) runs before the throttle decision; the caller's own reads after. */
+  @Test
+  void should_decideThrottleAfterClassificationAndBeforeTheCallersReads_when_assigning() {
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    InOrder order = Mockito.inOrder(throttlePort, userRoleAssignmentPort);
+    order.verify(userRoleAssignmentPort).findPermissionIdsForRole(roleId, tenantId);
+    order.verify(throttlePort).isThrottled(tenantId, actorId);
+    order
+        .verify(userRoleAssignmentPort)
+        .findHeldRolePermissionIdsForAuthorization(actorId, tenantId);
+    order.verify(userRoleAssignmentPort).hasActiveAssignment(targetUserId, roleId);
+  }
+
+  @Test
+  void should_return403WithNoAuditRowCounterAndOneWarn_when_throttledBenignRequestIsDenied() {
+    stubBenignAssignTargetCallerLacksIt();
+    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
+    when(throttlePort.recordSuppressedDenial(tenantId, actorId)).thenReturn(1, 2);
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      for (int i = 0; i < 2; i++) {
+        assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+            .isInstanceOf(InsufficientPermissionException.class)
+            .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+      }
+
+      var warns = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
+      assertThat(warns).as("one WARN per window, and no per-denial WARN").hasSize(1);
+      assertThat(keyValueMap(warns.get(0)))
+          .containsOnlyKeys("event", "tenantId", "actorUserId", "operation", "suppressedCount")
+          .containsEntry("event", "RBAC_DENIAL_THROTTLED")
+          .containsEntry("operation", "assign")
+          .containsEntry("suppressedCount", 1);
+    } finally {
+      stopLogCapture(appender);
+    }
+
+    verifyNoInteractions(rbacAuditPort);
+    verify(throttlePort, never()).recordDenial(any(), any());
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+    assertThat(deniedThrottledCount("assign")).isEqualTo(2.0);
+  }
+
+  @Test
+  void should_return403WithNoAuditRow_when_throttledCallerNoLongerHoldsTheEndpointPermission() {
+    stubBenignAssignTarget();
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(List.of());
+    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.PERMISSION_ABSENT));
+
+    verifyNoInteractions(rbacAuditPort);
+    assertThat(deniedThrottledCount("assign")).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_return403WithNoAuditRow_when_throttledRevokeSubsetDenies() {
+    stubBenignRevokeTarget();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(Set.of(P2)));
+    stubCallerHoldsP1Only();
+    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
+
+    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    verifyNoInteractions(rbacAuditPort);
+    verify(userRoleAssignmentPort, never()).revoke(any(), any());
+    assertThat(deniedThrottledCount("revoke")).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_stillReturnTheRealDenial_when_recordSuppressedDenialThrows() {
+    stubBenignAssignTargetCallerLacksIt();
+    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
+    when(throttlePort.recordSuppressedDenial(tenantId, actorId))
+        .thenThrow(new RuntimeException("throttle store down"));
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+  }
+
+  @Test
+  void should_recordFullDenialAndNeverSuppress_when_notThrottled() {
+    stubBenignAssignTargetCallerLacksIt();
+    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(false);
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    verify(rbacAuditPort)
+        .recordRoleAssignmentDenied(
+            new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx),
+            DenialReason.GRANT_EXCEEDS_CALLER, "assign", 1);
+    verify(throttlePort).recordDenial(tenantId, actorId);
+    verify(throttlePort, never()).recordSuppressedDenial(any(), any());
+    assertThat(deniedThrottledCount("assign")).isZero();
+  }
+
+  @Test
+  void should_callRecordDenialOnThrottlePort_when_anAdministratorRequirementDeniesRevoke() {
+    ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(new ActiveAssignmentHolder(ref.id(), targetUserId, roleId)));
+    lenientCallerIsUnionHolder();
+
+    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(InsufficientPermissionException.class);
+
+    verify(throttlePort).recordDenial(tenantId, actorId);
+  }
+
+  @Test
+  void should_emitDenialThrottleEngagedWarnExactlyOnce_when_recordDenialReturnsTrue() {
+    stubBenignSelfAssignTarget();
+    stubCallerHoldsP1Only();
+    when(throttlePort.recordDenial(tenantId, actorId)).thenReturn(true);
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
+          .isInstanceOf(InsufficientPermissionException.class);
+
+      var engagedWarnings =
+          appender.list.stream()
+              .filter(e -> e.getLevel() == Level.WARN)
+              .filter(e -> "RBAC_DENIAL_THROTTLE_ENGAGED".equals(keyValueMap(e).get("event")))
+              .toList();
+      assertThat(engagedWarnings).hasSize(1);
+      assertThat(keyValueMap(engagedWarnings.get(0)))
+          .containsEntry("tenantId", tenantId)
+          .containsEntry("actorUserId", actorId)
+          .containsEntry("operation", "assign")
+          .containsEntry("maxDenials", MAX_DENIALS)
+          .containsEntry("windowSeconds", WINDOW_SECONDS);
+    } finally {
+      stopLogCapture(appender);
+    }
+  }
+
+  @Test
+  void should_notEmitDenialThrottleEngagedWarn_when_recordDenialReturnsFalse() {
+    stubBenignSelfAssignTarget();
+    stubCallerHoldsP1Only();
+    when(throttlePort.recordDenial(tenantId, actorId)).thenReturn(false);
+
+    ListAppender<ILoggingEvent> appender = startLogCapture();
+    try {
+      assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
+          .isInstanceOf(InsufficientPermissionException.class);
+
+      assertThat(
+              appender.list.stream()
+                  .anyMatch(e -> "RBAC_DENIAL_THROTTLE_ENGAGED".equals(keyValueMap(e).get("event"))))
+          .isFalse();
+    } finally {
+      stopLogCapture(appender);
+    }
+  }
+
+  @Test
+  void should_proceedWithNormalFlow_when_isThrottledThrows() {
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+    when(throttlePort.isThrottled(tenantId, actorId)).thenThrow(new RuntimeException("store down"));
+
+    ActiveRoleAssignment result = service.assign(actor, targetUserId, roleId, ctx);
+
+    assertThat(result.roleId()).isEqualTo(roleId);
+  }
+
+  @Test
+  void should_stillThrowRealDenialException_when_recordDenialThrows() {
+    stubBenignSelfAssignTarget();
+    stubCallerHoldsP1Only();
+    when(throttlePort.recordDenial(tenantId, actorId))
+        .thenThrow(new RuntimeException("throttle store down"));
+
+    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.SELF_ASSIGNMENT));
+
+    verify(rbacAuditPort)
+        .recordRoleAssignmentDenied(
+            new RbacAuditEvent(tenantId, actorId, roleId, "MEMBER", actorId, ctx),
+            DenialReason.SELF_ASSIGNMENT, "assign");
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // Log-capture helpers
   // ---------------------------------------------------------------------------------------
 
   private ListAppender<ILoggingEvent> startLogCapture() {

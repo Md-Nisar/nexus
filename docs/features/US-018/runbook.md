@@ -16,7 +16,7 @@ Never paste emails, names or tokens into tickets: use user, role, permission and
    | `PERMISSION_ABSENT` | `RBAC_ENDPOINT_PERMISSION_NOT_HELD` | Right after the V6 deploy: stale permission cache or old JWT without `user:role:assign`. Otherwise the caller's role was revoked and the token is stale (working as intended) | Step 2 |
    | `GRANT_EXCEEDS_CALLER` | `RBAC_GRANT_EXCEEDS_CALLER` (assign, revoke) or `RBAC_ATTACH_EXCEEDS_CALLER` (attach) | The role being assigned, revoked or attached carries a permission the caller does not hold. This is A2, A3 or revoke-subset working as designed | Step 3 |
    | `SELF_ASSIGNMENT` | `RBAC_SELF_ASSIGNMENT_DENIED` | A non-administrator targeted themselves (A4) | Step 4 |
-   | `NOT_TENANT_ADMIN` | `RBAC_PRIVILEGED_ROLE_CHANGE_BLOCKED` or `RBAC_DENIAL_THROTTLE_ENGAGED` | Legacy gate for privileged roles, or the actor is throttled | Section 3 |
+   | `NOT_TENANT_ADMIN` | `RBAC_ADMINISTRATOR_REQUIRED_DENIED` or `RBAC_DENIAL_THROTTLE_ENGAGED` | (M3) The caller revoked an admin-defining role without being an administrator, or the actor is throttled. An administrator is an active holder of one role carrying every catalogue permission; holding the union across roles does not count | Section 3 and section 12 |
    | `CROSS_TENANT_TARGET` | n/a | Target user or role belongs to another tenant | Check ids; do not widen anything |
 
 2. **`PERMISSION_ABSENT`.** Does the caller hold `user:role:assign` (or `role:write`) in the database right now?
@@ -54,7 +54,7 @@ Never paste emails, names or tokens into tickets: use user, role, permission and
 
 **Symptom.** `DELETE /api/v1/users/{userId}/roles/{roleId}` returns 409 `RBAC_002` "Cannot revoke the last active TENANT_ADMIN assignment in this tenant".
 
-**What it means.** The revocation would leave the tenant with no distinct active holder of a role able to administer it. The lockout is intact and unchanged by M2; in M2 it still uses the US-017 admin-equivalent definition (re-scoped to admin-defining roles in M3). Authorization is evaluated first, so only a caller allowed to revoke that role ever sees 409.
+**What it means.** The revocation would leave the tenant with no distinct active holder of a role able to administer it. The lockout counts distinct active holders of admin-defining roles (a role carrying every catalogue permission), since M3. Authorization is evaluated first, so only a caller allowed to revoke that role ever sees 409.
 
 **Do.**
 1. Confirm it is genuine: count active holders of the role (and of other roles that carry every permission) in the tenant.
@@ -63,14 +63,14 @@ Never paste emails, names or tokens into tickets: use user, role, permission and
 
 ## 3. Throttled actor
 
-**Symptom.** A caller gets 403 on every assign or revoke for up to a minute, even for actions that should be allowed. The audit rows stop appearing for the throttled requests. `nexus_rbac_denial_throttled_total` increases; WARN `RBAC_DENIAL_THROTTLE_ENGAGED` was logged once at the transition.
+**Symptom (from M8).** A caller gets 403 when assigning or revoking a role that carries every catalogue permission (an administrator role), or when targeting themself, for up to a minute. Other changes by the same caller still work. `nexus_rbac_denial_throttled_total` increases; WARN `RBAC_DENIAL_THROTTLE_ENGAGED` was logged once at the transition. A request that is evaluated and denied while the actor is throttled also returns 403 but writes **no** `ROLE_ASSIGNMENT_DENIED` row; WARN `RBAC_DENIAL_THROTTLED` is logged once per window and the counter carries the volume.
 
-**Cause.** The actor produced `nexus.rbac.denial-throttle.max-denials` (default 5) gate denials within `window-seconds` (default 60). In M2, A2, A4, revoke-subset and L-1 denials all count. While throttled, requests are rejected before any lock or read, with reason `NOT_TENANT_ADMIN` (a pre-existing label; tidied in M8).
+**Cause.** The actor produced `nexus.rbac.denial-throttle.max-denials` (default 5) gate denials within `window-seconds` (default 60). A throttled actor is blocked only on set-lock (admin-defining) targets and on self-targets, with reason `NOT_TENANT_ADMIN` (a pre-existing label). Every other request is evaluated normally (B8, Decision 25).
 
 **Diagnose.**
-1. Read the preceding durable `ROLE_ASSIGNMENT_DENIED` rows for that actor (monitoring.md section 6) to see which reasons burned the budget. A legitimate operator hitting `GRANT_EXCEEDS_CALLER` five times means they are using the wrong role or lack permissions: fix that, do not raise the limit.
-2. Deployments with `nexus.security.rate-limit.store-type: memory` have one counter per replica, so a user may be throttled on one replica and not another (US-016 runbook).
-3. Wait for the window to pass. Raising `NEXUS_RBAC_DENIAL_THROTTLE_MAX_DENIALS` is a config-and-restart change and weakens a probe-cost bound; only do it with Security agreement.
+1. Read the preceding durable `ROLE_ASSIGNMENT_DENIED` rows for that actor (monitoring.md section 6) to see which reasons burned the budget. Denials after the throttle tripped have no row: use the counter and the `RBAC_DENIAL_THROTTLED` WARN. A legitimate operator hitting `GRANT_EXCEEDS_CALLER` five times means they are using the wrong role or lack permissions: fix that, do not raise the limit.
+2. With `nexus.security.rate-limit.store-type: redis` the throttle is shared by all replicas (keys `nexus:rbac:throttle:{tenantId}:{actorUserId}` and `:until`, `:suppressed`). With `memory` it is per replica, and production refuses to start with `memory` once `nexus.rbac.throttle.require-shared-store` is `true` (section 13).
+3. Wait for the window to pass. To clear a throttle at once (Security agreement required), delete the actor's `...:until` key in Redis. Raising `NEXUS_RBAC_DENIAL_THROTTLE_MAX_DENIALS` is a config-and-restart change and weakens a probe-cost bound.
 
 ## 4. Service-level callers need DB-held permissions
 
@@ -236,3 +236,57 @@ If the page was received but the process shows a start failure with reason `WEB_
 **After the grant.** The DISABLED holder keeps its `TENANT_ADMIN` assignment; the grant does not touch it. Once the new administrator has logged in, they revoke the DISABLED holder's assignment through the normal API (the last-administrator guard allows it, because the new administrator is now a holder too), so a later re-enable of that account does not silently restore its administrator rights. Record the revoke on the ticket.
 
 Do not add or use any CLI override flag; none exists.
+
+## 12. M3: refusals and signals after the name-based gate was retired
+
+- **409 `RBAC_010` on attach.** The attach would make the role admin-defining while an active holder was assigned by someone who is not an administrator. Look up the holders (`user_roles.assigned_by`) of the role; have an administrator re-assign or revoke those holders, then retry. The response names no holder; the WARN `RBAC_ATTACH_PROVENANCE_REFUSED` carries only the count.
+- **403 on detach (`GRANT_EXCEEDS_CALLER`, WARN `RBAC_ROLE_SUBSET_DENIED`).** The caller must hold every permission of the role; for an admin-defining role they must also be an administrator through another role. Ask an administrator to detach.
+- **Page: `role_became_admin_defining` with holders.** Check the holders of the role (`holders="unknown"` means the after-commit read failed, so read them by hand). If the attach was not intended, detach the permission with an administrator account and review who attached it (`ROLE_PERMISSION_GRANTED` row).
+- **Page: `RBAC_SELF_ASSIGN_ADMIN_DISAGREEMENT`.** The authorization check and the independent statement disagree about the caller. Treat as a defect in the administrator definition or a race on role data; collect the user's roles and each role's permission count versus the catalogue count and escalate to the owning team. The assignment itself was decided by A4.
+- **Health component `rbacZeroActiveAdmins` DOWN.** A tenant has an admin-defining role with no active holder. Follow the US-017 zero-administrator procedure, or the break-glass CLI (section 11); the definition now includes custom roles carrying the whole catalogue.
+- **Concurrent detach (RES-28) and the attach snapshot (RES-27)** are accepted, detective-only races: a role can lose admin-defining status through two concurrent detaches, and the indicator is what notices.
+
+## 13. M8: V7/V8 migrations, shared throttle store, and what changed for clients
+
+**Cross-tenant ids now return 404.** `POST/DELETE/GET /users/{id}/roles` and the `/roles/{id}/permissions` endpoints answer 404 `USER_NOT_FOUND` / `ROLE_NOT_FOUND` for an id in another tenant, byte-identical to a genuine not-found. Support cannot tell the two apart from the response; use the WARN `RBAC_CROSS_TENANT_TARGET` (`tenantId`, `actorUserId`, `targetKind`, `operation`; no foreign id) and the counter `nexus_rbac_permission_denied_total{reason="CROSS_TENANT_TARGET"}`. There is no audit row for it.
+
+**V8 pre-flight (every environment, before deploy; A-9).** Run as a read-only DBA:
+
+```sql
+SELECT COUNT(*) FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.tenant_id <> r.tenant_id;
+```
+
+The count must be **0**. If it is not, **stop**. `user_roles` rows cannot be deleted (append-only trigger) and a revoked mismatched row still violates the new foreign key. Remediation needs the DBA exception procedure with Security sign-off; do not edit `user_roles` ad hoc. Record the result per environment in the change ticket.
+
+**V8 maintenance window.** Booking required. V8 adds `fk_user_roles_role_tenant` with `ALGORITHM=COPY`: `user_roles` is rebuilt and writes (assign, revoke, break-glass) are blocked for the duration; reads continue. Flyway runs at boot on the first new instance while old instances still serve traffic, so deploy inside the window. Never run with `foreign_key_checks=0`: it skips validating existing rows. V7 is online.
+
+**Recovering a failed V7 or V8 (RES-44).** Each file is one statement, so a failure leaves nothing half-applied, but Flyway records the file as failed and every booting instance refuses to start. Fix the cause (for V8, the pre-flight rows), then, **as the Flyway DDL user** (the owner of `flyway_schema_history`; `nexus_app` grants are not widened and `nexus_app` cannot do this):
+
+1. `flyway repair` (removes the failed row from `flyway_schema_history`).
+2. Redeploy or restart, so the migration runs again.
+
+Do not edit the applied file (ADR 0003).
+
+**Shared throttle store check (RC-45.1, RES-11).** In production `nexus.rbac.throttle.require-shared-store` must resolve to `true` and `nexus.security.rate-limit.store-type` to `redis`. Check the deployed configuration for both values; with `memory` and the requirement on, the application fails at startup naming both properties. The `application-prod.yml` line is a human edit (see `16-threat-model-repass-M8.md` section 2); until it lands the check is manual. RES-11 closes at deploy, when this check passes.
+
+**New permission migrations.** Any migration that inserts into `permissions` must carry the B7 footer from `nexus-backend/src/main/resources/db/templates/permission-migration-footer.sql` with `{{INSERTED_PERMISSION_IDS}}` bound to its own ids; `PermissionMigrationFooterScannerTest` fails the build otherwise. Also do the custom-administrator exposure check before and after deploy and flush the permission cache (`SCAN` and `DEL` of `nexus:rbac:permset:*` and `roleset:*`), as the template lists.
+
+**Permission cache benchmark (B6).** The keep-or-remove measurement is deferred to the first staging deployment; procedure in `nexus-test/performance-test/README.md`, rule and status in the ADR-0022 addendum. `nexus.rbac.permission-cache.bypass=true` is a benchmark-only switch and the application refuses to start with it under the `prod` profile.
+
+## 14. M9: role soft delete, V9, grants, access review (US-018 C1, C3)
+
+**V9 maintenance window.** `V9__rbac_roles_soft_delete.sql` adds a STORED generated column, so MySQL rebuilds `roles` (`ALGORITHM=COPY`): create, PATCH and DELETE of roles block for the duration; reads continue. Book a window; deploy inside it. One statement per file; recover a failure with `flyway repair` as the Flyway DDL user, then a re-run (RC-49). Never edit the applied file.
+
+**Grants (after the code is deployed, per environment).** `GRANT UPDATE (name, description, deleted_at) ON nexus.roles TO 'nexus_app'@'%';` byte-identical to `nexus-database/mysql/init/02-grants-post-schema.sql` and `docs/runbooks/nexus-app-provisioning.md` section 2. Until applied, PATCH and DELETE fail with a privilege error (500) and assign still works; keep `feature.nexus-us015-rbac-role-management` off until then. `rbacDbPrivilege` is UP before and after; it goes DOWN on a column outside that set, a table-level `UPDATE` or any `DELETE` on `roles`. V10 (drop `uq_roles_tenant_name`) is one release later; until then a deleted role's name still collides (409 `RBAC_006`).
+
+**Deleting a role.** 409 `RBAC_009` means the role has an active holder: revoke the holders (`DELETE /users/{id}/roles/{roleId}`), then delete. A replayed DELETE is 404.
+
+**Page: `deletedRoleActiveAssignments` > 0** (health detail of `rbacZeroActiveAdmins`, DOWN; WARN `RBAC_DELETED_ROLE_ACTIVE_ASSIGNMENTS`). The delete protocol makes it 0, so it is an invariant break (a bypass or a bug). Find rows: `SELECT ur.id, ur.user_id, ur.role_id FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE r.deleted_at IS NOT NULL AND ur.revoked_at IS NULL;`. Reads already ignore deleted roles, so these rows grant nothing; revoke them (`revoked_at` update, DBA exception) and find the cause.
+
+**`audit:read` pre-deploy detection (RC-38.3), before the flag flips.** Custom roles carrying it, ids only:
+`SELECT HEX(r.tenant_id), HEX(r.id) FROM roles r JOIN role_permissions rp ON rp.role_id = r.id JOIN permissions p ON p.id = rp.permission_id WHERE p.name = 'audit:read' AND r.is_system_role = FALSE AND r.deleted_at IS NULL;`
+A non-zero production count is reviewed with Security first. C3 discloses the administrator roster to every `audit:read` holder (RES-37).
+
+**Access review.** Reviewers hold `audit:read`. `assignedBy` is visible only to administrator reviewers; others see ids without it. A holder whose `assignedBy` equals its own `userId` may be a break-glass grant: join to `ROLE_BREAK_GLASS_GRANT` audit rows before raising a self-grant finding (RC-37.5). Every query logs INFO `RBAC_ACCESS_REVIEW_QUERY`.
+
+**Clients.** The three list endpoints are paginated (default 20): follow `links.next` or read `page.totalElements`.

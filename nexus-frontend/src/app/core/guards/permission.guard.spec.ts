@@ -37,7 +37,7 @@ describe('permissionGuard', () => {
   }
 
   beforeEach(() => {
-    stub = createAuthStoreStub({ permissions: ['roles:read'] });
+    stub = createAuthStoreStub({ permissions: ['role:read'] });
     mockLogger = { debug: vi.fn() };
 
     TestBed.configureTestingModule({
@@ -55,12 +55,12 @@ describe('permissionGuard', () => {
   });
 
   it('returns true when the user holds the required permission', () => {
-    const result = runGuard({ permission: 'roles:read' });
+    const result = runGuard({ permission: 'role:read' });
     expect(result).toBe(true);
   });
 
   it('returns a UrlTree to /access-denied when the user lacks the required permission', () => {
-    const result = runGuard({ permission: 'roles:write' });
+    const result = runGuard({ permission: 'role:write' });
     const urlTree = result as unknown as { _commands: string[] };
     expect(urlTree._commands).toEqual(['/access-denied']);
   });
@@ -89,30 +89,30 @@ describe('permissionGuard', () => {
   });
 
   it('logs a debug event exactly once on denial, with the permission and query-stripped route path', () => {
-    runGuard({ permission: 'roles:write' }, '/gated?from=/dashboard&token=secret');
+    runGuard({ permission: 'role:write' }, '/gated?from=/dashboard&token=secret');
 
     expect(mockLogger.debug).toHaveBeenCalledTimes(1);
     expect(mockLogger.debug).toHaveBeenCalledWith('Permission check denied navigation', {
       event: 'permission_denied_client',
       outcome: 'FAILURE',
-      context: { permission: 'roles:write', route: '/gated' },
+      context: { permission: 'role:write', route: '/gated' },
     });
   });
 
   it('strips the URL fragment (not just the query string) from the logged route on denial', () => {
     // SEC-1 (07-security-review.md): a fragment can carry a token, e.g. after an
     // OAuth-style redirect — must never reach the log, same as the query string.
-    runGuard({ permission: 'roles:write' }, '/gated#access_token=secret');
+    runGuard({ permission: 'role:write' }, '/gated#access_token=secret');
 
     expect(mockLogger.debug).toHaveBeenCalledWith('Permission check denied navigation', {
       event: 'permission_denied_client',
       outcome: 'FAILURE',
-      context: { permission: 'roles:write', route: '/gated' },
+      context: { permission: 'role:write', route: '/gated' },
     });
   });
 
   it('does not log anything when access is allowed', () => {
-    runGuard({ permission: 'roles:read' });
+    runGuard({ permission: 'role:read' });
     expect(mockLogger.debug).not.toHaveBeenCalled();
   });
 

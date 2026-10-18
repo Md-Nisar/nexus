@@ -1,5 +1,8 @@
 package com.example.nexus.rbac.application;
 
+import static com.example.nexus.common.security.Permissions.USER_READ;
+import static com.example.nexus.common.security.Permissions.USER_ROLE_ASSIGN;
+
 import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.common.security.DenialReason;
@@ -15,14 +18,11 @@ import com.example.nexus.rbac.domain.ActiveAssignmentRef;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
 import com.example.nexus.rbac.domain.LastAdminRoleException;
-import com.example.nexus.rbac.domain.RbacAdminEquivalence;
+import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.RbacAdministrators;
-import com.example.nexus.rbac.domain.RbacDangerousPermissions;
-import com.example.nexus.rbac.domain.RbacRoleNames;
 import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
-import com.example.nexus.rbac.domain.RolePermissionName;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.DistributionSummary;
@@ -30,7 +30,6 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.time.Instant;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -46,21 +45,38 @@ import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
- * Assigns, revokes, and lists tenant-scoped role assignments (03-design.md §4.2, §3.1-§3.3).
+ * Assigns, revokes, and lists tenant-scoped role assignments (03-design.md §4, §5.3).
  *
- * <p>This is the <b>only</b> place AC4 (tenant isolation), AC5 (last-admin lockout), and AC8 (only
- * an active {@code TENANT_ADMIN} may grant {@code TENANT_ADMIN}) are enforced — {@code
- * @RequiresPermission}/{@code TenantAwarePermissionEvaluator} check nothing but flat JWT {@code
- * permissions[]} membership and cannot express any of them (threat model T-E7/T-E8/T-E9/T-E10).
+ * <p>This is the <b>only</b> place the assignment rules are enforced; {@code
+ * @RequiresPermission} checks nothing but flat JWT {@code permissions[]} membership and cannot
+ * express any of them. The rules, in the order they apply (ADR-0021):
  *
- * <p><b>Design invariant, self-policed (not compiler-enforced):</b> every public method on this
- * class accepts only {@link RoleChangeActor}, {@link UUID}, and {@link RequestContext} as
- * parameter types — never {@code org.springframework.security.core.Authentication}, never {@code
- * java.security.Principal}, never {@code java.util.Map}, never {@code
- * common.security.AuthenticatedRequestDetails}. ArchUnit's {@code
- * domain_and_application_must_not_depend_on_spring_security} rule only catches types living in a
- * banned package — {@code Principal}/{@code Map} do not, and would compile fine while
- * reintroducing raw authentication data into this layer (T-E10).
+ * <ul>
+ *   <li><b>Tenant isolation.</b> The target user and the role must belong to the caller's tenant;
+ *       a missing one is 404, a foreign one 403.
+ *   <li><b>One definition of "administrator".</b> A role is admin-defining iff it carries every
+ *       permission of the catalogue, and a user is an administrator iff they actively hold such a
+ *       role ({@link RbacAdministrators}). Names do not matter.
+ *   <li><b>A caller may only hand out what they hold.</b> Assigning a role requires the caller to
+ *       hold every permission of that role (the union of their live holdings); revoking it
+ *       requires the same, and revoking an admin-defining role additionally requires the caller to
+ *       be an administrator, so a partial holder cannot strip an administrator.
+ *   <li><b>No self-assignment unless administrator.</b> A caller who is not an administrator
+ *       cannot assign any role to themselves.
+ *   <li><b>The last administrator stays.</b> A revoke that would leave the tenant without a
+ *       distinct holder of an admin-defining role is refused (409).
+ * </ul>
+ *
+ * <p><b>Locking.</b> When the target role is admin-defining, one single-statement lock over every
+ * active assignment of the tenant's admin-defining roles plus the target role is taken first, in
+ * ascending unsigned byte order (ADR-0018 D5 to D7). On that path the caller's administrator
+ * status comes from the rows that lock returns, which are current, and never from the snapshot
+ * read that feeds the subset comparisons (ADR-0021 D2). A benign target takes no lock.
+ *
+ * <p><b>Self-policed design invariant:</b> every public method accepts only {@link
+ * RoleChangeActor}, {@link UUID}, and {@link RequestContext} as parameter types, never an
+ * authentication object, {@code java.security.Principal} or {@code java.util.Map}. See {@code
+ * docs/adr/0021-grant-subset-authorization-model.md}.
  */
 @Service
 public class RoleAssignmentService {
@@ -72,15 +88,14 @@ public class RoleAssignmentService {
    * {@code requiredPermission} of every 403 they raise. Local constant until the typed catalogue
    * (B5) lands.
    */
-  private static final String USER_ROLE_ASSIGN = "user:role:assign";
-  private static final String USER_READ = "user:read";
 
   private static final String OPERATION_ASSIGN = "assign";
   private static final String OPERATION_REVOKE = "revoke";
-
-  private static final String MATCHED_ON_ROLE_NAME = "ROLE_NAME";
-  private static final String MATCHED_ON_DANGEROUS_PERMISSION = "DANGEROUS_PERMISSION";
-  private static final String MATCHED_ON_ALL_DANGEROUS_PERMISSIONS = "ALL_DANGEROUS_PERMISSIONS";
+  private static final String OPERATION_LIST = "list";
+  private static final String TARGET_KIND_USER = "user";
+  private static final String TARGET_KIND_ROLE = "role";
+  private static final String MESSAGE_NO_SUCH_USER = "No such user";
+  private static final String MESSAGE_NO_SUCH_ROLE = "No such role";
 
   private static final String TIMER_PRIVILEGED_REVOKE_LOCK_HOLD =
       "nexus.rbac.privileged_revoke_lock_hold";
@@ -92,13 +107,11 @@ public class RoleAssignmentService {
   private static final String OUTCOME_CONFLICT = "conflict";
   private static final String OUTCOME_ERROR = "error";
 
-  private static final String COUNTER_PRIVILEGED_ROLE_CHANGE_ALLOWED =
-      "nexus.rbac.privileged_role_change_allowed";
-  private static final String TAG_CALLER_MATCHED_ON = "callerMatchedOn";
-  private static final String COUNTER_ADMIN_MINTED_BY_NON_NAMED_ADMIN =
-      "nexus.rbac.admin_minted_by_non_named_admin";
+  private static final String COUNTER_ADMIN_ROLE_ASSIGNED = "nexus.rbac.admin_role_assigned";
+  private static final String COUNTER_SELF_ASSIGN_ADMIN_DISAGREEMENT =
+      "nexus.rbac.self_assign_admin_disagreement";
   private static final String TAG_SELF_TARGET = "selfTarget";
-  private static final String METRIC_ADMIN_EQUIVALENT_LOCK_SET_SIZE =
+  private static final String METRIC_ADMIN_DEFINING_LOCK_SET_SIZE =
       "nexus.rbac.admin_equivalent_lock_set_size";
 
   private static final String LOG_KEY_EVENT = "event";
@@ -106,9 +119,7 @@ public class RoleAssignmentService {
   private static final String LOG_KEY_TARGET_USER_ID = "targetUserId";
   private static final String LOG_KEY_ACTOR_USER_ID = "actorUserId";
   private static final String LOG_KEY_ROLE_ID = "roleId";
-  private static final String LOG_KEY_ROLE_NAME = "roleName";
   private static final String LOG_KEY_OPERATION = "operation";
-  private static final String LOG_KEY_MATCHED_ON = "matchedOn";
   private static final String LOG_KEY_MISSING_COUNT = "missingCount";
   private static final String LOG_KEY_MAX_DENIALS = "maxDenials";
   private static final String LOG_KEY_WINDOW_SECONDS = "windowSeconds";
@@ -118,11 +129,11 @@ public class RoleAssignmentService {
       "nexus.rbac.last_admin_lockout_blocked";
 
   /**
-   * D6 (US-017, M11's port Javadoc): the total order M11's deterministic acquisition proof rests
-   * on. "Ascending" means unsigned byte-wise order of the 16-byte UUID representation, matching
-   * MySQL's {@code BINARY(16)} comparison — NEVER {@link UUID#compareTo}, which compares {@code
-   * mostSigBits} as a SIGNED {@code long} and would silently diverge from the database's own order
-   * for an id whose high bit is set (MC-E).
+   * The total order the set lock's deterministic acquisition proof rests on. "Ascending" means
+   * unsigned byte-wise order of the 16-byte UUID representation, matching MySQL's {@code
+   * BINARY(16)} comparison, never {@link UUID#compareTo}, which compares {@code mostSigBits} as a
+   * SIGNED {@code long} and would silently diverge from the database's own order for an id whose
+   * high bit is set (MC-E).
    */
   private static final Comparator<UUID> UNSIGNED_BYTEWISE_UUID_ORDER =
       (a, b) -> {
@@ -164,160 +175,56 @@ public class RoleAssignmentService {
   }
 
   /**
-   * Grants {@code roleId} to {@code targetUserId} within the actor's own tenant (AC1, AC4, AC6,
-   * AC7, AC8). Returns the created assignment, including its DB-generated {@code assignedAt}.
+   * Grants {@code roleId} to {@code targetUserId} within the actor's own tenant. Returns the
+   * created assignment, including its DB-generated {@code assignedAt}.
    *
-   * <p><b>Security note (M-3 / T-E9 — CLOSED by US-016; RES-1 PARTIALLY closed).</b> This gate is
-   * privilege-based, not name-based: it denies granting <em>and</em> revoking any role that is
-   * literally named {@code TENANT_ADMIN} <b>or</b> carries any {@code RbacDangerousPermissions}
-   * member, unless the caller holds an active {@code TENANT_ADMIN} assignment in this tenant,
-   * verified by a fresh locking read (never a JWT claim — T-E7).
+   * <p>Order: tenant checks (404/403), throttle, classify the target role (is it admin-defining?),
+   * the set lock when it is, the caller's live holdings, then in this order the {@code
+   * user:role:assign} re-check (07-security-review.md L-1), A4 (self-assignment needs an
+   * administrator), A2 (the role's permissions must be a subset of the caller's), the duplicate
+   * 409 and the insert. One denial row carries the first reason. Neither A4 nor A2 closes RES-26
+   * (pre-positioning through a second account).
    *
-   * <p><b>Closed:</b> T-E9 (no symmetric admin check on {@link #revoke}); T-E17 (administrator
-   * stripping); T-E16 <b>for the direct propagate path only</b> (a non-admin can no longer assign
-   * a role that is dangerous <em>at assign time</em>).
-   *
-   * <p><b>NOT closed, deliberately:</b> the attach-after-assign path — a non-admin may self-assign
-   * a benign role, which an administrator may later make dangerous via {@code
-   * RoleManagementService.attachPermission}; no gate evaluates at that moment. Carried forward as
-   * <b>US-016 T-E21 / RES-1(b)</b> ({@code docs/features/US-016/03b-threat-model.md} §3, §5).
-   * Mitigated, not closed, by the mint-side holder-count signal in {@code
-   * RoleManagementService.attachPermission} (US-016 D13) — do not delete that signal without
-   * re-opening this note.
-   *
-   * <p><b>Closed by US-017:</b> RES-3 — the last-admin lockout now protects the tenant-wide set
-   * of <b>distinct holders</b> of <b>any</b> admin-equivalent role (literal {@code TENANT_ADMIN}
-   * or any {@code RbacDangerousPermissions} member), and {@code
-   * RbacZeroActiveAdminsHealthIndicator} detects the same population. RES-9 — the
-   * <b>caller</b>-side admin test is privilege-based, using a deliberately <b>narrower</b>
-   * predicate than the target-side one: literal {@code TENANT_ADMIN} <b>or all three</b>
-   * dangerous permissions ({@code RbacAdminEquivalence#isFullyAdminEquivalent}). <b>Do not
-   * "simplify" the caller-side test to the target-side ANY predicate: it is vacuous, because
-   * every caller who reaches this code holds {@code user:write}, which is itself in the
-   * dangerous set</b> (ADR-0018 D2).
-   *
-   * <p><b>Relocated, not closed — and NOT a containment:</b> the <em>mint</em>-side AC11 caller
-   * test on {@code RoleManagementService.attachPermission}/{@code detachPermission} remains
-   * name-based (US-017 RES-13). It is narrower <b>by construction</b>, but it bounds nothing: a
-   * fully admin-equivalent caller may self-assign the literal {@code TENANT_ADMIN} in a
-   * <b>single request</b> and is thereafter a mint-side administrator. Do not read this
-   * asymmetry as a control to preserve.
-   *
-   * <p><b>Amplified, not closed — read this before assuming the surviving escalation path is
-   * unaffected:</b> US-016 <b>RES-1(b) / T-E21</b>, the attach-after-assign pre-positioning path,
-   * is <b>not</b> closed here and this change <b>increases its payoff</b>. A {@code user:write}
-   * holder who self-assigned a benign custom role is silently escalated when an administrator
-   * later attaches dangerous permissions to it. Before US-017 that yielded admin-equivalent
-   * <em>permissions</em>, effective at the next token mint and insufficient to pass this gate.
-   * <b>After US-017 it yields caller-side administrative capability, effective on the next
-   * request from a live DB read, and the literal {@code TENANT_ADMIN} one self-assignment
-   * later.</b> Likelihood unchanged; impact materially increased. Detection, not prevention:
-   * {@code RBAC_ROLE_BECAME_FULLY_ADMIN_EQUIVALENT} (US-017 D22) reports the moment a role
-   * crosses the threshold.
-   *
-   * <p>See {@code docs/features/US-017/03-design.md} and ADR-0018.
-   *
-   * <p>See {@code docs/features/US-016/03-design.md} and ADR-0017.
-   *
-   * <p><b>US-018 A1/A2 (ADR-0021 D1, D2):</b> the endpoint permission is {@code
-   * user:role:assign}, and the caller may grant only what they hold: the target role's permission
-   * ids must be a subset of the union of the caller's held permission ids (M13). This does not
-   * close RES-1(b); the second-account path is tracked as RES-26.
-   *
-   * <p><b>US-018 A4:</b> a self-assignment additionally requires the caller to be an administrator
-   * (03-design.md §2.1). Denials follow Decision 6: tenant checks, throttle, legacy gate, the
-   * fresh {@code user:role:assign} check (07-security-review.md L-1), A4, A2, duplicate 409, with
-   * one denial row carrying the first reason. A4 removes only the literal
-   * self-target step of RES-1(b); its primitive survives through a second account (RES-26).
+   * <p>A4's "is the caller an administrator?" comes from the set lock's rows when the target is
+   * admin-defining and from the snapshot otherwise; A2 compares against the snapshot's union in
+   * both cases (RES-27).
    */
   @Transactional
   public ActiveRoleAssignment assign(
       RoleChangeActor actor, UUID targetUserId, UUID roleId, RequestContext requestContext) {
-    Role role;
-    try {
-      verifySameTenant(targetUserId, actor, USER_ROLE_ASSIGN);
-      role = resolveRoleInTenant(roleId, actor, USER_ROLE_ASSIGN);
-    } catch (InsufficientPermissionException e) {
-      // roleName is null by construction here: T1 runs before the role is resolved, and T2's
-      // resolveRoleInTenant throws without returning the (foreign-tenant) Role. A denial row
-      // therefore never carries another tenant's role name.
-      recordDenial(
-          actor, targetUserId, roleId, null, e.getReason(), OPERATION_ASSIGN, requestContext, null);
-      throw e;
-    }
+    // A cross-tenant user or role throws the same 404 as a genuine not-found, with no audit row
+    // (US-018 B1, FR-B1.a): the WARN and the counter are emitted by crossTenantNotFound.
+    verifySameTenant(targetUserId, actor, USER_ROLE_ASSIGN, OPERATION_ASSIGN);
+    Role role = resolveRoleInTenant(roleId, actor, USER_ROLE_ASSIGN, OPERATION_ASSIGN);
 
-    requireNotThrottled(actor, OPERATION_ASSIGN, requestContext);
-
-    // D4: one unified, privilege-based gate (FR-1, FR-3), name-first so the pre-existing
-    // name-match behaviour never depends on the new dangerous-permission read.
-    boolean nameMatch = isNamedTenantAdmin(role);
-    boolean privileged =
-        nameMatch
-            || RbacAdminEquivalence.isAdminEquivalent(
-                role.getName(), userRoleAssignmentPort.findPermissionNamesForRole(role.getId()));
-
-    // US-017 D7/RES-10 fix, §7.2/§7.3: acquire the SAME M11 union lock FIRST -- before M5b,
-    // before M2's duplicate check, before the INSERT -- exactly mirroring revoke()'s order, so
-    // the acquisition order is now total across both verbs. The benign path costs +0: no M10,
-    // no M8, no M11 (unchanged property).
-    AdminEquivalentRoles roles;
-    Timer.Sample lockHoldSample;
-    if (privileged) {
-      roles = resolveAdminEquivalentRoles(actor.tenantId(), role, nameMatch);
-      List<UUID> lockSet = buildAscendingAdminEquivalentLockSet(roles, role.getId());
-      List<ActiveAssignmentHolder> lockedHolders =
-          userRoleAssignmentPort.lockActiveAssignmentHolders(actor.tenantId(), lockSet);
-      recordLockSetSize(lockedHolders.size());
-      lockHoldSample = Timer.start(meterRegistry);
-    } else {
-      roles = null;
-      lockHoldSample = null;
-    }
+    // B8 (RES-33): classification (two non-locking reads) runs BEFORE the throttle decision, so a
+    // throttled actor is blocked only on the paths that take the set lock or target themself.
+    TargetClassification target = classifyTarget(actor, role, OPERATION_ASSIGN);
+    boolean throttled = evaluateThrottle(actor, targetUserId, target, OPERATION_ASSIGN);
+    SetLock setLock = target.adminDefining() ? acquireSetLock(actor, target, role) : null;
+    Timer.Sample lockHoldSample = setLock == null ? null : setLock.holdTimer();
 
     try {
-      if (privileged) {
-        // FR-3/D8: the SAME caller gate as revoke() (M5b over the caller-qualifying set,
-        // contained inside the X region M11 just acquired) -- 403 before 409, position unchanged.
-        requireCallerHoldsAdminEquivalentRole(
-            actor, targetUserId, role, USER_ROLE_ASSIGN, OPERATION_ASSIGN, nameMatch, roles,
-            requestContext);
-      }
-
-      // US-018 Decision 6 (03-design.md §4.4): after the throttle and the legacy gate, A4 then A2,
-      // both before the duplicate 409, so a denied caller learns nothing about the target's
-      // assignment state. Both take their input from this ONE M13 read, never two reads that
-      // could disagree.
-      // 07-security-review.md L-1: before A4/A2, the same M13 read must still contain the
-      // endpoint permission itself -- the JWT that passed @RequiresPermission may predate a revoke.
       List<RolePermissionRef> heldRolePermissions =
           userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(
               actor.userId(), actor.tenantId());
       requireCallerStillHoldsUserRoleAssign(
-          actor, targetUserId, role, heldRolePermissions, OPERATION_ASSIGN, requestContext);
-      requireAdministratorForSelfAssignment(
-          actor, targetUserId, role, heldRolePermissions, requestContext);
-      requireGrantWithinCallerHoldings(
-          actor, targetUserId, role, heldRolePermissions, OPERATION_ASSIGN, requestContext);
+          actor, targetUserId, role, heldRolePermissions, OPERATION_ASSIGN, requestContext,
+          throttled);
 
-      // 07-security-review.md M-1 (2026-09-24): the canary's M12-based caller-status read MUST
-      // run BEFORE the INSERT below, never after. Reading it post-commit (as originally shipped)
-      // meant that on a self-assignment of a role that is ITSELF fully admin-equivalent, the read
-      // would see the row this very request is about to create, making callerIsAdmin=true
-      // unconditionally reachable and callerIsAdmin=false structurally UNREACHABLE for exactly
-      // the highest-severity target (TENANT_ADMIN or an ALL-three role) -- the one case this
-      // canary most needs to catch a gate bypass for. Computed only on the one path where it is
-      // ever used (a privileged self-assignment); MC-G is undisturbed, since this result is never
-      // used to authorize anything -- the gate above has already decided -- only to compute this
-      // already-decided request's canary signal from the caller's PRE-request state.
-      boolean callerWasAdminBeforeThisAssignment =
-          privileged
-              && targetUserId.equals(actor.userId())
-              && callerHoldsActiveAdminEquivalentRole(actor);
+      boolean selfTarget = targetUserId.equals(actor.userId());
+      boolean callerIsAdministrator =
+          selfTarget && callerIsAdministrator(actor, setLock, heldRolePermissions, target);
+      if (selfTarget && !callerIsAdministrator) {
+        denySelfAssignment(actor, targetUserId, role, requestContext);
+      }
+      requireGrantWithinCallerHoldings(
+          actor, targetUserId, role, target, heldRolePermissions, OPERATION_ASSIGN,
+          requestContext, throttled);
 
       if (userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)) {
         // Deliberately DEBUG, not WARN: a duplicate-assignment attempt is a benign client bug,
-        // not a security signal (contrast the WARN below on the last-admin lockout guard).
-        // nexus.domain.conflict{code="RBAC_004"} already provides the trend-line metric.
+        // not a security signal. nexus.domain.conflict{code="RBAC_004"} is the trend-line metric.
         log.atDebug()
             .addKeyValue(LOG_KEY_EVENT, "RBAC_DUPLICATE_ASSIGNMENT")
             .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
@@ -327,24 +234,27 @@ public class RoleAssignmentService {
         throw new DuplicateRoleAssignmentException();
       }
 
-      // assignedBy is ALWAYS actor.userId() -- never derived from targetUserId or any other
-      // path/request-supplied value (T-S3).
+      // Row 7 (RC-28.1): the independent check runs BEFORE the insert. After it, a self-assignment
+      // of an admin-defining role would see the row this very request creates and could never
+      // disagree (US-017 RES-25). It records a signal for a request A4 has already decided.
+      if (selfTarget) {
+        captureIndependentAdministratorCheck(actor, role, callerIsAdministrator);
+      }
+
+      // assignedBy is ALWAYS actor.userId(), never derived from targetUserId or any
+      // request-supplied value (T-S3).
       userRoleAssignmentPort.assign(targetUserId, roleId, actor.tenantId(), actor.userId());
 
-      // Re-read via the M4a projection rather than the just-persisted entity: a projection
-      // reads DB-generated values (assignedAt) directly, whereas the entity instance in the
-      // session would still show a null assignedAt.
+      // Re-read via the projection rather than the just-persisted entity: a projection reads
+      // DB-generated values (assignedAt) directly.
       ActiveRoleAssignment assignment =
           userRoleAssignmentPort
               .findActiveAssignmentView(targetUserId, roleId, actor.tenantId())
               .orElseThrow(); // structurally impossible: the row was just inserted above
 
-      // US-018 A6 (design §6.2): the success-audit write moved INLINE, inside this transaction,
-      // after the insert and before return -- no longer post-commit. RbacAuditPort's Group A
-      // contract now REQUIRES the implementation to throw on failure (it no longer swallows), so
-      // a lost audit write propagates from here, rolls back this transaction, and surfaces as a
-      // 500 rather than committing a role change with zero audit trail. Cache eviction, the INFO
-      // log and the lock-hold timer stay post-commit below -- only the audit write itself moved.
+      // A6 (design §6.2): the success audit is written INLINE, inside this transaction. The port
+      // contract requires it to throw on failure, so a lost audit write rolls this transaction back
+      // and surfaces as a 500 rather than committing a role change with no audit trail.
       rbacAuditPort.recordRoleAssigned(
           new RbacAuditEvent(
               actor.tenantId(), targetUserId, roleId, role.getName(), actor.userId(),
@@ -360,49 +270,15 @@ public class RoleAssignmentService {
                 .addKeyValue(LOG_KEY_ROLE_ID, roleId)
                 .addKeyValue("assignedBy", actor.userId())
                 .log("Role assigned");
-            // D18/§7.5: stopped from afterCommit(), the true "at commit" point -- same rationale
-            // as revoke()'s stop site.
+            // Stopped from afterCommit(), the true "at commit" point.
             stopLockHoldTimer(lockHoldSample, OPERATION_ASSIGN, OUTCOME_ASSIGNED);
-
-            // RC-7 (T-005, 03-design.md §9.2/§10.2): unconditional exploitation-side detection
-            // signal for the M-3/T-E16 propagate-side escalation chain. Deliberately no new
-            // query and no dangerous-permission lookup -- actorUserId and targetUserId are
-            // already in hand at this point on every successful assignment. The severity
-            // distinction (whether the assigned role is actually dangerous) is made at alert
-            // time by composing this counter with nexus.rbac.dangerous_permission_granted, not
-            // here.
-            if (targetUserId.equals(actor.userId())) {
-              // D7 + D15 (§9.2), fixed per 07-security-review.md M-2 (RC-11.2's canary had no
-              // reachable firing path): callerIsAdmin must come from a SECOND, INDEPENDENT
-              // source, not from `privileged` (the gate's own control-flow variable) -- deriving
-              // it from control flow made "false" definitionally unreachable, since reaching
-              // this line already proves requireCallerHoldsAdminEquivalentRole's M5b locking
-              // read returned true. callerHoldsActiveAdminEquivalentRole(actor) answers the
-              // same question via a deliberately different mechanism AND a deliberately
-              // different data source (US-017 D24/RC-17.1): M12, a non-locking, USER-scoped
-              // read driven off fk_user_roles_user -- never M10, the gate's own tenant-scoped
-              // read, so an over-broad M10 can no longer silence this detector (§9.3). A future
-              // T-E22-class bug that makes M5b answer the wrong question and still let the gate
-              // pass now surfaces as a disagreement between the two -- observable -- instead of
-              // being tautologically "true".
-              //
-              // M-1 fix (07-security-review.md, 2026-09-24): the read itself must happen BEFORE
-              // the INSERT, not here (post-commit) -- see callerWasAdminBeforeThisAssignment's own
-              // comment above the INSERT. Re-using that pre-computed value, not re-reading here,
-              // is what stops this from silently reverting to the post-commit (bugged) read.
-              boolean callerIsAdmin = callerWasAdminBeforeThisAssignment;
-              Counter.builder("nexus.rbac.self_role_assignment")
-                  .tag("tenantId", actor.tenantId().toString())
-                  .tag("privileged", Boolean.toString(privileged))
-                  .tag("callerIsAdmin", privileged ? Boolean.toString(callerIsAdmin) : "n_a")
+            // Row 9: an administrator was minted. Ticket, never page: a self-target by an
+            // administrator is legitimate. Bounded tag, no tenant tag.
+            if (target.adminDefining()) {
+              Counter.builder(COUNTER_ADMIN_ROLE_ASSIGNED)
+                  .tag(TAG_SELF_TARGET, Boolean.toString(selfTarget))
                   .register(meterRegistry)
                   .increment();
-              log.atWarn()
-                  .addKeyValue(LOG_KEY_EVENT, "RBAC_SELF_ROLE_ASSIGNMENT")
-                  .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
-                  .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
-                  .addKeyValue(LOG_KEY_ROLE_ID, roleId)
-                  .log("Actor assigned a role to themselves");
             }
           });
 
@@ -420,191 +296,84 @@ public class RoleAssignmentService {
   }
 
   /**
-   * Revokes {@code roleId} from {@code targetUserId} within the actor's own tenant (AC2, AC4,
-   * AC5, AC6, AC7).
+   * Revokes {@code roleId} from {@code targetUserId} within the actor's own tenant.
    *
-   * <p><b>Security note (M-3 / T-E9 — CLOSED by US-016; RES-1 PARTIALLY closed).</b> This gate is
-   * privilege-based, not name-based: it denies granting <em>and</em> revoking any role that is
-   * literally named {@code TENANT_ADMIN} <b>or</b> carries any {@code RbacDangerousPermissions}
-   * member, unless the caller holds an active {@code TENANT_ADMIN} assignment in this tenant,
-   * verified by a fresh locking read (never a JWT claim — T-E7).
-   *
-   * <p><b>Closed:</b> T-E9 (no symmetric admin check on {@code revoke()}); T-E17 (administrator
-   * stripping); T-E16 <b>for the direct propagate path only</b> (a non-admin can no longer assign
-   * a role that is dangerous <em>at assign time</em>).
-   *
-   * <p><b>NOT closed, deliberately:</b> the attach-after-assign path — a non-admin may self-assign
-   * a benign role, which an administrator may later make dangerous via {@code
-   * RoleManagementService.attachPermission}; no gate evaluates at that moment. Carried forward as
-   * <b>US-016 T-E21 / RES-1(b)</b> ({@code docs/features/US-016/03b-threat-model.md} §3, §5).
-   * Mitigated, not closed, by the mint-side holder-count signal in {@code
-   * RoleManagementService.attachPermission} (US-016 D13) — do not delete that signal without
-   * re-opening this note.
-   *
-   * <p><b>Closed by US-017:</b> RES-3 — the last-admin lockout now protects the tenant-wide set
-   * of <b>distinct holders</b> of <b>any</b> admin-equivalent role (literal {@code TENANT_ADMIN}
-   * or any {@code RbacDangerousPermissions} member), and {@code
-   * RbacZeroActiveAdminsHealthIndicator} detects the same population. RES-9 — the
-   * <b>caller</b>-side admin test is privilege-based, using a deliberately <b>narrower</b>
-   * predicate than the target-side one: literal {@code TENANT_ADMIN} <b>or all three</b>
-   * dangerous permissions ({@code RbacAdminEquivalence#isFullyAdminEquivalent}). <b>Do not
-   * "simplify" the caller-side test to the target-side ANY predicate: it is vacuous, because
-   * every caller who reaches this code holds {@code user:write}, which is itself in the
-   * dangerous set</b> (ADR-0018 D2).
-   *
-   * <p><b>Relocated, not closed — and NOT a containment:</b> the <em>mint</em>-side AC11 caller
-   * test on {@code RoleManagementService.attachPermission}/{@code detachPermission} remains
-   * name-based (US-017 RES-13). It is narrower <b>by construction</b>, but it bounds nothing: a
-   * fully admin-equivalent caller may self-assign the literal {@code TENANT_ADMIN} in a
-   * <b>single request</b> and is thereafter a mint-side administrator. Do not read this
-   * asymmetry as a control to preserve.
-   *
-   * <p><b>Amplified, not closed — read this before assuming the surviving escalation path is
-   * unaffected:</b> US-016 <b>RES-1(b) / T-E21</b>, the attach-after-assign pre-positioning path,
-   * is <b>not</b> closed here and this change <b>increases its payoff</b>. A {@code user:write}
-   * holder who self-assigned a benign custom role is silently escalated when an administrator
-   * later attaches dangerous permissions to it. Before US-017 that yielded admin-equivalent
-   * <em>permissions</em>, effective at the next token mint and insufficient to pass this gate.
-   * <b>After US-017 it yields caller-side administrative capability, effective on the next
-   * request from a live DB read, and the literal {@code TENANT_ADMIN} one self-assignment
-   * later.</b> Likelihood unchanged; impact materially increased. Detection, not prevention:
-   * {@code RBAC_ROLE_BECAME_FULLY_ADMIN_EQUIVALENT} (US-017 D22) reports the moment a role
-   * crosses the threshold.
-   *
-   * <p>See {@code docs/features/US-017/03-design.md} and ADR-0018.
-   *
-   * <p>See {@code docs/features/US-016/03-design.md} and ADR-0017.
-   *
-   * <p><b>US-018 revoke-subset (07-security-review.md M-1, L-1):</b> after the throttle and the
-   * legacy gate, the caller must still hold {@code user:role:assign} in M13 and must hold every
-   * permission of the role being revoked (M13 ⊇ M14); either denial is 403 {@code RBAC_001} with
-   * one {@code ROLE_ASSIGNMENT_DENIED} row, and both precede the last-admin 409. The 404 still
-   * precedes the throttle (L-6, deferred to M3).
+   * <p>Order (design §5.3): tenant checks (404/403), the assignment lookup (404), throttle, classify
+   * the target role, the set lock when it is admin-defining, then <b>revoke-subset</b> (403): when
+   * the role is admin-defining the caller must be an administrator according to the set lock's own
+   * rows ({@code NOT_TENANT_ADMIN}, evaluated first because it needs no other read), then the
+   * {@code user:role:assign} re-check (L-1), then the caller must hold every permission of the role
+   * ({@code GRANT_EXCEEDS_CALLER}); then the distinct-holder lockout (409); then the update. A 403
+   * always precedes the 409, so the 409 never tells an unauthorized caller that a role guards the
+   * last administrator (ADR-0017 D4).
    */
   @Transactional
   public void revoke(
       RoleChangeActor actor, UUID targetUserId, UUID roleId, RequestContext requestContext) {
-    Role role;
-    try {
-      verifySameTenant(targetUserId, actor, USER_ROLE_ASSIGN);
-      role = resolveRoleInTenant(roleId, actor, USER_ROLE_ASSIGN);
-    } catch (InsufficientPermissionException e) {
-      // roleName is null by construction here -- same rationale as assign()'s catch above.
-      recordDenial(
-          actor, targetUserId, roleId, null, e.getReason(), OPERATION_REVOKE, requestContext, null);
-      throw e;
-    }
+    verifySameTenant(targetUserId, actor, USER_ROLE_ASSIGN, OPERATION_REVOKE);
+    Role role = resolveRoleInTenant(roleId, actor, USER_ROLE_ASSIGN, OPERATION_REVOKE);
 
-    // Resolved once, ahead of the admin-lockout check: this covers "never assigned" and
-    // "already revoked" identically for both admin and non-admin roles, and its id is what
-    // the lockout check below needs to test set-membership against.
+    // Resolved once, ahead of the lockout check: this covers "never assigned" and "already
+    // revoked" identically for every role, and its id is what the lockout check excludes.
     ActiveAssignmentRef ref = findAssignmentRefOrThrow(targetUserId, roleId, actor.tenantId());
 
-    requireNotThrottled(actor, OPERATION_REVOKE, requestContext);
-
-    // D4/D5: the same unified, privilege-based gate condition as assign() (§7.2: M7 runs
-    // before M10/M11, outside the locked region, on every path -- name-first short-circuit
-    // means M7 is never evaluated when nameMatch is true).
-    boolean nameMatch = isNamedTenantAdmin(role);
-    boolean privileged =
-        nameMatch
-            || RbacAdminEquivalence.isAdminEquivalent(
-                role.getName(), userRoleAssignmentPort.findPermissionNamesForRole(role.getId()));
-
-    // D5/D6/§7.2: on the privileged path (name-match OR dangerous-permission, never
-    // conditioned on nameMatch alone any more), resolve the tenant's admin-equivalent role
-    // sets from ONE M10 read plus M8, build the ascending-sorted union lock set, and acquire
-    // it (M11) BEFORE the caller gate (M5b) below. The benign path costs +0: no M10, no M8,
-    // no M11 -- "one condition, one call site" is preserved (§7.2).
-    List<UUID> lockSet;
-    List<ActiveAssignmentHolder> lockedHolders;
-    AdminEquivalentRoles roles;
-    Timer.Sample lockHoldSample;
-    if (privileged) {
-      roles = resolveAdminEquivalentRoles(actor.tenantId(), role, nameMatch);
-      lockSet = buildAscendingAdminEquivalentLockSet(roles, role.getId());
-      lockedHolders = userRoleAssignmentPort.lockActiveAssignmentHolders(actor.tenantId(), lockSet);
-      recordLockSetSize(lockedHolders.size());
-      // D18/US-017 §9.5: the timer's population widens from `nameMatch` to `privileged` --
-      // M11 is now acquired for every privileged revocation, not only the literally-named
-      // TENANT_ADMIN (the "dangerous-custom-role revocation never participates" caveat no
-      // longer holds).
-      lockHoldSample = Timer.start(meterRegistry);
-    } else {
-      roles = null;
-      lockSet = List.of();
-      lockedHolders = List.of();
-      lockHoldSample = null;
-    }
+    TargetClassification target = classifyTarget(actor, role, OPERATION_REVOKE);
+    boolean throttled = evaluateThrottle(actor, targetUserId, target, OPERATION_REVOKE);
+    SetLock setLock = target.adminDefining() ? acquireSetLock(actor, target, role) : null;
+    Timer.Sample lockHoldSample = setLock == null ? null : setLock.holdTimer();
 
     try {
-      if (privileged) {
-        // FR-3/D8: the caller gate is now M5b over the caller-qualifying set (ALL ⊆ ANY ⊆
-        // lockSet), contained inside the X region M11 just acquired -- 403 before 409,
-        // position unchanged (Gate 1 Resolution 2).
-        requireCallerHoldsAdminEquivalentRole(
-            actor, targetUserId, role, USER_ROLE_ASSIGN, OPERATION_REVOKE, nameMatch, roles,
-            requestContext);
+      // The administrator requirement first: it needs only the rows the set lock just returned,
+      // and it keeps the reason a non-administrator sees on an admin-defining role stable
+      // (NOT_TENANT_ADMIN, A-13) whatever else they lack.
+      if (setLock != null) {
+        requireAdministratorFromSetLock(actor, targetUserId, role, setLock, requestContext);
       }
-
-      // US-018 07-security-review.md M-1: revoke-subset, pulled forward from M3 -- the caller may
-      // revoke only a role whose every permission they hold (M13 ⊇ M14), so a delegated
-      // user:role:assign holder cannot strip access they could not have granted. After the
-      // throttle and the legacy gate, BEFORE the last-admin 409, so the 409 never tells a caller
-      // who may not revoke this role that it guards the last administrator. L-1 first, from the
-      // same M13 read.
       List<RolePermissionRef> heldRolePermissions =
           userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(
               actor.userId(), actor.tenantId());
       requireCallerStillHoldsUserRoleAssign(
-          actor, targetUserId, role, heldRolePermissions, OPERATION_REVOKE, requestContext);
+          actor, targetUserId, role, heldRolePermissions, OPERATION_REVOKE, requestContext,
+          throttled);
       requireGrantWithinCallerHoldings(
-          actor, targetUserId, role, heldRolePermissions, OPERATION_REVOKE, requestContext);
-
-      // D5, AC5 widened: fires for ANY caller revoking the tenant's last DISTINCT HOLDER able
-      // to pass the caller gate (H-1, 2026-09-24: caller-qualifying, not merely ANY
-      // admin-equivalent), not only self-revocation and not only literally-named TENANT_ADMIN.
-      // Always evaluated AFTER the privilege gate above, so a non-admin caller sees 403 before
-      // this 409 can ever fire.
-      if (privileged
-          && wouldLeaveTenantWithoutCallerQualifyingHolder(
-              lockedHolders, ref.id(), roles.callerQualifyingIds())) {
-        String matchedOn = nameMatch ? MATCHED_ON_ROLE_NAME : MATCHED_ON_DANGEROUS_PERMISSION;
-        // WARN, not DEBUG: an operator needs to know which tenant nearly locked itself out
-        // and who tried, independent of the nexus.domain.conflict{code="RBAC_002"} counter.
-        log.atWarn()
-            .addKeyValue(LOG_KEY_EVENT, "RBAC_LAST_ADMIN_REVOCATION_BLOCKED")
-            .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
-            .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
-            .addKeyValue("actorUserId", actor.userId())
-            .addKeyValue(LOG_KEY_ROLE_ID, roleId)
-            .addKeyValue(LOG_KEY_MATCHED_ON, matchedOn)
-            .addKeyValue("adminEquivalentRoleCount", lockSet.size())
-            .addKeyValue("lockedRowCount", lockedHolders.size())
-            .log("Blocked revocation of the tenant's last active admin-equivalent role assignment");
-        Counter.builder(COUNTER_LAST_ADMIN_LOCKOUT_BLOCKED)
-            .tag(LOG_KEY_MATCHED_ON, matchedOn)
-            .register(meterRegistry)
-            .increment();
-        throw new LastAdminRoleException();
+          actor, targetUserId, role, target, heldRolePermissions, OPERATION_REVOKE,
+          requestContext, throttled);
+      if (setLock != null) {
+        // The last-admin lockout: distinct holders of admin-defining roles, not rows, excluding
+        // the assignment being revoked (by assignment id, never by user id, so a user's OTHER
+        // admin-defining assignment still counts them). Always evaluated AFTER the 403s above.
+        if (wouldLeaveTenantWithoutAdministrator(
+            setLock.lockedHolders(), ref.id(), setLock.adminDefiningRoleIds())) {
+          // WARN, not DEBUG: an operator needs to know which tenant nearly locked itself out and
+          // who tried, independent of the nexus.domain.conflict{code="RBAC_002"} counter.
+          log.atWarn()
+              .addKeyValue(LOG_KEY_EVENT, "RBAC_LAST_ADMIN_REVOCATION_BLOCKED")
+              .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+              .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
+              .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+              .addKeyValue(LOG_KEY_ROLE_ID, roleId)
+              .addKeyValue("adminDefiningRoleCount", setLock.adminDefiningRoleIds().size())
+              .addKeyValue("lockedRowCount", setLock.lockedHolders().size())
+              .log("Blocked revocation of the tenant's last active administrator assignment");
+          Counter.builder(COUNTER_LAST_ADMIN_LOCKOUT_BLOCKED).register(meterRegistry).increment();
+          throw new LastAdminRoleException();
+        }
       }
 
       // App-side clamp, not a DB-side FUNCTION('now', 6): this codebase's pinned Hibernate
-      // version rejects that HQL construct at parse time ("Function now() has 0 parameters, but
-      // 1 arguments given"). max(now, assignedAt) can never violate the revoked_at >= assigned_at
-      // CHECK constraint, by construction (03-design.md §5.2 M6's own anticipated fallback).
+      // version rejects that HQL construct at parse time. max(now, assignedAt) can never violate
+      // the revoked_at >= assigned_at CHECK constraint, by construction.
       Instant now = Instant.now();
       Instant revokedAt = now.isBefore(ref.assignedAt()) ? ref.assignedAt() : now;
 
       int affectedRows = userRoleAssignmentPort.revoke(ref.id(), revokedAt);
       if (affectedRows == 0) {
-        // Lost race: someone else revoked this exact assignment between the read above and
-        // this write.
+        // Lost race: someone else revoked this exact assignment between the read above and this
+        // write.
         throw assignmentNotFound();
       }
 
-      // US-018 A6 (design §6.2): see the matching comment in assign() above -- the success-audit
-      // write moved INLINE, inside this transaction, after the revoke and before return.
+      // A6 (design §6.2): the success audit is written INLINE, inside this transaction.
       rbacAuditPort.recordRoleRevoked(
           new RbacAuditEvent(
               actor.tenantId(), targetUserId, roleId, role.getName(), actor.userId(),
@@ -620,17 +389,15 @@ public class RoleAssignmentService {
                 .addKeyValue(LOG_KEY_ROLE_ID, roleId)
                 .addKeyValue("revokedBy", actor.userId())
                 .log("Role revoked");
-            // D18/§7.5: stopped here, not right after registration -- this runnable only
-            // executes from afterCommit(), which Spring invokes strictly after doCommit()
-            // returns, so this is the true "at commit" point the timer is meant to measure.
-            // Stopping it immediately after registerPostCommitSideEffects() returns would
-            // measure only up to the register call, missing the COMMIT round-trip itself --
-            // exactly the interval this instrument exists to catch (RC-9.5).
+            // Stopped here, not right after registration: this runnable only executes from
+            // afterCommit(), strictly after doCommit() returns, so this is the true "at commit"
+            // point the timer is meant to measure (RC-9.5).
             stopLockHoldTimer(lockHoldSample, OPERATION_REVOKE, OUTCOME_REVOKED);
-            // US-018 A9 (MC-7b): every token the target holds becomes stale. After commit only, so
-            // a mint in the gap cannot read the new epoch with pre-commit permissions; after the
-            // timer, so the bump's Redis latency does not inflate the lock-hold measurement.
-            permissionFreshnessService.invalidateUser(actor.tenantId(), targetUserId, OPERATION_REVOKE);
+            // A9 (MC-7b): every token the target holds becomes stale. After commit only, so a mint
+            // in the gap cannot read the new epoch with pre-commit permissions; after the timer,
+            // so the bump's Redis latency does not inflate the lock-hold measurement.
+            permissionFreshnessService.invalidateUser(
+                actor.tenantId(), targetUserId, OPERATION_REVOKE);
           });
     } catch (InsufficientPermissionException e) {
       stopLockHoldTimer(lockHoldSample, OPERATION_REVOKE, OUTCOME_DENIED);
@@ -639,26 +406,181 @@ public class RoleAssignmentService {
       stopLockHoldTimer(lockHoldSample, OPERATION_REVOKE, OUTCOME_LOCKOUT);
       throw e;
     } catch (RuntimeException e) {
-      // Covers both the M6 lost-race 404 (assignmentNotFound()) and any unexpected propagating
-      // failure from M8/M5/the audit write -- neither is an authorization decision nor a
-      // successful revoke by this transaction, so both are bucketed under the bounded, 4-value
-      // outcome set (D18 fixes the cardinality at {denied, lockout, revoked, error}).
+      // Covers the lost-race 404 and any unexpected failure from the lock, the reads or the audit
+      // write: neither is an authorization decision nor a successful revoke, so both are bucketed
+      // under the bounded outcome set {denied, lockout, revoked, error}.
       stopLockHoldTimer(lockHoldSample, OPERATION_REVOKE, OUTCOME_ERROR);
       throw e;
     }
   }
 
   /**
-   * D18: stops the composed X-lock-hold timer with the given {@code operation}/{@code outcome}
-   * tags. A no-op when {@code sample} is {@code null} -- the timer only ever starts on the {@code
-   * privileged} path (US-017 D5/D6/§7.2 widens the timer's population from {@code nameMatch} to
-   * every privileged role change, since M11 is now acquired whenever {@code privileged} is true,
-   * not only for the literally-named {@code TENANT_ADMIN}), so a benign (non-privileged) role
-   * change never participates in this timer.
+   * Lists one page of the active role assignments held by {@code targetUserId} within the actor's
+   * own tenant, ordered by {@code (assignedAt, id)} (US-018 C2).
    *
-   * <p>US-017 D7/§9.2: {@code operation} ({@code assign}/{@code revoke}) is a new tag -- {@code
-   * assign()} now holds the same lock, so the metric name is historical (it predates {@code
-   * assign()} participating) but is kept rather than churning the shipped alert for no benefit.
+   * <p>{@code assignedBy} is omitted (nulled out) unless the caller is an administrator
+   * (03-design.md §2.1; O-10/T-I5): the one definition, a small stated widening of the former
+   * literal-name test. A plain snapshot read, appropriate because it decides only whether to
+   * redact one response field, never whether to authorize a mutation.
+   */
+  @Transactional(readOnly = true)
+  public PageResult<ActiveRoleAssignment> listActive(
+      RoleChangeActor actor, UUID targetUserId, int page, int size) {
+    // MANDATORY, not redundant with the repository's own tenant predicates (T-E8): without this
+    // explicit check, a cross-tenant GET would silently return 200 {"data":[]} instead of a 403,
+    // destroying the WARN log + denial metric that makes cross-tenant probing detectable.
+    verifySameTenant(targetUserId, actor, USER_READ, OPERATION_LIST);
+
+    PageResult<ActiveRoleAssignment> assignments =
+        userRoleAssignmentPort.findActiveAssignmentViews(
+            targetUserId, actor.tenantId(), page, size);
+
+    if (isCallerAdministrator(userRoleAssignmentPort, actor)) {
+      return assignments;
+    }
+    return assignments.map(RoleAssignmentService::withAssignedByRedacted);
+  }
+
+  /**
+   * Whether the caller is an administrator by the one definition (03-design.md §2.1): the redaction
+   * rule shared by {@link #listActive} and the access-review role-holders read (US-018 C3, R1-4), so
+   * the two can never apply different rules to the same {@code assignedBy} field. A plain snapshot
+   * read, appropriate because it decides only whether to redact one response field, never whether
+   * to authorize a mutation.
+   */
+  static boolean isCallerAdministrator(
+      UserRoleAssignmentPort userRoleAssignmentPort, RoleChangeActor actor) {
+    return RbacAdministrators.isAdministrator(
+        userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(
+            actor.userId(), actor.tenantId()),
+        userRoleAssignmentPort.findCatalogueIds());
+  }
+
+  /**
+   * What the target role is, decided once from M14 (its permission ids) and M15 (the catalogue).
+   * {@code adminDefining} drives the set lock; the ids are reused by the subset comparison so the
+   * decision and the comparison can never read two different states.
+   */
+  private record TargetClassification(
+      Set<UUID> targetPermissionIds, Set<UUID> catalogueIds, boolean adminDefining) {}
+
+  /**
+   * The set lock and what it returned. {@code lockedHolders} are current and X-locked rows, so
+   * {@link #callerHoldsAdministratorRole} answers "is the caller an administrator?" without
+   * touching the snapshot (ADR-0021 D2).
+   */
+  private record SetLock(
+      Set<UUID> adminDefiningRoleIds,
+      List<ActiveAssignmentHolder> lockedHolders,
+      Timer.Sample holdTimer) {
+
+    boolean callerHoldsAdministratorRole(UUID callerUserId) {
+      return lockedHolders.stream()
+          .anyMatch(
+              holder ->
+                  holder.userId().equals(callerUserId)
+                      && adminDefiningRoleIds.contains(holder.roleId()));
+    }
+  }
+
+  /**
+   * Classifies the target role: M14 for its permission ids and M15 for the catalogue. An empty M14
+   * {@code Optional} (the role is not in the caller's tenant) denies with the cross-tenant 404 and
+   * no audit row: it is unreachable today (the tenant check ran first and a role's tenant is
+   * immutable), so reaching it means an invariant broke, and "grants nothing" would be the wrong
+   * reading (07-security-review.md L-2). A read failure propagates (500).
+   */
+  private TargetClassification classifyTarget(RoleChangeActor actor, Role role, String operation) {
+    Optional<Set<UUID>> targetPermissionIdsInTenant =
+        userRoleAssignmentPort.findPermissionIdsForRole(role.getId(), actor.tenantId());
+    if (targetPermissionIdsInTenant.isEmpty()) {
+      log.atWarn()
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_GRANT_CHECK_ROLE_NOT_IN_TENANT")
+          .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+          .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+          .addKeyValue(LOG_KEY_ROLE_ID, role.getId())
+          .addKeyValue(LOG_KEY_OPERATION, operation)
+          .log("Denied a role change: the role's permissions are not readable in the caller's tenant");
+      throw crossTenantNotFound(actor, USER_ROLE_ASSIGN, TARGET_KIND_ROLE, operation);
+    }
+    Set<UUID> catalogueIds = userRoleAssignmentPort.findCatalogueIds();
+    return new TargetClassification(
+        targetPermissionIdsInTenant.get(),
+        catalogueIds,
+        RbacAdministrators.isAdminDefining(targetPermissionIdsInTenant.get(), catalogueIds));
+  }
+
+  /**
+   * Takes the set lock for an admin-defining target: M10' for the tenant's roles, the admin-defining
+   * ones among them, then ONE statement locking every active assignment of those roles plus the
+   * target role, in ascending unsigned byte order (ADR-0018 D5 to D7, upheld). The target role is
+   * always in the set, which is what makes an insert contained.
+   */
+  private SetLock acquireSetLock(RoleChangeActor actor, TargetClassification target, Role role) {
+    Set<UUID> adminDefiningRoleIds =
+        resolveAdminDefiningRoleIds(userRoleAssignmentPort, actor.tenantId(), target.catalogueIds());
+    List<UUID> lockSet = buildAscendingLockSet(adminDefiningRoleIds, role.getId());
+    List<ActiveAssignmentHolder> lockedHolders =
+        userRoleAssignmentPort.lockActiveAssignmentHolders(actor.tenantId(), lockSet);
+    recordLockSetSize(lockedHolders.size());
+    return new SetLock(adminDefiningRoleIds, lockedHolders, Timer.start(meterRegistry));
+  }
+
+  /**
+   * The ids of the tenant's admin-defining roles, from ONE M10' read and the catalogue. Static and
+   * package-private so the break-glass service primes the lock exactly as {@code assign()} and
+   * {@code revoke()} do, never a second copy that could drift.
+   */
+  static Set<UUID> resolveAdminDefiningRoleIds(
+      UserRoleAssignmentPort userRoleAssignmentPort, UUID tenantId, Set<UUID> catalogueIds) {
+    return RbacAdministrators.adminDefiningRoleIds(
+        userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId), catalogueIds);
+  }
+
+  /**
+   * The ascending-sorted lock set for one change: the tenant's admin-defining role ids and the
+   * target role itself. "Ascending" is {@link #UNSIGNED_BYTEWISE_UUID_ORDER}, a port contract of
+   * {@link UserRoleAssignmentPort#lockActiveAssignmentHolders}, not a caller convention.
+   */
+  static List<UUID> buildAscendingLockSet(Set<UUID> adminDefiningRoleIds, UUID targetRoleId) {
+    Set<UUID> lockSet = new TreeSet<>(UNSIGNED_BYTEWISE_UUID_ORDER);
+    lockSet.addAll(adminDefiningRoleIds);
+    lockSet.add(targetRoleId);
+    return List.copyOf(lockSet);
+  }
+
+  /**
+   * The lockout predicate: {@code true} iff the DISTINCT {@code userId}s of {@code lockedHolders}
+   * whose {@code roleId} is admin-defining, EXCLUDING the row whose {@code assignmentId} equals
+   * {@code revokedAssignmentId}, is empty. Distinct holders, not rows: one user holding two
+   * admin-defining roles counts once (MC-D), and the exclusion is by assignment id, never by user
+   * id.
+   *
+   * <p>The lock population and the holder population are the same set, so no separate filter is
+   * needed. Package-private so the break-glass service decides "the tenant has no administrator"
+   * with the same predicate, passing {@code null} for {@code revokedAssignmentId}: nothing is being
+   * revoked there, and {@code null} excludes no row.
+   */
+  static boolean wouldLeaveTenantWithoutAdministrator(
+      List<ActiveAssignmentHolder> lockedHolders,
+      UUID revokedAssignmentId,
+      Set<UUID> adminDefiningRoleIds) {
+    return lockedHolders.stream()
+        .filter(holder -> !holder.assignmentId().equals(revokedAssignmentId))
+        .filter(holder -> adminDefiningRoleIds.contains(holder.roleId()))
+        .map(ActiveAssignmentHolder::userId)
+        .distinct()
+        .findAny()
+        .isEmpty();
+  }
+
+  /**
+   * Stops the lock-hold timer with the given {@code operation}/{@code outcome} tags. A no-op when
+   * {@code sample} is {@code null}: the timer only starts on the set-lock path (an admin-defining
+   * target), so a benign role change never participates in it.
+   *
+   * <p>{@code operation} ({@code assign}/{@code revoke}) is a tag because {@code assign()} holds
+   * the same lock; the metric name is historical and kept rather than churning the shipped alert.
    */
   private void stopLockHoldTimer(Timer.Sample sample, String operation, String outcome) {
     if (sample == null) {
@@ -672,181 +594,35 @@ public class RoleAssignmentService {
   }
 
   /**
-   * US-017 RES-17/RC-20.4 (A-2): records the size of the list M11 just returned. Untagged (1
-   * series) and recorded on BOTH verbs, immediately after M11 executes -- restricting it to
-   * {@code revoke()} would halve the sample the soak-derived p99 threshold (design §10.3 step 2)
-   * is computed from, since {@code assign()}'s privileged path now acquires M11 too (D7).
+   * Records the size of the list the set lock just returned. Untagged (1 series) and recorded on
+   * BOTH verbs, immediately after the lock statement executes.
    */
   private void recordLockSetSize(int size) {
-    DistributionSummary.builder(METRIC_ADMIN_EQUIVALENT_LOCK_SET_SIZE)
+    DistributionSummary.builder(METRIC_ADMIN_DEFINING_LOCK_SET_SIZE)
         .register(meterRegistry)
         .record(size);
   }
 
   /**
-   * Lists the active role assignments held by {@code targetUserId} within the actor's own tenant
-   * (AC3, AC4).
+   * D14, re-scoped by US-018 B8 (Decision 25; 03-design.md §10.8): after the 404s and the target's
+   * classification, before every authorization read of the caller. Returns whether the actor is
+   * currently throttled. A throttled actor is BLOCKED (403, no audit row, counter) only when the
+   * request would take the set lock (the target role is admin-defining) or targets the actor
+   * themself: those are the paths the throttle exists to bound (T-D10, T-D11, RES-8; ADR-0018 D7).
+   * Every other request is evaluated normally, so an authorized benign change still succeeds
+   * (FR-B8.a); a denial among them is handled by {@link #suppressThrottledDenial}.
    *
-   * <p>{@code assignedBy} is omitted (nulled out) unless the caller holds an active {@code
-   * TENANT_ADMIN} assignment in this tenant (O-10/T-I5) — narrowing the admin-roster/granter graph
-   * to admins, since every self-registered {@code MEMBER} otherwise holds {@code user:read}.
-   */
-  @Transactional(readOnly = true)
-  public List<ActiveRoleAssignment> listActive(RoleChangeActor actor, UUID targetUserId) {
-    // MANDATORY, not redundant with M4's own tenant predicates (T-E8): without this
-    // explicit check, a cross-tenant GET would silently return 200 {"data":[]} instead of a
-    // 403, destroying the WARN log + denial metric that makes cross-tenant probing
-    // detectable.
-    verifySameTenant(targetUserId, actor, USER_READ);
-
-    List<ActiveRoleAssignment> assignments =
-        userRoleAssignmentPort.findActiveAssignmentViews(targetUserId, actor.tenantId());
-
-    if (callerHoldsActiveTenantAdmin(actor)) {
-      return assignments;
-    }
-    return assignments.stream().map(RoleAssignmentService::withAssignedByRedacted).toList();
-  }
-
-  /** FR-3's half of the unified gate condition (D4) — the source of {@code matchedOn}. */
-  private static boolean isNamedTenantAdmin(Role role) {
-    return RbacRoleNames.TENANT_ADMIN.equalsIgnoreCase(role.getName());
-  }
-
-  /**
-   * A small carrier for the tenant's admin-equivalence sets (US-017 D3/D9, §4.2), returned
-   * together so the two id sets can never be built from two different M10 reads.
-   */
-  record AdminEquivalentRoles(
-      Set<UUID> adminEquivalentIds, Set<UUID> fullyAdminEquivalentIds, Optional<UUID> namedAdminRoleId) {
-
-    /**
-     * The tenant's CALLER-QUALIFYING role ids (post-06-code-review.md H-1, 2026-09-24) — literal
-     * {@code TENANT_ADMIN} (when seeded) UNION every role carrying ALL THREE dangerous
-     * permissions. The SAME population {@link
-     * RoleAssignmentService#requireCallerHoldsAdminEquivalentRole} admits, deliberately narrower
-     * than {@link #adminEquivalentIds()} (ANY) — see {@link
-     * RoleAssignmentService#wouldLeaveTenantWithoutCallerQualifyingHolder}.
-     */
-    Set<UUID> callerQualifyingIds() {
-      Set<UUID> ids = new HashSet<>(fullyAdminEquivalentIds);
-      namedAdminRoleId.ifPresent(ids::add);
-      return ids;
-    }
-  }
-
-  /**
-   * Resolves the tenant's two admin-equivalence role-id sets from ONE M10 read plus M8 (US-017
-   * D3, D9, §7.2) — never two separate reads that could disagree with each other. {@code
-   * targetRole} and {@code nameMatch} are accepted per the approved signature (03-design.md §4.2)
-   * for the lock-set construction its callers (T-002/T-003) build around this result.
-   *
-   * <p>Wired up by {@code revoke()} (US-017 T-002); {@code assign()} (T-003) is still pending.
-   */
-  private AdminEquivalentRoles resolveAdminEquivalentRoles(
-      UUID tenantId, Role targetRole, boolean nameMatch) {
-    return resolveAdminEquivalentRolesFor(userRoleAssignmentPort, tenantId);
-  }
-
-  /**
-   * The body of {@link #resolveAdminEquivalentRoles(UUID, Role, boolean)}, package-private and
-   * static so {@code BootstrapAdminService} (US-018 A7, 03-design.md §7.1) primes M10 and M8
-   * exactly as {@code assign()}/{@code revoke()} do, never a second copy that could drift.
-   */
-  static AdminEquivalentRoles resolveAdminEquivalentRolesFor(
-      UserRoleAssignmentPort userRoleAssignmentPort, UUID tenantId) {
-    List<RolePermissionName> tenantRolePermissions =
-        userRoleAssignmentPort.findPermissionNamesForTenantRoles(tenantId);
-
-    Set<UUID> adminEquivalentIds = new HashSet<>();
-    Set<UUID> fullyAdminEquivalentIds = new HashSet<>();
-    tenantRolePermissions.stream()
-        .collect(
-            Collectors.groupingBy(
-                RolePermissionName::roleId,
-                Collectors.mapping(RolePermissionName::permissionName, Collectors.toList())))
-        .forEach(
-            (roleId, permissionNames) -> {
-              if (RbacDangerousPermissions.carriesAny(permissionNames)) {
-                adminEquivalentIds.add(roleId);
-              }
-              if (RbacDangerousPermissions.carriesAll(permissionNames)) {
-                fullyAdminEquivalentIds.add(roleId);
-              }
-            });
-
-    Optional<UUID> namedAdminRoleId =
-        userRoleAssignmentPort.findRoleIdByName(tenantId, RbacRoleNames.TENANT_ADMIN);
-
-    return new AdminEquivalentRoles(
-        Set.copyOf(adminEquivalentIds), Set.copyOf(fullyAdminEquivalentIds), namedAdminRoleId);
-  }
-
-  /**
-   * D6/§7.2: the ascending-sorted union lock set for one privileged role change — the tenant's
-   * ANY-admin-equivalent role ids, the literal {@code TENANT_ADMIN} role id when seeded, and the
-   * target role itself (always included when privileged — this is what makes {@code assign()}'s
-   * INSERT insert-intention contained, and what makes M11 fail toward more locking on any
-   * M7/M10 disagreement). "Ascending" is {@link #UNSIGNED_BYTEWISE_UUID_ORDER}, a port contract
-   * of {@link UserRoleAssignmentPort#lockActiveAssignmentHolders}, not a caller convention.
-   */
-  static List<UUID> buildAscendingAdminEquivalentLockSet(
-      AdminEquivalentRoles roles, UUID targetRoleId) {
-    Set<UUID> lockSet = new TreeSet<>(UNSIGNED_BYTEWISE_UUID_ORDER);
-    lockSet.addAll(roles.adminEquivalentIds());
-    roles.namedAdminRoleId().ifPresent(lockSet::add);
-    lockSet.add(targetRoleId);
-    return List.copyOf(lockSet);
-  }
-
-  /**
-   * D5's predicate, restricted post-06-code-review.md H-1 (2026-09-24) to the tenant's
-   * CALLER-QUALIFYING holders, not the broader ANY-admin-equivalent lock-set population: {@code
-   * true} iff the DISTINCT {@code userId}s of {@code lockedHolders} whose {@code roleId} is in
-   * {@code callerQualifyingRoleIds}, EXCLUDING the row whose {@code assignmentId} equals {@code
-   * revokedAssignmentId}, is empty. Distinct holders, not rows (§7.2) — one user holding two
-   * caller-qualifying roles counts once (MC-D), and the exclusion is by assignment id, never by
-   * user id, so a user's OTHER caller-qualifying assignment still counts them as a holder.
-   *
-   * <p><b>Why not the ANY population (H-1):</b> a holder of a role carrying only ONE dangerous
-   * permission (e.g. {@code tenant:write} alone) can never pass {@link
-   * #requireCallerHoldsAdminEquivalentRole}'s caller gate — counting them as a "remaining admin"
-   * let a revocation succeed that left the tenant with zero callers able to ever administer it
-   * again, while both this guard and {@code RbacZeroActiveAdminsHealthIndicator} kept reporting
-   * healthy. The lock set (§7.2) still spans the wider ANY population — that stays correct for
-   * deadlock-freedom (D6/D7) and for making M11 fail toward more locking on any M7/M10
-   * disagreement — but only the caller-qualifying subset of what it locked is what this specific
-   * guard must never zero out.
-   *
-   * <p>Package-private so {@code BootstrapAdminService} (US-018 A7) decides "the tenant has zero
-   * administrators" with this same predicate, passing {@code null} for {@code
-   * revokedAssignmentId}: nothing is being revoked there, and {@code null} excludes no row.
-   */
-  static boolean wouldLeaveTenantWithoutCallerQualifyingHolder(
-      List<ActiveAssignmentHolder> lockedHolders,
-      UUID revokedAssignmentId,
-      Set<UUID> callerQualifyingRoleIds) {
-    return lockedHolders.stream()
-        .filter(holder -> !holder.assignmentId().equals(revokedAssignmentId))
-        .filter(holder -> callerQualifyingRoleIds.contains(holder.roleId()))
-        .map(ActiveAssignmentHolder::userId)
-        .distinct()
-        .findAny()
-        .isEmpty();
-  }
-
-  /**
-   * D14 (03-design.md §4.8, §6.1): check 3.5 — after the 404s, before M1/M7/M8/M5, the audit
-   * write, and the metric. Bounds the cost of repeated authorization denials on {@code
-   * assign()}/{@code revoke()} (T-D10, T-D11, RES-8).
+   * <p>A throttled actor never reaches the set lock: this runs before {@link #acquireSetLock}.
+   * Classifying first tells a throttled actor whether a target is admin-defining by whether the
+   * request is blocked (one bit, RES-33, accepted).
    *
    * <p>Defense in depth (MC-7(i)): {@link RoleChangeThrottlePort#isThrottled} is documented to
    * fail safe and never throw, but a throwing implementation must not turn an availability
-   * problem into a false block here — any exception is swallowed and treated as "not throttled",
+   * problem into a false block here: any exception is swallowed and treated as "not throttled",
    * falling through to the real gate, which remains authoritative.
    */
-  private void requireNotThrottled(
-      RoleChangeActor actor, String operation, RequestContext requestContext) {
+  private boolean evaluateThrottle(
+      RoleChangeActor actor, UUID targetUserId, TargetClassification target, String operation) {
     boolean throttled;
     try {
       throttled = throttlePort.isThrottled(actor.tenantId(), actor.userId());
@@ -857,16 +633,61 @@ public class RoleAssignmentService {
           .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
           .addKeyValue(LOG_KEY_OPERATION, operation)
           .log("isThrottled threw despite its never-throw contract", e);
-      throttled = false;
+      return false;
     }
     if (!throttled) {
-      return;
+      return false;
     }
+    if (target.adminDefining() || targetUserId.equals(actor.userId())) {
+      countThrottled(operation);
+      throw new InsufficientPermissionException(USER_ROLE_ASSIGN, DenialReason.NOT_TENANT_ADMIN);
+    }
+    return true;
+  }
+
+  private void countThrottled(String operation) {
     Counter.builder(COUNTER_DENIAL_THROTTLED)
         .tag("operation", operation)
         .register(meterRegistry)
         .increment();
-    throw new InsufficientPermissionException(USER_ROLE_ASSIGN, DenialReason.NOT_TENANT_ADMIN);
+  }
+
+  /**
+   * B8 (RC-33.1): a request by a throttled actor that was evaluated and DENIED returns its 403
+   * without a {@code ROLE_ASSIGNMENT_DENIED} row. A {@code REQUIRES_NEW} row per throttled denial
+   * would re-open US-016 T-D10 (a second pooled connection per request, bounded only by request
+   * rate) and let an attacker bury meaningful denials in noise. Denials before the throttle trips
+   * were recorded in full. Increments {@code nexus.rbac.denial_throttled{operation}} and emits at
+   * most one WARN {@code RBAC_DENIAL_THROTTLED} per throttle window per actor, decided by the
+   * throttle store ({@link RoleChangeThrottlePort#recordSuppressedDenial}, shared across
+   * instances), so the log volume is bounded too. The per-denial WARNs are skipped for the same
+   * reason; the counter carries the volume.
+   */
+  private void suppressThrottledDenial(RoleChangeActor actor, String operation) {
+    countThrottled(operation);
+    int suppressedCount;
+    try {
+      suppressedCount = throttlePort.recordSuppressedDenial(actor.tenantId(), actor.userId());
+    } catch (RuntimeException e) {
+      log.atError()
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_THROTTLE_RECORD_SUPPRESSED_CALL_FAILED")
+          .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+          .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+          .addKeyValue(LOG_KEY_OPERATION, operation)
+          .log("recordSuppressedDenial threw despite its never-throw contract", e);
+      return;
+    }
+    if (suppressedCount != 1) {
+      return;
+    }
+    log.atWarn()
+        .addKeyValue(LOG_KEY_EVENT, "RBAC_DENIAL_THROTTLED")
+        .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+        .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+        .addKeyValue(LOG_KEY_OPERATION, operation)
+        .addKeyValue("suppressedCount", suppressedCount)
+        .log("Denied a role change by a throttled actor without an audit row; further denials in "
+            + "this window are counted, not logged");
   }
 
   /**
@@ -903,192 +724,29 @@ public class RoleAssignmentService {
   }
 
   /**
-   * US-017 D2/D8/FR-3: the shared caller gate for both {@code assign()} and {@code revoke()},
-   * generalised from M5 (one literally-named role) to M5b (the caller-qualifying set — literal
-   * {@code TENANT_ADMIN} OR a role carrying ALL THREE dangerous permissions, {@code
-   * RbacAdminEquivalence#isFullyAdminEquivalent}). {@code roles} is the SAME {@link
-   * AdminEquivalentRoles} the caller already resolved for the lock set (§7.2), so this never
-   * issues a second, possibly-disagreeing M10/M8 read.
-   *
-   * <p>US-017 T-003(a): checked as TWO SEQUENTIAL queries — the literal {@code TENANT_ADMIN} role
-   * id alone, then the ALL-three set alone — rather than one query over their union. This is what
-   * lets {@code callerMatchedOn} (§9.2) be attributed correctly: a single combined boolean cannot
-   * say WHICH set answered yes. The literal-admin check is the SAME one query every caller paid
-   * before FR-3; only a caller who does NOT hold it pays the second, FR-3-introduced query — the
-   * new population {@code nexus.rbac.privileged_role_change_allowed} exists to make visible.
-   *
-   * <p>An empty caller-qualifying set means the caller has no way to qualify: fail closed WITHOUT
-   * calling M5b at all (D9, R-10/T-E18 precedent, generalised from "M8 empty" to "the whole
-   * caller-qualifying set is empty") — preserved here since the named-admin branch short-circuits
-   * on {@code isPresent()} and the ALL-three branch short-circuits on {@code isEmpty()}.
+   * Whether the caller is an administrator, for A4. On the set-lock path the answer comes from the
+   * lock's rows, never from the snapshot (RC-25.1): the snapshot's read view can predate a wait on
+   * the lock. Otherwise it comes from the snapshot's per-role rows and the catalogue, never the
+   * union across roles.
    */
-  private void requireCallerHoldsAdminEquivalentRole(
+  private boolean callerIsAdministrator(
       RoleChangeActor actor,
-      UUID targetUserId,
-      Role role,
-      String requiredPermission,
-      String operation,
-      boolean nameMatch,
-      AdminEquivalentRoles roles,
-      RequestContext requestContext) {
-    boolean callerHoldsNamedAdmin =
-        roles.namedAdminRoleId().isPresent()
-            && userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(
-                actor.userId(), List.of(roles.namedAdminRoleId().get()), actor.tenantId());
-    if (callerHoldsNamedAdmin) {
-      recordPrivilegedRoleChangeAllowed(
-          actor, targetUserId, role, operation, nameMatch, MATCHED_ON_ROLE_NAME, requestContext);
-      return;
-    }
-
-    Set<UUID> fullyAdminEquivalentIds = roles.fullyAdminEquivalentIds();
-    boolean callerHoldsFullyAdminEquivalent =
-        !fullyAdminEquivalentIds.isEmpty()
-            && userRoleAssignmentPort.hasActiveAssignmentOfAnyRole(
-                actor.userId(), List.copyOf(fullyAdminEquivalentIds), actor.tenantId());
-    if (callerHoldsFullyAdminEquivalent) {
-      recordPrivilegedRoleChangeAllowed(
-          actor, targetUserId, role, operation, nameMatch, MATCHED_ON_ALL_DANGEROUS_PERMISSIONS,
-          requestContext);
-      return;
-    }
-
-    denyPrivilegedRoleChange(
-        actor, targetUserId, role, requiredPermission, operation, nameMatch, requestContext);
-  }
-
-  /**
-   * US-017 D23/§9.2: the caller-gate PASS-point signal — the only observable evidence that FR-3's
-   * loosening is actually exercised. {@code callerMatchedOn} names WHICH of the two mechanisms
-   * qualified the caller (see the split-query note on the caller above), never a guess.
-   *
-   * <p>For the {@code ALL_DANGEROUS_PERMISSIONS} population only (RC-16.3/T-R11): an INFO log
-   * companion with a subject — the metric alone has no id to investigate from, and D15's "no ids
-   * in a metric" boundary is why this lives in the log, not a new tag.
-   *
-   * <p>On {@code assign()} specifically, when the target role is the literal {@code TENANT_ADMIN}
-   * (D23/RC-16.2): a caller who is not themselves a named admin is minting a NEW one — the single
-   * most sensitive operation FR-3 newly permits, and the one for which the re-derived canary
-   * correctly reports {@code callerIsAdmin=true}, producing no signal at all without this WARN.
-   * Gated on {@code operation}, not just on the role/caller match: the identical condition reached
-   * from {@code revoke()} is removing an admin, not minting one.
-   */
-  private void recordPrivilegedRoleChangeAllowed(
-      RoleChangeActor actor,
-      UUID targetUserId,
-      Role role,
-      String operation,
-      boolean nameMatch,
-      String callerMatchedOn,
-      RequestContext requestContext) {
-    Counter.builder(COUNTER_PRIVILEGED_ROLE_CHANGE_ALLOWED)
-        .tag(LOG_KEY_OPERATION, operation)
-        .tag(TAG_CALLER_MATCHED_ON, callerMatchedOn)
-        .register(meterRegistry)
-        .increment();
-
-    if (!MATCHED_ON_ALL_DANGEROUS_PERMISSIONS.equals(callerMatchedOn)) {
-      return;
-    }
-
-    log.atInfo()
-        .addKeyValue(LOG_KEY_EVENT, "RBAC_PRIVILEGED_ROLE_CHANGE_ALLOWED")
-        .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
-        .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
-        .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
-        .addKeyValue(LOG_KEY_ROLE_ID, role.getId())
-        .addKeyValue(LOG_KEY_ROLE_NAME, role.getName())
-        .addKeyValue(LOG_KEY_OPERATION, operation)
-        .log("Privileged role change allowed for a caller qualifying via all three dangerous permissions");
-
-    if (!OPERATION_ASSIGN.equals(operation) || !nameMatch) {
-      return;
-    }
-
-    boolean selfTarget = targetUserId.equals(actor.userId());
-    log.atWarn()
-        .addKeyValue(LOG_KEY_EVENT, "RBAC_ADMIN_MINTED_BY_NON_NAMED_ADMIN")
-        .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
-        .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
-        .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
-        .addKeyValue(LOG_KEY_ROLE_ID, role.getId())
-        .log("A caller who is not a named TENANT_ADMIN minted a new TENANT_ADMIN via all three dangerous permissions");
-    Counter.builder(COUNTER_ADMIN_MINTED_BY_NON_NAMED_ADMIN)
-        .tag(TAG_SELF_TARGET, Boolean.toString(selfTarget))
-        .register(meterRegistry)
-        .increment();
-  }
-
-  /**
-   * The tail of {@link #requireCallerHoldsAdminEquivalentRole}'s two failed branches: the WARN,
-   * the counter, the denial audit row, and the throw.
-   */
-  private void denyPrivilegedRoleChange(
-      RoleChangeActor actor,
-      UUID targetUserId,
-      Role role,
-      String requiredPermission,
-      String operation,
-      boolean nameMatch,
-      RequestContext requestContext) {
-    String matchedOn = nameMatch ? MATCHED_ON_ROLE_NAME : MATCHED_ON_DANGEROUS_PERMISSION;
-    recordThrottleDenialAndMaybeWarn(actor, operation);
-    log.atWarn()
-        .addKeyValue(LOG_KEY_EVENT, "RBAC_PRIVILEGED_ROLE_CHANGE_BLOCKED")
-        .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
-        .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
-        .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
-        .addKeyValue(LOG_KEY_ROLE_ID, role.getId())
-        .addKeyValue(LOG_KEY_ROLE_NAME, role.getName())
-        .addKeyValue(LOG_KEY_OPERATION, operation)
-        .addKeyValue(LOG_KEY_MATCHED_ON, matchedOn)
-        .log("Blocked privileged role change by a non-admin caller");
-    Counter.builder("nexus.rbac.privileged_role_change_blocked")
-        .tag("operation", operation)
-        .tag("matchedOn", matchedOn)
-        .register(meterRegistry)
-        .increment();
-    recordDenial(
-        actor, targetUserId, role.getId(), role.getName(), DenialReason.NOT_TENANT_ADMIN,
-        operation, requestContext, null);
-    throw new InsufficientPermissionException(requiredPermission, DenialReason.NOT_TENANT_ADMIN);
-  }
-
-  /**
-   * US-018 A4 (ADR-0021, 03-design.md §2.1, §4.4): a caller may assign a role to themselves only
-   * if they are an administrator, i.e. at least ONE of their held roles is admin-defining ({@link
-   * RbacAdministrators#isAdminDefining}). Evaluated per role over M13's rows, never over the union,
-   * so the whole catalogue held across two partial roles does not qualify (fails closed).
-   *
-   * <p>M15 (the catalogue) is read only on this self-target branch. A read failure propagates
-   * (500) and never allows; an empty catalogue makes nobody an administrator.
-   *
-   * <p>This closes the literal self-target step only. The same pre-positioning through a second
-   * account is not prevented here (RES-26, T-E32).
-   */
-  private void requireAdministratorForSelfAssignment(
-      RoleChangeActor actor,
-      UUID targetUserId,
-      Role role,
+      SetLock setLock,
       List<RolePermissionRef> heldRolePermissions,
-      RequestContext requestContext) {
-    if (!targetUserId.equals(actor.userId())) {
-      return;
+      TargetClassification target) {
+    if (setLock != null) {
+      return setLock.callerHoldsAdministratorRole(actor.userId());
     }
-    Set<UUID> catalogueIds = userRoleAssignmentPort.findCatalogueIds();
-    boolean callerIsAdministrator =
-        heldRolePermissions.stream()
-            .collect(
-                Collectors.groupingBy(
-                    RolePermissionRef::roleId,
-                    Collectors.mapping(RolePermissionRef::permissionId, Collectors.toSet())))
-            .values()
-            .stream()
-            .anyMatch(rolePermissionIds ->
-                RbacAdministrators.isAdminDefining(rolePermissionIds, catalogueIds));
-    if (callerIsAdministrator) {
-      return;
-    }
+    return RbacAdministrators.isAdministrator(heldRolePermissions, target.catalogueIds());
+  }
+
+  /**
+   * A4 (ADR-0021 D4): a caller may assign a role to themselves only if they are an administrator.
+   * This closes the literal self-target step only; the same pre-positioning through a second
+   * account is not prevented here (RES-26, T-E32). Always throws.
+   */
+  private void denySelfAssignment(
+      RoleChangeActor actor, UUID targetUserId, Role role, RequestContext requestContext) {
     recordThrottleDenialAndMaybeWarn(actor, OPERATION_ASSIGN);
     log.atWarn()
         .addKeyValue(LOG_KEY_EVENT, "RBAC_SELF_ASSIGNMENT_DENIED")
@@ -1100,6 +758,60 @@ public class RoleAssignmentService {
         actor, targetUserId, role.getId(), role.getName(), DenialReason.SELF_ASSIGNMENT,
         OPERATION_ASSIGN, requestContext, null);
     throw new InsufficientPermissionException(USER_ROLE_ASSIGN, DenialReason.SELF_ASSIGNMENT);
+  }
+
+  /**
+   * The administrator requirement of revoke-subset on an admin-defining role (ADR-0021 D5): the
+   * caller must hold an admin-defining role according to the set lock's own rows. This is what
+   * stops a union-holder, who passes the subset comparison, from stripping an administrator
+   * (T-E34); it keeps {@code NOT_TENANT_ADMIN} as the reason (A-13).
+   */
+  private void requireAdministratorFromSetLock(
+      RoleChangeActor actor,
+      UUID targetUserId,
+      Role role,
+      SetLock setLock,
+      RequestContext requestContext) {
+    if (setLock.callerHoldsAdministratorRole(actor.userId())) {
+      return;
+    }
+    recordThrottleDenialAndMaybeWarn(actor, OPERATION_REVOKE);
+    log.atWarn()
+        .addKeyValue(LOG_KEY_EVENT, "RBAC_ADMINISTRATOR_REQUIRED_DENIED")
+        .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+        .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
+        .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+        .addKeyValue(LOG_KEY_ROLE_ID, role.getId())
+        .addKeyValue(LOG_KEY_OPERATION, OPERATION_REVOKE)
+        .log("Blocked the revocation of an admin-defining role by a caller who is not an administrator");
+    recordDenial(
+        actor, targetUserId, role.getId(), role.getName(), DenialReason.NOT_TENANT_ADMIN,
+        OPERATION_REVOKE, requestContext, null);
+    throw new InsufficientPermissionException(USER_ROLE_ASSIGN, DenialReason.NOT_TENANT_ADMIN);
+  }
+
+  /**
+   * Row 7 (RC-28.1, RC-50(b)): the independent check on a successful self-target assignment. One
+   * non-locking statement over the caller's own active roles, grouped by role, that shares no input
+   * with the snapshot read A4 used. When it disagrees with A4's verdict, ERROR {@code
+   * RBAC_SELF_ASSIGN_ADMIN_DISAGREEMENT} (ids only) and the counter that pages. Never consulted for
+   * authorization: the request has already been decided. A read failure propagates (fail closed).
+   */
+  private void captureIndependentAdministratorCheck(
+      RoleChangeActor actor, Role role, boolean a4SaidAdministrator) {
+    boolean independentlyAdministrator =
+        !userRoleAssignmentPort.findHeldAdminDefiningRoleIds(actor.userId(), actor.tenantId())
+            .isEmpty();
+    if (independentlyAdministrator == a4SaidAdministrator) {
+      return;
+    }
+    log.atError()
+        .addKeyValue(LOG_KEY_EVENT, "RBAC_SELF_ASSIGN_ADMIN_DISAGREEMENT")
+        .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+        .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+        .addKeyValue(LOG_KEY_ROLE_ID, role.getId())
+        .log("A self-assignment passed A4 but the independent administrator check disagrees");
+    Counter.builder(COUNTER_SELF_ASSIGN_ADMIN_DISAGREEMENT).register(meterRegistry).increment();
   }
 
   /**
@@ -1116,12 +828,17 @@ public class RoleAssignmentService {
       Role role,
       List<RolePermissionRef> heldRolePermissions,
       String operation,
-      RequestContext requestContext) {
+      RequestContext requestContext,
+      boolean throttled) {
     boolean stillHeld =
         heldRolePermissions.stream()
             .anyMatch(ref -> RbacSeededPermissionIds.USER_ROLE_ASSIGN.equals(ref.permissionId()));
     if (stillHeld) {
       return;
+    }
+    if (throttled) {
+      suppressThrottledDenial(actor, operation);
+      throw new InsufficientPermissionException(USER_ROLE_ASSIGN, DenialReason.PERMISSION_ABSENT);
     }
     recordThrottleDenialAndMaybeWarn(actor, operation);
     log.atWarn()
@@ -1139,54 +856,42 @@ public class RoleAssignmentService {
   }
 
   /**
-   * US-018 A2 (ADR-0021 D2, 03-design.md §4.3, §4.4), and on {@code revoke()} the revoke-subset
-   * union check (07-security-review.md M-1): denies unless every permission of the target role
-   * (M14) is in the union of the caller's held permission ids (M13). Ids only, from the one
-   * authorization read, never M12 or a JWT claim (MC-2).
+   * A2 (ADR-0021 D2, 03-design.md §4.3, §4.4), and on {@code revoke()} the union part of
+   * revoke-subset: denies unless every permission of the target role (M14, already read by {@link
+   * #classifyTarget}) is in the union of the caller's held permission ids (M13). Ids only, from the
+   * one authorization read, never a JWT claim.
    *
-   * <p>Fails closed: a read failure propagates (500) and never allows; an empty M13 result denies
-   * any permissioned target; an empty M14 {@code Optional} (role not in the caller's tenant, L-2)
-   * denies with {@code CROSS_TENANT_TARGET} and no role name. A target role with no permissions
-   * passes (EC7): it grants nothing.
+   * <p>Fails closed: an empty M13 result denies any permissioned target. A target role with no
+   * permissions passes (EC7): it grants nothing.
    *
-   * <p>The 403's {@code requiredPermission} is the endpoint permission, and the denial row and
-   * WARN carry only the COUNT of missing permissions, never their ids, so neither is an oracle on
-   * the role's contents.
+   * <p>The 403's {@code requiredPermission} is the endpoint permission, and the denial row and WARN
+   * carry only the COUNT of missing permissions, never their ids, so neither is an oracle on the
+   * role's contents.
    */
   private void requireGrantWithinCallerHoldings(
       RoleChangeActor actor,
       UUID targetUserId,
       Role role,
+      TargetClassification target,
       List<RolePermissionRef> heldRolePermissions,
       String operation,
-      RequestContext requestContext) {
-    Optional<Set<UUID>> targetPermissionIdsInTenant =
-        userRoleAssignmentPort.findPermissionIdsForRole(role.getId(), actor.tenantId());
-    if (targetPermissionIdsInTenant.isEmpty()) {
-      // Unreachable today (resolveRoleInTenant ran first, in this transaction, and a role's tenant
-      // is immutable), so reaching it means an invariant broke: deny, never "grants nothing".
-      log.atWarn()
-          .addKeyValue(LOG_KEY_EVENT, "RBAC_GRANT_CHECK_ROLE_NOT_IN_TENANT")
-          .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
-          .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
-          .addKeyValue(LOG_KEY_ROLE_ID, role.getId())
-          .addKeyValue(LOG_KEY_OPERATION, operation)
-          .log("Denied a role change: the role's permissions are not readable in the caller's tenant");
-      recordDenial(
-          actor, targetUserId, role.getId(), null, DenialReason.CROSS_TENANT_TARGET, operation,
-          requestContext, null);
-      throw new InsufficientPermissionException(
-          USER_ROLE_ASSIGN, DenialReason.CROSS_TENANT_TARGET);
-    }
-    Set<UUID> targetPermissionIds = targetPermissionIdsInTenant.get();
+      RequestContext requestContext,
+      boolean throttled) {
     Set<UUID> heldPermissionIds =
         heldRolePermissions.stream()
             .map(RolePermissionRef::permissionId)
             .collect(Collectors.toSet());
     int missingCount =
-        (int) targetPermissionIds.stream().filter(id -> !heldPermissionIds.contains(id)).count();
+        (int)
+            target.targetPermissionIds().stream()
+                .filter(id -> !heldPermissionIds.contains(id))
+                .count();
     if (missingCount == 0) {
       return;
+    }
+    if (throttled) {
+      suppressThrottledDenial(actor, operation);
+      throw new InsufficientPermissionException(USER_ROLE_ASSIGN, DenialReason.GRANT_EXCEEDS_CALLER);
     }
     recordThrottleDenialAndMaybeWarn(actor, operation);
     log.atWarn()
@@ -1205,53 +910,6 @@ public class RoleAssignmentService {
         USER_ROLE_ASSIGN, DenialReason.GRANT_EXCEEDS_CALLER);
   }
 
-  /**
-   * Whether {@code actor} holds an active {@code TENANT_ADMIN} assignment in their own tenant.
-   *
-   * <p>{@link UserRoleAssignmentPort#hasActiveAdminAssignment} needs the tenant's {@code
-   * TENANT_ADMIN} {@code roleId} up front, and the port exposes no "find role by (tenant, name)"
-   * lookup. Rather than adding a new port method for this minor visibility nuance, this reuses the
-   * already-existing M4 projection ({@link UserRoleAssignmentPort#findActiveAssignmentViews}) —
-   * already used above for the response itself — to inspect the caller's own active role names.
-   * This is a plain (non-locking) read, which is appropriate here: unlike AC8's live-admin check,
-   * this only decides whether to redact one response field, not whether to authorize a mutation.
-   */
-  private boolean callerHoldsActiveTenantAdmin(RoleChangeActor actor) {
-    return userRoleAssignmentPort
-        .findActiveAssignmentViews(actor.userId(), actor.tenantId())
-        .stream()
-        .anyMatch(a -> RbacRoleNames.TENANT_ADMIN.equalsIgnoreCase(a.roleName()));
-  }
-
-  /**
-   * US-017 D24/RC-17 (03-design.md §9.3): the {@code assign()} self-assignment canary's SECOND,
-   * INDEPENDENT mechanism, re-derived after FR-3 widened the gate's own caller-side question.
-   * REVISION 2 (RC-17.1): shares NO INPUT with the gate — driven off M12 (non-locking, keyed by
-   * {@code fk_user_roles_user}), never M10 (the gate's own tenant-scoped read), so an over-broad
-   * M10 cannot silence this detector. Deliberately NOT {@link #callerHoldsActiveTenantAdmin} (kept
-   * for {@link #listActive}'s unrelated, deliberately name-based D17 redaction decision) and
-   * deliberately NOT reusing the gate's own {@code AdminEquivalentRoles} result.
-   */
-  private boolean callerHoldsActiveAdminEquivalentRole(RoleChangeActor actor) {
-    List<ActiveRoleAssignment> views =
-        userRoleAssignmentPort.findActiveAssignmentViews(actor.userId(), actor.tenantId());
-    List<RolePermissionName> permsByRole =
-        userRoleAssignmentPort.findPermissionNamesForActiveAssignmentsOfUser(
-            actor.userId(), actor.tenantId());
-    return views.stream()
-        .anyMatch(
-            a ->
-                RbacAdminEquivalence.isFullyAdminEquivalent(
-                    a.roleName(), permissionNamesOf(permsByRole, a.roleId())));
-  }
-
-  private static List<String> permissionNamesOf(List<RolePermissionName> permsByRole, UUID roleId) {
-    return permsByRole.stream()
-        .filter(p -> p.roleId().equals(roleId))
-        .map(RolePermissionName::permissionName)
-        .toList();
-  }
-
   private static ActiveRoleAssignment withAssignedByRedacted(ActiveRoleAssignment assignment) {
     return new ActiveRoleAssignment(
         assignment.userId(), assignment.roleId(), assignment.roleName(), assignment.assignedAt(),
@@ -1259,35 +917,62 @@ public class RoleAssignmentService {
   }
 
   /**
-   * AC4 tenant-isolation check on the subject ({@code targetUserId}): empty ⇒ 404 {@code
-   * USER_NOT_FOUND}; a tenant other than {@code actor.tenantId()} ⇒ 403 {@code
-   * CROSS_TENANT_TARGET}.
+   * AC4 tenant-isolation check on the subject ({@code targetUserId}): empty or another tenant's
+   * user ⇒ the same 404 {@code USER_NOT_FOUND} (US-018 B1, Decision 20), so the response is no
+   * existence oracle.
    */
-  private void verifySameTenant(UUID targetUserId, RoleChangeActor actor, String requiredPermission) {
+  private void verifySameTenant(
+      UUID targetUserId, RoleChangeActor actor, String requiredPermission, String operation) {
     UUID targetTenantId =
         userDirectoryPort
             .findTenantId(targetUserId)
-            .orElseThrow(
-                () -> new ResourceNotFoundException("USER_NOT_FOUND", "No such user"));
+            .orElseThrow(() -> new ResourceNotFoundException("USER_NOT_FOUND", MESSAGE_NO_SUCH_USER));
     if (!targetTenantId.equals(actor.tenantId())) {
-      throw new InsufficientPermissionException(requiredPermission, DenialReason.CROSS_TENANT_TARGET);
+      throw crossTenantNotFound(actor, requiredPermission, TARGET_KIND_USER, operation);
     }
   }
 
   /**
-   * AC4 tenant-isolation check on the role: empty ⇒ 404 {@code ROLE_NOT_FOUND}; a tenant other
-   * than {@code actor.tenantId()} ⇒ 403 {@code CROSS_TENANT_TARGET}.
+   * AC4 tenant-isolation check on the role: empty or another tenant's role ⇒ the same 404 {@code
+   * ROLE_NOT_FOUND} (US-018 B1).
    */
-  private Role resolveRoleInTenant(UUID roleId, RoleChangeActor actor, String requiredPermission) {
+  private Role resolveRoleInTenant(
+      UUID roleId, RoleChangeActor actor, String requiredPermission, String operation) {
     Role role =
         userRoleAssignmentPort
             .findRole(roleId)
-            .orElseThrow(
-                () -> new ResourceNotFoundException("ROLE_NOT_FOUND", "No such role"));
+            .orElseThrow(() -> new ResourceNotFoundException("ROLE_NOT_FOUND", MESSAGE_NO_SUCH_ROLE));
     if (!role.getTenantId().equals(actor.tenantId())) {
-      throw new InsufficientPermissionException(requiredPermission, DenialReason.CROSS_TENANT_TARGET);
+      throw crossTenantNotFound(actor, requiredPermission, TARGET_KIND_ROLE, operation);
     }
     return role;
+  }
+
+  /**
+   * The cross-tenant 404 (B1, FR-B1.a and FR-B1.b): the exception is built from the same code and
+   * message as a genuine not-found, so the body is byte-identical. The evidence is the WARN {@code
+   * RBAC_CROSS_TENANT_TARGET} and the same {@code nexus.rbac.permission_denied} series the 403
+   * handler increments (the 404 handler does not). No audit row and no {@code AuthEventRetryBuffer}
+   * entry: a synchronous write on this path only would be a timing oracle (R1-5, RES-34). The WARN
+   * carries no foreign id.
+   */
+  private ResourceNotFoundException crossTenantNotFound(
+      RoleChangeActor actor, String requiredPermission, String targetKind, String operation) {
+    log.atWarn()
+        .addKeyValue(LOG_KEY_EVENT, "RBAC_CROSS_TENANT_TARGET")
+        .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+        .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+        .addKeyValue("targetKind", targetKind)
+        .addKeyValue(LOG_KEY_OPERATION, operation)
+        .log("Refused a role change: the target belongs to another tenant");
+    Counter.builder("nexus.rbac.permission_denied")
+        .tag("permission", requiredPermission)
+        .tag("reason", DenialReason.CROSS_TENANT_TARGET.name())
+        .register(meterRegistry)
+        .increment();
+    return TARGET_KIND_USER.equals(targetKind)
+        ? new ResourceNotFoundException("USER_NOT_FOUND", MESSAGE_NO_SUCH_USER)
+        : new ResourceNotFoundException("ROLE_NOT_FOUND", MESSAGE_NO_SUCH_ROLE);
   }
 
   private ActiveAssignmentRef findAssignmentRefOrThrow(UUID targetUserId, UUID roleId, UUID tenantId) {

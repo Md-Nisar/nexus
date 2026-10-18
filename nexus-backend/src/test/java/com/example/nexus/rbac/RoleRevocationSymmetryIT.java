@@ -13,6 +13,7 @@ import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
 import com.example.nexus.rbac.application.RoleAssignmentService;
+import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RolePermission;
@@ -24,6 +25,7 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.nio.ByteBuffer;
 import java.sql.Timestamp;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -43,16 +45,18 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * the pair (a denial-only proof could pass for the wrong reason, e.g. a missing bean denying
  * everyone, mirroring {@code RoleAssignmentSecurityIT}'s T-E11 pairing discipline).
  *
- * <p><b>Canary (FR-6/D7/D15).</b> {@link RoleAssignmentService#assign}'s {@code
- * nexus.rbac.self_role_assignment} counter carries {@code privileged}/{@code callerIsAdmin} tags.
- * An active admin self-assigning a dangerous custom role must increment {@code
- * privileged="true",callerIsAdmin="true"} and must NEVER produce {@code
- * privileged="true",callerIsAdmin="false"} — asserted against a REAL successful privileged
- * self-assignment by a real admin, not an empty registry, which is what makes the assertion a
- * genuine bypass canary rather than a tautology: if a future change ever let a non-admin succeed at
- * a privileged self-assignment, this exact tag combination would start appearing and this
- * assertion would catch it. A permission-less self-assignment separately increments {@code
- * privileged="false",callerIsAdmin="n_a"}.
+ * <p><b>US-018 M3 (T-016, T-018) — revoke-subset and the replaced canary.</b> The four revoke
+ * tests below are the T-E17 pairing and are kept as outcome assertions (the 403 and the success
+ * stay); two fixtures change because the control that decides them changed:
+ * {@code TENANT_ADMIN} now carries the whole catalogue as the real one does, since a role is an
+ * administrator role by its permissions and not its name, and a caller with {@code user:write} only
+ * revoking a {@code role:write}-only role is now denied by the live holdings check and the subset
+ * rule instead of the name-or-ANY gate. New cases cover revoke-subset itself (a union-holder, a
+ * caller missing one permission, a caller without {@code user:read} revoking a role that carries
+ * it). The two canary tests of {@code nexus.rbac.self_role_assignment} are replaced by tests of
+ * the meters that now exist: {@code nexus.rbac.admin_role_assigned{selfTarget}} (ticket, never
+ * page) and the independent check's {@code nexus.rbac.self_assign_admin_disagreement}, which must
+ * stay silent on a real successful self-assignment by a real administrator.
  *
  * <p>Service-layer test (mirrors {@code LastAdminLockoutIT}/{@code RoleAssignmentEscalationIT}'s
  * house style) — {@link RoleAssignmentService} autowired directly, no HTTP layer needed for either
@@ -69,6 +73,8 @@ class RoleRevocationSymmetryIT {
       UUID.fromString("019f6839-1803-7000-8000-000000000004");
   private static final UUID ROLE_WRITE_PERMISSION_ID =
       UUID.fromString("019f6839-1805-7000-8000-000000000006");
+  private static final UUID USER_READ_PERMISSION_ID =
+      UUID.fromString("019f6839-1802-7000-8000-000000000003");
 
   @Autowired private RoleAssignmentService roleAssignmentService;
   @Autowired private JpaUserRepository userRepository;
@@ -83,8 +89,15 @@ class RoleRevocationSymmetryIT {
   // Revoke symmetry (T-E17 closure) — denial half
   // ═══════════════════════════════════════════════════════════════════
 
+  /**
+   * T-E17, re-targeted. The role carries only {@code role:write}, so it is NOT admin-defining and
+   * the name-or-ANY gate that used to deny this caller no longer exists. The caller holds {@code
+   * user:write} only: the live holdings check (L-1) finds no {@code user:role:assign}, so the
+   * revoke is denied with 403 {@code PERMISSION_ABSENT} and the row stays active. The 403 outcome
+   * is unchanged; the reason is the control that now enforces it.
+   */
   @Test
-  void should_throwNotTenantAdmin_when_nonAdminAttemptsToRevokeDangerousCustomRole() {
+  void should_throwPermissionAbsent_when_callerWithoutUserRoleAssignAttemptsToRevokeRoleWriteRole() {
     UUID tenantId = uuidGenerator.newId();
     User nonAdminCaller =
         seedUserWithRole(tenantId, "revsym-deny-dangerous-caller", "USER_WRITER",
@@ -104,13 +117,80 @@ class RoleRevocationSymmetryIT {
         .satisfies(
             e ->
                 assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
+                    .isEqualTo(DenialReason.PERMISSION_ABSENT));
 
     assertThat(isActive(assignment.getId()))
         .as("a denied revoke must never touch the assignment row")
         .isTrue();
   }
 
+  /**
+   * Revoke-subset, union part: the caller holds {@code user:role:assign} but not {@code
+   * role:write}, which the role carries. 403 {@code GRANT_EXCEEDS_CALLER}, the row stays active.
+   */
+  @Test
+  void should_throwGrantExceedsCaller_when_callerLacksAPermissionOfTheRoleBeingRevoked() {
+    UUID tenantId = uuidGenerator.newId();
+    User delegate =
+        seedUserWithRole(tenantId, "revsym-subset-caller", "ASSIGNER",
+            RbacSeededPermissionIds.USER_ROLE_ASSIGN);
+    Role dangerousRole = seedRole(tenantId, "CUSTOM-DANGEROUS", "revsym-subset");
+    grantPermission(dangerousRole.getId(), ROLE_WRITE_PERMISSION_ID);
+    User target = seedUser(tenantId, "revsym-subset-target");
+    UserRole assignment =
+        seedActiveAssignment(tenantId, dangerousRole.getId(), target.getId(), target.getId());
+    RoleChangeActor actor = new RoleChangeActor(delegate.getId(), tenantId);
+
+    assertThatThrownBy(
+            () ->
+                roleAssignmentService.revoke(
+                    actor, target.getId(), dangerousRole.getId(), requestContext()))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .satisfies(
+            e ->
+                assertThat(((InsufficientPermissionException) e).getReason())
+                    .isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    assertThat(isActive(assignment.getId())).isTrue();
+  }
+
+  /**
+   * Behaviour change recorded in T-016: a caller without {@code user:read} can no longer revoke
+   * {@code MEMBER}, because MEMBER carries it and revoke-subset requires the caller to hold every
+   * permission of the role. The caller below holds {@code user:role:assign} only.
+   */
+  @Test
+  void should_throwGrantExceedsCaller_when_callerWithoutUserReadRevokesMember() {
+    UUID tenantId = uuidGenerator.newId();
+    User delegate =
+        seedUserWithRole(tenantId, "revsym-member-caller", "ASSIGNER",
+            RbacSeededPermissionIds.USER_ROLE_ASSIGN);
+    Role memberLikeRole = seedRole(tenantId, "MEMBER-LIKE", "revsym-member");
+    grantPermission(memberLikeRole.getId(), USER_READ_PERMISSION_ID);
+    User target = seedUser(tenantId, "revsym-member-target");
+    UserRole assignment =
+        seedActiveAssignment(tenantId, memberLikeRole.getId(), target.getId(), target.getId());
+    RoleChangeActor actor = new RoleChangeActor(delegate.getId(), tenantId);
+
+    assertThatThrownBy(
+            () ->
+                roleAssignmentService.revoke(
+                    actor, target.getId(), memberLikeRole.getId(), requestContext()))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .satisfies(
+            e ->
+                assertThat(((InsufficientPermissionException) e).getReason())
+                    .isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    assertThat(isActive(assignment.getId())).isTrue();
+  }
+
+  /**
+   * T-E17, kept: a non-administrator cannot strip a {@code TENANT_ADMIN} assignment. The fixture
+   * change is that {@code TENANT_ADMIN} carries the whole catalogue, as the real one does: it is an
+   * administrator role by its permissions. The assertion (403 {@code NOT_TENANT_ADMIN}) is
+   * unchanged.
+   */
   @Test
   void should_throwNotTenantAdmin_when_nonAdminAttemptsToRevokeTenantAdminAssignment() {
     UUID tenantId = uuidGenerator.newId();
@@ -118,6 +198,7 @@ class RoleRevocationSymmetryIT {
         seedUserWithRole(tenantId, "revsym-deny-admin-caller", "USER_WRITER",
             USER_WRITE_PERMISSION_ID);
     Role adminRole = seedRole(tenantId, "TENANT_ADMIN", "revsym-deny-admin");
+    grantWholeCatalogue(adminRole.getId());
     User target = seedUser(tenantId, "revsym-deny-admin-target");
     UserRole assignment =
         seedActiveAssignment(tenantId, adminRole.getId(), target.getId(), target.getId());
@@ -136,6 +217,41 @@ class RoleRevocationSymmetryIT {
     assertThat(isActive(assignment.getId()))
         .as("a denied revoke must never touch the assignment row")
         .isTrue();
+  }
+
+  /**
+   * RC-26.2 (T-E34): a UNION-holder -- someone who holds every catalogue permission only across
+   * two partial roles -- passes the subset comparison on an administrator role but is not an
+   * administrator, so they cannot strip one. 403 {@code NOT_TENANT_ADMIN}; the row stays active.
+   */
+  @Test
+  void should_throwNotTenantAdmin_when_unionHolderAttemptsToRevokeTenantAdminAssignment() {
+    UUID tenantId = uuidGenerator.newId();
+    Role adminRole = seedRole(tenantId, "TENANT_ADMIN", "revsym-union");
+    grantWholeCatalogue(adminRole.getId());
+    User unionHolder = seedUser(tenantId, "revsym-union-caller");
+    Role halfA = seedRole(tenantId, "HALF-A", "revsym-union");
+    Role halfB = seedRole(tenantId, "HALF-B", "revsym-union");
+    grantCatalogueHalf(halfA.getId(), 0);
+    grantCatalogueHalf(halfB.getId(), 1);
+    seedActiveAssignment(tenantId, halfA.getId(), unionHolder.getId(), unionHolder.getId());
+    seedActiveAssignment(tenantId, halfB.getId(), unionHolder.getId(), unionHolder.getId());
+    User target = seedUser(tenantId, "revsym-union-target");
+    UserRole assignment =
+        seedActiveAssignment(tenantId, adminRole.getId(), target.getId(), target.getId());
+    RoleChangeActor actor = new RoleChangeActor(unionHolder.getId(), tenantId);
+
+    assertThatThrownBy(
+            () ->
+                roleAssignmentService.revoke(
+                    actor, target.getId(), adminRole.getId(), requestContext()))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .satisfies(
+            e ->
+                assertThat(((InsufficientPermissionException) e).getReason())
+                    .isEqualTo(DenialReason.NOT_TENANT_ADMIN));
+
+    assertThat(isActive(assignment.getId())).isTrue();
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -197,59 +313,52 @@ class RoleRevocationSymmetryIT {
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  // Canary (FR-6/D7/D15)
+  // Row 9 and row 7: admin_role_assigned{selfTarget}, and the independent check stays silent
   // ═══════════════════════════════════════════════════════════════════
 
   @Test
-  void should_incrementPrivilegedTrueCallerIsAdminTrue_and_makeCallerIsAdminFalseUnreachable_when_activeAdminSelfAssignsDangerousCustomRole() {
+  void should_countAdminRoleAssignedAndStaySilentOnDisagreement_when_administratorSelfAssignsAnAdminDefiningRole() {
     UUID tenantId = uuidGenerator.newId();
     Role adminRole = seedRole(tenantId, "TENANT_ADMIN", "canary-admin-self");
-    // US-018 A2 needs the admin to hold every permission of the role it grants, and A4 needs an
-    // administrator to self-assign: the admin role carries the whole catalogue (role:write too).
     grantWholeCatalogue(adminRole.getId());
     User adminUser = seedUser(tenantId, "canary-admin-self");
     seedActiveAssignment(tenantId, adminRole.getId(), adminUser.getId(), adminUser.getId());
-    Role dangerousRole = seedRole(tenantId, "CUSTOM-DANGEROUS", "canary-admin-self");
-    grantPermission(dangerousRole.getId(), ROLE_WRITE_PERMISSION_ID);
+    Role secondAdminRole = seedRole(tenantId, "ADMIN-DEFINING-2", "canary-admin-self");
+    grantWholeCatalogue(secondAdminRole.getId());
     RoleChangeActor actor = new RoleChangeActor(adminUser.getId(), tenantId);
-    double before = selfRoleAssignmentCount(tenantId, "true", "true");
+    double assignedBefore = counterValue("nexus.rbac.admin_role_assigned", "selfTarget", "true");
+    double disagreementBefore = counterValue("nexus.rbac.self_assign_admin_disagreement", null, null);
 
-    roleAssignmentService.assign(actor, adminUser.getId(), dangerousRole.getId(), requestContext());
+    roleAssignmentService.assign(actor, adminUser.getId(), secondAdminRole.getId(), requestContext());
 
-    assertThat(selfRoleAssignmentCount(tenantId, "true", "true"))
-        .as("nexus.rbac.self_role_assignment{privileged=true,callerIsAdmin=true} must increment"
-            + " when an active admin self-assigns a dangerous custom role")
-        .isEqualTo(before + 1.0);
-    // The canary: driven against this SAME real, successful, privileged self-assignment by a
-    // real admin -- not an empty registry -- this tag combination must never appear. If a future
-    // change ever let a non-admin succeed at a privileged self-assignment, this combination would
-    // start appearing and this assertion would catch it.
-    assertThat(selfRoleAssignmentCounter(tenantId, "true", "false"))
-        .as("nexus.rbac.self_role_assignment{privileged=true,callerIsAdmin=false} must be"
-            + " unreachable on the success path (D7/D15 bypass canary)")
-        .isNull();
+    assertThat(counterValue("nexus.rbac.admin_role_assigned", "selfTarget", "true"))
+        .as("nexus.rbac.admin_role_assigned{selfTarget=true} must increment when an administrator"
+            + " self-assigns an admin-defining role")
+        .isEqualTo(assignedBefore + 1.0);
+    assertThat(counterValue("nexus.rbac.self_assign_admin_disagreement", null, null))
+        .as("the independent per-role check must AGREE with A4 on a real successful"
+            + " self-assignment by a real administrator (RC-28.1)")
+        .isEqualTo(disagreementBefore);
   }
 
   @Test
-  void should_incrementPrivilegedFalseCallerIsAdminNA_when_administratorSelfAssignsPermissionlessRole() {
+  void should_notCountAdminRoleAssigned_when_administratorSelfAssignsAPermissionlessRole() {
     UUID tenantId = uuidGenerator.newId();
     User adminUser = seedUser(tenantId, "canary-admin-self-benign");
-    // US-018 A4: only an administrator may self-assign. The admin-defining role is a custom one
-    // (not named TENANT_ADMIN), so the legacy privileged/callerIsAdmin tags below are unaffected.
+    // A4: only an administrator may self-assign. The admin-defining role is a custom one, named
+    // nothing like TENANT_ADMIN: names do not matter.
     Role adminDefiningRole = seedRole(tenantId, "ADMIN-DEFINING", "canary-admin-self-benign");
     grantWholeCatalogue(adminDefiningRole.getId());
     seedActiveAssignment(tenantId, adminDefiningRole.getId(), adminUser.getId(), adminUser.getId());
     Role benignRole = seedRole(tenantId, "NO-PERMS", "canary-admin-self-benign");
     RoleChangeActor actor = new RoleChangeActor(adminUser.getId(), tenantId);
-    double before = selfRoleAssignmentCount(tenantId, "false", "n_a");
+    double assignedBefore = counterValue("nexus.rbac.admin_role_assigned", "selfTarget", "true");
 
-    roleAssignmentService.assign(
-        actor, adminUser.getId(), benignRole.getId(), requestContext());
+    roleAssignmentService.assign(actor, adminUser.getId(), benignRole.getId(), requestContext());
 
-    assertThat(selfRoleAssignmentCount(tenantId, "false", "n_a"))
-        .as("nexus.rbac.self_role_assignment{privileged=false,callerIsAdmin=n_a} must increment"
-            + " for a permission-less self-assignment")
-        .isEqualTo(before + 1.0);
+    assertThat(counterValue("nexus.rbac.admin_role_assigned", "selfTarget", "true"))
+        .as("a permission-less role is not admin-defining, so nothing is counted")
+        .isEqualTo(assignedBefore);
   }
 
   // ── Fixtures / helpers ───────────────────────────────────────────────────────────────────
@@ -268,6 +377,26 @@ class RoleRevocationSymmetryIT {
 
   private void grantPermission(UUID roleId, UUID permissionId) {
     rolePermissionRepository.save(new RolePermission(roleId, permissionId));
+  }
+
+  /**
+   * Attaches half of the catalogue to {@code roleId}: the permissions whose position in id order
+   * has the given parity. Two halves of opposite parity together cover the catalogue, but neither
+   * role alone is admin-defining.
+   */
+  private void grantCatalogueHalf(UUID roleId, int parity) {
+    List<UUID> ids =
+        jdbc.query(
+            "SELECT id FROM permissions ORDER BY id",
+            (rs, rowNum) -> {
+              ByteBuffer buf = ByteBuffer.wrap(rs.getBytes(1));
+              return new UUID(buf.getLong(), buf.getLong());
+            });
+    for (int i = 0; i < ids.size(); i++) {
+      if (i % 2 == parity) {
+        grantPermission(roleId, ids.get(i));
+      }
+    }
   }
 
   /** Makes {@code roleId} admin-defining (US-018 §2.1): attaches every catalogue permission. */
@@ -302,22 +431,18 @@ class RoleRevocationSymmetryIT {
     return revokedAt == null;
   }
 
-  // The shared *IT MeterRegistry accumulates one counter instance per (tenantId, privileged,
-  // callerIsAdmin) tuple ever seen in this run -- scope every lookup to this test's own tenantId
-  // (mirrors RoleAssignmentEscalationIT's own rationale for the same counter).
-
-  private double selfRoleAssignmentCount(UUID tenantId, String privileged, String callerIsAdmin) {
-    Counter counter = selfRoleAssignmentCounter(tenantId, privileged, callerIsAdmin);
+  /**
+   * The shared *IT MeterRegistry accumulates counters across the whole run and these meters carry
+   * no tenant tag (B3), so every assertion is a delta against a baseline read just before the
+   * action. {@code tagKey} may be {@code null} for an untagged counter. A missing counter is 0.
+   */
+  private double counterValue(String name, String tagKey, String tagValue) {
+    var search = meterRegistry.find(name);
+    if (tagKey != null) {
+      search = search.tag(tagKey, tagValue);
+    }
+    Counter counter = search.counter();
     return counter != null ? counter.count() : 0.0;
-  }
-
-  private Counter selfRoleAssignmentCounter(UUID tenantId, String privileged, String callerIsAdmin) {
-    return meterRegistry
-        .find("nexus.rbac.self_role_assignment")
-        .tag("tenantId", tenantId.toString())
-        .tag("privileged", privileged)
-        .tag("callerIsAdmin", callerIsAdmin)
-        .counter();
   }
 
   private static byte[] toBytes(UUID uuid) {

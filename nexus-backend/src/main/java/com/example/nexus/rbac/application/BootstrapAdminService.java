@@ -1,6 +1,5 @@
 package com.example.nexus.rbac.application;
 
-import com.example.nexus.rbac.application.RoleAssignmentService.AdminEquivalentRoles;
 import com.example.nexus.rbac.application.port.out.BreakGlassAlert;
 import com.example.nexus.rbac.application.port.out.BreakGlassAlertPort;
 import com.example.nexus.rbac.application.port.out.BreakGlassAuditEvent;
@@ -41,23 +40,23 @@ import org.springframework.transaction.support.TransactionTemplate;
  * transaction callback has no other side effect: it returns its decision, and every page and
  * every FAILURE row is written only after the transaction has ended (T-008 review Low 1).
  *
- * <p><b>Locking.</b> The zero-admin check runs under the SAME single-statement ascending M11 set
- * lock that {@code assign()}/{@code revoke()} take, built from the same M10 + M8 resolution
- * ({@link RoleAssignmentService#resolveAdminEquivalentRolesFor(UserRoleAssignmentPort, UUID)}
- * and {@link RoleAssignmentService#buildAscendingAdminEquivalentLockSet}), and decides "zero
- * administrators" with the revoke guard's own predicate ({@link
- * RoleAssignmentService#wouldLeaveTenantWithoutCallerQualifyingHolder}). After the set lock, one
- * statement takes shared ({@code FOR SHARE}) locks on the {@code users} rows of the target and
- * of every caller-qualifying holder, in ascending id order ({@link
+ * <p><b>Locking.</b> The zero-admin check runs under the SAME single-statement ascending set lock
+ * that {@code assign()}/{@code revoke()} take, built from the same M10' + catalogue resolution
+ * ({@link RoleAssignmentService#resolveAdminDefiningRoleIds} and {@link
+ * RoleAssignmentService#buildAscendingLockSet}), and decides "zero administrators" with the revoke
+ * guard's own predicate ({@link RoleAssignmentService#wouldLeaveTenantWithoutAdministrator}).
+ * After the set lock, one statement takes shared ({@code FOR SHARE}) locks on the {@code users}
+ * rows of the target and of every administrator holder, in ascending id order ({@link
  * UserDirectoryPort#lockUserStatuses}), so the statuses the decision uses are current, not a
  * snapshot, and cannot change before the commit. That is the only lock added to ADR-0018's set
  * lock, and only on this path: the insert's foreign-key check already takes a shared lock on the
  * target's {@code users} row after the set lock, in the same order. Nothing is retried (ADR-0018
  * D6).
  *
- * <p><b>Who counts as an administrator (O-7, owner decision 2026-10-15).</b> For break-glass only,
- * a caller-qualifying holder whose user is DISABLED is not an administrator, so a tenant whose
- * only administrators are DISABLED is recoverable. Every other status (ACTIVE, PENDING, and a
+ * <p><b>Who counts as an administrator (A-6, O-7).</b> A holder of an admin-defining role (the one
+ * definition, ADR-0021 D3: a role carrying every permission of the catalogue), whatever its name.
+ * For break-glass only, such a holder whose user is DISABLED is not an administrator, so a tenant
+ * whose only administrators are DISABLED is recoverable (owner decision 2026-10-15). Every other status (ACTIVE, PENDING, and a
  * temporarily LOCKED lockout), and a holder whose status is not returned, still counts. The
  * last-admin lockout, the assign and revoke guards and the zero-admin health indicator are
  * unchanged.
@@ -114,8 +113,8 @@ public class BootstrapAdminService {
   /**
    * Grants the target user its tenant's system {@code TENANT_ADMIN} role iff the change reference
    * was never used on a successful grant, the target is ACTIVE under the lock, and the tenant has
-   * zero administrators (the ADR-0018 caller-qualifying population, A-6, minus holders whose user
-   * is DISABLED, O-7) under the set lock. {@code assigned_by} is the target
+   * zero administrators (holders of admin-defining roles, A-6, minus holders whose user is DISABLED,
+   * O-7) under the set lock. {@code assigned_by} is the target
    * itself (Decision 10). Refusals, including a failed grant transaction, are returned, not
    * thrown. A failure of the replay or target lookup propagates (fail closed, no row, no page).
    *
@@ -200,10 +199,11 @@ public class BootstrapAdminService {
       return new BreakGlassOutcome.Refused(BreakGlassRefusalReason.NO_SYSTEM_ADMIN_ROLE);
     }
 
-    AdminEquivalentRoles roles =
-        RoleAssignmentService.resolveAdminEquivalentRolesFor(userRoleAssignmentPort, tenantId);
+    Set<UUID> adminDefiningRoleIds =
+        RoleAssignmentService.resolveAdminDefiningRoleIds(
+            userRoleAssignmentPort, tenantId, userRoleAssignmentPort.findCatalogueIds());
     List<UUID> lockSet =
-        RoleAssignmentService.buildAscendingAdminEquivalentLockSet(roles, tenantAdminRoleId.get());
+        RoleAssignmentService.buildAscendingLockSet(adminDefiningRoleIds, tenantAdminRoleId.get());
     List<ActiveAssignmentHolder> lockedHolders =
         userRoleAssignmentPort.lockActiveAssignmentHolders(tenantId, lockSet);
 
@@ -212,7 +212,7 @@ public class BootstrapAdminService {
     Set<UUID> statusUserIds = new HashSet<>();
     statusUserIds.add(targetUserId);
     lockedHolders.stream()
-        .filter(holder -> roles.callerQualifyingIds().contains(holder.roleId()))
+        .filter(holder -> adminDefiningRoleIds.contains(holder.roleId()))
         .forEach(holder -> statusUserIds.add(holder.userId()));
     Map<UUID, DirectoryUserStatus> statuses =
         userDirectoryPort.lockUserStatuses(tenantId, statusUserIds);
@@ -226,8 +226,8 @@ public class BootstrapAdminService {
         lockedHolders.stream()
             .filter(holder -> statuses.get(holder.userId()) != DirectoryUserStatus.DISABLED)
             .toList();
-    if (!RoleAssignmentService.wouldLeaveTenantWithoutCallerQualifyingHolder(
-        administratorCandidates, null, roles.callerQualifyingIds())) {
+    if (!RoleAssignmentService.wouldLeaveTenantWithoutAdministrator(
+        administratorCandidates, null, adminDefiningRoleIds)) {
       return new BreakGlassOutcome.Refused(BreakGlassRefusalReason.TENANT_HAS_ADMIN);
     }
 

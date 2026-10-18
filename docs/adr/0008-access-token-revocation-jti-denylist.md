@@ -81,3 +81,9 @@ Rationale:
 - The frontend mitigates the *client-visible* window fully: `AuthStore.clearSession()` discards the
   in-memory access token on logout, so the SPA stops sending it immediately. The residual window
   only matters to an attacker who already exfiltrated the raw access token before logout.
+
+## Amendment notes
+
+Dated notes only; the decisions above are not rewritten (ADR 0001).
+
+- **2026-10-18 (US-018 M11, D2):** the trigger note above ("`jti` denylist ... is now implemented as part of that ADR's rollout") is **incorrect**. No denylist code exists in `nexus-backend/src/main` (the `denylist` matches there belong to the password policy), and the authentication filter consults nothing but `JwtPort.verify`. Logout revocation of access tokens is still TTL-only (Option A), with a residual window of up to the access-token lifetime. The first per-request Redis check on the authenticated path is the permission-epoch check of ADR-0022 (US-018 A9). Recorded in `docs/features/US-018/03-design.md` §2.4. The Status line above is unchanged.

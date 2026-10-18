@@ -55,11 +55,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
 @Tag("IT")
 class RoleManagementAuditIT {
 
-  // role:read for the plain grant/revoke success-path scenarios (12/13) -- role:write is one of
-  // AC11's 3 dangerous permissions and requires an active TENANT_ADMIN caller, which these tests
-  // don't set up. DANGEROUS_PERMISSION_ID (role:write) is used deliberately, and only, by the
-  // AC11-denial negative test below. US-018 A3: the attaching caller must hold the permission, so
-  // the success paths use seedActorHolding.
+  // role:read for the plain grant/revoke success-path scenarios (12/13). DANGEROUS_PERMISSION_ID
+  // (role:write) is used by the denial negative test below, where the caller does not hold it.
+  // US-018 A3: the attaching caller must hold the permission, so the success paths use
+  // seedActorHolding.
   private static final UUID SAFE_PERMISSION_ID =
       UUID.fromString("019f6839-1804-7000-8000-000000000005");
   private static final UUID DANGEROUS_PERMISSION_ID =
@@ -184,10 +183,9 @@ class RoleManagementAuditIT {
   }
 
   @Test
-  void should_writeNoRolePermissionGrantedRow_when_attachFailsWithNotTenantAdmin() {
+  void should_writeNoRolePermissionGrantedRow_when_attachFailsWithGrantExceedsCaller() {
     UUID tenantId = uuidGenerator.newId();
-    // Caller has role:write (implicit at the service layer -- no @RequiresPermission gate here)
-    // but no active TENANT_ADMIN assignment.
+    // US-018 A3: the caller does not hold the permission being attached.
     RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
     Role customRole = seedRole("DENIED-ADMIN-GATE", tenantId);
 
@@ -198,7 +196,7 @@ class RoleManagementAuditIT {
         .isInstanceOf(InsufficientPermissionException.class);
 
     assertThat(countAuditRows(tenantId, "ROLE_PERMISSION_GRANTED"))
-        .as("a 403 NOT_TENANT_ADMIN denial must never write a ROLE_PERMISSION_GRANTED row")
+        .as("a 403 GRANT_EXCEEDS_CALLER denial must never write a ROLE_PERMISSION_GRANTED row")
         .isZero();
   }
 
@@ -276,6 +274,92 @@ class RoleManagementAuditIT {
               + " role_permissions delete too -- the attachment must still be present")
           .isEqualTo(1);
       assertThat(countAuditRows(tenantId, "ROLE_PERMISSION_REVOKED")).isZero();
+    } finally {
+      dropAuditBlockTrigger();
+    }
+  }
+
+  // ── US-018 C1 (T-027): ROLE_UPDATED and ROLE_DELETED ─────────────────────────────────────
+
+  /** The ROLE_UPDATED row names the changed fields and the old and new name, never the description. */
+  @Test
+  void should_writeRoleUpdatedWithFieldNamesAndNames_butNeverTheDescription_when_roleIsPatched() {
+    UUID tenantId = uuidGenerator.newId();
+    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
+    Role role = seedRole("UPD", tenantId);
+    String newName = "RMA-RENAMED-" + UUID.randomUUID();
+    String secretDescription = "SECRET-DESCRIPTION-" + UUID.randomUUID();
+
+    roleManagementService.updateRole(
+        actor, role.getId(), newName, secretDescription, requestContext());
+
+    Map<String, Object> row =
+        jdbc.queryForMap(
+            "SELECT JSON_VALID(metadata) AS valid, CAST(metadata AS CHAR) AS metadata, "
+                + "JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.oldName')) AS old_name, "
+                + "JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.newName')) AS new_name, "
+                + "JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.updatedBy')) AS updated_by, "
+                + "JSON_EXTRACT(metadata, '$.changedFields') AS changed_fields "
+                + "FROM auth_events WHERE tenant_id = ? AND event_type = 'ROLE_UPDATED'",
+            toBytes(tenantId));
+    assertThat(((Number) row.get("valid")).intValue()).isEqualTo(1);
+    assertThat(row.get("old_name")).isEqualTo(role.getName());
+    assertThat(row.get("new_name")).isEqualTo(newName);
+    assertThat(row.get("updated_by")).isEqualTo(actor.userId().toString());
+    assertThat(String.valueOf(row.get("changed_fields"))).contains("name").contains("description");
+    assertThat(String.valueOf(row.get("metadata")))
+        .as("the description text is never audited (T-T9/RC-3)")
+        .doesNotContain(secretDescription);
+  }
+
+  @Test
+  void should_rollBackTheRename_when_roleUpdatedAuditInsertIsBlocked() {
+    UUID tenantId = uuidGenerator.newId();
+    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
+    Role role = seedRole("TS5-UPD", tenantId);
+    String newName = "RMA-NOT-APPLIED-" + UUID.randomUUID();
+
+    installAuditBlockTrigger("ROLE_UPDATED");
+    try {
+      assertThatThrownBy(
+              () ->
+                  roleManagementService.updateRole(
+                      actor, role.getId(), newName, null, requestContext()))
+          .as("a blocked Group A (atomic) audit write must propagate -- never be swallowed")
+          .isInstanceOf(RuntimeException.class);
+
+      assertThat(countRolesNamed(tenantId, newName))
+          .as("the blocked ROLE_UPDATED audit insert must roll the rename back")
+          .isZero();
+      assertThat(countRolesNamed(tenantId, role.getName())).isEqualTo(1);
+      assertThat(countAuditRows(tenantId, "ROLE_UPDATED")).isZero();
+    } finally {
+      dropAuditBlockTrigger();
+    }
+  }
+
+  @Test
+  void should_writeRoleDeletedRow_andRollBackTheDelete_whenItsAuditInsertIsBlocked() {
+    UUID tenantId = uuidGenerator.newId();
+    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
+    Role kept = seedRole("TS5-DEL-BLOCKED", tenantId);
+    Role deleted = seedRole("DEL", tenantId);
+
+    roleManagementService.softDeleteRole(actor, deleted.getId(), requestContext());
+    assertThat(countAuditRows(tenantId, "ROLE_DELETED")).isEqualTo(1);
+
+    installAuditBlockTrigger("ROLE_DELETED");
+    try {
+      assertThatThrownBy(
+              () -> roleManagementService.softDeleteRole(actor, kept.getId(), requestContext()))
+          .isInstanceOf(RuntimeException.class);
+      assertThat(
+              jdbc.queryForObject(
+                  "SELECT COUNT(*) FROM roles WHERE id = ? AND deleted_at IS NULL",
+                  Integer.class,
+                  toBytes(kept.getId())))
+          .as("the blocked ROLE_DELETED audit insert must roll the soft delete back")
+          .isEqualTo(1);
     } finally {
       dropAuditBlockTrigger();
     }

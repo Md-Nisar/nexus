@@ -1,15 +1,25 @@
 import { HttpErrorResponse, HttpInterceptorFn } from '@angular/common/http';
 import { inject } from '@angular/core';
+import { Router } from '@angular/router';
 import { catchError, throwError } from 'rxjs';
 import { AppError, isAppError } from '../../shared/types/app-error';
 import { LoggerService } from '../logging/logger.service';
 import { CORRELATION_HEADER } from './correlation-id.interceptor';
+import { SKIP_ACCESS_DENIED_REDIRECT } from './skip-access-denied-redirect';
 
 /**
  * HTTP interceptor that normalizes every HTTP failure into a standardized AppError.
+ *
+ * A 403 with code `RBAC_001` (the caller lacks a permission the backend checked) also sends the
+ * user to `/access-denied`, unless the request opted out with `SKIP_ACCESS_DENIED_REDIRECT`
+ * (US-018 C6). The navigation carries no query parameters: nothing derived from the server
+ * response may reach the URL, which keeps this out of the open-redirect class. The `AppError` is
+ * still rethrown, so components that handle 403 inline keep working. The filter-level
+ * `ACCESS_DENIED`, 401 and 404 never redirect.
  */
 export const apiErrorInterceptor: HttpInterceptorFn = (req, next) => {
   const logger = inject(LoggerService);
+  const router = inject(Router);
 
   return next(req).pipe(
     catchError((error: unknown) => {
@@ -50,6 +60,14 @@ export const apiErrorInterceptor: HttpInterceptorFn = (req, next) => {
       } else {
         // 400, 401, 403, 404, 409 etc. represent expected application behaviors (low noise)
         logger.debug(logMsg, logParams);
+      }
+
+      if (
+        status === 403 &&
+        appError.code === 'RBAC_001' &&
+        !req.context.get(SKIP_ACCESS_DENIED_REDIRECT)
+      ) {
+        void router.navigate(['/access-denied']);
       }
 
       return throwError(() => appError);

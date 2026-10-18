@@ -23,6 +23,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpMethod;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
+import org.springframework.web.util.UrlPathHelper;
 
 /**
  * Servlet filter that enforces sliding-window rate limits on the auth endpoints before any
@@ -102,12 +103,21 @@ public class LoginRateLimitFilter extends OncePerRequestFilter {
     this.resetIpMaxAttempts = resetIpMaxAttempts;
   }
 
+  /**
+   * The path Spring MVC will route on: percent-escapes decoded and {@code ;} path parameters
+   * removed. The raw request URI must not be compared, or {@code /api/v1/auth/%6Cogin} reaches the
+   * login controller without passing a rate limit.
+   */
+  private static String matchedPath(HttpServletRequest request) {
+    return UrlPathHelper.defaultInstance.getPathWithinApplication(request);
+  }
+
   @Override
   protected boolean shouldNotFilter(HttpServletRequest request) {
     if (!HttpMethod.POST.name().equalsIgnoreCase(request.getMethod())) {
       return true;
     }
-    String path = request.getRequestURI();
+    String path = matchedPath(request);
     return !LOGIN_PATH.equals(path) && !REFRESH_PATH.equals(path)
         && !FORGOT_PATH.equals(path) && !RESET_PATH.equals(path);
   }
@@ -118,7 +128,7 @@ public class LoginRateLimitFilter extends OncePerRequestFilter {
       throws ServletException, IOException {
     // T-1.3: getRemoteAddr() only — never X-Forwarded-For
     String clientIp = request.getRemoteAddr();
-    String path = request.getRequestURI();
+    String path = matchedPath(request);
 
     if (LOGIN_PATH.equals(path)) {
       handleLogin(request, response, chain, clientIp);

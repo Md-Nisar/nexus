@@ -38,7 +38,11 @@ import org.springframework.stereotype.Component;
  * active write targets in US-015, so this indicator also monitors them: both flag DOWN on any
  * {@code UPDATE} (table- <em>or</em> column-scoped — neither table has an intended column-scoped
  * grant the way {@code user_roles} does) or {@code ALL PRIVILEGES}; {@code roles} additionally
- * flags on {@code DELETE}. {@code role_permissions} deliberately never checks {@code DELETE} — it
+ * flags on {@code DELETE}. <b>US-018 C1 (V9):</b> {@code roles} now has an intended column-scoped
+ * grant, {@code UPDATE (name, description, deleted_at)}, so its column-scoped leg flags only a grant
+ * on any OTHER column ({@code is_system_role}, {@code tenant_id}, {@code id}); a table-scoped
+ * {@code UPDATE} and any {@code DELETE} still flag. The indicator is UP both before the grant is
+ * applied and after. {@code role_permissions} deliberately never checks {@code DELETE} — it
  * is intentionally granted there (no soft-delete column, no trigger) — so replicating the {@code
  * user_roles}/{@code roles} DELETE check onto it would make this indicator permanently DOWN.
  *
@@ -292,11 +296,14 @@ public class RbacDbPrivilegeHealthIndicator implements HealthIndicator {
   }
 
   /**
-   * US-015 D9 — positive grant-scope check via {@code information_schema.COLUMN_PRIVILEGES} for
-   * {@code roles}: unlike {@code user_roles}, {@code roles} has no intended column-scoped grant,
-   * so a column-scoped {@code UPDATE} here — which would produce no row in {@code
-   * TABLE_PRIVILEGES} and so pass {@link #hasRolesTableScopedUpdateGrant} unnoticed — must itself
-   * flag DOWN.
+   * US-015 D9, re-scoped by US-018 C1 — positive grant-scope check via {@code
+   * information_schema.COLUMN_PRIVILEGES} for {@code roles}: a column-scoped {@code UPDATE} would
+   * produce no row in {@code TABLE_PRIVILEGES} and so pass {@link #hasRolesTableScopedUpdateGrant}
+   * unnoticed. Since C1 the intended grant is {@code UPDATE (name, description, deleted_at)} (and
+   * before the grant is applied, none), so the check flags a column-scoped {@code UPDATE} on any
+   * OTHER column of {@code roles}: {@code is_system_role}, {@code tenant_id} or {@code id} would
+   * each be a direct bypass of the application-layer guards below the application layer. The
+   * column list is the allow-list; widening it is a design change, not a configuration edit.
    */
   private boolean hasRolesColumnScopedUpdateGrant(Connection connection, String userName)
       throws SQLException {
@@ -306,6 +313,7 @@ public class RbacDbPrivilegeHealthIndicator implements HealthIndicator {
             + "WHERE TABLE_SCHEMA = DATABASE() "
             + "AND TABLE_NAME = 'roles' "
             + "AND PRIVILEGE_TYPE = 'UPDATE' "
+            + "AND COLUMN_NAME NOT IN ('name', 'description', 'deleted_at') "
             + "AND GRANTEE LIKE ?",
         grantee(userName));
   }
