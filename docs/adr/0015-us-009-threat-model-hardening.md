@@ -66,4 +66,4 @@ ADR-0014 D5's actual goal — "the migration's seed literal and the runtime defa
 
 Dated notes only; the decisions above are not rewritten (ADR 0001).
 
-- **2026-10-16 (US-018 M11, D2):** the header comment of `V5__rbac_schema.sql` ("== application.yml default-tenant-id fallback") is stale. Base `application.yml` has no fallback for `nexus.identity.default-tenant-id` (it is `${NEXUS_IDENTITY_DEFAULT_TENANT_ID}`, required), as ADR-0015 D8 decided; only the dev and test profiles carry the literal. V5 is immutable, so the comment is not edited; this note is the correction.
+- **2026-10-18 (US-018 M11, D2):** the header comment of `V5__rbac_schema.sql` ("== application.yml default-tenant-id fallback") is stale. Base `application.yml` has no fallback for `nexus.identity.default-tenant-id` (it is `${NEXUS_IDENTITY_DEFAULT_TENANT_ID}`, required), as ADR-0015 D8 decided; only the dev and test profiles carry the literal. V5 is immutable, so the comment is not edited; this note is the correction.

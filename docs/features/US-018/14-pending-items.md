@@ -1,4 +1,4 @@
-# US-018 pending items (backlog): M7 (P-1, P-2) and M5 (merge conditions; O-7, L-1, L-2 closed)
+# US-018 pending items (backlog): M7 (P-1, P-2: both decided 2026-10-18, see 18-closure-record.md) and M5 (merge conditions; O-7, L-1, L-2 closed)
 
 **Recorded:** 2026-10-11. Open decisions from the pre-PR security re-review (`13-security-review-pre-PR-rereview.md`) that were not closed on branch `ccr-4e9e7cbe-4vl9v6`. They are tracked here for later; they do not block opening the M7 PR as a draft, but each is a decision needed before the M7 PR merges unless the PR author or approver explicitly defers it.
 
