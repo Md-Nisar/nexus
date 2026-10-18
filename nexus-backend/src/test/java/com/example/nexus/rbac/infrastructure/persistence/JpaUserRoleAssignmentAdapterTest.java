@@ -16,6 +16,9 @@ import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
 import com.example.nexus.rbac.domain.HolderProvenance;
 import com.example.nexus.rbac.domain.IdGenerator;
 import com.example.nexus.rbac.domain.PageResult;
+import com.example.nexus.rbac.domain.PermissionHolder;
+import com.example.nexus.rbac.domain.RoleHolder;
+import com.example.nexus.rbac.domain.UserViaRole;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.UserRole;
@@ -302,6 +305,60 @@ class JpaUserRoleAssignmentAdapterTest {
         .putLong(uuid.getMostSignificantBits())
         .putLong(uuid.getLeastSignificantBits())
         .array();
+  }
+
+  @Test
+  void should_pageActiveRoleHoldersForTheTenant_when_findingRoleHolders() {
+    RoleHolder holder = new RoleHolder(userId, UUID.randomUUID(), Instant.now(), assignedBy);
+    when(userRoleRepository.findActiveRoleHoldersPage(roleId, tenantId, PageRequest.of(1, 2)))
+        .thenReturn(new PageImpl<>(List.of(holder), PageRequest.of(1, 2), 3));
+
+    PageResult<RoleHolder> result = adapter.findActiveRoleHolders(roleId, tenantId, 1, 2);
+
+    assertThat(result.items()).containsExactly(holder);
+    assertThat(result.totalElements()).isEqualTo(3);
+    assertThat(result.totalPages()).isEqualTo(2);
+  }
+
+  /** One user holding the permission through two roles appears once, with both role ids. */
+  @Test
+  void should_listAUserOnceWithEveryRole_when_findingPermissionHolders() {
+    UUID permissionId = UUID.randomUUID();
+    UUID otherUser = UUID.randomUUID();
+    UUID roleA = UUID.randomUUID();
+    UUID roleB = UUID.randomUUID();
+    when(userRoleRepository.findPermissionHolderUserIdsPage(
+            permissionId, tenantId, PageRequest.of(0, 20)))
+        .thenReturn(new PageImpl<>(List.of(userId, otherUser), PageRequest.of(0, 20), 2));
+    when(userRoleRepository.findPermissionHolderRoles(
+            permissionId, tenantId, List.of(userId, otherUser)))
+        .thenReturn(
+            List.of(
+                new UserViaRole(userId, roleA),
+                new UserViaRole(userId, roleB),
+                new UserViaRole(otherUser, roleA)));
+
+    PageResult<PermissionHolder> result = adapter.findPermissionHolders(permissionId, tenantId, 0, 20);
+
+    assertThat(result.items())
+        .containsExactly(
+            new PermissionHolder(userId, List.of(roleA, roleB)),
+            new PermissionHolder(otherUser, List.of(roleA)));
+    assertThat(result.totalElements()).isEqualTo(2);
+  }
+
+  @Test
+  void should_skipTheRoleQuery_when_noUserHoldsThePermission() {
+    UUID permissionId = UUID.randomUUID();
+    when(userRoleRepository.findPermissionHolderUserIdsPage(
+            permissionId, tenantId, PageRequest.of(0, 20)))
+        .thenReturn(new PageImpl<>(List.of(), PageRequest.of(0, 20), 0));
+
+    PageResult<PermissionHolder> result = adapter.findPermissionHolders(permissionId, tenantId, 0, 20);
+
+    assertThat(result.items()).isEmpty();
+    assertThat(result.totalElements()).isZero();
+    verify(userRoleRepository, never()).findPermissionHolderRoles(any(), any(), any());
   }
 
   @Test

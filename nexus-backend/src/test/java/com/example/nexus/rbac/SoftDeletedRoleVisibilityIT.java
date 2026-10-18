@@ -12,6 +12,7 @@ import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.application.port.out.UserRoleQueryPort;
 import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
+import com.example.nexus.rbac.domain.PermissionHolder;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.RoleView;
@@ -33,7 +34,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * US-018 MC-9 (T-026, RC-36.3): after a role is soft-deleted it is invisible to every role-reading
  * port method and to the zero-admin reader: M13, M14, M10', M11, M16, {@code RoleResolutionService}'s
  * two reads, the assignment projections, {@code ZeroAdminTenantReader}, {@code findRoleIdByName}
- * and the role listing and cap count. (The three C3 queries are added by T-029.)
+ * and the role listing and cap count, plus the three C3 access-review queries (T-029).
  *
  * <p>The primary control is the invariant "a deleted role has no active holders". These reads are
  * defense in depth, so the fixture deliberately FORGES the invariant break: the role is
@@ -100,6 +101,16 @@ class SoftDeletedRoleVisibilityIT {
         .extracting(RoleView::id)
         .containsExactly(live.getId());
     assertThat(roleManagementPort.countRolesInTenant(tenantId)).isEqualTo(1L);
+    // The three C3 (access review) queries (T-029): a deleted role has no holders, grants nothing.
+    assertThat(assignmentPort.findActiveRoleHolders(deleted.getId(), tenantId, 0, 100).items())
+        .isEmpty();
+    UUID someCataloguePermission = assignmentPort.findCatalogueIds().iterator().next();
+    assertThat(
+            assignmentPort.findPermissionHolders(someCataloguePermission, tenantId, 0, 100).items())
+        .extracting(PermissionHolder::userId)
+        .as("a user whose only route to the permission is a deleted role is not a holder")
+        .doesNotContain(user.getId());
+    assertThat(userRoleQueryPort.findActivePermissionsViaRoles(user.getId(), tenantId)).isEmpty();
     // ZeroAdminTenantReader: a tenant whose only admin-defining role is deleted has none.
     assertThat(userRoleRepository.findTenantsWithAnAdminDefiningRole()).doesNotContain(tenantId);
     assertThat(userRoleRepository.findTenantsWithActiveAdminDefiningHolders())

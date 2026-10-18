@@ -1,5 +1,6 @@
 package com.example.nexus.rbac.application.port.out;
 
+import com.example.nexus.rbac.domain.PermissionViaRole;
 import java.util.List;
 import java.util.UUID;
 
@@ -19,4 +20,11 @@ public interface UserRoleQueryPort {
    * role held by a user within a tenant.
    */
   List<String> findActivePermissionNames(UUID userId, UUID tenantId);
+
+  /**
+   * C3 (US-018 T-029) — every {@code (permission name, role id)} pair a user holds through active
+   * assignments of live roles within a tenant, from one statement, ordered by name then role id.
+   * The access-review effective-permissions read groups it by name.
+   */
+  List<PermissionViaRole> findActivePermissionsViaRoles(UUID userId, UUID tenantId);
 }

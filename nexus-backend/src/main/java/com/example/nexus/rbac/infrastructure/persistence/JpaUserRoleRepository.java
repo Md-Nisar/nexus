@@ -2,7 +2,10 @@ package com.example.nexus.rbac.infrastructure.persistence;
 
 import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.HolderProvenance;
+import com.example.nexus.rbac.domain.PermissionViaRole;
+import com.example.nexus.rbac.domain.RoleHolder;
 import com.example.nexus.rbac.domain.RolePermissionRef;
+import com.example.nexus.rbac.domain.UserViaRole;
 import com.example.nexus.rbac.domain.UserRole;
 import java.util.Collection;
 import java.util.List;
@@ -267,6 +270,100 @@ public interface JpaUserRoleRepository
   @Modifying(clearAutomatically = true)
   @Query("UPDATE UserRole ur SET ur.revokedAt = :revokedAt WHERE ur.id = :id AND ur.revokedAt IS NULL")
   int revokeById(@Param("id") UUID id, @Param("revokedAt") java.time.Instant revokedAt);
+
+  /**
+   * C3 role holders (US-018 T-029): one page of the ACTIVE holders of one live role of one tenant,
+   * {@code ORDER BY assignedAt, id} (a total order). The caller resolves the role in the tenant first
+   * (404 otherwise); this query still carries the tenant and live-role predicates on both the page and
+   * the count query as defense in depth. Served through the {@code (role_id, tenant_id)} index
+   * (V7/V8). Plain, NON-LOCKING; ids and a timestamp only.
+   */
+  @Query(
+      value =
+          """
+          SELECT new com.example.nexus.rbac.domain.RoleHolder(ur.userId, ur.id, ur.assignedAt, ur.assignedBy)
+          FROM UserRole ur, Role r
+          WHERE ur.roleId = r.id AND ur.roleId = :roleId
+            AND ur.tenantId = :tenantId AND r.tenantId = :tenantId
+            AND r.deletedAt IS NULL AND ur.revokedAt IS NULL
+          ORDER BY ur.assignedAt, ur.id
+          """,
+      countQuery =
+          """
+          SELECT COUNT(ur) FROM UserRole ur, Role r
+          WHERE ur.roleId = r.id AND ur.roleId = :roleId
+            AND ur.tenantId = :tenantId AND r.tenantId = :tenantId
+            AND r.deletedAt IS NULL AND ur.revokedAt IS NULL
+          """)
+  Page<RoleHolder> findActiveRoleHoldersPage(
+      @Param("roleId") UUID roleId, @Param("tenantId") UUID tenantId, Pageable pageable);
+
+  /**
+   * C3 permission holders, step 1 (US-018 T-029): one page of the DISTINCT users who hold {@code
+   * permissionId} through an active assignment of a live role of the tenant, ordered by user id.
+   * Driven by {@code role_permissions.permission_id} (its foreign-key index), then the tenant's live
+   * roles, then {@code user_roles}. Paging is over distinct users, so a user who holds the permission
+   * through several roles is counted and listed once. Non-locking; ids only.
+   */
+  @Query(
+      value =
+          """
+          SELECT DISTINCT ur.userId FROM UserRole ur, Role r, RolePermission rp
+          WHERE rp.id.permissionId = :permissionId AND rp.id.roleId = r.id
+            AND r.tenantId = :tenantId AND r.deletedAt IS NULL
+            AND ur.roleId = r.id AND ur.tenantId = :tenantId AND ur.revokedAt IS NULL
+          ORDER BY ur.userId
+          """,
+      countQuery =
+          """
+          SELECT COUNT(DISTINCT ur.userId) FROM UserRole ur, Role r, RolePermission rp
+          WHERE rp.id.permissionId = :permissionId AND rp.id.roleId = r.id
+            AND r.tenantId = :tenantId AND r.deletedAt IS NULL
+            AND ur.roleId = r.id AND ur.tenantId = :tenantId AND ur.revokedAt IS NULL
+          """)
+  Page<UUID> findPermissionHolderUserIdsPage(
+      @Param("permissionId") UUID permissionId,
+      @Param("tenantId") UUID tenantId,
+      Pageable pageable);
+
+  /**
+   * C3 permission holders, step 2: the live roles through which each of the page's users holds the
+   * permission. Same predicates as step 1, restricted to {@code userIds} (at most one page, 100).
+   * Non-locking.
+   */
+  @Query(
+      """
+      SELECT new com.example.nexus.rbac.domain.UserViaRole(ur.userId, r.id)
+      FROM UserRole ur, Role r, RolePermission rp
+      WHERE rp.id.permissionId = :permissionId AND rp.id.roleId = r.id
+        AND r.tenantId = :tenantId AND r.deletedAt IS NULL
+        AND ur.roleId = r.id AND ur.tenantId = :tenantId AND ur.revokedAt IS NULL
+        AND ur.userId IN :userIds
+      ORDER BY ur.userId, r.id
+      """)
+  List<UserViaRole> findPermissionHolderRoles(
+      @Param("permissionId") UUID permissionId,
+      @Param("tenantId") UUID tenantId,
+      @Param("userIds") Collection<UUID> userIds);
+
+  /**
+   * C3 effective permissions (US-018 T-029): every {@code (permission name, role id)} pair a user
+   * holds through active assignments of live roles in one tenant, in one statement so the names and
+   * the roles come from the same snapshot. Same {@code r.tenantId} cross-check and live-role filter
+   * as {@link #findActivePermissionNames}. Bounded by the catalogue times the tenant's roles.
+   * Non-locking; names and ids only.
+   */
+  @Query(
+      """
+      SELECT new com.example.nexus.rbac.domain.PermissionViaRole(p.name, r.id)
+      FROM UserRole ur, Role r, RolePermission rp, Permission p
+      WHERE ur.roleId = r.id AND rp.id.roleId = r.id AND rp.id.permissionId = p.id
+        AND ur.userId = :userId AND ur.tenantId = :tenantId AND r.tenantId = :tenantId
+        AND r.deletedAt IS NULL AND ur.revokedAt IS NULL
+      ORDER BY p.name, r.id
+      """)
+  List<PermissionViaRole> findActivePermissionsViaRoles(
+      @Param("userId") UUID userId, @Param("tenantId") UUID tenantId);
 
   /**
    * RC-6 — every user id holding an ACTIVE (non-revoked) assignment of {@code roleId}. Backs

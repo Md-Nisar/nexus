@@ -9,12 +9,17 @@ import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
 import com.example.nexus.rbac.domain.HolderProvenance;
 import com.example.nexus.rbac.domain.IdGenerator;
 import com.example.nexus.rbac.domain.PageResult;
+import com.example.nexus.rbac.domain.PermissionHolder;
 import com.example.nexus.rbac.domain.Role;
+import com.example.nexus.rbac.domain.RoleHolder;
 import com.example.nexus.rbac.domain.RolePermissionRef;
+import com.example.nexus.rbac.domain.UserViaRole;
 import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -192,5 +197,36 @@ public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
       return Set.of();
     }
     return Set.copyOf(userRoleRepository.findActiveHolderUserIdsByRoles(roleIds, tenantId));
+  }
+
+  @Override
+  public PageResult<RoleHolder> findActiveRoleHolders(
+      UUID roleId, UUID tenantId, int page, int size) {
+    Page<RoleHolder> result =
+        userRoleRepository.findActiveRoleHoldersPage(roleId, tenantId, PageRequest.of(page, size));
+    return new PageResult<>(result.getContent(), result.getTotalElements(), page, size);
+  }
+
+  @Override
+  public PageResult<PermissionHolder> findPermissionHolders(
+      UUID permissionId, UUID tenantId, int page, int size) {
+    Page<UUID> userIds =
+        userRoleRepository.findPermissionHolderUserIdsPage(
+            permissionId, tenantId, PageRequest.of(page, size));
+    if (userIds.isEmpty()) {
+      return new PageResult<>(List.of(), userIds.getTotalElements(), page, size);
+    }
+    // Keep the page's user order; the roles are fetched for the page's users only.
+    Map<UUID, List<UUID>> rolesByUser = new LinkedHashMap<>();
+    userIds.forEach(userId -> rolesByUser.put(userId, new java.util.ArrayList<>()));
+    for (UserViaRole row :
+        userRoleRepository.findPermissionHolderRoles(permissionId, tenantId, userIds.getContent())) {
+      rolesByUser.computeIfAbsent(row.userId(), k -> new java.util.ArrayList<>()).add(row.roleId());
+    }
+    List<PermissionHolder> holders =
+        rolesByUser.entrySet().stream()
+            .map(e -> new PermissionHolder(e.getKey(), e.getValue()))
+            .toList();
+    return new PageResult<>(holders, userIds.getTotalElements(), page, size);
   }
 }

@@ -171,4 +171,15 @@
         <Class name="com.example.nexus.rbac.application.RoleManagementService" />
         <Bug pattern="EI_EXPOSE_REP2" />
     </Match>
+    <!--
+      US-018 T-029: AccessReviewService constructor-injects the Spring-managed singleton MeterRegistry
+      bean (to count nexus.rbac.access_review_query and the cross-tenant permission_denied series) and
+      stores it directly, per this project's constructor-injection-only convention (CLAUDE.md). Same
+      rationale as RoleManagementService and RoleAssignmentService above: a MeterRegistry is a metrics
+      factory (not a value object) with no sensible defensive copy.
+    -->
+    <Match>
+        <Class name="com.example.nexus.rbac.application.AccessReviewService" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
 </FindBugsFilter>

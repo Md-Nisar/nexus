@@ -5,7 +5,9 @@ import com.example.nexus.rbac.domain.ActiveAssignmentRef;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.HolderProvenance;
 import com.example.nexus.rbac.domain.PageResult;
+import com.example.nexus.rbac.domain.PermissionHolder;
 import com.example.nexus.rbac.domain.Role;
+import com.example.nexus.rbac.domain.RoleHolder;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import java.time.Instant;
 import java.util.Collection;
@@ -159,6 +161,23 @@ public interface UserRoleAssignmentPort {
    * NON-LOCKING.
    */
   Set<UUID> findActiveHolderUserIdsForRoles(UUID tenantId, Collection<UUID> roleIds);
+
+  /**
+   * C3 (US-018 T-029) — one page of the ACTIVE holders of {@code roleId} in {@code tenantId}, {@code
+   * ORDER BY assignedAt, id}: a tenant-scoped, paged variant of {@link #findActiveUserIdsForRole}
+   * that also carries the assignment id, timestamp and assigner. The role must already have been
+   * resolved in the tenant by the caller. Excludes revoked rows and deleted roles. Plain,
+   * NON-LOCKING; ids only.
+   */
+  PageResult<RoleHolder> findActiveRoleHolders(UUID roleId, UUID tenantId, int page, int size);
+
+  /**
+   * C3 (US-018 T-029) — one page, ordered by user id, of the DISTINCT users of {@code tenantId} who
+   * hold {@code permissionId} through an active assignment of a live role, each with the roles that
+   * grant it. A user holding it through several roles appears once. Plain, NON-LOCKING; ids only.
+   */
+  PageResult<PermissionHolder> findPermissionHolders(
+      UUID permissionId, UUID tenantId, int page, int size);
 
   /**
    * M3 — the active assignment to revoke; empty covers both "never assigned" and "already revoked"
