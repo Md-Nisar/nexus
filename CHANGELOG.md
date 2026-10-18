@@ -7,6 +7,20 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ## [Unreleased]
 
+### Added — US-018 Milestone 9 (Group C: C1, C2, C3, C5, C6; T-025 to T-030)
+
+**Backend**
+- `DELETE /api/v1/roles/{roleId}` (soft delete, 409 `RBAC_009` while the role has an active holder) and `PATCH /api/v1/roles/{roleId}` (name, description; audit `ROLE_DELETED`, `ROLE_UPDATED`), both bounded by the caller's authority (role-subset 403). Database: `V9` adds `roles.deleted_at`, `active_name` and `uq_roles_tenant_active_name` (**maintenance window**: rebuilds `roles`); column-scoped `GRANT UPDATE (name, description, deleted_at) ON nexus.roles` per environment (`runbook.md` 14). CORS allows PATCH.
+- **Behaviour change:** `GET /api/v1/roles`, `/api/v1/permissions` and `/api/v1/users/{userId}/roles` are paginated (`page`, `size`; default 20, max 100; out of range is 400) and answer `{ data, page, links }`. A tenant with more than 20 roles no longer gets them all in one response.
+- Access review for `audit:read` holders (ids only, tenant-scoped): `GET /roles/{roleId}/holders`, `/permissions/{permissionId}/holders`, `/users/{userId}/effective-permissions`. Discloses the administrator roster to every `audit:read` holder (RES-37); `assignedBy` is redacted for non-administrators.
+- Assign now inserts only against a live role. A soft-deleted role is invisible to every read; `rbacZeroActiveAdmins` reports `deletedRoleActiveAssignments`.
+
+**Frontend**
+- A 403 `RBAC_001` sends the user to `/access-denied` unless the request carries `SKIP_ACCESS_DENIED_REDIRECT`.
+
+**Tests and docs**
+- Unit gate: 2226 run, 0 failures; frontend 253 passed. Integration tests written, not run (no Docker). Docs: `09-technical.md` 16, `runbook.md` 14, `monitoring.md` 9, `17-threat-model-repass-M9.md`, US-012/US-015 API notes.
+
 ### Changed — US-018 Milestone 8 (Group B hardening: B1, B2, B3, B5, B6, B7, B8; T-020 to T-024)
 
 **Backend**

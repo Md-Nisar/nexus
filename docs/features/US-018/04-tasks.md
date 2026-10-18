@@ -1282,13 +1282,13 @@ US-018 (one story, 12 PRs)
 **Threats owned:** T-T17 (RC-35), T-T18 (RC-36), T-T20 (RC-46), T-I17 (RC-38), T-I19 (RC-40.7), T-D25 (RC-49.2), RC-37.5, RES-37, RES-45, L-5.
 
 **Merge checklist (M9):**
-- [ ] **Maintenance window** booked for V9 (`ALGORITHM=COPY` on `roles`; create/PATCH/DELETE blocked; recovery `flyway repair` then a re-run, RC-49).
-- [ ] **Grants** `GRANT UPDATE (name, description, deleted_at) ON nexus.roles` applied per environment; the three ADR-0014 D6 artifacts byte-consistent.
-- [ ] **`RolesPrivilegeIT` green as `nexus_app`** under both grant sets (RC-36.2).
-- [ ] **RC-36.4 detector** `deletedRoleActiveAssignments` live, paging on > 0.
-- [ ] `RoleDeleteConcurrencyIT` green, including the holder-less admin-defining case with **no 500** (RC-46.2); MC-9 green.
-- [ ] **`audit:read` pre-deploy detection query** (custom roles carrying it, by tenant, ids only); a non-zero production count reviewed with Security before the flag flips (RC-38.3).
-- [ ] Docs pass: C3 API docs and ADR-0021 state the administrator-roster disclosure (RES-37); the access-review runbook says reviewers are administrators or use the `ROLE_BREAK_GLASS_GRANT` join for `assignedBy = userId` rows (RC-37.5, R1-4); API changelog for C2 paging.
+- [ ] **Maintenance window** booked for V9 (`ALGORITHM=COPY` on `roles`; create/PATCH/DELETE blocked; recovery `flyway repair` then a re-run, RC-49). *(deferred to first deployment; ITs written, not run: no Docker)*
+- [ ] **Grants** `GRANT UPDATE (name, description, deleted_at) ON nexus.roles` applied per environment; the three ADR-0014 D6 artifacts byte-consistent. *(deferred to first deployment; ITs written, not run: no Docker)*
+- [ ] **`RolesPrivilegeIT` green as `nexus_app`** under both grant sets (RC-36.2). *(deferred to first deployment; ITs written, not run: no Docker)*
+- [ ] **RC-36.4 detector** `deletedRoleActiveAssignments` live, paging on > 0. *(code done in T-026; the paging alert itself is deferred to first deployment)*
+- [ ] `RoleDeleteConcurrencyIT` green, including the holder-less admin-defining case with **no 500** (RC-46.2); MC-9 green. *(deferred to first deployment; ITs written, not run: no Docker)*
+- [ ] **`audit:read` pre-deploy detection query** (custom roles carrying it, by tenant, ids only); a non-zero production count reviewed with Security before the flag flips (RC-38.3). *(query written in `runbook.md` 14; run deferred to first deployment)*
+- [x] Docs pass: C3 API docs and ADR-0021 state the administrator-roster disclosure (RES-37); the access-review runbook says reviewers are administrators or use the `ROLE_BREAK_GLASS_GRANT` join for `assignedBy = userId` rows (RC-37.5, R1-4); API changelog for C2 paging.
 - [ ] RES-45 accepted (Low, Architect); revisit if the C1 1213 rate is ever non-zero.
 
 ### T-025 — A custom role with no active holders can be soft-deleted, and a concurrent assign can never attach a holder to a deleted role (C1 DELETE)

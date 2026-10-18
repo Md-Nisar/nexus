@@ -1417,3 +1417,10 @@ The narrowing applies only to the literally-named `TENANT_ADMIN` role. A **custo
 - `docs/adr/0017-privilege-based-role-assignment-gate.md` — the accepted decision record
 - `docs/features/US-012/monitoring.md` — §1, §2 and §5, amended 2026-09-13 in the same change
 - `docs/features/US-012/01-requirements.md` §11 — Gate 1 Resolution 5, unedited; this section is its amendment record
+
+
+---
+
+## API changes by US-018 M9 (C2)
+
+`GET /api/v1/users/{userId}/roles` is now paginated: query `page` (0-based, default 0) and `size` (default 20, max 100; out of range or non-integer is 400 `VALIDATION_FAILED`, never clamped). The body is `{ "data": [...], "page": { "size", "number", "totalElements", "totalPages" }, "links": { "next", "prev" } }` with relative links, ordered by `(assignedAt, id)`. `data` and the element shape are unchanged; `page` and `links` are additive. A user with more than 20 assignments now needs `links.next`. Details: `docs/features/US-018/09-technical.md` section 16.

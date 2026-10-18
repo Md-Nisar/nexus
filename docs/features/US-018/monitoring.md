@@ -181,3 +181,10 @@ The cross-tenant alert in `US-012/monitoring.md` (`nexus_rbac_cross_tenant_attem
 
 **Dashboards.** Remove any panel that groups an RBAC metric by `tenantId` or `tenant`. Add: `permission_denied{reason="CROSS_TENANT_TARGET"}` rate, `denial_throttled` by `operation`.
 
+
+## 9. M9: soft delete, access review, pagination (US-018 C1, C2, C3)
+
+- **Metric** `nexus.rbac.access_review_query{endpoint=role_holders|permission_holders|effective_permissions}` (no tenant tag). Cross-tenant access-review attempts increment `permission_denied{permission="audit:read",reason="CROSS_TENANT_TARGET"}` with the WARN `RBAC_CROSS_TENANT_TARGET`.
+- **Log markers.** INFO `RBAC_ACCESS_REVIEW_QUERY` (`actorUserId`, `tenantId`, `endpoint`, `subjectId`); INFO `ROLE_UPDATED` (`changedFields`, never the description) and `ROLE_DELETED`; INFO `RBAC_ROLE_DELETE_REFUSED_HAS_HOLDERS`; WARN `RBAC_ROLE_SUBSET_DENIED` with `operation` `update`/`delete`; WARN `RBAC_DELETED_ROLE_ACTIVE_ASSIGNMENTS`.
+- **Audit event types** `ROLE_UPDATED`, `ROLE_DELETED` (atomic).
+- **Alerts (suggestions; Ops owns them).** Page: `rbacZeroActiveAdmins` DOWN with `deletedRoleActiveAssignments > 0` (RC-36.4). Ticket: a burst of `access_review_query` from one actor. Watch the 500 rate on `PATCH`/`DELETE /roles/{id}` after deploy (a missing column grant) and InnoDB 1213 on C1 (RES-45: revisit if ever non-zero). None of these exists in a monitoring system yet; deferred to first deployment.

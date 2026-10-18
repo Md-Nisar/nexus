@@ -272,3 +272,21 @@ Do not edit the applied file (ADR 0003).
 **New permission migrations.** Any migration that inserts into `permissions` must carry the B7 footer from `nexus-backend/src/main/resources/db/templates/permission-migration-footer.sql` with `{{INSERTED_PERMISSION_IDS}}` bound to its own ids; `PermissionMigrationFooterScannerTest` fails the build otherwise. Also do the custom-administrator exposure check before and after deploy and flush the permission cache (`SCAN` and `DEL` of `nexus:rbac:permset:*` and `roleset:*`), as the template lists.
 
 **Permission cache benchmark (B6).** The keep-or-remove measurement is deferred to the first staging deployment; procedure in `nexus-test/performance-test/README.md`, rule and status in the ADR-0022 addendum. `nexus.rbac.permission-cache.bypass=true` is a benchmark-only switch and the application refuses to start with it under the `prod` profile.
+
+## 14. M9: role soft delete, V9, grants, access review (US-018 C1, C3)
+
+**V9 maintenance window.** `V9__rbac_roles_soft_delete.sql` adds a STORED generated column, so MySQL rebuilds `roles` (`ALGORITHM=COPY`): create, PATCH and DELETE of roles block for the duration; reads continue. Book a window; deploy inside it. One statement per file; recover a failure with `flyway repair` as the Flyway DDL user, then a re-run (RC-49). Never edit the applied file.
+
+**Grants (after the code is deployed, per environment).** `GRANT UPDATE (name, description, deleted_at) ON nexus.roles TO 'nexus_app'@'%';` byte-identical to `nexus-database/mysql/init/02-grants-post-schema.sql` and `docs/runbooks/nexus-app-provisioning.md` section 2. Until applied, PATCH and DELETE fail with a privilege error (500) and assign still works; keep `feature.nexus-us015-rbac-role-management` off until then. `rbacDbPrivilege` is UP before and after; it goes DOWN on a column outside that set, a table-level `UPDATE` or any `DELETE` on `roles`. V10 (drop `uq_roles_tenant_name`) is one release later; until then a deleted role's name still collides (409 `RBAC_006`).
+
+**Deleting a role.** 409 `RBAC_009` means the role has an active holder: revoke the holders (`DELETE /users/{id}/roles/{roleId}`), then delete. A replayed DELETE is 404.
+
+**Page: `deletedRoleActiveAssignments` > 0** (health detail of `rbacZeroActiveAdmins`, DOWN; WARN `RBAC_DELETED_ROLE_ACTIVE_ASSIGNMENTS`). The delete protocol makes it 0, so it is an invariant break (a bypass or a bug). Find rows: `SELECT ur.id, ur.user_id, ur.role_id FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE r.deleted_at IS NOT NULL AND ur.revoked_at IS NULL;`. Reads already ignore deleted roles, so these rows grant nothing; revoke them (`revoked_at` update, DBA exception) and find the cause.
+
+**`audit:read` pre-deploy detection (RC-38.3), before the flag flips.** Custom roles carrying it, ids only:
+`SELECT HEX(r.tenant_id), HEX(r.id) FROM roles r JOIN role_permissions rp ON rp.role_id = r.id JOIN permissions p ON p.id = rp.permission_id WHERE p.name = 'audit:read' AND r.is_system_role = FALSE AND r.deleted_at IS NULL;`
+A non-zero production count is reviewed with Security first. C3 discloses the administrator roster to every `audit:read` holder (RES-37).
+
+**Access review.** Reviewers hold `audit:read`. `assignedBy` is visible only to administrator reviewers; others see ids without it. A holder whose `assignedBy` equals its own `userId` may be a break-glass grant: join to `ROLE_BREAK_GLASS_GRANT` audit rows before raising a self-grant finding (RC-37.5). Every query logs INFO `RBAC_ACCESS_REVIEW_QUERY`.
+
+**Clients.** The three list endpoints are paginated (default 20): follow `links.next` or read `page.totalElements`.
