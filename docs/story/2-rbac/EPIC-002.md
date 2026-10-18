@@ -158,7 +158,7 @@ Custom `@RequiresPermission("tenant:write")` annotation backed by a Spring Secur
 **Seeded system data (Flyway migration):**
 - Permissions: `tenant:read`, `tenant:write`, `user:read`, `user:write`, `role:read`, `role:write`, `audit:read`
 - System role: `TENANT_ADMIN` (per-tenant, seeded on tenant creation in Epic 3; pre-seeded for default tenant in Epic 2)
-- System role: `MEMBER` — default role for new users; `user:read` permission only
+- System role: `MEMBER` — `user:read` permission only. **Not** assigned at registration: US-018 C5 (Gate 1) decided that registration assigns no role, so a new user holds zero permissions until an administrator assigns one (pinned by `RegistrationIT`; corrected 2026-10-18, US-018 D2)
 
 **Permission cache:** Redis; two keys per entry sharing a TTL — `{nexus.redis.key-prefix}:rbac:roleset:{tenant_id}:{user_id}` and `{nexus.redis.key-prefix}:rbac:permset:{tenant_id}:{user_id}` (`nexus.redis.key-prefix` defaults to `nexus`); TTL 15 min; invalidated via `PermissionCachePort.evict(tenantId, userId)` on role assignment/revocation. Fallback: DB query if cache miss. Cache is a performance optimisation — the JWT is the authority.
 
@@ -196,7 +196,7 @@ Custom `@RequiresPermission("tenant:write")` annotation backed by a Spring Secur
 
 EPIC-002 delivers the permission enforcement layer the platform needs before any admin surface can exist. The model (Roles + Permissions, tenant-scoped) is the right balance between simplicity and extensibility — flat enough to build fast, structured enough to support future granularity without schema rework. Three things to watch: JWT size as permission sets grow (benchmark early), the 15-minute cache lag on role revocation (document and accept for MVP), and the cross-tenant boundary test (must be in CI before Epic 3 starts — this is the highest-consequence failure mode on a multi-tenant platform).
 
-The one handoff dependency to flag: **Epic 3 cannot start until the `TENANT_ADMIN` system role is seeded and the role assignment API is working.** That means US-002 of this epic (role + permission seeding) is the hard gate for Epic 3 kickoff, not the full epic completion.
+The one handoff dependency to flag: **Epic 3 cannot start until the `TENANT_ADMIN` system role is seeded and the role assignment API is working.** That means US-009 of this epic (role + permission seeding; US-002 belongs to EPIC-001 and was never the gate) is the hard gate for Epic 3 kickoff, not the full epic completion. _(Corrected 2026-10-18, US-018 D2.)_
 
 ---
 
@@ -216,7 +216,7 @@ audited from day one.
 Success Metric: Zero privilege-escalation findings in pre-GA pen test; RBAC
 overhead < 5ms p95; Epic 3 ships on RBAC contract with no changes.
 Priority: P0
-Story Points (total): 36 (corrected from an earlier 34 — see Open Decision #2 for the US-015 addition, and the ARC effort estimate for US-009's Gate-1 revision from 5 to 8)
+Story Points (total): 36 for US-009–US-015 (8+3+5+5+3+3+9; history 34 → 33 → 36 — see Open Decision #2 for the US-015 addition, and the ARC effort estimate for US-009's Gate-1 revision from 5 to 8). US-016–US-020 are not included: US-016, US-018, US-019 and US-020 are unestimated and US-017 was sized in tasks, not points (corrected 2026-10-18, US-018 D2)
 Dependencies: Blocked by EPIC-001 (US-001 schema, US-003 JWT contract).
 Blocks: EPIC-003 Tenant Management.
 ```
@@ -571,7 +571,7 @@ First admin capability on the platform. All endpoints are themselves protected b
 
 ### User Story
 As a frontend developer,
-I want a standard Angular route guard and permission directive that reads from the JWT,
+I want a standard Angular route guard and permission directive that read the current user's permissions from `AuthStore`,
 So that every future feature can hide unauthorised UI elements and redirect unauthorised routes without bespoke logic.
 
 ### Background / Context

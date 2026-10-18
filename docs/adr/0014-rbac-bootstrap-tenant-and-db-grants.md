@@ -79,3 +79,9 @@ These statements are added to all three existing provisioning artifacts, applied
 - D6's residual CI blind spot (Testcontainers not exercising `nexus_app`) remains open. If a future story wants to close it for all tables at once (not just RBAC's four), that is a separate, larger change to `TestcontainersConfiguration` and should be scoped as its own hardening item, not bundled into US-009.
 
 **Follow-on rule for future work:** any new bounded context introducing tables that the running application must read/write should size its `nexus_app` grants per-table to the actual read/write pattern (as D6 does here), and add the grants to all three existing provisioning artifacts as part of the same story that creates the schema — not a follow-up story, since (as found here) a schema-only story with no grants change looks fully green in Testcontainers CI while being broken in every real environment.
+
+## Amendment notes
+
+Dated notes only; the decisions above are not rewritten (ADR 0001).
+
+- **2026-10-16 (US-018 M11, D2):** the header comment of `V5__rbac_schema.sql` ("== application.yml default-tenant-id fallback") is stale. Base `application.yml` has no fallback for `nexus.identity.default-tenant-id` (it is `${NEXUS_IDENTITY_DEFAULT_TENANT_ID}`, required), per ADR-0015 D8; only the dev and test profiles carry the literal. V5 is immutable, so the comment is not edited; this note is the correction.
