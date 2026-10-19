@@ -1,6 +1,8 @@
 # US-019 — Prerequisites for the RBAC Access Management UI: Requirements
 
-**Status:** Draft · **Owner:** Business Analyst · **Gate 1:** _pending approval_
+**Status:** Approved at Gate 1 · **Owner:** Business Analyst
+
+**Gate 1:** approved 2026-10-19 by the story owner (approver name to be recorded)
 **Date:** 2026-10-18 · **Base:** `main` @ `2962b0e` (US-018 merged), branch `feature/US-019`
 **Risk tier (from discovery):** high-risk (new PII-bearing endpoints, live authorization profile, atomic permission write path, change to denial disclosure). Full Gate 2 threat model and Phase 7 audit apply.
 
@@ -325,6 +327,24 @@ Format: options, **recommendation**, trade-off. Roles in brackets are the addres
 - **Q-N8 [Ops] — Flag mechanism.** Boolean flags cannot do the percentage rollout `deployment-process.md` assumes. Do we need a staged rollout for B1?
 - **Q-N9 [Architect] — Paging types location.** Move `PageParams/PageMetadata/PageLinks` to `common` for identity? This modifies US-018 C2 code; is that in scope?
 - **Q-N10 [Legal, Security] — Legal basis** for showing emails to administrators, and retention for CSV export (D5). The source names neither.
+
+## 13a. Gate 1 decisions (2026-10-19)
+
+The story owner approved this document at Gate 1 with the recommendations in section 13 adopted as the answers, without change:
+
+- Q1: a new permission (`user:directory:read`) gates the user directory (B1, B2). `user:read` is left as is. The MEMBER exposure (R1) is therefore closed by design, not accepted.
+- Q2: `isSensitive` is a static set in `Permissions`, kept in step by `PermissionsCatalogueIT`.
+- Q3: ship the B7 allow-list now; throttling becomes a real 429 with `Retry-After`.
+- Q4: `ETag` and `If-Match` on the permission replace (428 missing, 412 stale, 409 only for business conflicts).
+- Q5: take the set lock when the before or after state is administrator-defining, to be confirmed by the Gate 2 threat model.
+- Q6: B4 is an `rbac` controller under the us019 flag.
+- Q7: A1 uses option (b): `authGuard` on a shell parent route, `permissionGuard` on its children.
+- Q8: A11 uses option (b): hand-written DTOs plus a contract test.
+- Q9: a CI job runs Playwright against a compose backend, and skipped specs count as failures.
+- Q10: the S0 to S5 split is approved; D2, D3 and D5 are human tracks.
+- Q11, Q-N5, Q-N8, Q-N10: remain open human decisions. They need named owners and dates and do not block the technical slices.
+- Q12: keep the `app.html` header for public pages; the shell gets its own header.
+- Q-N1 to Q-N4, Q-N6, Q-N7, Q-N9: the recommendations in section 13 apply. Q-N9 (moving the paging types to `common`) is decided at design time.
 
 ## 14. Design benchmark defaults (for D2/D3/D5; not requirements)
 
