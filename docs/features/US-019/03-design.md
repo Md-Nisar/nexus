@@ -3,7 +3,19 @@
 **Epic:** EPIC-002 (RBAC Foundation)
 **Phase:** 3 (Solution Design), Gate 2 Step A
 **Author:** Principal Architect
-**Status:** Draft for Gate 2 Step B (threat model). Not approved.
+**Status:** Revision 1 (2026-10-19), threat-model required changes RC-55 to RC-63 folded in (`03b-threat-model.md` §6, §9.1). Not approved.
+
+> **Revision 1 (2026-10-19) — threat model RC-55..RC-63**
+> - **RC-55** (T-T22, High): step 9 compares the locked version to the snapshot version `v0`; `If-Match` takes exactly one strong tag; soundness paragraph rewritten; IT case (g), two-tag unit test; ADR-0027 states the ETag is not a secret (§0 #15–16, §10.3, §10.5, §10.8).
+> - **RC-56** (T-E48): queued assign and attach recorded in the proof table; assign and attach re-classify after insert with retryable 409 `RBAC_012`; committed-state detector that pages; ADR-0021 Revision 3 corrects R1-1; harness cases (§2.2, §10.4, §10.8, §10.9).
+> - **RC-57** (T-E49): admin-defining classification under the set lock from a current read, for B8, revoke and softDelete; RES-28 restated as single-actor (§10.3, §10.4, §10.9).
+> - **RC-58** (T-I20): 403 before 412 and before the no-op; live `role:read` required; 412/428 bodies carry no state (§10.3, §10.5).
+> - **RC-59** (T-I21): body, media-type, method and missing-header handlers that never log the message; malformed-body log scan; 1 KiB lookup cap (§2.2, §4.2, §4.7, §10.7).
+> - **RC-60** (T-E50): delegation recorded in ADR-0026; administrator-only grant of `user:directory:read` (default, D5 confirms); delegation WARN (§4.8).
+> - **RC-61** (T-R16): row-volume alert; batch cross-tenant count and WARN; per-actor directory ceiling (§4.2, §4.5, §17).
+> - **RC-62** (T-T23): `@angular/*` ≥ 22.2.0, clean production audit, ESLint HTML-sink ban (§12.4).
+> - **RC-63(a)–(l)**: attach row corrected (T-T24) and the low-severity tasks, in the sections each names.
+> - Architect decisions (◆) are in "Revision 1 decisions for Gate 2" at the end of §0.
 
 **Inputs (binding, not reopened):**
 - `01-requirements.md` §13a, **Gate 1 decisions (2026-10-19)**: `user:directory:read` gates B1/B2 and `user:read` is unchanged; `isSensitive` is a static set in `Permissions`; B7 ships with an allow-list and throttling becomes a real 429 + `Retry-After`; `ETag`/`If-Match` on the permission replace (428 missing, 412 stale, 409 business only); the set lock is taken when the before or after state of the role is admin-defining (to be confirmed by the threat model); B4 is an `rbac` controller under the us019 flag; A1 = `authGuard` on a shell parent, `permissionGuard` on children; A11 = hand-written DTOs + contract test; C4 = Playwright against a compose backend, skips count as failures; S0–S5 split; Q12(b) keep `app.html`'s header for public pages, the shell has its own; Q-N1 to Q-N4, Q-N6, Q-N7 take the requirements' recommendations.
@@ -20,7 +32,7 @@
 
 | ADR | Covers | Relationship |
 |---|---|---|
-| `0026-user-directory-permission-and-pii-transport.md` | `user:directory:read`, the POST lookup, directory audit and throttle, `isSensitive` semantics | Draft of the ADR-0006 addendum D5 must sign; ADR-0013 D1 naming (three-token name, as ADR-0021 D1 allowed) |
+| `0026-user-directory-permission-and-pii-transport.md` | `user:directory:read`, the POST lookup, directory audit and throttle, `isSensitive` semantics, PII-permission delegation (RC-60) | Draft of the ADR-0006 addendum D5 must sign; ADR-0013 D1 naming (three-token name, as ADR-0021 D1 allowed) |
 | `0027-role-permission-set-optimistic-concurrency.md` | B8 content ETag, role-row lock, lock order | Extends ADR-0018 D5–D7 and US-018 RC-46 with one new verb; deviates from the skill's "`@Version` for optimistic locking" (§10.2 states why) |
 | ADR-0021, **Revision 3** (it is still Proposed, so it may be revised) | B7 caller-facing `reason` and its wire values; B8 as a grant-like operation (follow-on rule) | Revision note, not a new ADR |
 
@@ -31,11 +43,11 @@
 Each line is a decision this design makes. Gate 2 may override any of them. Section numbers point to the reasoning.
 
 1. **V11** seeds `user:directory:read` (id `019f6839-1808-7000-8000-000000000009`) with the mandatory B7 footer, **A-V9 variant**, bound to exactly that id. It is data only: no DDL, no grant. It is the only migration in this story (§3).
-2. **Administrator set preserved by V11:** footer (a) completes every live full-catalogue role and footer (b) re-syncs every system `TENANT_ADMIN`. No role is promoted and no administrator is demoted. `MEMBER` does not receive the permission. **Ops ordering is mandatory:** V11 deploys, then the permission cache is flushed, then at least one access-token TTL (900 s) passes, then us019 is enabled (§3.3).
+2. **Administrator set preserved by V11:** footer (a) completes every live full-catalogue role and footer (b) re-syncs every system `TENANT_ADMIN`. No role is promoted and no administrator is demoted. `MEMBER` does not receive the permission. **Ops ordering is mandatory:** V11 deploys, then the permission cache is flushed, then us019 is enabled only after 1,800 s, a second flush 900 s after the first, or a verified fresh administrator token carrying the permission (RC-63(d), §3.3).
 3. **Test fixtures cannot silently stop building an administrator:** a DB-derived `RbacTestCatalogue` helper, a literal-scan test with an allow-list, and an `assertAdministrator` fixture check (§3.5).
 4. **Directory email lookup is `POST /api/v1/users/lookup` with the email in the body.** `GET /api/v1/users?email=` is rejected with 400 so the email never enters a URL, an access log or browser history. This departs from the story's `GET ?email=`; D5 must accept it (§4.3).
 5. **Directory responses** carry exactly `userId, email, status, emailVerified, createdAt`. Missing and cross-tenant ids give a byte-identical 404 `USER_NOT_FOUND`, which is deliberately distinct from flag-off 404 `RESOURCE_NOT_FOUND` (§4.2).
-6. **Directory reads are audited** (`USER_DIRECTORY_READ`, ids and counts only; no email, no blind index). **Lookups are throttled** at 30 per 60 s per (tenant, actor) with 429 `USER_DIR_001` + `Retry-After`. The design states that the throttle does not stop enumeration by a permission holder, who can list the directory anyway (§4.5).
+6. **Directory reads are audited** (`USER_DIRECTORY_READ`, ids and counts only; no email, no blind index). **Lookups are throttled** at 30 per 60 s per (tenant, actor) with 429 `USER_DIR_001` + `Retry-After`, and every directory operation shares a per-actor ceiling (429 `USER_DIR_002`). The design states that the throttle does not stop enumeration by a permission holder, who can list the directory anyway; a row-volume alert per actor detects it (§4.5, §17).
 7. **Paging types are not moved.** Identity gets three small local types; a contract test pins the identical wire shape. The 33-file move to `common` becomes a separate refactor (§4.6).
 8. **B3** `GET /api/v1/roles/{roleId}` reuses `resolveRoleInTenant`; it has no ETag (§5).
 9. **B4** `GET /api/v1/users/me/authorization` is an `rbac` controller under us019 and `@AuthenticatedEndpoint` with an `Authentication` parameter only. It makes four live reads in one read-only transaction, gets `isAdministrator` from `RoleAssignmentService.isCallerAdministrator` (the one predicate), and uses no cache, no JWT claim and no audit row (§6).
@@ -44,10 +56,10 @@ Each line is a decision this design makes. Gate 2 may override any of them. Sect
 12. **B7** `RBAC_001` gains an always-present `reason` ∈ {`GRANT_EXCEEDS_CALLER`, `SELF_ASSIGNMENT`, `ADMINISTRATOR_REQUIRED`, `UNSPECIFIED`}, decoupled from `DenialReason` names. Cross-tenant (already a 404), malformed authentication, missing tenant and plain permission absence all map to `UNSPECIFIED`. There is no flag (§9).
 13. **B7 throttle:** `RoleChangeThrottlePort.isThrottled` becomes `throttleStatus` returning `ThrottleStatus(throttled, retryAfterSeconds)`, implemented by both adapters (Redis `PTTL`, memory map). A blocked request is **429 `RBAC_011` + `Retry-After`**; no audit row, unchanged (§9.3).
 14. **B8 ETag** is a strong content hash of the role id and its sorted permission ids. There is **no version column and no V12**. It is served on `GET /roles/{roleId}/permissions` and on the PUT's 200 (§10.2).
-15. **B8 serialisation:** an X lock on the role row (`SELECT … FOR UPDATE` on `roles`), then a **current** read of `role_permissions` (`FOR SHARE`), then the If-Match comparison. Lock order follows the role's **current** class, as RC-46 does: admin-defining means set lock, then role row; otherwise role row, then the set lock only when the PUT promotes the role. Locks are taken only after snapshot authorization has passed (§10.3, §10.4).
-16. **B8 semantics:** an empty set is legal on a custom role; unknown id gives 404 `PERMISSION_NOT_FOUND`; duplicates and more than 100 ids give 400; a no-op is 200 with no audit, no lock and no bump; success is 200 with the new set and the new `ETag`; `If-Match` missing or `*` gives 428 (§10.5).
+15. **B8 serialisation:** an X lock on the role row (`SELECT … FOR UPDATE` on `roles`), then a **current** read of `role_permissions` (`FOR SHARE`), whose version must **equal the snapshot version `v0`** that every earlier decision used (RC-55). Under the set lock, which roles are admin-defining is derived from a current read too (RC-57). Lock order follows the role's **current** class, as RC-46 does: admin-defining means set lock, then role row; otherwise role row, then the set lock only when the PUT promotes the role. Locks are taken only after snapshot authorization has passed (§10.3, §10.4).
+16. **B8 semantics:** an empty set is legal on a custom role; unknown id gives 404 `PERMISSION_NOT_FOUND`; duplicates and more than 100 ids give 400; every 403 (including live `role:read`) comes before the 412 and before the no-op, so a no-op is an **authorised** 200 with no audit, no lock and no bump; success is 200 with the new set and the new `ETag`; `If-Match` must be **exactly one strong tag**, anything else gives 428; 412 and 428 bodies carry no state (RC-55, RC-58, §10.5).
 17. **B8 audit:** one existing `ROLE_PERMISSION_GRANTED`/`REVOKED` row per change, inline (ADR-0024), with metadata `operation=REPLACE`. The rows share the request's correlation id. No new event type (§10.6).
-18. **CORS:** add `If-Match` to allowed headers and `ETag` to exposed headers. New `PreconditionFailedException` (412 `PRECONDITION_FAILED`) and `PreconditionRequiredException` (428 `PRECONDITION_REQUIRED`) in `common.domain`, with handlers (§10.7).
+18. **CORS:** add `If-Match` to allowed headers and `ETag` to exposed headers. New `PreconditionFailedException` (412 `PRECONDITION_FAILED`) and `PreconditionRequiredException` (428 `PRECONDITION_REQUIRED`) in `common.domain`, with handlers; plus handlers for unreadable bodies, unsupported media types and methods, and missing headers that never log the exception message (RC-59, §10.7).
 19. **B10:** one `@ProblemResponses` annotation plus an `OperationCustomizer` emits the `ProblemDetail` schema and an `x-nexus-error-codes` extension. A test fails when a code thrown in production code is undocumented (§11.1).
 20. **A11:** recorded responses live at repo-root `contracts/api/*.json`. A backend `@JsonTest` (no Docker) generates and verifies them from real DTOs, and a frontend Vitest test pins its hand-written interfaces' key sets to them (§11.2).
 21. **Frontend route tree:** `app.html` becomes an outlet only. A `PublicLayout` route carries today's header for `auth`, `access-denied` and `design-system`. A lazy `Shell` route at `''` carries `authGuard` and holds `dashboard`, the redirect from `''`, US-020's console routes (each with `permissionGuard`) and the signed-in `**` Not Found (§12.1).
@@ -58,13 +70,27 @@ Each line is a decision this design makes. Gate 2 may override any of them. Sect
 26. **C1:** personas are seeded in the bootstrap tenant. The second tenant is **fixture-only data** with fixed dev ids: it cannot sign in, because login always uses the default tenant. The seed logs counts, not emails (§13.1).
 27. **C2/C4:** one API login per (worker, persona) into a worker-scoped `BrowserContext` (its cookie jar follows refresh-token rotation). CI runs the compose backend as `nexus_app` plus the Angular dev server, not the nginx container. Skips and zero executed tests fail the job. Login and refresh limits are raised by environment variables in that CI job only (§13.2–§13.4).
 28. **Flags:** one new flag `feature.nexus-us019-user-directory.enabled` (B1, B2, lookup, B4). B3, B5, B6 and B8 ride us015. B7, V11 and the frontend have no flag (§15).
+29. **`RBAC_010` under concurrency (RC-56):** assign (non-admin-defining path) and attach re-classify R with a current `FOR SHARE` read after their insert and roll back with retryable 409 `RBAC_012` when R has become admin-defining; a committed-state detector pages when an admin-defining role has a holder assigned by a non-administrator (§10.9).
+30. **PII-permission delegation (RC-60):** granting `user:directory:read` (attach, or assign of a role carrying it) requires an administrator; a non-administrator grant that succeeds anyway emits WARN `RBAC_PII_PERMISSION_DELEGATED` (§4.8). Default ON pending D5.
+31. **Frontend dependency hygiene (RC-62):** `@angular/*` ≥ 22.2.0 and a clean production `npm audit` before the S2c directives merge; ESLint bans HTML sinks (§12.4).
+
+### Revision 1 decisions for Gate 2
+
+The threat model asked for four Architect decisions (◆).
+
+| # | Decision | Chosen | Reason | Where |
+|---|---|---|---|---|
+| RC-56.5 | Land assign and attach re-classification (US-018 code) in S3c, or defer | **Land in S3c**, together with the detector | B8 makes the race deterministic; the fix is one indexed current read per assign and attach and a rollback on a rare branch; deferring would leave RES-26 at High | §10.9 |
+| RC-57.2 | Apply the current-read re-derivation to `revoke`'s administrator requirement and lockout and to `softDeleteRole`'s admin-defining path | **Adopted** | It closes the B8-then-revoke path to zero administrators at the cost of one `FOR SHARE` read under a lock already held; RES-28 then remains only for detach ∥ detach (Low) | §10.9 |
+| RC-58.4 | B8 requires live `role:read` as well as `role:write` | **Adopted** | The 200 returns the representation and the editor must GET it for the ETag anyway, so no legitimate client loses anything; it removes the last 412-versus-200 composition signal for callers who cannot read roles | §10.3, §10.5 |
+| RC-60.3 | Administrator-only grant of `user:directory:read` | **Needs a human (D5). Default chosen: ON** | PII minimisation: delegation to a self-registered second account is the RES-26 shape with personal data; the rule is cheap (keyed by permission id, evaluated with A2/A3) and D5 can switch it off, leaving the detective WARN | §4.8, ADR-0026 |
 
 ### Resolution of the impact analysis's open design questions (Q-D1 to Q-D28)
 
 | Q | Decision | Reason (one line) | Where |
 |---|---|---|---|
 | Q-D1 | **Needs a human (Security, D5).** Default sensitive set: `tenant:write`, `user:write`, `role:write`, `user:role:assign`, `user:directory:read`, `audit:read` | Each one confers control over identities, authorization or the tenant, or reads PII or the admin roster (RES-37) | §7 |
-| Q-D2 | The "user manager" persona holds `user:directory:read`; the "role manager" does not | US-020 needs one non-admin directory reader and one non-reader to test the gate both ways | §13.1 |
+| Q-D2 | The "user manager" persona holds `user:directory:read`; the "role manager" does not. Under the RC-60.3 default the user manager can use the permission but cannot pass it on | US-020 needs one non-admin directory reader and one non-reader to test the gate both ways | §13.1 |
 | Q-D3 | `POST /api/v1/users/lookup` with the email in the body; `?email=` gives 400 | No proxy, browser or APM URL sink can capture a body; redaction would depend on log formats we do not control (prod ingress) | §4.3 |
 | Q-D4 | `USER_NOT_FOUND`, deliberately distinct from `RESOURCE_NOT_FOUND` | Flag state is not secret, and US-020 F6 needs to tell "feature off" from "no such user" | §4.2 |
 | Q-D5 | Order by `id` ascending (UUIDv7, about creation order); no index; no default status filter, so `DISABLED` is listed | `idx_users_tenant_id_status` orders by id within a status; an admin must see disabled users who still hold roles | §4.2, §16 |
@@ -81,7 +107,7 @@ Each line is a decision this design makes. Gate 2 may override any of them. Sect
 | Q-D16 | Content hash, no version column | No migration, no grant change; it cannot drift after migrations or out-of-band SQL, which a version column can (§10.2) | §10.2 |
 | Q-D17 | On `GET /roles/{roleId}/permissions` (the representation PUT replaces) and the PUT's 200; strong; not on B3 | HTTP semantics: the validator belongs to the replaced resource | §10.2 |
 | Q-D18 | Role-row X lock via `SELECT … FOR UPDATE`, then a `FOR SHARE` current read of `role_permissions`; RC-46 order by current class; `RolesPrivilegeIT` proves the privilege as `nexus_app`; fallback is a no-op guarded `UPDATE` | Serialises PUTs and makes the compare a current read; no new grant | §10.3, §10.4 |
-| Q-D19 | Q5 confirmed in design, pending the threat model. Attach/detach are serialised against B8 by the current read's record and gap locks, so B8 never loses their update; RES-45 and RES-28 extend to B8 (both Low, detected) | Locking attach/detach would add a verb to the lock family for a race-only, detected case (US-018 row 19 reasoning) | §10.4 |
+| Q-D19 | Q5 confirmed by the threat model with RC-55 and RC-57. Attach waits on B8's role row (FK parent check) and detach on its current read, so B8 never loses their update; queued assign and attach re-classify after insert (RC-56); RES-45 extends to B8; RES-28 remains only for detach ∥ detach (Low, single-actor-triggerable, detected) | Locking detach would add a verb to the lock family for a detected, recoverable case (US-018 row 19 reasoning) | §10.4, §10.9 |
 | Q-D20 | Empty set legal on a custom role; unknown id gives 404 `PERMISSION_NOT_FOUND`; duplicates give 400; at most 100 ids (bean validation); 200 with the new set and `ETag` | Matches attach's 404; strictness surfaces client bugs; 200 lets the editor continue without a re-GET | §10.5 |
 | Q-D21 | Per-change rows only, metadata `operation=REPLACE`; rows share the correlation id `RequestContext` already carries | No new event type for reviewers to learn; the grouping key already exists | §10.6 |
 | Q-D22 | A public layout route; `app.html` becomes an outlet only | Structural, not a URL condition that drifts | §12.1 |
@@ -206,17 +232,17 @@ graph LR
 | Slice | Contents | Exit gate (must be green; "Docker" means `./mvnw verify` with Testcontainers) |
 |---|---|---|
 | **S0** | D2, D3, D4 text, D5 (ADR-0006 addendum, drafted from ADR-0026), C3 sign-off, Q-N5, Q-N8, Q-N10 | Signed records. D5 and the Gate 2 threat model block S1c's merge; the threat model blocks S3b and S3c |
-| **S1a** | V11; `Permissions.USER_DIRECTORY_READ`; `permission.ts` member; `RbacTestCatalogue` and the literal scan; migrate the 20 literal-id test files | Docker: `RbacSchemaMigrationIT` V11 cases, `PermissionMigrationFooterScannerTest` unchanged and green, `PermissionsCatalogueIT`, the V11 semantic IT (§3.4); frontend gates |
+| **S1a** | V11; `Permissions.USER_DIRECTORY_READ`; `permission.ts` member; `RbacTestCatalogue` and the literal scan; migrate the 20 literal-id test files; RC-63(d) runbook ordering written | Docker: `RbacSchemaMigrationIT` V11 cases, `PermissionMigrationFooterScannerTest` unchanged and green, `PermissionsCatalogueIT`, the V11 semantic IT (§3.4); frontend gates |
 | **S1b** | B3, B5 | Docker: `CrossTenantNotFoundEquivalenceIT` extended, `PermissionsCatalogueIT` sensitive partition; `-DskipITs` gates |
-| **S1c** | B1, B2, lookup, us019 flag | Docker: `UserDirectoryIT` (two tenants, exact field set, hit/miss/cross-tenant byte equality, log scan), `UserDirectoryFeatureFlagTest`, `EndpointClassificationWebTest` all-flags sweep. **Merge needs D5 and the threat model** |
+| **S1c** | B1, B2, lookup, us019 flag, RC-59 handlers, RC-60 delegation rule and WARN, RC-61 detection | Docker: `UserDirectoryIT` (two tenants, exact field set, hit/miss/cross-tenant byte equality with `traceId` and `instance` normalised, batch cross-tenant WARN), log scan including malformed bodies, `UserDirectoryFeatureFlagTest`, `EndpointClassificationWebTest` all-flags sweep. **Merge needs D5 (incl. RES-49, RES-51) and Ops sign-off of RES-6 retention for the new WARN markers** |
 | **S1d** | B4 | Docker: `CallerAuthorizationIT` (revoked before refresh; admin-equivalent custom role); ArchUnit green |
-| **S2a–d** | A2, then A1; A3, A4, A5, A6 | `npm run test:ci`, `lint`, `format:check`, `build` (budgets); unit axe per wrapper |
+| **S2a–d** | A2, then A1; A3, A4, A5, A6; RC-62 | `npm run test:ci`, `lint`, `format:check`, `build` (budgets); unit axe per wrapper. **S2c does not merge until `@angular/*` ≥ 22.2.0, `npm audit --omit=dev` has no high or critical finding, and the HTML-sink ESLint ban is in** |
 | **S3a** | B6 | Docker: query-count IT (two statements per page) |
-| **S3b** | B7 | Docker: throttle ITs (429 + `Retry-After`, both adapters), allow-list unit tests, opaque-path tests |
-| **S3c** | B8, CORS, 412/428 | Docker: `RolePermissionReplaceIT`, `RolePermissionReplaceConcurrencyIT`, `RolesPrivilegeIT` and `RolePermissionsPrivilegeIT` new cases as `nexus_app`, harness C re-run with a B8 thread; `SecurityConfigWebTest` |
+| **S3b** | B7, RC-63(l) | Docker: throttle ITs (429 + `Retry-After`, both adapters), allow-list unit tests, opaque-path tests; `ACCESS_DENIED` carries no `reason`; SPA spec: no auto-retry of `RBAC_011`. RES-47 acceptance recorded at Gate 2 |
+| **S3c** | B8, CORS, 412/428, RC-56 (assign/attach re-classification, detector), RC-57 (B8, revoke, softDelete current classification), RC-59 body handler | Docker: `RolePermissionReplaceIT`, `RolePermissionReplaceConcurrencyIT` cases (a)–(g) (B8 ∥ attach in both arrival orders as `nexus_app`, no 1213 outside RES-45), `RolesPrivilegeIT` and `RolePermissionsPrivilegeIT` new cases as `nexus_app` with `SHOW GRANTS` unchanged, harness C with the B8 threads and the RC-56.7 and RC-57.4 cases; `SecurityConfigWebTest` |
 | **S3d** | B10 | `OpenApiErrorCatalogueTest` (test profile, no Docker) |
-| **S4a** | C1 | `DevDataInitializerTest` (idempotent, profile guard), `DevPersonaSeedIT` (Docker) |
-| **S4b–c** | C2, C4 | The new CI job green with executed count > 0 and 0 skips; backend-log PII scan clean |
+| **S4a** | C1, RC-63(g) | `DevDataInitializerTest` (idempotent, profile guard incl. `dev,prod`), `DevPersonaSeedIT` (Docker) |
+| **S4b–c** | C2, C4 | The new CI job green with executed count > 0 and 0 skips; PII scan clean over backend log, Playwright report and traces (addresses and their blind indexes); RC-63(g) and RC-63(h) in |
 | **S5a** | A7, A8, A9, A10 | Frontend gates; adversarial `safeReturnUrl` table |
 | **S5b** | A11 | `ApiContractFixturesTest` (backend), `api-contract.spec.ts` (frontend) |
 | **S5c** | D6, B9 | Doc review; no code |
@@ -242,18 +268,22 @@ Every error is an RFC 9457 `ProblemDetail` from `GlobalExceptionHandler`, with `
 | `RBAC_001` | 403 | Every RBAC denial; **gains `reason`** (B7, §9.2) | existing, extended |
 | `RBAC_002`–`RBAC_010` | 409 | Unchanged. B8 can raise `RBAC_003` (system role) and `RBAC_010` (promotion with non-admin-assigned holders) | existing |
 | `RBAC_011` | **429** + `Retry-After` | A throttled actor's assign or revoke on an admin-defining or self target (B7, replaces the throttled 403) | **new** |
-| `PRECONDITION_FAILED` | **412** | B8: `If-Match` matches no current `ETag` | **new** |
-| `PRECONDITION_REQUIRED` | **428** | B8: `If-Match` absent, `*`, or unparseable | **new** |
+| `RBAC_012` | **409**, retryable | Assign or attach found, after its insert, that the role became admin-defining while it waited (RC-56); B8 when the role row is gone at lock time is still 404 | **new** |
+| `PRECONDITION_FAILED` | **412** | B8: the `If-Match` tag is not the snapshot version, or the locked state differs from the snapshot. Body carries no ETag, ids or count | **new** |
+| `PRECONDITION_REQUIRED` | **428** | B8: `If-Match` absent, `*`, a list, weak-only, empty or unparseable. Body carries no state | **new** |
 | `USER_DIR_001` | **429** + `Retry-After` | Directory lookup throttled | **new** |
+| `USER_DIR_002` | **429** + `Retry-After` | Per-actor directory ceiling across all operations (RC-61.3) | **new** |
+| `UNSUPPORTED_MEDIA_TYPE` | **415** | Any endpoint; `HttpMediaTypeNotSupportedException` (RC-59) | **new** |
+| `METHOD_NOT_ALLOWED` | **405** | Any endpoint; `HttpRequestMethodNotSupportedException` (RC-59) | **new** |
 | `USER_NOT_FOUND` | 404 | B1 by-id: missing or other tenant, byte-identical | existing code, new use |
 | `ROLE_NOT_FOUND` | 404 | B3, B8: missing, deleted or other tenant | existing |
 | `PERMISSION_NOT_FOUND` | 404 | B8: an id that is not in the catalogue | existing |
 | `RESOURCE_NOT_FOUND` | 404 | Flag off (no handler) | existing |
-| `VALIDATION_FAILED` | 400 | Paging, `ids`, `status`, `email` on GET, lookup body, B8 body | existing |
+| `VALIDATION_FAILED` | 400 | Paging (incl. `page × size > 10,000`), `ids`, `status`, `email` on GET, lookup body (incl. over 1 KiB), B8 body; **new uses:** unreadable body ("Request body is not valid JSON.") and missing required header (RC-59) | existing |
 | `AUTH_003` / `AUTH_005` | 401 / 503 | Unchanged (US-018) | existing |
 | `INTERNAL_ERROR` | 500 | Atomic audit failure (B8), email decryption failure (B1) | existing |
 
-`RBAC_011` is free (`RBAC_001`–`RBAC_010` are taken, verified by grep). `PRECONDITION_*` are generic codes in `common.domain`, like `VALIDATION_FAILED`, because 412 and 428 are protocol outcomes, not RBAC rules. `USER_DIR_001` follows identity's `AUTH_<AREA>_NNN` style (`ResendVerificationUseCase.java:31`). No `detail` text names an id, an email or a permission.
+`RBAC_011` and `RBAC_012` are free (`RBAC_001`–`RBAC_010` are taken, verified by grep). `RBAC_012` is distinct from `RBAC_010` because its remedy differs: retry, not "revoke holders first". `PRECONDITION_*` are generic codes in `common.domain`, like `VALIDATION_FAILED`, because 412 and 428 are protocol outcomes, not RBAC rules. `USER_DIR_001` follows identity's `AUTH_<AREA>_NNN` style (`ResendVerificationUseCase.java:31`). No `detail` text names an id, an email or a permission.
 
 **Retry and idempotency.** No server-side retry is added. B8 is a PUT and therefore idempotent; with `If-Match` a replay after success returns 412 (the ETag moved), and the client re-reads. The lookup POST is safe and read-only; POST is used only to keep PII out of URLs. No `Idempotency-Key` (api-design "target"), and nothing here prevents adding one later.
 
@@ -261,7 +291,8 @@ Every error is an RFC 9457 `ProblemDetail` from `GlobalExceptionHandler`, with `
 
 US-018 §2.3 carries forward: no `tenantId`, `userId` or email in any metric tag; ids only in logs; every WARN or ERROR has a stable, grep-able event name. Two rules are new:
 - **No email, and no email blind index, in any log, metric, audit metadata, exception message or trace attribute.** This is enforced by a log-scan IT (§4.7) and a CI log scan of the e2e backend (§13.4).
-- `IDENTITY_DIRECTORY_CROSS_TENANT_TARGET` joins the WARN markers retained for at least 1 year (US-018 RC-19 precondition). Ops sign-off is a merge-checklist item on S1c.
+- `IDENTITY_DIRECTORY_CROSS_TENANT_TARGET`, `RBAC_PII_PERMISSION_DELEGATED` and `RBAC_ADMIN_DEFINING_ROLE_HAS_NON_ADMIN_ASSIGNED_HOLDER` join the WARN markers retained for at least 1 year (US-018 RC-19 precondition, RES-6). Ops sign-off is a merge-checklist item on S1c and S3c.
+- **Protocol and body-parse exceptions never log `getMessage()` or the cause** (RC-59): Jackson parse errors quote request tokens, which can be an email's local part.
 
 ### 2.4 Corrections to earlier documents (recorded here; fixed in S5c/D6 or by the owners)
 
@@ -320,12 +351,13 @@ sequenceDiagram
     Admin->>New: POST /auth/refresh within one token TTL
     New->>DB: Resolve permissions, cache miss
     New-->>Admin: JWT now includes user:directory:read
-    Ops->>Ops: Wait at least 900 s after the flush, check the zero-admin indicator is green
+    Ops->>Ops: Wait 1800 s, or flush again after 900 s, or verify a fresh admin token carries the permission
+    Ops->>Ops: Check the zero-admin indicator is green
     Ops->>New: Enable feature.nexus-us019-user-directory
 ```
 
 - **Authorization decisions are unaffected by the lag**: every administrator decision reads the DB (M13/M15). Only JWT-gated `@RequiresPermission(USER_DIRECTORY_READ)` checks see the stale claim.
-- **If us019 is enabled too early**, an administrator whose token predates the flush gets 403 `RBAC_001` on B1, and the SPA's interceptor redirects them to `/access-denied`. The ordering rule prevents that, and it costs nothing because us019 is a new flag. Without the flush the worst case is cache TTL plus token TTL, about 30 minutes (impact §3.2). With the flush it is one access-token TTL (900 s).
+- **If us019 is enabled too early**, an administrator whose token predates the flush gets 403 `RBAC_001` on B1, and the SPA's interceptor redirects them to `/access-denied`. The ordering rule prevents that, and it costs nothing because us019 is a new flag. Without the flush the worst case is cache TTL plus token TTL, about 30 minutes (impact §3.2). **A single flush does not shorten it reliably** (T-I23, RC-63(d)): a mint that read the stale set before the flush can write it back after the flush (US-018 L-4), so that administrator can lack the permission for up to 1,800 s. The runbook therefore enables us019 only after one of: (i) 1,800 s after the flush; (ii) a second flush 900 s after the first; (iii) an administrator's freshly refreshed token is verified to carry `user:directory:read`. It fails safe either way (RES-52, Low).
 - **No epoch bump** is needed: the change only adds a permission, and a token that lacks it is fail-safe (ADR-0022 D3).
 - **Custom admin-equivalent roles** stay administrators through footer (a). A role an administrator **creates after V11** must carry nine permissions to be admin-defining. The runbook, C1 and the tests enumerate the catalogue instead of listing ids.
 - **Grant-subset spill-over** (impact §3.2 item 6): after V11 a "role manager" without `user:directory:read` can no longer detach from, PATCH or DELETE any role that carries it (role-subset). This is intended; D3 copy and US-020 affordances must explain it.
@@ -350,7 +382,7 @@ The 20 files are migrated in the V11 commit. A file whose fixture deliberately b
 
 ### 3.6 Frontend and constant
 
-`Permissions.USER_DIRECTORY_READ = "user:directory:read"`, added to `ALL`. Javadoc `:7` becomes "V5 seeds seven, V6 and V11 add one each". `permission.ts` gains the union member, its `PERMISSIONS` entry and its label (§12.6). `RbacSeededPermissionIds` gains nothing, because no code checks this permission by id.
+`Permissions.USER_DIRECTORY_READ = "user:directory:read"`, added to `ALL`. Javadoc `:7` becomes "V5 seeds seven, V6 and V11 add one each". `permission.ts` gains the union member, its `PERMISSIONS` entry and its label (§12.6). `RbacSeededPermissionIds` gains `USER_DIRECTORY_READ` (the V11 literal), because the RC-60 delegation rule checks it by id (§4.8); the literal-scan allow-list (§3.5) already covers that class.
 
 ---
 
@@ -364,7 +396,7 @@ The 20 files are migrated in the V11 commit. A file whose fixture deliberately b
 | `identity.interfaces.rest` | `DirectoryPageRequest` (package-private) | Parses `page`/`size` exactly as `PageParams` does (default 20, max 100, 400 not clamp), plus `status` and `ids` |
 | `identity.interfaces.rest.dto` | `UserDirectoryEntryResponse`, `UserDirectoryPageResponse`, `UserLookupRequest`, `UserLookupResponse`, `DirectoryPageMetadata`, `DirectoryPageLinks` | Records |
 | `identity.application` | `UserDirectoryService` | `@Transactional(readOnly = true)` reads; actor and tenant from the controller; blind index through `EmailBlindIndexService.blindIndex` only (ADR-0006); throttle; audit; logs |
-| `identity.application.port.out` | `UserDirectoryQueryPort` | `findPageByTenant(tenantId, status, page, size)`, `findByTenantAndIds(tenantId, ids)`, `findByTenantAndId(tenantId, userId)`, `existsById(userId)`, `findByTenantAndEmailHmac(tenantId, hmac)`. Returns `DirectoryUserView` projections (`identity.domain` record: id, email plaintext, status, emailVerifiedAt, createdAt). This is a new identity port, distinct from `rbac`'s `UserDirectoryPort` |
+| `identity.application.port.out` | `UserDirectoryQueryPort` | `findPageByTenant(tenantId, status, page, size)`, `findByTenantAndIds(tenantId, ids)`, `findByTenantAndId(tenantId, userId)`, `existsById(userId)` (the inherited JPA method, so no `UNSCOPED_ALLOWLIST` change, RC-63(j)), `countByIdIn(ids)` (unscoped, count only, RC-61.2), `findByTenantAndEmailHmac(tenantId, hmac)`. Returns `DirectoryUserView` projections (`identity.domain` record: id, email plaintext, status, emailVerifiedAt, createdAt). This is a new identity port, distinct from `rbac`'s `UserDirectoryPort` |
 | `identity.infrastructure.persistence` | `JpaUserDirectoryQueryAdapter` + `JpaUserRepository` methods | Each tenant-scoped method carries `TenantId` in its name or `@Param("tenantId")` (`TenantIsolationArchitectureTest`). Never inherited `findById` for a user-facing read. Decrypts `email_cipher` through the existing converter; **never maps `email_hmac`, `password_hash`, counters or `locked_until` into the view** |
 
 Constructor injection, at most four collaborators per class (`UserDirectoryService`: query port, blind-index service, `RateLimitStore`, directory audit port). Metrics come through `MeterRegistry` on the controller side, or the service is split if a fifth is needed.
@@ -382,10 +414,10 @@ POST /users/lookup        body: { "email": string }
 
 | Operation | Success | Errors |
 |---|---|---|
-| List | 200 `UserDirectoryPageResponse` | 400 `VALIDATION_FAILED` (`page`, `size`, `status`, or `email` present: "use POST /api/v1/users/lookup"); 401; 403 `RBAC_001` |
+| List | 200 `UserDirectoryPageResponse` | 400 `VALIDATION_FAILED` (`page`, `size`, `page × size > 10,000` (RC-63(c), bounds deep OFFSET), `status`, or `email` present: "use POST /api/v1/users/lookup"); 401; 403 `RBAC_001`; 429 `USER_DIR_002` |
 | Batch | 200 `UserDirectoryPageResponse` with `page = {size: n, number: 0, totalElements: n, totalPages: n > 0 ? 1 : 0}` and `links = {next: null, prev: null}` | 400 (`ids` empty, malformed, more than 100, or combined with `status`/`page`/`size`); 401; 403 |
 | By id | 200 `UserDirectoryEntryResponse` | 400 (malformed UUID); 401; 403; 404 `USER_NOT_FOUND` (missing **or other tenant**, byte-identical body) |
-| Lookup | 200 `UserLookupResponse` `{ data: [entry] }` or `{ data: [] }` (miss and other-tenant hit are byte-identical) | 400 (`email` blank, longer than 320, or not well formed: the message never echoes the value); 401; 403; 429 `USER_DIR_001` + `Retry-After` |
+| Lookup | 200 `UserLookupResponse` `{ data: [entry] }` or `{ data: [] }` (miss and other-tenant hit are byte-identical) | 400 (`email` blank, longer than 320, or not well formed; body not valid JSON; body over **1 KiB**, rejected from `Content-Length` or a bounded read before parsing (RC-59.3): no message ever echoes the value); 401; 403; 415 (not `application/json`); 429 `USER_DIR_001` or `USER_DIR_002` + `Retry-After` |
 | Flag off | — | 404 `RESOURCE_NOT_FOUND` on every route above |
 
 **Element shape** (`UserDirectoryEntryResponse`), exactly:
@@ -402,9 +434,9 @@ POST /users/lookup        body: { "email": string }
 
 **Ordering:** `ORDER BY id` (UUIDv7, about creation order). With a status filter, `idx_users_tenant_id_status` serves the order because InnoDB secondary indexes carry the primary key **[INFERENCE, EXPLAIN in the IT]**. Without one, MySQL filesorts the tenant's users, which is accepted at today's volumes (§16).
 
-**`ids` mode:** de-duplicated; ids of other tenants are silently omitted (`WHERE id IN (:ids) AND tenant_id = :tenantId`, primary-key driven); ordered by id. No cross-tenant WARN per omitted id (that would cost a lookup per id); the INFO log carries `requestedCount` and `returnedCount`.
+**`ids` mode:** de-duplicated; ids of other tenants are silently omitted (`WHERE id IN (:ids) AND tenant_id = :tenantId`, primary-key driven); ordered by id. **Cross-tenant parity (RC-61.2):** one extra PK-driven statement, `countByIdIn(ids)` (unscoped, count only), runs on every batch; when its count exceeds `returnedCount`, WARN `IDENTITY_DIRECTORY_CROSS_TENANT_TARGET {tenantId, actorUserId, operation=BATCH, omittedCount}` and `nexus.identity.directory.cross_tenant_miss` are emitted. The response never depends on it, and every batch runs the same statements, so NF-S2 holds. It needs an `UNSCOPED_ALLOWLIST` entry in `TenantIsolationArchitectureTest`, signed off by Security on three conditions, each enforced: count only; called only by `JpaUserDirectoryQueryAdapter` (an ArchUnit containment rule, as for `existsSuccessfulBreakGlassGrantWithChangeRef`); never feeds the response. The INFO log carries `requestedCount` and `returnedCount`.
 
-**By id:** `findByTenantAndId(tenantId, userId)`. If it is empty, `existsById(userId)` runs **on every miss**. If the id exists, it is a cross-tenant id: WARN `IDENTITY_DIRECTORY_CROSS_TENANT_TARGET {tenantId, actorUserId}` (the target id is not logged, matching `RBAC_CROSS_TENANT_TARGET`) and `nexus.identity.directory.cross_tenant_miss`. Both branches run the same two statements, so a genuine miss and a cross-tenant miss are the same timing class (NF-S2).
+**By id:** `findByTenantAndId(tenantId, userId)`. If it is empty, `existsById(userId)` runs **on every miss**. If the id exists, it is a cross-tenant id: WARN `IDENTITY_DIRECTORY_CROSS_TENANT_TARGET {tenantId, actorUserId, operation=GET}` (the WARN carries no target id, matching `RBAC_CROSS_TENANT_TARGET`; `ApiRequestLoggingFilter` does log the request path, which contains the id, under the same correlation id, so the id is recoverable from logs. Ids are not PII; RC-63(j)) and `nexus.identity.directory.cross_tenant_miss`. Both branches run the same two statements, so a genuine miss and a cross-tenant miss are the same timing class (NF-S2).
 
 **Caching:** none. Responses carry Spring Security's default `Cache-Control: no-cache, no-store, max-age=0, must-revalidate`; a test asserts it is not overridden on directory routes.
 
@@ -455,7 +487,10 @@ sequenceDiagram
 ### 4.5 Abuse controls (Q-N1, Q-D8)
 
 - **Throttle:** lookups only, 30 per 60 s per (tenant, actor), bucket `DIR_LOOKUP:{tenantId}:{actorUserId}` on the existing `RateLimitStore` (memory or Redis per `store-type`). Config `nexus.identity.directory.lookup.max-attempts: 30` and `window-seconds: 60`. **Failure mode: open**, because `RedisRateLimitStore` fails open (`RedisRateLimitStore.java:71-77`, ADR-0016) and the authorization gate is the permission, not the throttle. Recorded per ADR-0016's per-capability table.
-- **Honest limit:** a `user:directory:read` holder can list every user with email through the list endpoint, so the lookup throttle bounds automated lookup volume and gives a signal; it **does not prevent enumeration by a holder**. The controls against misuse are the permission (administrators only by default), the audit trail and the alerts in §17. D5 must accept this.
+- **Per-actor directory ceiling (RC-61.3):** every directory operation (list, batch, by-id, lookup) also consumes bucket `DIR_ALL:{tenantId}:{actorUserId}`, 600 per 60 s (config `nexus.identity.directory.ceiling.max-attempts` / `window-seconds`), giving 429 `USER_DIR_002` + `Retry-After`. It bounds line-rate paging by a stolen token without affecting a human, and fails open like the lookup bucket.
+- **Log volume (RC-63(c)):** `USER_DIR_001` and `USER_DIR_002` exceptions are `selfReported()` (§9.3), so the handler logs them at DEBUG; the service emits at most one WARN `IDENTITY_DIRECTORY_THROTTLED {tenantId, actorUserId, bucket}` per window, decided by the first rejection the store reports.
+- **Honest limit:** a `user:directory:read` holder can list every user with email through the list endpoint, so the throttles bound automated volume and give a signal; they **do not prevent enumeration by a holder** (RES-49, escalated to D5). The controls against misuse are the permission (administrators only by default, and delegation restricted by §4.8), the audit trail and the alerts in §17, including the row-volume alert per actor across all four operations (RC-61.1).
+- **Emails are self-asserted** until verified (RC-63(e)): anonymous registration lets anyone create a PENDING row with any address, including look-alikes; NFC does not fold confusables. Carried to D5 and US-020: the console shows `status` and `emailVerified` beside every email and marks PENDING rows; CSV export (US-020 E3) prefixes cells starting with `=`, `+`, `-`, `@`, tab or CR and is audited; US-020/Epic 3 decides whether assigning roles to PENDING users is refused.
 - **Audit:** one `USER_DIRECTORY_READ` row per request on all four operations (new `AuthEventType`; `event_type` is `VARCHAR(64)`, no migration). It is written through the existing best-effort path (`SecureEventService.recordEvent`, `REQUIRES_NEW`, retry buffer, ADR-0011) because the read transaction is read-only. Metadata: `operation` (`LIST|BATCH|GET|LOOKUP`), `resultCount`, `statusFilter` (enum or null) and, for lookups, `outcome` (`HIT|MISS`), with `resolvedUserId` on a hit (an id the caller has just been shown). **Never** the email, the blind index or the `ids` list. An audit write failure does not fail the read, and is counted (`nexus.identity.directory.audit_write_failed`). D5 may require fail-closed; that would need a writable transaction and is a one-line change of propagation.
 - **Throttled lookup:** no audit row (bounded write volume, US-018 RC-33 reasoning); counter `nexus.identity.directory.requests{operation=lookup, outcome=throttled}`.
 
@@ -472,11 +507,27 @@ The duplication is about 80 lines, and identity's links differ on purpose (statu
 ### 4.7 Tests (S1c)
 
 - `UserDirectoryIT` (Docker): two tenants; list returns only the caller's tenant; exact field set (the JSON key set equals the five names; no `tenantId`, `emailHmac`, `passwordHash`, `failedAttemptCount`, `lockedUntil`); by-id cross-tenant equals missing (status, body bytes apart from `traceId`); lookup hit, miss and other-tenant hit (byte equality); `size=101` gives 400; 101 ids gives 400; `?email=` gives 400; DISABLED listed; decryption of a tampered cipher gives 500 with no partial page.
-- **Log-scan IT:** with `OutputCaptureExtension`, run a lookup with a sentinel email, a list and a by-id read, and assert that neither the sentinel, its blind index, nor any seeded email appears in the captured output.
+- Byte-equality assertions normalise both `traceId` and `instance` (Spring fills `instance` with the request path, which differs per id; RC-63(j)). Batch with a foreign id emits the BATCH cross-tenant WARN with `omittedCount` and an unchanged response; `page × size > 10,000` gives 400.
+- **Log-scan IT:** with `OutputCaptureExtension`, run a lookup with a sentinel email, a list and a by-id read, **and the malformed requests of RC-59.2**: `{"email": <sentinel unquoted>}`, `{"email": ["<sentinel>"]}`, a truncated body, and `Content-Type: text/plain`, plus a body over 1 KiB. Each must give 400 or 415, and neither the sentinel, its local part, its blind index, nor any seeded email may appear in the captured output.
+- `UserDirectoryCeilingIT`: the 601st directory request in a window gives 429 `USER_DIR_002`; one WARN per window.
 - `UserDirectoryLookupThrottleIT`: the 31st lookup in a window gives 429 with `Retry-After` ≥ 1; no audit row for it.
 - `UserDirectoryFeatureFlagTest` (pattern `RbacRoleManagementFeatureFlagTest`): flag off gives 404 `RESOURCE_NOT_FOUND` on all routes.
 - `EndpointClassificationWebTest`: us019 added to the all-flags context; the four new handlers are classified; the `/users/me` precedence case.
 - Unit: `DirectoryPageRequestTest` (bounds, `ids` parsing, combination rules); `UserDirectoryServiceTest` (audit metadata contains no email: an `ArgumentCaptor` asserts the metadata key set).
+
+### 4.8 Delegation of `user:directory:read` (RC-60, T-E50)
+
+**The property.** Under A2/A3, any holder of `user:directory:read` together with `user:role:assign` (assign a role carrying it) or `role:write` (attach it to a role they may edit) could grant tenant-wide email access onward, to anyone in the tenant except themselves (A4), including a self-registered second account; that access would survive revocation of the delegator's own account (the RES-26 shape with personal data). The C1 "User Manager" persona is exactly such a delegator. ADR-0026 §7 and the D5 record state this (RC-60.1).
+
+**Preventive rule (◆ RC-60.3, default ON pending D5).** A request that would grant `user:directory:read` requires the caller to be an administrator (ADR-0021 D3):
+- `attachPermission` and B8 when the permission is among the added ids (matched by its seeded id, added to `RbacSeededPermissionIds` as `USER_DIRECTORY_READ`);
+- `assign` when the target role's permission ids (M14, already read for classification) contain it.
+
+It is keyed by permission id, never by `isSensitive`, and evaluated with A2/A3 from the same M13 read (per role, `RbacAdministrators.isAdministrator`; on set-lock paths from the locked rows). A denial is 403 `RBAC_001`, `DenialReason.NOT_TENANT_ADMIN` (wire `ADMINISTRATOR_REQUIRED`), WARN `RBAC_PII_PERMISSION_GRANT_DENIED` (ids only), no audit row (Decision 7 posture). Config `nexus.rbac.pii-grant-requires-administrator: true`, so D5 can switch it off without a code change.
+
+**Detective (RC-60.2, always on).** When a grant of the permission by a non-administrator **succeeds** (the rule switched off, or a future path), emit after commit WARN `RBAC_PII_PERMISSION_DELEGATED {tenantId, actorUserId, roleId, targetUserId|null}` (ids only, ≥ 1-year retention, RES-6) and `nexus.rbac.pii_permission_delegated` (no tags; ticket).
+
+**Tests:** attach, B8 add and assign of a role carrying the permission by a non-administrator holder give 403 `ADMINISTRATOR_REQUIRED` with the rule on; with the rule off they succeed and emit the WARN and counter exactly once; an administrator's grant emits nothing. The "User Manager" persona can read the directory but cannot delegate it.
 
 ---
 
@@ -536,7 +587,7 @@ public CallerAuthorizationResponse authorization(Authentication authentication);
 | `tenant:write`, `user:write`, `role:write`, `user:role:assign`, `user:directory:read`, `audit:read` | `tenant:read`, `user:read`, `role:read` |
 
 - **Guard tests.** `PermissionsCatalogueTest` (unit): `SENSITIVE ∪ NON_SENSITIVE == ALL` and `SENSITIVE ∩ NON_SENSITIVE == ∅`, so a new catalogue constant that is not classified fails the build. `PermissionsCatalogueIT` (Docker): `ALL` equals the table (existing). `PermissionControllerTest`: the flag equals `SENSITIVE.contains(name)` for every row.
-- It is UX only. No server rule reads `isSensitive`; grant-subset governs.
+- It is UX only. No server rule reads `isSensitive`; grant-subset governs (the RC-60 rule is keyed by permission id, §4.8). **ArchUnit (RC-63(k)):** in `src/main`, `Permissions.SENSITIVE` and `Permissions.NON_SENSITIVE` are referenced only by the `PermissionResponse` mapper.
 
 ---
 
@@ -573,7 +624,7 @@ A new `common.security.CallerFacingDenialReason` enum maps internal `DenialReaso
 
 A mapping test is exhaustive over `DenialReason.values()`, so a new enum value without a mapping fails the build. Metrics and logs keep the internal names (`permission_denied{reason}` is unchanged), so no dashboard breaks.
 
-**Disclosures for the threat model.** `GRANT_EXCEEDS_CALLER` tells a caller without `role:read` that a role holds something they lack (one bit of composition; still never *which*). `ADMINISTRATOR_REQUIRED` on revoke tells the caller the target role is admin-defining (the RES-33 bit). Note that detach, PATCH and DELETE report their administrator-through-another-role failure as `GRANT_EXCEEDS_CALLER` today (`RoleManagementService.java:653`); B8 inherits the same reason. Both need explicit acceptance at Gate 2.
+**Disclosures for the threat model.** `GRANT_EXCEEDS_CALLER` tells a caller without `role:read` that a role holds something they lack (one bit of composition; still never *which*). `ADMINISTRATOR_REQUIRED` on revoke tells the caller the target role is admin-defining (the RES-33 bit). Note that detach, PATCH and DELETE report their administrator-through-another-role failure as `GRANT_EXCEEDS_CALLER` today (`RoleManagementService.java:653`); B8 inherits the same reason. Both need explicit acceptance at Gate 2 (RES-47, Low; threat model T-I22). **RES-33 restated (RC-63(l)):** the throttle's admin-defining-or-self bit is no longer implied by a blocked 403; it is explicit on every target through the 429 `RBAC_011` once an actor is throttled (five audited denials first). **Scope (RC-63(l)):** `CallerFacingDenialReason` is applied only in `handleInsufficientPermission` (`RBAC_001`); the `ACCESS_DENIED` handler never carries a `reason`.
 
 ### 9.3 Throttle as 429
 
@@ -603,7 +654,7 @@ None. The change is additive (`reason`) plus one status change on one branch. Me
 
 ### 9.5 Tests
 
-`GlobalExceptionHandlerTest`: `reason` for each mapping; always present; `requiredPermission` unchanged. `CallerFacingDenialReasonTest`: exhaustive mapping. `RoleAssignmentServiceTest` and throttle ITs: throttled admin-defining or self target gives 429 `RBAC_011` with `Retry-After` within `[1, window]`, no audit row, counter incremented, at most one WARN per window. `RedisRoleChangeThrottleAdapterIT`: `PTTL` path, including Redis down (fail safe). Opaque paths: malformed principal and missing tenant give `reason=UNSPECIFIED`.
+`GlobalExceptionHandlerTest`: `reason` for each mapping; always present; `requiredPermission` unchanged. `CallerFacingDenialReasonTest`: exhaustive mapping. `RoleAssignmentServiceTest` and throttle ITs: throttled admin-defining or self target gives 429 `RBAC_011` with `Retry-After` within `[1, window]`, no audit row, counter incremented, at most one WARN per window. `RedisRoleChangeThrottleAdapterIT`: `PTTL` path, including Redis down (fail safe). Opaque paths: malformed principal and missing tenant give `reason=UNSPECIFIED`. `ACCESS_DENIED` bodies have no `reason` key. Frontend: `api-error.interceptor.spec.ts` asserts that a 429 `RBAC_011` is surfaced as an `AppError` with `retryAfterSeconds` and is **never auto-retried** (RC-63(l)).
 
 ---
 
@@ -627,33 +678,33 @@ None. The change is additive (`reason`) plus one status change on one branch. Me
 static String of(UUID roleId, Collection<UUID> permissionIds);   // "rp1-" + base64url(SHA-256(roleId ‖ ascending permission ids)), unpadded
 ```
 
-It is a **strong** validator over the permission set; the role id is in the input so ETags are not interchangeable between roles. The representation's descriptive fields (names, descriptions, `isSensitive`) are deploy-time constants and are deliberately not hashed. The OpenAPI text says the ETag validates the set, which is what `If-Match` protects. It is served as the `ETag` header on `GET /roles/{roleId}/permissions` and on the PUT's 200. `If-None-Match`/304 is **not** supported (responses are `no-store`); this is stated in the API docs.
+It is a **strong** validator over the permission set; the role id is in the input so ETags are not interchangeable between roles. **It is computable by anyone who knows the ids: a concurrency validator, not a capability or a secret** (RC-55.5, ADR-0027). No authorization decision depends on knowing it, and the server never trusts the client's tag beyond "equals the authorised snapshot" (§10.3). The representation's descriptive fields (names, descriptions, `isSensitive`) are deploy-time constants and are deliberately not hashed. The OpenAPI text says the ETag validates the set, which is what `If-Match` protects. It is served as the `ETag` header on `GET /roles/{roleId}/permissions` and on the PUT's 200. `If-None-Match`/304 is **not** supported (responses are `no-store`); this is stated in the API docs.
 
 The skill says "`@Version` for optimistic locking". This design deviates because neither table is an entity that is loaded and saved (writes are targeted statements, `RoleManagementPort.java:21-24`), and a version column cannot see migration writes. ADR-0027 records the deviation.
 
 ### 10.3 Algorithm
 
-`RoleManagementService.replaceRolePermissions(actor, roleId, targetIds, acceptedEtags, ctx)`, `@Transactional`:
+`RoleManagementService.replaceRolePermissions(actor, roleId, targetIds, ifMatchTag, ctx)`, `@Transactional`. `ifMatchTag` is the **single** strong entity-tag the controller accepted (RC-55.2).
 
 | Step | Action | Outcome on failure |
 |---|---|---|
 | 1 | `resolveRoleInTenant` | 404 `ROLE_NOT_FOUND` (+ cross-tenant WARN) |
 | 2 | `requireMutableRole` | 409 `RBAC_003` |
-| 3 | M15 catalogue; every target id must be in it | 404 `PERMISSION_NOT_FOUND` |
-| 4 | M14 snapshot `S0`; `v0 = version(roleId, S0)`; `v0 ∈ acceptedEtags`? | 412, lock-free |
-| 5 | `adds = T − S0`, `removes = S0 − T`; both empty | **200 no-op**: no lock, no audit, no bump |
-| 6 | `before = isAdminDefining(S0, C)`, `after = isAdminDefining(T, C)`; demotion iff `before` and `removes ≠ ∅`; promotion iff `!before` and `after` | — |
-| 7 | **Snapshot authorization**, one M13 read `H`: L-1 live `role:write` (`RbacSeededPermissionIds.ROLE_WRITE`); A3 `adds ⊆ ∪H`; role-subset when `removes ≠ ∅` (`S0 ⊆ ∪H`, and on demotion administrator through a role other than R, as `requireRoleSubset` does) | 403 `RBAC_001` (`PERMISSION_ABSENT` / `GRANT_EXCEEDS_CALLER`); WARN, no audit (Decision 7) |
-| 8 | **Locks** by the role's *current* class (§10.4): `before` gives set lock, then role row; otherwise role row, then the set lock iff promotion | — |
-| 9 | **Current read** `S1` = `role_permissions` of R `FOR SHARE`; `v1 = version(roleId, S1)`; `v1 ∈ acceptedEtags`? | 412 (a concurrent writer won) |
-| 10 | If the set lock is held on a demotion: the caller is an administrator through a role other than R **per the set lock's rows** (RC-25.1) | 403 `RBAC_001` `GRANT_EXCEEDS_CALLER` |
-| 11 | On promotion: the RBAC_010 provenance check over R's active holders (rows the set lock holds) | 409 `RBAC_010` |
+| 3 | M15 catalogue `C`; every target id must be in it | 404 `PERMISSION_NOT_FOUND` |
+| 4 | M14 snapshot `S0`; `v0 = version(roleId, S0)`. No comparison yet | — |
+| 5 | `adds = T − S0`, `removes = S0 − T`; `before = isAdminDefining(S0, C)`, `after = isAdminDefining(T, C)`; demotion iff `before` and `removes ≠ ∅`; promotion iff `!before` and `after` | — |
+| 6 | **Snapshot authorization, always, before any state is revealed** (RC-58.1), one M13 read `H`: L-1 live `role:write` (`RbacSeededPermissionIds.ROLE_WRITE`) **and live `role:read`** (◆ RC-58.4); A3 `adds ⊆ ∪H`; the PII grant rule when `adds` contains `user:directory:read` (§4.8); role-subset when `removes ≠ ∅` (`S0 ⊆ ∪H`, and on demotion administrator through a role other than R, as `requireRoleSubset` does) | 403 `RBAC_001` (`PERMISSION_ABSENT` / `GRANT_EXCEEDS_CALLER` / `ADMINISTRATOR_REQUIRED`); WARN, no audit (Decision 7) |
+| 7 | `ifMatchTag = v0`? If not, 412. Then, if `adds` and `removes` are both empty, **200 no-op** (authorised by step 6): no lock, no audit, no bump | 412 (no state in the body), lock-free |
+| 8 | **Locks** by the role's *current* class (§10.4): `before` gives set lock, then role row; otherwise role row, then the set lock iff promotion | 404 `ROLE_NOT_FOUND` if the role row is gone |
+| 9 | **Current read** `S1` = `role_permissions` of R `FOR SHARE`; `v1 = version(roleId, S1)`; **if `v1 ≠ v0` → 412** (a concurrent writer won). `v0` is the snapshot version that steps 5–7 used; membership of `v1` in anything the client sent is never sufficient (RC-55.1) | 412 (no state in the body) |
+| 10 | If the set lock is held: re-derive which locked roles are admin-defining **now**, from `SELECT role_id, permission_id FROM role_permissions WHERE role_id IN (:lockedRoleIds) FOR SHARE` against `C` (RC-57.1; an uncommitted detach on another role is waited for, then seen). On a demotion, the caller must hold a locked `user_roles` row of a role other than R that is admin-defining **in this current read** (RC-25.1 + RC-57.1) | 403 `RBAC_001` `GRANT_EXCEEDS_CALLER` |
+| 11 | On promotion: the RBAC_010 provenance check over R's active holders (rows the set lock holds), "is an administrator" judged against step 10's current admin-defining set | 409 `RBAC_010` |
 | 12 | Delete `removes` (one bulk statement; affected rows must equal the size of `removes`, else `IllegalStateException`, 500), insert `adds` | — |
-| 13 | Audit inline: one `ROLE_PERMISSION_GRANTED` per add and one `ROLE_PERMISSION_REVOKED` per remove (ADR-0024 Group A, throws on failure) | 500 `INTERNAL_ERROR`, full rollback |
-| 14 | After commit: if `removes ≠ ∅`, `invalidateHolders` once (the epoch bump also evicts the old-epoch cache entry); else if `adds ≠ ∅`, evict holders once; attach signals (rows 13 and 14) computed once for the added set; INFO `RBAC_PERMISSION_SET_REPLACED` | Same failure semantics as detach/attach (bounded replay queue) |
+| 13 | Audit inline: one `ROLE_PERMISSION_GRANTED` per add and one `ROLE_PERMISSION_REVOKED` per remove (ADR-0024 Group A, throws on failure); metadata `operation=REPLACE` and a server-generated `replaceId` (UUIDv7, RC-63(f)) | 500 `INTERNAL_ERROR`, full rollback |
+| 14 | After commit: if `removes ≠ ∅`, `invalidateHolders` once (the epoch bump also evicts the old-epoch cache entry); else if `adds ≠ ∅`, evict holders once; attach signals (rows 13 and 14) computed once for the added set; on a demotion, WARN `RBAC_ROLE_CEASED_ADMIN_DEFINING {tenantId, roleId, holderCount}` and `nexus.rbac.role_ceased_admin_defining` (ticket, RC-63(f)); the committed-state detector (§10.9); the PII delegation WARN when applicable (§4.8); INFO `RBAC_PERMISSION_SET_REPLACED` | Same failure semantics as detach/attach (bounded replay queue) |
 | 15 | Return `T` and `v2 = version(roleId, T)` | 200 + `ETag` |
 
-**Why `v1 = v0` makes steps 6 and 7 valid under the lock:** SHA-256 collision resistance means `S1 = S0`, so the classification and the role-side inputs of step 7 are unchanged. The caller's own holdings `H` can still change concurrently; that is RES-27 (snapshot TOCTOU, milliseconds), exactly as for attach and detach, except that on the set-lock path the administrator answer comes from locked rows (step 10).
+**Why the step 9 check makes steps 5–7 valid under the lock (rewritten, RC-55.3):** step 9 tests `v1 = v0`, where `v0` is the version of the very snapshot `S0` from which adds, removes, `before`, `after`, the lock path and the step 6 authorization were computed. SHA-256 collision resistance then gives `S1 = S0`: the locked, current state is the state that was classified and authorised, so no decision rests on a state the server did not check. The client's tag enters only at step 7, where it must equal `v0` too; a client therefore cannot make the server accept a state other than the one it authorised by sending several tags (the header takes exactly one, §10.5). The caller's own holdings `H` can still change concurrently. That is **RES-27, restated for B8 (RC-63(b))**: the window runs from the transaction's first consistent read to the end of the role-row wait, which another B8, a PATCH, a DELETE or a slow attach can extend up to `innodb_lock_wait_timeout` (50 s default), not milliseconds. The stake is non-admin-defining roles only, because on the set-lock path the administrator answer comes from locked rows and a current read (step 10); Low. The optional per-transaction `SET SESSION innodb_lock_wait_timeout` is **not adopted**: a session variable outlives the transaction on a pooled connection and would leak to the next borrower.
 
 **Locks only after authorization.** Steps 1–7 lock nothing, so an unauthorized caller never takes the role-row lock or the set lock. That is ADR-0018's follow-on rule ("a lock taken before an authorization decision must be bounded") honoured by construction, which is why B8 needs no throttle.
 
@@ -672,7 +723,7 @@ sequenceDiagram
     C->>RC: PUT /roles/R/permissions If-Match etag body permissionIds
     RC->>RC: Parse body and If-Match, 400 or 428
     RC->>S: replaceRolePermissions
-    S->>S: Steps 1 to 7, snapshot reads only, no locks
+    S->>S: Steps 1 to 7, snapshot reads only, 403 before 412 or no-op, no locks
     alt R is admin-defining now
         S->>UR: Set lock M10 then M11, one ascending FOR UPDATE statement
         S->>R: SELECT id FOR UPDATE, X lock on the role row
@@ -683,11 +734,14 @@ sequenceDiagram
         end
     end
     S->>RP: SELECT permission_id FOR SHARE, current read
-    alt current version not in If-Match
+    alt current version differs from snapshot version v0
         S-->>RC: PreconditionFailedException
-        RC-->>C: 412 PRECONDITION_FAILED
-    else versions match
-        S->>S: Steps 10 and 11 from locked rows
+        RC-->>C: 412 PRECONDITION_FAILED, no state in body
+    else current version equals v0
+        opt set lock held
+            S->>RP: FOR SHARE read of locked roles, current admin-defining set
+        end
+        S->>S: Steps 10 and 11 from locked rows and the current set
         S->>RP: DELETE removes, INSERT adds
         S->>AU: One audit row per change, inline
         S-->>RC: New set and new version
@@ -707,17 +761,20 @@ sequenceDiagram
 | softDelete R, admin-defining | set lock, role row X, `user_roles(R)` FOR UPDATE (already held) | set lock, role row X | No: same first lock |
 | softDelete R, not admin-defining | role row X, then `user_roles(R)` FOR UPDATE | role row X first | No: same first lock |
 | PATCH R | role row X (UPDATE), then audit insert | … role row X | No: PATCH requests nothing after the row |
-| attach to R | `role_permissions` insert (insert intention), audit insert | role row, then `role_permissions` FOR SHARE | No: attach holds at most its own new row and requests no lock B8 holds on `roles` or `user_roles`. If attach inserted first, B8's current read waits for its commit and then sees it (412). If B8 read first, attach's insert waits for B8's commit: serial order B8, then attach |
-| detach from R | `role_permissions` delete (record X), audit | same as attach | No, same reasoning |
+| attach to R (corrected, T-T24, RC-63(a)) | `role_permissions` insert, whose `fk_role_permissions_role` parent check takes **S on R's `roles` row**; then (RC-56.3) a current `FOR SHARE` read of R's `role_permissions`; audit insert | role row X, then `role_permissions` FOR SHARE | No, **provided InnoDB runs the FK parent check before the clustered-index insert** [INFERENCE]: attach then waits on B8's role-row X before it holds any `role_permissions` record, and proceeds after B8 commits (serial order B8, then attach). If attach's S was granted first, B8's role-row X waits for attach's commit. Otherwise attach would hold its new record X while waiting on `roles`, and B8's `FOR SHARE` would close a cycle. **Proven by the concurrency IT, B8 ∥ attach in both arrival orders, as `nexus_app`, asserting no 1213 outside RES-45** |
+| attach queued behind a **B8 promotion** or a B8 that leaves R one short (RC-56.1) | as above; its A3 and "completes the catalogue" classification come from a snapshot taken **before** the wait | B8 commits first | No cycle. **Semantic gap:** without RC-56.3 the attach commits on its pre-wait classification and can complete the catalogue with no `RBAC_010` check. With RC-56.3, its post-insert current read sees the completion and rolls back with 409 `RBAC_012` (§10.9) |
+| assign queued behind a **B8 promotion** of R (RC-56.1) | role row S (`INSERT … SELECT`), which waits on B8's role-row X, then `user_roles` insert; A2 and classification from the pre-wait snapshot | B8 commits first | No cycle. **Semantic gap:** without RC-56.2 the assign gives an admin-defining R to a holder chosen by a possibly non-administrator assigner, after B8's `RBAC_010` check. With RC-56.2, its post-insert current read sees R is admin-defining and rolls back with 409 `RBAC_012`; the retry takes the set-lock path (A4, A2, `RBAC_010` scope) (§10.9) |
+| detach from R | `role_permissions` delete (record X; no FK parent check on delete), audit | role row X, then `role_permissions` FOR SHARE | No: detach holds one record and requests no lock B8 holds. If detach deleted first, B8's current read waits for its commit and then sees it (412). If B8 read first, the delete waits for B8's commit |
+| revoke, softDelete after RC-57.2 | set lock, then a `FOR SHARE` read of `role_permissions` for the locked role ids, then their writes | — | No: each new `FOR SHARE` comes after the requester's `user_roles` or `roles` locks, and no `role_permissions` writer waits on `user_roles` or `roles` while holding a record (the T-T24 condition) |
 | B8 on R, concurrently | identical order | — | No: serialised on the first lock |
 | B8 on R2 | role row R2 and/or set lock | — | No: different role rows; set-lock statements are ascending |
 | break-glass grant | set lock (as assign) | — | No |
 
-**What attach and detach get.** They are not ETag-aware and take no role-row lock (RES-28 reasoning, US-018 §5.1 row 19). The current read's record and gap locks still serialise them against B8, so **B8 never overwrites a concurrent attach or detach that it did not see**: either it sees the write and returns 412, or the write lands after B8 commits. The next editor's PUT then gets 412.
+**What attach and detach get.** They are not ETag-aware. Attach waits on B8's role row through its FK parent check; detach is serialised by the current read's record locks. So **B8 never overwrites a concurrent attach or detach that it did not see**: either it sees the write and returns 412, or the write lands after B8 commits, and then RC-56's post-insert re-classification and the committed-state detector (§10.9) cover the classification it committed on. The next editor's PUT gets 412.
 
-**Residuals for the threat model (both recorded, neither accepted by this design):**
-- **RES-45, extended to B8 (Low).** Lock order is chosen from a non-locking classification. A concurrent attach or detach that flips R's class between B8's step 6 and another request's classification can put the two in different orders, and InnoDB then kills one with 1213 (a 500). Integrity holds. If the flip committed before B8's step 4, B8 returns 412 lock-free. The trigger is three concurrent admin-only calls on one role.
-- **RES-28, extended (Low).** A B8 demotion of R, authorized because the caller is an administrator through R2, racing a detach that demotes R2 (detach takes no set lock), can end with zero administrators. B8 takes R2's administrator status from the set lock's rows, but R2's *admin-defining classification* comes from non-locking M10'. It is detected by the zero-admin health indicator (it pages) and recoverable by break-glass where a system `TENANT_ADMIN` exists. A single B8 can never reach zero on its own.
+**Residuals (recorded; corrected per RC-57.3):**
+- **RES-45, extended (Low).** Lock order is chosen from a non-locking classification. A concurrent attach or detach that flips R's class between B8's step 5 and another request's classification can put the two in different orders, and InnoDB then kills one with 1213 (a 500). Integrity holds. If the flip committed before B8's step 4, B8 returns 412 lock-free. With RC-56.3, two racing catalogue-completing attaches also deadlock: one 1213 victim, intended; the retry meets `RBAC_010`. Revisit if the 1213 rate is non-zero.
+- **RES-28, re-scoped (corrected).** The earlier text here ("racing a detach … a single B8 can never reach zero on its own") named the wrong bound. **One administrator sending two concurrent demotions** (PUT R − x and PUT R2 − y, each authorised through the other role) reached zero administrators deterministically, because the set lock serialised the two but each classified the other role from its pre-lock M10' read; a B8 demotion followed by a queued revoke of the last other administrator did the same. **With RC-57.1 (step 10) and ◆ RC-57.2 (adopted, §10.9), all three set-lock verbs classify the locked roles from a current read under the lock, so these paths are closed**, and B8 against an uncommitted detach waits and then sees it. RES-28 **remains only for detach ∥ detach** (detach takes no set lock): one actor can trigger it with two requests, so it is **single-actor-triggerable, not race-only** (the same correction applies to US-018's RES-28 text). Low; the zero-admin health indicator pages; break-glass recovers it where a system `TENANT_ADMIN` exists (RES-41 otherwise).
 
 **`nexus_app` privileges (what an IT must prove).** `nexus_app` holds `SELECT, INSERT` plus column-scoped `UPDATE (name, description, deleted_at)` on `roles`, and `SELECT, INSERT, DELETE` on `role_permissions` (`02-grants-post-schema.sql:32-33`, `:39`). MySQL requires `SELECT` plus one of `UPDATE`, `DELETE` or `LOCK TABLES` for a locking read. **No grant changes**, and the following are proven by connecting **as `nexus_app`** (never the Testcontainers superuser, the US-016 D5 trap):
 
@@ -725,6 +782,7 @@ sequenceDiagram
 |---|---|---|
 | `RolesPrivilegeIT` (new case) | `SELECT id FROM roles WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL FOR UPDATE` | Succeeds; a second `nexus_app` connection running the same statement blocks until the first commits (short `innodb_lock_wait_timeout`) |
 | `RolePermissionsPrivilegeIT` (new case) | `SELECT permission_id FROM role_permissions WHERE role_id = ? FOR SHARE` | Succeeds (DELETE is held) |
+| `RolePermissionsPrivilegeIT` (new case, RC-57.1) | `SELECT role_id, permission_id FROM role_permissions WHERE role_id IN (…) FOR SHARE` | Succeeds |
 | both | `SHOW GRANTS FOR 'nexus_app'` | Unchanged |
 
 The `user_roles` precedent (`UserRolesPrivilegeIT.java:133-151`) shows a column-scoped `UPDATE` is accepted, so the first row is expected to pass. **Fallback, if it does not:** take the role-row X lock with a guarded no-op `UPDATE roles SET name = name WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL` (needs only `UPDATE (name)`; InnoDB X-locks the matched row; MySQL does not fire `ON UPDATE` for an unchanged row). Its IT must then also assert `updated_at` is unchanged and that the matched-row count is 1 under the configured driver (Connector/J reports found rows by default; `application.yml:23` sets no `useAffectedRows`).
@@ -734,17 +792,19 @@ The `user_roles` precedent (`UserRolesPrivilegeIT.java:133-151`) shows a column-
 ```java
 boolean lockRoleRow(UUID roleId, UUID tenantId);          // false = gone (deleted or missing) -> 404
 Set<UUID> lockPermissionIdsForRole(UUID roleId);          // FOR SHARE current read, native
+// UserRoleAssignmentPort, shared with revoke and softDelete (RC-57):
+List<RolePermissionRef> lockRolePermissionsForRoles(Collection<UUID> roleIds);   // FOR SHARE, native
 int detachPermissions(UUID roleId, Collection<UUID> permissionIds);
 void attachPermissions(UUID roleId, Collection<UUID> permissionIds);
 ```
 
-The set lock reuses `RoleAssignmentService.resolveAdminDefiningRoleIds` and `buildAscendingLockSet` through the existing `acquireSetLockBeforeRoleRow` helper, refactored to return the locked holders so steps 10 and 11 can use them. **MC-A** (no locks on M13–M15, M10') is untouched: the two new locking statements are new methods, named `lock…`. A deleted role found at `lockRoleRow` (a concurrent DELETE committed) gives 404 `ROLE_NOT_FOUND`.
+The set lock reuses `RoleAssignmentService.resolveAdminDefiningRoleIds` and `buildAscendingLockSet` through the existing `acquireSetLockBeforeRoleRow` helper, refactored to return the locked holders so steps 10 and 11 can use them, followed by `lockRolePermissionsForRoles` over the locked role ids for step 10's current classification. **MC-A** (no locks on M13–M15, M10') is untouched: the three new locking statements are new methods, named `lock…`. A deleted role found at `lockRoleRow` (a concurrent DELETE committed) gives 404 `ROLE_NOT_FOUND`.
 
 ### 10.5 API contract
 
 ```
-PUT /api/v1/roles/{roleId}/permissions          @RequiresPermission(ROLE_WRITE), us015
-If-Match: "rp1-…"                               required
+PUT /api/v1/roles/{roleId}/permissions          @RequiresPermission(ROLE_WRITE), us015; live role:read and role:write (step 6)
+If-Match: "rp1-…"                               required, exactly one strong entity-tag
 Content-Type: application/json
 { "permissionIds": [ "uuid", … ] }              @NotNull, @Size(max = 100), each canonical UUID, no duplicates
 
@@ -753,41 +813,63 @@ Content-Type: application/json
 
 | Status | `code` | When |
 |---|---|---|
-| 200 | — | Applied, or a no-op (same body and ETag as a GET) |
-| 400 | `VALIDATION_FAILED` | Malformed path UUID; body missing or not JSON; `permissionIds` null, more than 100, a malformed element (`details.field = permissionIds[i]`), or duplicates |
+| 200 | — | Applied, or an authorised no-op (same body and ETag as a GET) |
+| 400 | `VALIDATION_FAILED` | Malformed path UUID; body missing or not valid JSON (RC-59 handler, message never logged); `permissionIds` null, more than 100, a malformed element (`details.field = permissionIds[i]`), or duplicates |
 | 401 | `AUTH_003` | — |
-| 403 | `RBAC_001` (`reason` per §9.2) | No `role:write`; L-1; A3 on adds; role-subset on removes; administrator-through-another-role on demotion |
+| 403 | `RBAC_001` (`reason` per §9.2) | No `role:write`; L-1 (live `role:write`); no live `role:read` (◆ RC-58.4); A3 on adds; PII grant rule (§4.8); role-subset on removes; administrator-through-another-role on demotion (snapshot, then locked rows and current classification) |
+| 415 | `UNSUPPORTED_MEDIA_TYPE` | Not `application/json` |
 | 404 | `ROLE_NOT_FOUND` / `PERMISSION_NOT_FOUND` | Role missing, deleted or other tenant; an id that is not in the catalogue |
 | 409 | `RBAC_003` / `RBAC_010` | System role; promotion while a holder was assigned by a non-administrator |
-| 412 | `PRECONDITION_FAILED` | The current set's ETag is not in `If-Match` (weak tags never match: strong comparison, RFC 9110 §13.1.1) |
-| 428 | `PRECONDITION_REQUIRED` | `If-Match` absent, `*`, or unparseable |
+| 412 | `PRECONDITION_FAILED` | The `If-Match` tag is not the snapshot version `v0`, or the locked current state differs from `v0`. **The body carries no ETag, no permission ids and no count** (RC-58.2) |
+| 428 | `PRECONDITION_REQUIRED` | `If-Match` absent, `*`, a list of more than one tag, weak-only, empty or unparseable (RC-55.2). **The body carries no state** |
 | 500 | `INTERNAL_ERROR` | Audit write failed (rolled back); 1213 deadlock victim (RES-45) |
 
-**Order of checks:** 400, then 428 (no DB access), then 404 role, then 409 `RBAC_003`, then 404 permission, then 412 (snapshot), then 403, then locks, 412 (current), 403 (locked rows), 409 `RBAC_010`. A 403 precedes the 409 `RBAC_010`, as in attach.
+**Order of checks (RC-58.1):** 400, then 428 (no DB access), then 404 role, then 409 `RBAC_003`, then 404 permission, **then 403 (step 6: L-1, live `role:read`, A3 on adds, PII grant rule, role-subset on removes, the administrator rule on demotion)**, then 412 (snapshot, step 7), then the no-op 200, then the locks, 412 (current, step 9), 403 (locked rows and current classification, step 10), 409 `RBAC_010`. A caller who is not authorised for the replace therefore learns nothing about R's state (no 412-versus-200 oracle), and a no-op is authorised. A 403 precedes the 409 `RBAC_010`, as in attach.
 
 **Empty set:** legal on a custom role (grants nothing, ADR-0021 D2). On an admin-defining role it is a demotion and needs the administrator-through-another-role rule.
 
-**`If-Match` parsing** is in the controller (`IfMatchHeader.parse(String raw)`, `interfaces.rest`): a comma-separated list of entity tags, strong tags kept, weak tags kept as non-matching; `*` or empty raises `PreconditionRequiredException`. `@RequestHeader(name = "If-Match", required = false) String`: a missing required header would raise `MissingRequestHeaderException`, which `GlobalExceptionHandler` maps to 500 (no handler), so the header is optional at binding and checked in code. `@RequestHeader` is allowed here; the ArchUnit ban applies only to `@AuthenticatedEndpoint` handlers.
+**`If-Match` parsing** is in the controller (`IfMatchHeader.parse(String raw)`, `interfaces.rest`): it accepts **exactly one** strong entity-tag and returns it. A list of more than one tag, `*`, a weak-only value, an empty or an unparseable header raises `PreconditionRequiredException` (RC-55.2). RFC 9110 permits a list; this API narrows it on purpose, because the editor never needs one and a list would let a client offer the versions of several states. `@RequestHeader(name = "If-Match", required = false) String`: the header stays optional at binding so that its absence is a 428 decided in code (RC-59 maps `MissingRequestHeaderException` to 400 elsewhere, which would be the wrong status here). `@RequestHeader` is allowed here; the ArchUnit ban applies only to `@AuthenticatedEndpoint` handlers.
 
 **ETag on GET:** `listRolePermissions` returns `RolePermissionSet(roleId, List<PermissionView>, String version)`; the controller sets the header. The version is computed from the same read as the body.
 
 ### 10.6 Audit (Q-D21)
 
-One existing Group A event per change (`recordRolePermissionGranted`/`Revoked`), inline, in the same transaction (ADR-0024). `RoleAuditEvent`'s metadata gains `operation=REPLACE`. The rows of one PUT already share the request's correlation id (`RequestContext`, `RbacControllerSupport.java:97-99`), which is the grouping key reviewers use. A no-op writes nothing. A denied PUT writes nothing (attach/detach posture, Decision 7).
+One existing Group A event per change (`recordRolePermissionGranted`/`Revoked`), inline, in the same transaction (ADR-0024). `RoleAuditEvent`'s metadata gains `operation=REPLACE` and a **server-generated `replaceId`** (UUIDv7, one per PUT), which is the grouping key reviewers use (RC-63(f)). The rows also share the request's correlation id (`RequestContext`, `RbacControllerSupport.java:97-99`), but that id is client-controllable (`X-Correlation-Id`), so it is not relied on for grouping. A no-op writes nothing. A denied PUT writes nothing (attach/detach posture, Decision 7).
 
 ### 10.7 CORS and handlers
 
 - `SecurityConfig.corsConfigurationSource`: `allowedHeaders` adds `If-Match` (`:209`); `exposedHeaders` adds `ETag` (`:213`). This matters in dev only (cross-origin `:2000` to `:1000`, `environment.development.ts:42`); prod is same-origin. `SecurityConfigWebTest` asserts both lists.
-- `common.domain.PreconditionFailedException` and `PreconditionRequiredException` (extend `DomainException`), and two `@ExceptionHandler`s built with the existing `problem(…)` helper. DEBUG logging; counter `nexus.rbac.permission_replace{outcome=precondition_failed|precondition_required}` is incremented in the service and controller, not the handler (keeps `common.web` context-free).
+- `common.domain.PreconditionFailedException` and `PreconditionRequiredException` (extend `DomainException`), and two `@ExceptionHandler`s built with the existing `problem(…)` helper. DEBUG logging; counter `nexus.rbac.permission_replace{outcome=precondition_failed|precondition_required}` is incremented in the service and controller, not the handler (keeps `common.web` context-free). The 412 and 428 bodies contain only the standard problem fields (`type`, `title`, `status`, `detail`, `instance`, `code`, `traceId`); no ETag, ids or counts (RC-58.2).
+- **Protocol and body handlers (RC-59.1)** in `GlobalExceptionHandler`, each logging `errorType` and `errorCode` only, **never `getMessage()` or the cause**:
+  - `HttpMessageNotReadableException` → 400 `VALIDATION_FAILED`, detail "Request body is not valid JSON.";
+  - `HttpMediaTypeNotSupportedException` → 415 `UNSUPPORTED_MEDIA_TYPE`;
+  - `HttpRequestMethodNotSupportedException` → 405 `METHOD_NOT_ALLOWED` (with the `Allow` header Spring computes);
+  - `MissingRequestHeaderException` → 400 `VALIDATION_FAILED` (the field is the header name, never its value).
+
+  They apply platform-wide, which also turns today's 500s for malformed attach and assign bodies into 400s (the workaround at `AttachPermissionRequest.java:11-12` stays harmless). `GlobalExceptionHandlerTest` asserts the statuses and, with `OutputCaptureExtension`, that a parse error's token never reaches the log.
 
 ### 10.8 Tests (S3c)
 
-- `RolePermissionReplaceIT` (Docker): one item violates grant-subset, so the whole request is 403 and no `role_permissions` or `auth_events` row changes (story scenario 14); no-op is 200 with no audit rows and no epoch bump (Redis key unchanged); empty set on a custom role; 412 with an old ETag; 428 without and with `*`; weak tag gives 412; unknown id gives 404; system role gives 409; demotion by an administrator through another role succeeds and bumps holders once; promotion with a non-admin-assigned holder gives 409 `RBAC_010`; audit failure (US-018 TS-5 trigger) gives 500 and no change; the GET `ETag` equals the PUT's returned ETag.
-- `RolePermissionReplaceConcurrencyIT` (Docker), 50 iterations each, **never a 500** except where it is RES-45: (a) two PUTs with the same `If-Match`: exactly one 200 and one 412; (b) PUT versus attach: the final state is one of the two serial orders; (c) PUT versus detach; (d) PUT promoting R versus softDelete of R; (e) PUT demoting R versus assign to R; (f) PUT versus revoke of a holder of R.
-- **Harness C** (the set-lock exit gate) re-run with a B8 demotion thread and a B8 promotion thread added.
-- The two privilege ITs in §10.4.
-- Unit: `RolePermissionSetVersionTest` (order independence, role id included, stable vectors); `IfMatchHeaderTest`; `RoleManagementServiceTest` for each step's denial (Mockito: unstubbed M13 means deny, US-018 §15.1).
+- `RolePermissionReplaceIT` (Docker): one item violates grant-subset, so the whole request is 403 and no `role_permissions` or `auth_events` row changes (story scenario 14); no-op is 200 with no audit rows and no epoch bump (Redis key unchanged); empty set on a custom role; 412 with an old ETag, and its body has no ETag, ids or count; 428 without, with `*`, with two tags, and with a weak-only tag; **RC-58.3:** a `role:write` holder who lacks one of R's permissions gets 403 for every combination of body and `If-Match` that removes something, never 412 or 200; a caller whose live M13 lacks `role:write` (or `role:read`) gets 403 on a no-op; unknown id gives 404; system role gives 409; demotion by an administrator through another role succeeds and bumps holders once; promotion with a non-admin-assigned holder gives 409 `RBAC_010`; audit failure (US-018 TS-5 trigger) gives 500 and no change; the GET `ETag` equals the PUT's returned ETag.
+- `RolePermissionReplaceConcurrencyIT` (Docker), 50 iterations each, **never a 500** except where it is RES-45: (a) two PUTs with the same `If-Match`: exactly one 200 and one 412; (b) PUT versus attach: the final state is one of the two serial orders; (c) PUT versus detach; (d) PUT promoting R versus softDelete of R; (e) PUT demoting R versus assign to R; (f) PUT versus revoke of a holder of R; **(g) (RC-55.4)** a PUT with `If-Match: v(S0)` while an attach commits between the snapshot and the lock gives 412, with no `role_permissions` or `auth_events` change. Case (b) runs B8 ∥ attach in **both arrival orders, as `nexus_app`**, asserting no 1213 outside RES-45 (RC-63(a), T-T24).
+- **Harness C** (the set-lock exit gate) re-run with a B8 demotion thread and a B8 promotion thread added, plus **RC-56.7:** attach p ∥ attach q on a role two permissions short with a non-administrator-assigned holder (never both succeed); B8 (+q) then a queued attach of p (409 `RBAC_012`); an assign queued behind a B8 promotion (409 `RBAC_012`; never a non-administrator-assigned holder on an admin-defining R); and **RC-57.4:** two B8 demotions by one caller holding R and R2 (exactly one succeeds; zero administrators never reached); a B8 demotion ∥ a revoke of the last other administrator (the lockout holds).
+- The privilege ITs in §10.4.
+- Unit: `RolePermissionSetVersionTest` (order independence, role id included, stable vectors); `IfMatchHeaderTest` (exactly one strong tag; **two tags rejected with 428**, RC-55.4); `RoleManagementServiceTest` asserting step 9 compares `v1` to `v0` (a stub returning a different but client-offered version gives 412); `RoleManagementServiceTest` for each step's denial (Mockito: unstubbed M13 means deny, US-018 §15.1).
 - Lock-hold re-baseline: the existing `nexus.rbac.privileged_revoke_lock_hold` timer gains `operation="replace"`.
+
+### 10.9 Changes to US-018 code paths for B8's safety (RC-56, RC-57)
+
+These change shipped US-018 verbs, because B8 makes their races deterministic. They land in **S3c** (◆ RC-56.5 and ◆ RC-57.2, §0).
+
+**Assign, non-admin-defining path (RC-56.2).** After the conditional `INSERT … SELECT` (which may have waited on a B8's role-row lock), `assign` runs a current read `SELECT permission_id FROM role_permissions WHERE role_id = ? FOR SHARE` and compares with M15. If R is now admin-defining, it throws `RoleClassificationChangedException` (409 `RBAC_012`, detail "The role changed while your request was waiting. Try again."), which rolls back the insert; no audit row is written (the success audit is inline and is never reached). On retry the set-lock path applies, with A4, A2 and the administrator answer from locked rows. Cost: one indexed current read per non-admin-defining assign. Lock order: the read comes after the role-row S and the `user_roles` insert, and no `role_permissions` writer waits on `roles` or `user_roles` while holding a record (T-T24 condition), so no cycle.
+
+**Attach (RC-56.3).** After its INSERT, the same current read of R's `role_permissions` (it now includes the new row). If the committed state plus this row completes the catalogue while the snapshot said it did not (`becameAdminDefining` was false), throw the same 409 `RBAC_012`. On retry the snapshot sees the completion and `RBAC_010` (D8) applies. Two racing catalogue-completing attaches block on each other's uncommitted rows through their current reads and deadlock: one 1213 victim (RES-45 extended); the survivor's current read still sees only its own completion if the victim rolled back.
+
+**Committed-state detector (RC-56.4).** In the existing after-commit read-only transaction (`readAfterCommit`), after attach, B8 and assign: if R is admin-defining **now** and has an active holder whose `assigned_by` is not currently an administrator, emit WARN `RBAC_ADMIN_DEFINING_ROLE_HAS_NON_ADMIN_ASSIGNED_HOLDER {tenantId, roleId, holderCount, nonAdminAssignedCount}` (ids and counts only) and `nexus.rbac.admin_defining_role_non_admin_assigned_holder` (no tags, **no tenant tag**). **Pages.** It reuses the reads of row 13's provenance signal (`findActiveHoldersForRole`, the tenant's administrator user set), so it adds no statement on attach; on assign it runs only when the assigned role is admin-defining after commit. It is the backstop for any path the preventive checks miss.
+
+**Revoke and softDelete classify under the lock (◆ RC-57.2).** After the set lock, `revoke`'s administrator requirement (`requireAdministratorFromSetLock`) and its lockout (`wouldLeaveTenantWithoutAdministrator`), and `softDeleteRole`'s admin-defining path, take the admin-defining set from `lockRolePermissionsForRoles(lockedRoleIds)` (current, `FOR SHARE`) instead of the pre-lock M10' result. This closes "B8 demotes R, then a queued revoke of the last other administrator counts R's holders as administrators". The break-glass grant, which also takes the set lock, adopts the same read so that one rule holds for every set-lock verb (ADR-0021 Revision 3 follow-on rule).
+
+**Tests:** `RoleAssignmentServiceTest` and `RoleManagementServiceTest` (409 `RBAC_012` on a stubbed post-insert completion; no audit call); the RC-56.7 and RC-57.4 harness cases (§10.8); a detector unit test (WARN and counter on a forced state, nothing for administrator-assigned holders); `LastAdminLockoutIT` outcome scenarios unchanged.
 
 ---
 
@@ -884,6 +966,7 @@ All are standalone with OnPush by default (no `standalone`/`changeDetection` in 
 | `NxTable` (A4) | existing | new: `stickyHeader` (false), `caption`, `captionVisuallyHidden`; `CellType` adds `'custom'`; cell templates via a content-projected `<ng-template nxTableCell="key" let-row>` directive (`NxTableCellDef`) | — | `<caption>`; the sticky header sits in its own scroll container with `scroll-padding-top`, so a focused row is never hidden under it (WCAG 2.4.11). Existing inputs and outputs unchanged; the only consumer is the preview |
 
 - **ADR-0004 enforcement:** an ESLint `no-restricted-imports` rule forbids `@angular/material/*` and `@angular/cdk/*` outside `src/app/shared/ui/**` (impact: ESLint does not enforce it today). One config change; existing code complies.
+- **Dependency and sink hygiene (RC-62, T-T23, OWASP A06).** The production graph today carries `@angular/*` 22.0.4 advisories (GHSA-hh8m-fm6v-7cvg, sanitization bypass via directive host bindings; GHSA-p297-fm68-3q8c; GHSA-ff3f-86qr-9cv3, SSR-only). These wrappers add the directives and bindings US-020 will feed attacker-chosen directory emails and free-text descriptions. Therefore, in S2 and **before the S2c directives merge**: (1) upgrade `@angular/*` to ≥ 22.2.0 and re-run `npm audit --omit=dev`, which must report no high or critical finding; (2) record the toolchain-only criticals (`@angular/build`, `tar`, `piscina`, `proxy-addr`) with the Frontend Tech Lead as owner and a review date; (3) add an ESLint rule (`no-restricted-syntax` on template and TS AST) forbidding `[innerHTML]`, `[outerHTML]`, `bypassSecurityTrust*` and `nativeElement.innerHTML` in `src/app/**`, with an empty allow-list. Interpolation stays the only way to render directory or description text.
 - **Unit axe (Q-D24):** `axe-core` becomes an explicit devDependency at the version `@axe-core/playwright` already resolves. `shared/testing/axe.ts` exports `expectNoAxeViolations(fixture, options?)`, which runs tags `wcag2a`, `wcag2aa`, `wcag21aa`, `wcag22aa` and fails on any **critical or serious** violation. `color-contrast` is disabled in jsdom (no layout engine). **Contrast** is covered by `e2e/design-system.a11y.spec.ts`, which runs axe on `/design-system` with `colorScheme: 'light'` and `'dark'`.
 - **Manual WCAG 2.2 checks** (axe cannot fully cover them): 2.4.11 focus not obscured (sticky header, shell header), 2.5.8 target size (icon buttons are at least 24 px from tokens). A checklist goes in the PR template for S2.
 
@@ -911,9 +994,10 @@ No code change expected. `api-error.interceptor.spec.ts` must cover both branche
 ### 12.9 A10 `returnUrl` (S5a)
 
 - `authGuard`'s failure branch returns `createUrlTree(['/auth/login'], { queryParams: { returnUrl: state.url } })`. `permissionGuard` still reflects nothing (`permission.guard.ts:71-74`).
-- `core/routing/safe-return-url.ts`: `safeReturnUrl(raw: string | null): string`, a pure function. It decodes once (a failure falls back), then accepts only a value that starts with `/`, whose second character is not `/` or `\`, that contains no `\`, no control characters and no `:` before the first `?` or `#`, that does not start with `/auth/`, and whose `new URL(value, location.origin).origin` equals `location.origin`. Anything else returns `/dashboard`.
+- `core/routing/safe-return-url.ts`: `safeReturnUrl(raw: string | null): string`, a pure function. **It performs no decoding of its own** (`queryParamMap` has already decoded once; a second decode would validate one string and navigate another, RC-63(i)), and it returns exactly the string it validated. It accepts only a value that starts with `/`, whose second character is not `/` or `\`, that contains no `\`, no control characters and no `:` before the first `?` or `#`, that does not start with `/auth/`, and whose `new URL(value, location.origin).origin` equals `location.origin`. Anything else returns `/dashboard`.
 - `LoginFormComponent` navigates with `router.navigateByUrl(safeReturnUrl(route.snapshot.queryParamMap.get('returnUrl')))`.
-- **Adversarial table** (unit): `//evil.example`, `/\evil.example`, `\\evil`, `https://evil.example`, `javascript:alert(1)`, `%2F%2Fevil.example`, `/%5Cevil`, `/auth/login?returnUrl=…` (loop), `/dashboard\u0000`, an empty string and `null` all fall back; `/dashboard?tab=x#y` is accepted.
+- **Adversarial table** (unit): `//evil.example`, `/\evil.example`, `\\evil`, `https://evil.example`, `javascript:alert(1)`, `%2F%2Fevil.example`, `/%5Cevil`, `%252F%252Fevil.example` (double-encoded, RC-63(i)), `/auth/login?returnUrl=…` (loop), `/dashboard\u0000`, an empty string and `null` all fall back; `/dashboard?tab=x#y` is accepted.
+- **Route hygiene (RC-63(i)):** a contract spec pins `PublicLayout`'s children to exactly `{auth, access-denied, design-system}`, so no unguarded route is added by accident; D6 states that **no route performs a mutation on activation** (a `returnUrl` could otherwise trigger an action after login). The shell also carries `canActivateChild: [authGuard]` (adopted: cheap, and a session lost mid-shell then routes to login rather than Access Denied; both fail closed). It reuses the same guard, so the single-refresh test (§12.2) covers it.
 
 ### 12.10 503 `AUTH_005`
 
@@ -926,7 +1010,7 @@ No code change expected. `api-error.interceptor.spec.ts` must cover both branche
 
 ### 13.1 C1 dev personas
 
-**Profile:** `dev & !break-glass` (unchanged, `DevDataInitializer.java:41`). The `test` profile never seeds; ITs build their own data (Q-N2).
+**Profile:** `dev & !break-glass & !prod` (RC-63(g): `SPRING_PROFILES_ACTIVE=dev,prod` would otherwise seed known-password administrators). At startup the runner logs WARN `DEV_SEED_ACTIVE {profiles}`, so a shared environment running `dev` is visible. The `test` profile never seeds; ITs build their own data (Q-N2).
 
 **Structure** (the constructor already has six collaborators, so it splits to stay at four or fewer):
 
@@ -936,7 +1020,7 @@ No code change expected. `api-error.interceptor.spec.ts` must cover both branche
 | `DevUserSeeder` | `UserRegistrationPort`, `EmailBlindIndexService`, `PasswordHasherPort`, `UuidGenerator` |
 | `DevRbacSeeder` | `RoleManagementPort` (`createRole`, `attachPermission`, `findAllPermissions`), `UserRoleAssignmentPort` (`findRoleIdByName`, `hasActiveAssignment`, `assign`) |
 
-All three carry `@Profile("dev & !break-glass")`. They write through ports and skip grant-subset and A6 audit, as the existing `assign` call does (stated in the Javadoc, dev only).
+All three carry `@Profile("dev & !break-glass & !prod")`. They write through ports and skip grant-subset and A6 audit, as the existing `assign` call does (stated in the Javadoc, dev only). **Persona assignments use `assigned_by` = the existing seeded administrator, never self** (RC-63(g)): a self-reference mimics the break-glass signature (US-018 RC-37.5) and would make US-020's promotion e2e hit `RBAC_010`. The existing seed user's own `TENANT_ADMIN` assignment keeps its current self-reference (it is the root of the chain).
 
 **Personas, bootstrap tenant:**
 
@@ -959,7 +1043,7 @@ All three carry `@Profile("dev & !break-glass")`. They write through ports and s
 
 **Logging:** INFO `DEV_SEED_COMPLETED {created, skipped}` only. **No email at any level** (fixes `DevDataInitializer.java:100`) and no password. Credentials are documented in DEVELOPMENT_GUIDE as dev-only.
 
-**Tests:** `DevDataInitializerTest` (unit: idempotent on re-run; every persona's roles; the admin role is built from `findAllPermissions`); `DevSeedProfileGuardTest` (context with `prod` and with `dev,break-glass`: no seeder beans, R17); `DevPersonaSeedIT` (Docker, `dev` profile): every persona exists, the second-tenant administrator is an administrator per `RbacAdministrators`, `RbacZeroActiveAdminsHealthIndicator` is green, and the captured log contains no seeded email.
+**Tests:** `DevDataInitializerTest` (unit: idempotent on re-run; every persona's roles; the admin role is built from `findAllPermissions`); `DevSeedProfileGuardTest` (contexts with `prod`, `dev,break-glass` and `dev,prod`: no seeder beans, R17, RC-63(g)); `DevPersonaSeedIT` (Docker, `dev` profile): every persona exists, the second-tenant administrator is an administrator per `RbacAdministrators`, `RbacZeroActiveAdminsHealthIndicator` is green, and the captured log contains no seeded email.
 
 ### 13.2 C2 Playwright fixtures
 
@@ -972,7 +1056,8 @@ All three carry `@Profile("dev & !break-glass")`. They write through ports and s
 
 - **Why per worker and not a `storageState` file:** refresh tokens rotate with reuse detection and no grace window (`RefreshTokenUseCase.java:47-53`). Every SPA cold start refreshes (`auth.guard.ts:27`), so a saved `storageState` is valid for exactly one page load, and two workers replaying one file revoke the family. A worker-scoped context's jar follows each rotation, and tests within a worker run sequentially, so no two refreshes race on one family.
 - **Login budget:** logins = workers × personas used, made lazily. Backend limits (`application.yml:256-262`: 10 per minute per IP, 5 per 15 minutes per email, 30 refreshes per minute per family) are raised **only in the CI job** by environment variables (§13.4); they are never changed in a profile file.
-- **Data hygiene:** specs that mutate RBAC state create their own roles with a per-worker unique name and never edit seeded personas, so parallel workers do not interfere.
+- **Data hygiene:** specs that mutate RBAC state create their own roles with a per-worker unique name and never edit seeded personas, so parallel workers do not interfere. **No test opens two pages in one persona context at the same time** (two cold starts would refresh one family concurrently; RC-63(h)).
+- **Traces and artifacts (RC-63(h)):** `trace: 'on-first-retry'` records API request bodies (persona passwords, lookup sentinels). The CI job keeps traces but scans them (§13.4) and uploads them with retention ≤ 7 days.
 - `apiBase` comes from `E2E_API_BASE_URL` (default `http://localhost:1000`), replacing the hardcoded URLs in new specs. Existing `e2e/auth/*` specs are not rewritten in this story.
 - Specs live under `e2e/access-management/`. US-019 adds the shell suite there: nav entries per persona (story scenario 5), skip link and landmarks, axe for each persona's dashboard, the cold-start deep link (scenarios 1–3), Not Found, and the `returnUrl` round trip.
 
@@ -992,13 +1077,15 @@ All three carry `@Profile("dev & !break-glass")`. They write through ports and s
 
 A new workflow `.github/workflows/e2e-full-stack.yml` on PRs that touch `nexus-backend/**`, `nexus-frontend/**`, `contracts/**`, `docker-compose.yml` or the workflow itself:
 
-1. `docker compose --profile full up -d --build mysql redis flyway-migrate backend`. Only these four services: the compose `frontend` (nginx) is **not** started, because its `/api/v1/auth/` zone throttles every cold-start refresh at 10 r/min per IP (`nginx.conf:9`, `:35-42`). The backend runs **as `nexus_app`** (`docker-compose.yml:110`) under `dev`, so real grants are exercised (B8's locking reads included). The job environment adds `NEXUS_SECURITY_RATELIMIT_IPMAXATTEMPTS`, `NEXUS_SECURITY_RATELIMIT_USERMAXATTEMPTS` and `NEXUS_SECURITY_RATELIMIT_REFRESHFAMILYMAXATTEMPTS` with CI-only values, documented in the workflow.
+1. `docker compose --profile full up -d --build mysql redis flyway-migrate backend`. Only these four services: the compose `frontend` (nginx) is **not** started, because its `/api/v1/auth/` zone throttles every cold-start refresh at 10 r/min per IP (`nginx.conf:9`, `:35-42`). The backend runs **as `nexus_app`** (`docker-compose.yml:110`) under `dev`, so real grants are exercised (B8's locking reads included). The raised limits (`NEXUS_SECURITY_RATELIMIT_IPMAXATTEMPTS`, `…_USERMAXATTEMPTS`, `…_REFRESHFAMILYMAXATTEMPTS`) live in a **CI-only compose override file**, `docker-compose.e2e.yml`, referenced only by this workflow (`-f docker-compose.yml -f docker-compose.e2e.yml`); `docker-compose.yml`'s `backend` passes no such variables, and its defaults equal `application.yml`. A unit test asserts that no `application*.yml` raises these limits above the base values (RC-63(h)).
 2. Wait for `http://localhost:1000/actuator/health` to report UP (5-minute timeout); otherwise fail.
 3. `npm ci`, install the Playwright browser. Playwright's existing `webServer` (`npm start`, the dev server on 2000, cross-origin to 1000) serves the SPA. That exercises CORS for `If-Match` and `ETag`, which prod's same-origin setup never does.
 4. `E2E_REQUIRE_BACKEND=1 npx playwright test e2e/access-management e2e/auth --reporter=json,github`.
 5. `node e2e/tools/assert-executed.mjs`: fails if any test under the required directories is `skipped`, or if fewer than the expected minimum executed (R6).
-6. **PII log scan:** `docker compose logs backend` must contain none of the dev persona addresses; otherwise fail.
-7. On failure, upload the Playwright report and the backend log.
+6. **PII scan (RC-63(h)):** the backend log, the Playwright report and the traces must contain none of the dev persona addresses **and none of their blind indexes** (computed in the step with the dev HMAC key, which is public in `application-dev.yml`); otherwise fail.
+7. Upload the Playwright report, traces and the backend log, with **retention ≤ 7 days**.
+
+**Workflow hardening (RC-63(h)):** trigger `on: pull_request` (never `pull_request_target`, which would run fork code with a write token), `permissions: contents: read`, no secrets.
 
 Making the job a **required status check** is an Ops action (Q9), recorded in the C3 plan. The existing `e2e` job in `frontend-ci.yml` stays as a frontend-only smoke; it is not the gate for backend-dependent specs.
 
@@ -1008,7 +1095,8 @@ Making the job a **required status check** is an Ops action (Q9), recorded in th
 
 - **D6** (`docs/DEVELOPMENT_GUIDE.md`): the shell and public layout; the guard composition rule (correcting `:149` and `:158-163`); typed permissions and labels; the 403 opt-out; `If-Match` handling; the personas table (dev only) and the Playwright fixtures; the `safeReturnUrl` rule; "never put an email in a URL". It also updates `features/dashboard/README.md` (test ids).
 - **D4:** recomputed from config (impact §2). API-driven changes reach a user on their next request (detach, revoke: epoch bump) or within one token TTL (attach, assign: eviction). The worst case is about 30 minutes only for out-of-band changes such as migrations without a flush. A proposal for D3: "Changes usually take effect within a few minutes, and always within 30 minutes or as soon as the person signs in again."
-- **D5:** the ADR-0006 addendum (drafted from ADR-0026 §§ on PII), the threat model for B1, B4, B7 and B8, and acceptance of: POST lookup, throttle fail-open, best-effort directory audit, the enumeration-by-holder statement, `memberCount`, and the sensitive set.
+- **D5:** the ADR-0006 addendum (drafted from ADR-0026), and acceptance of: POST lookup, throttle fail-open, best-effort directory audit (RES-50), the enumeration-by-holder statement (RES-49), `memberCount` (RES-48), the sensitive set, **PII-permission delegation (RC-60.1; RES-51) and the administrator-only grant rule (◆ RC-60.3, default ON)**, and **emails are self-asserted until verified** (RC-63(e)), with the US-020 carry-forwards of §4.5.
+- **D6 addition (RC-63(i)):** no route performs a mutation on activation.
 - **B9:** correct `docs/features/US-018/STATUS.md`. A doc fix; ownership confirmed in S0.
 
 ---
@@ -1039,10 +1127,11 @@ No RPS or latency target exists (G1). The proposed targets for confirmation are 
 | B1 page decryption | at most 100 AES-GCM decryptions | — | Microseconds each |
 | B2 | one PK-driven `IN` | PK | — |
 | Lookup | one unique-index probe; throttle; audit | `uq_users_tenant_id_email_hmac` | Audit on a second connection (`REQUIRES_NEW`), bounded by the throttle |
+| Every directory request (RC-63(c)) | + one audit insert on a **second pooled connection** (`REQUIRES_NEW`); batch + one `countByIdIn` | — | Capacity: each directory request holds two pool connections briefly; bounded by the per-actor ceiling (600/min) and `page × size ≤ 10,000` (no deep OFFSET) |
 | B3 | one projection read | PK | — |
 | B4 | four indexed reads, one snapshot | existing | Once per console open |
 | B6 | two grouped reads per page | `fk_user_roles_role_tenant`, `pk_role_permissions` | Query-count IT |
-| B8 | about 4 snapshot reads, up to 2 locking statements, at most 2×9 writes plus as many audit inserts; post-commit O(holders) | PKs, set-lock indexes | Lock hold on the set-lock path is re-baselined (`operation="replace"`) |
+| B8 | about 4 snapshot reads, up to 3 locking statements, at most 2×9 writes plus as many audit inserts; post-commit O(holders) | PKs, set-lock indexes | Lock hold on the set-lock path is re-baselined (`operation="replace"`) |
 
 **Caching:** no new cache and no Redis addition except the lookup bucket family `{prefix}:identity:ratelimit:DIR_LOOKUP:*` in the existing `RateLimitStore`. B4 and the directory are never cached. The permission-cache **flush after V11** is an ops step (§3.3). ETags are computed per request, never stored.
 
@@ -1063,12 +1152,18 @@ No RPS or latency target exists (G1). The proposed targets for confirmation are 
 | `nexus.rbac.permission_replace` | counter | `outcome` (`applied`, `noop`, `precondition_failed`, `precondition_required`, `denied`, `conflict`, `error`), `lockPath` (`role_row`, `set_lock`) |
 | `nexus.rbac.permission_replace.changes` | distribution summary | — |
 | `nexus.rbac.privileged_revoke_lock_hold` (existing) | timer | adds `operation="replace"` |
+| `nexus.rbac.admin_defining_role_non_admin_assigned_holder` (RC-56.4) | counter | none (no tenant tag) |
+| `nexus.rbac.pii_permission_delegated` (RC-60.2) | counter | none |
+| `nexus.rbac.role_ceased_admin_defining` (RC-63(f)) | counter | none |
+| `nexus.rbac.role_classification_changed` (RC-56.2–3, 409 `RBAC_012`) | counter | `operation` (`assign`, `attach`) |
 | `nexus.rbac.denial_throttled` (existing) | counter | now counts 429s |
 | `nexus.rbac.permission_denied` (existing) | counter | unchanged (internal reason names) |
 
 **Logs** (structured, ids only; `correlationId`, `tenantId`, `actorUserId` on each):
 - `IDENTITY_DIRECTORY_READ` (INFO): `operation`, `resultCount`, `statusFilter`, `requestedCount` and `returnedCount` for batch. Never an email, a blind index or the id list.
-- `IDENTITY_DIRECTORY_CROSS_TENANT_TARGET` (WARN, retained ≥ 1 year).
+- `IDENTITY_DIRECTORY_CROSS_TENANT_TARGET` (WARN, retained ≥ 1 year), with `operation` `GET` or `BATCH` (+ `omittedCount`, RC-61.2).
+- `IDENTITY_DIRECTORY_THROTTLED` (WARN, at most once per window per bucket, RC-63(c)).
+- `RBAC_ADMIN_DEFINING_ROLE_HAS_NON_ADMIN_ASSIGNED_HOLDER` (WARN, pages, ≥ 1 year; RC-56.4), `RBAC_PII_PERMISSION_DELEGATED` (WARN, ≥ 1 year; RC-60.2), `RBAC_PII_PERMISSION_GRANT_DENIED` (WARN; RC-60.3), `RBAC_ROLE_CEASED_ADMIN_DEFINING` (WARN; RC-63(f)), `DEV_SEED_ACTIVE` (WARN, dev only; RC-63(g)).
 - `RBAC_PERMISSION_SET_REPLACED` (INFO, after commit): `roleId`, `addedPermissionIds`, `removedPermissionIds`, `lockPath`.
 - `RBAC_PERMISSION_REPLACE_PRECONDITION_FAILED` (DEBUG): `roleId`, `stage` (`snapshot` or `locked`).
 - Existing markers reused: `RBAC_ROLE_SUBSET_DENIED`, `RBAC_ATTACH_EXCEEDS_CALLER`, `RBAC_ATTACH_PROVENANCE_REFUSED`, `RBAC_DENIAL_THROTTLE_ENGAGED`, `RBAC_CROSS_TENANT_TARGET`.
@@ -1084,6 +1179,11 @@ No RPS or latency target exists (G1). The proposed targets for confirmation are 
 |---|---|---|
 | Directory cross-tenant probing | `IDENTITY_DIRECTORY_CROSS_TENANT_TARGET` rate above `max(5 × 7-day baseline, 20 per 15 min)` (the US-018 RC-50(c) floor) | Ticket |
 | Directory lookup volume | log-derived lookups per (tenant, actor) above 200 per hour | Ticket (enumeration signal; tenant is not a metric tag) |
+| **Directory row volume (RC-61.1)** | log-derived sum of `resultCount` per (tenant, actor) across LIST, BATCH, GET and LOOKUP: above 1,000 rows per hour | Ticket |
+| **Directory row volume, high (RC-61.1)** | above 10,000 rows per hour, or above the tenant's user count within a day | Page (thresholds for Ops to confirm) |
+| Admin-defining role with a non-administrator-assigned holder (RC-56.4) | counter > 0 | **Page** |
+| PII permission delegated by a non-administrator (RC-60.2) | counter > 0 | Ticket |
+| Role ceased to be admin-defining (RC-63(f)) | counter > 0 | Ticket |
 | Directory audit loss | `audit_write_failed` > 0 for 5 minutes | Ticket |
 | B8 contention | `permission_replace{outcome=precondition_failed}` above 20% of attempts for 15 minutes | Ticket (UX problem, not security) |
 | B8 errors | `permission_replace{outcome=error}` > 0 | Page (includes audit failure and 1213 victims, RES-45) |
@@ -1100,10 +1200,10 @@ No RPS or latency target exists (G1). The proposed targets for confirmation are 
 | 1 | S1a (V11) | Rolling; V11 runs on the first new instance; old instances agree because M15 is live | Custom-admin exposure check (ids) | V11 applied; **permission cache flushed**; zero-admin indicator green; semantic IT green |
 | 2 | S1b, S1d, S3a | Rolling; behind us015/us019 (off in prod) | — | ITs green |
 | 3 | S1c | Rolling; flag off | D5 signed; threat model passed | `UserDirectoryIT` and log scan green |
-| 4 | S3b (B7) | Rolling; **unflagged**, so live on deploy | Threat model passed | 429 visible in metrics only for throttled actors; no change in `RBAC_001` volume |
-| 5 | S3c (B8) | Rolling; us015 | Threat model passed | Concurrency and privilege ITs green as `nexus_app`; harness C green |
+| 4 | S3b (B7) | Rolling; **unflagged**, so live on deploy | Threat model passed; RES-47 accepted at Gate 2 | 429 visible in metrics only for throttled actors; no change in `RBAC_001` volume |
+| 5 | S3c (B8, plus the RC-56/RC-57 changes to assign, attach, revoke and softDelete, which are **unflagged** and live on deploy under us012/us015) | Rolling; us015 | Threat model passed; the §1.2 S3c gate | Concurrency and privilege ITs green as `nexus_app`; harness C green |
 | 6 | S2, S5a (frontend) | With the build; no flag | — | e2e (C4) green |
-| 7 | us019 on in staging | Config | Step 1 done at least 900 s earlier | Persona e2e green against staging; dashboards live |
+| 7 | us019 on in staging | Config | Step 1 done and one of the RC-63(d) conditions met (1,800 s after the flush, a second flush 900 s after the first, or a verified fresh administrator token) | Persona e2e green against staging; dashboards live |
 | 8 | us019 on in prod | Config, instant (boolean flags cannot do a percentage rollout; Q-N8 open) | C3 plan signed; D5 signed | 24 h watch: no cross-tenant alert, no audit loss, B8 error rate 0 |
 
 **Rollback:** us019 off (B1, B2, lookup, B4); us015 off (B3, B5, B6, B8); B7 and the frontend by reverting the deploy. **V11 is not rolled back:** removing a permission would demote every administrator (the footer has no inverse). If V11 must be neutralised, nothing grants or uses the permission until us019 is on, so leaving it in place is safe.
@@ -1114,7 +1214,7 @@ No RPS or latency target exists (G1). The proposed targets for confirmation are 
 
 - **Gates** (CLAUDE.md §4): every backend task runs `./mvnw verify -DskipITs`; every slice that touches persistence, migrations or a `*IT` runs `./mvnw verify` with Docker before merge (S1a, S1b, S1c, S1d, S3a, S3b, S3c, S4a). Frontend tasks run `npm run test:ci`, `npm run lint && npm run format:check`, and `npm run build` before the PR.
 - **Must pass unmodified:** `CrossTenantPermissionIT`, `UserRolesAppendOnlyIT`, `UserRolesPrivilegeIT`, `PermissionMigrationFooterScannerTest`, `LastAdminLockoutIT` outcomes, the four `permission.guard.spec.ts` fail-open tests (RES-39), `e2e/access-denied.spec.ts`. `CrossTenantNotFoundEquivalenceIT`, `RolesPrivilegeIT` and `RolePermissionsPrivilegeIT` are extended, not changed.
-- **Mechanical controls introduced:** the seeded-literal scan (§3.5); the sensitive partition test (§7); the exhaustive reason mapping (§9.2); the OpenAPI error catalogue test (§11.1); the contract fixtures on both sides (§11.2); the guard-composition contract (§12.2); the nav-config consistency test (§12.3); the ESLint Material/CDK import rule (§12.4); the paging shape test (§4.6); the two PII log scans (§4.7, §13.4); the executed-tests check (§13.4).
+- **Mechanical controls introduced:** the seeded-literal scan (§3.5); the sensitive partition test (§7); the exhaustive reason mapping (§9.2); the OpenAPI error catalogue test (§11.1); the contract fixtures on both sides (§11.2); the guard-composition contract (§12.2); the nav-config consistency test (§12.3); the ESLint Material/CDK import rule (§12.4); the paging shape test (§4.6); the two PII log scans (§4.7, §13.4, both extended to malformed bodies and blind indexes); the executed-tests check (§13.4). **Revision 1 adds:** the ArchUnit containment of `countByIdIn` and of the `SENSITIVE`/`NON_SENSITIVE` references (§4.2, §7); the ESLint HTML-sink ban and the production `npm audit` gate (§12.4); the `PublicLayout` children pin (§12.9); the rate-limit-in-profile test (§13.4); the committed-state detector (§10.9).
 - **Test naming:** `should_<expected>_when_<condition>` (backend); one logical assertion per test.
 
 ---
@@ -1128,20 +1228,20 @@ No RPS or latency target exists (G1). The proposed targets for confirmation are 
 | SD-3 | Email lookup is a POST body; `?email=` is rejected | §4.3 | No other email sink (logs, links, errors, audit, metrics) |
 | SD-4 | Directory fields are an exact allow-list; no HMAC, hash, counters or tenant id | §4.2 | The contract test and the adapter's mapping |
 | SD-5 | Cross-tenant and missing ids are the same 404 with the same statements; cross-tenant lookup is a plain miss | §4.2, §4.4 | Byte and timing-class equality |
-| SD-6 | Lookup throttle fails open; it does not prevent enumeration by a holder | §4.5 | Acceptance by D5 |
+| SD-6 | Lookup throttle and per-actor directory ceiling fail open; they do not prevent enumeration by a holder; a row-volume alert detects it (RC-61) | §4.5, §17 | Acceptance by D5 (RES-49) |
 | SD-7 | Directory audit is best-effort and holds no email or HMAC | §4.5 | Whether D5 requires fail-closed |
 | SD-8 | B4 is authenticated-only, takes no identifier, reads live, reuses the one predicate, writes no audit | §6 | Leakage beyond own data; reliance on `isCallerAdministrator` |
 | SD-9 | `isSensitive` is UX only; the set is a human decision | §7 | That no server rule starts depending on it |
 | SD-10 | `memberCount` visible under `role:read` | §8 | The single-holder disclosure; US-020 C5's wrong reading |
 | SD-11 | `reason` allow-list with decoupled values; opaque cases are `UNSPECIFIED`; unflagged | §9.2, §9.4 | The `GRANT_EXCEEDS_CALLER` and `ADMINISTRATOR_REQUIRED` bits |
 | SD-12 | Throttled assign/revoke become 429 `RBAC_011` with `Retry-After`; still no audit; throttle remains fail-safe | §9.3 | The RES-33 bit is now explicit; `Retry-After` reveals the window |
-| SD-13 | B8 authorizes on a snapshot before any lock; locks only for authorized callers | §10.3 | ADR-0018's bounded-lock rule |
-| SD-14 | B8 ETag is a content hash compared on a current read under a role-row X lock | §10.2, §10.3 | Soundness under REPEATABLE READ; no version column to drift |
-| SD-15 | B8 lock order follows RC-46 by current class; promotion takes the set lock after the role row | §10.4 | The proof table; RES-45 and RES-28 extensions |
+| SD-13 | B8 authorizes on a snapshot before any lock **and before any 412 or no-op 200** (RC-58), with live `role:read` and `role:write`; locks only for authorized callers | §10.3, §10.5 | ADR-0018's bounded-lock rule; no composition oracle |
+| SD-14 | B8 ETag is a content hash (computable, not a secret); the locked current state must **equal the authorised snapshot version `v0`**; `If-Match` takes exactly one strong tag (RC-55) | §10.2, §10.3, §10.5 | Soundness under REPEATABLE READ; no version column to drift |
+| SD-15 | B8 lock order follows RC-46 by current class; promotion takes the set lock after the role row; attach waits on the role row through its FK check (T-T24) | §10.4 | The proof table; the FK-order IT; RES-45 extension; RES-28 now detach ∥ detach only |
 | SD-16 | `SELECT … FOR UPDATE` on `roles` under a column-scoped grant, proven as `nexus_app`; no grant change | §10.4 | The IT and the fallback |
-| SD-17 | B8 demotion takes the administrator answer from the set lock's rows; promotion runs RBAC_010 on locked holders | §10.3 | RC-25.1 conformance |
+| SD-17 | Under the set lock, B8, revoke and softDelete take both the administrator answer (locked rows) and the admin-defining set (current `FOR SHARE` read) from current state; promotion runs RBAC_010 on locked holders (RC-57) | §10.3, §10.9 | RC-25.1 conformance; single-actor zero-admin closed |
 | SD-18 | B8 audit is atomic (ADR-0024); a no-op writes nothing; denials write nothing | §10.6 | Evidence for SOC 2 |
-| SD-19 | `If-Match` `*` is refused (428); weak tags never match | §10.5 | Blind-overwrite prevention |
+| SD-19 | `If-Match` `*`, lists, weak-only and empty values are refused (428); 412/428 bodies carry no state | §10.5 | Blind-overwrite prevention; no state leak |
 | SD-20 | CORS adds only `If-Match` (request) and `ETag` (exposed) | §10.7 | No wider header policy |
 | SD-21 | `returnUrl` only from `authGuard`, only through `safeReturnUrl` | §12.9 | Open redirect (NF-S6) |
 | SD-22 | Access Denied stays inert (no HTTP call) and shows JWT role names only | §12.8 | `supportContact` scheme check |
@@ -1149,6 +1249,13 @@ No RPS or latency target exists (G1). The proposed targets for confirmation are 
 | SD-24 | Dev personas exist only under `dev & !break-glass`; no email in logs; the second tenant cannot sign in | §13.1 | Profile guard test |
 | SD-25 | CI raises login and refresh limits by environment variables in one job only | §13.4 | That no profile file carries them |
 | SD-26 | Seeded-id literals are banned from tests outside an allow-list | §3.5 | Fixture integrity after catalogue growth |
+| SD-27 | Assign and attach re-classify R with a current read after insert (409 `RBAC_012`); a committed-state detector pages on a non-administrator-assigned holder of an admin-defining role (RC-56) | §10.9 | `RBAC_010` holds under concurrency (RES-26) |
+| SD-28 | Granting `user:directory:read` requires an administrator (default ON, D5 decides); non-administrator grants that succeed are WARNed (RC-60) | §4.8 | RES-51 |
+| SD-29 | Body-parse, media-type, method and missing-header exceptions are 400/415/405, never logged with their message; 1 KiB lookup body cap (RC-59) | §10.7, §4.2 | No email token in logs |
+| SD-30 | Batch cross-tenant count via an unscoped count-only method, contained by ArchUnit and never feeding the response (RC-61.2) | §4.2 | `UNSCOPED_ALLOWLIST` entry |
+| SD-31 | `@angular/*` ≥ 22.2.0, clean production audit, HTML-sink ESLint ban (RC-62) | §12.4 | OWASP A06; US-020 XSS surface |
+| SD-32 | Seeders excluded under `prod`; persona `assigned_by` never self; CI rate-limit overrides only in a CI-only compose file; CI job on `pull_request`, read-only, scans artifacts for emails and blind indexes (RC-63(g), (h)) | §13 | Dev credentials outside dev; CI artifact PII |
+| SD-33 | `safeReturnUrl` does not decode again; `PublicLayout` children pinned; `canActivateChild: [authGuard]` on the shell (RC-63(i)) | §12.9 | Open redirect; unguarded routes |
 
 ---
 
@@ -1166,6 +1273,8 @@ No RPS or latency target exists (G1). The proposed targets for confirmation are 
 | AS-8 | The default sensitive set (§7) and the "user manager" holding `user:directory:read` (§13.1) are acceptable until D5 rules | Change a constant or a seed row |
 | AS-9 | `axe-core` is MPL-2.0 and already resolved transitively by `@axe-core/playwright` **[INFERENCE; license from upstream]** | Licence check in S2 |
 | AS-10 | Users have no soft delete (`UserStatus` has `PENDING, ACTIVE, LOCKED, DISABLED`) | B1 would need a filter |
+| AS-11 | InnoDB runs `fk_role_permissions_role`'s parent check (S on the `roles` row) before the clustered-index insert of a `role_permissions` row (T-T24) | Attach could hold its new record while waiting on `roles`, closing a cycle with B8's `FOR SHARE`; the S3c IT (both arrival orders, as `nexus_app`) would show 1213s, and attach would then need to take R's row explicitly before inserting |
+| AS-12 | Jackson 3 parse errors quote request tokens as Jackson 2 does (T-I21 inference) | None: RC-59's handlers never log the message either way |
 
 ---
 
@@ -1175,7 +1284,11 @@ No RPS or latency target exists (G1). The proposed targets for confirmation are 
 |---|---|---|
 | D5: POST lookup, throttle fail-open, best-effort audit, the enumeration-by-holder statement, `memberCount`, email display to holders | Security/Privacy | As designed; B1 does not merge without it |
 | Q-D1 sensitive set | Security | §7 table |
-| RES-45 and RES-28 extensions to B8; the B7 disclosure bits | Security (threat model) | Low; detected; not accepted here |
+| RES-45 and RES-28 extensions to B8; the B7 disclosure bits (RES-47) | Security (Gate 2) | Low; detected; not accepted here |
+| ◆ RC-60.3 administrator-only grant of `user:directory:read`; RES-51 | D5 (Platform Security Owner + DPO) | **ON** (`nexus.rbac.pii-grant-requires-administrator: true`) |
+| RES-26 confirmation that the B8 path and the attach race are covered (RC-56) | Platform Security Owner (Gate 2) | Covered in S3c (§10.9) |
+| RC-61.1 row-volume alert thresholds; RES-6 retention for the new WARN markers | Ops | 1,000 rows/h ticket, 10,000 rows/h or tenant size per day page |
+| RC-62.2 toolchain-only npm criticals | Frontend Tech Lead | Recorded with a review date |
 | Q-N5 support contact and live versus JWT role names on Access Denied | PM | `null` (hidden link); JWT names |
 | C3 prod and staging flag values; making the e2e job a required check (Q9) | Ops | Unknown in repo |
 | Q-N8 percentage rollout | Ops | Boolean, instant flip |
