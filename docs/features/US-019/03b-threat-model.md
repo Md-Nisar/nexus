@@ -27,9 +27,9 @@ Every component and trust boundary in `03-design.md`: the directory endpoints (B
 | 3 | Assign's insert locks the role row | `JpaUserRoleRepository.java:240-245` (`INSERT … SELECT … FROM roles … deleted_at IS NULL`) | **Confirmed.** It takes S on the role row, so a B8 that holds R's row X makes assign **wait, then commit on its pre-wait classification** (T-E48) |
 | 4 | Set lock statement | `JpaUserRoleRepository.java:108-117` (`FORCE INDEX (fk_user_roles_role_tenant)`, `role_id IN (…) … FOR UPDATE`) | **Confirmed.** It locks `user_roles` rows only; the admin-defining set it is built from is a **pre-lock** M10' read (`RoleAssignmentService.java:519-538`) (T-E49) |
 | 5 | Attach's promotion check is snapshot-only | `RoleManagementService.java:668-682`, `:248-251` | **Confirmed.** Two attaches that each see "8 of 9" both pass and jointly complete the catalogue without `RBAC_010` and without the row-14 page (T-E48, pre-existing) |
-| 6 | Malformed request bodies | `GlobalExceptionHandler.java` (no handler for `HttpMessageNotReadableException`; `handleUnexpected` logs the exception at ERROR, `:195-202`); the gap is acknowledged at `AttachPermissionRequest.java:11-12` | **Confirmed.** A malformed body on the new POST lookup is a 500, and its exception text is logged (T-I21) |
+| 6 | Malformed request bodies | `GlobalExceptionHandler.java` (no handler for `HttpMessageNotReadableException`; `handleUnexpected` logs the exception at ERROR, `:194-202`); the gap is acknowledged at `AttachPermissionRequest.java:11-12` | **Confirmed.** A malformed body on the new POST lookup is a 500, and its exception text is logged (T-I21) |
 | 7 | Correlation id is client-controlled | `CorrelationIdFilter.java:32-41` (any `[A-Za-z0-9._-]{1,64}` header value is adopted) | **Confirmed.** "Rows of one PUT share the correlation id" holds only for honest clients (T-R17) |
-| 8 | Throttle sources | `RedisRoleChangeThrottleAdapter.java:56-58` (`SET … PX retryMs`), `:99-106`; `RateLimitRoleChangeThrottleAdapter.java:112-131`; `RoleAssignmentService.java:624-646` (`:643` throws `NOT_TENANT_ADMIN`) | **Confirmed** as the design states. `PTTL` gives the retry-after atomically |
+| 8 | Throttle sources | `RedisRoleChangeThrottleAdapter.java:56-58` (`SET … PX retryMs`), `:95-101`; `RateLimitRoleChangeThrottleAdapter.java:112-131`; `RoleAssignmentService.java:624-646` (`:643` throws `NOT_TENANT_ADMIN`) | **Confirmed** as the design states. `PTTL` gives the retry-after atomically |
 | 9 | Rate-limit store fails open; key never logged | `RedisRateLimitStore.java:56-78` | **Confirmed** |
 | 10 | URL and body sinks | `ApiRequestLoggingFilter.java` (logs `getRequestURI()`, no query, no body); no Tomcat access log, no tracing dependency (grep of `pom.xml` and `application*.yml`); `nexus-frontend/nginx.conf:35-51` (no `access_log` override, so the default combined log has the request line) | **Confirmed.** A POST body reaches no sink; a GET query would reach nginx's log |
 | 11 | CORS and default cache headers | `SecurityConfig.java:205-219` (single origin, credentials, `If-Match` absent, `ETag` not exposed); `:88-91` (only HSTS is customised, so Spring Security's `no-store` default stays) | **Confirmed.** No `ShallowEtagHeaderFilter` exists (grep) |
@@ -181,7 +181,7 @@ The epic sequence continues. US-018 ended at T-S11, T-T21, T-R15, T-I19, T-D25, 
 
 | | Threat | Verdict |
 |---|---|---|
-| **S** | CSRF on a POST read | **OK.** Bearer-only authentication; CSRF disabled for a stateless API (`SecurityConfig.java:84`); CORS allows a single origin |
+| **S** | CSRF on a POST read | **OK.** Bearer-only authentication; CSRF disabled for a stateless API (`SecurityConfig.java:85`); CORS allows a single origin |
 | **T** | Normalisation divergence (case, whitespace, NFC) produces a false miss or a wrong hit | **OK.** `EmailBlindIndexService.blindIndex` only; tests cover the variants |
 | **R** | Throttled lookups unaudited | **OK.** Bounded write volume (US-018 RC-33 reasoning); a counter remains |
 | **I** | Email in URL, access log, link, error, audit, metric, trace | **OK** for every designed path: body only; `?email=` is 400; no tracing dependency |
@@ -731,3 +731,155 @@ RES-47 onward is new. Owners are roles. **Accept** means the residual can be acc
 **S4a and S4c (personas, CI job) do not merge until:** RC-63(g) and RC-63(h) are in.
 
 **All slices:** `./mvnw dependency:tree` and `npm audit` are re-run at each Phase 7. Today's baseline: no manifest delta; the production npm graph has 7 findings (1 high, 6 moderate, all `@angular/*` 22.0.4), cleared by RC-62.1.
+
+---
+
+## 10. Delta review (Step C) — design Revision 1, commit `9e222b4`
+
+**Scope:** a delta review only. I re-read the changed parts of `03-design.md` (§0 decisions 15–17 and 29–31, §0 "Revision 1 decisions", §2.2, §2.3, §3.3, §4.1–4.8, §7, §9, §10.3–10.9, §12.4, §12.9, §13.1–13.4, §17), ADR-0026, ADR-0027 and ADR-0021 Revision 3. No code changed (`git log` shows only document commits after `2962b0e`), so §0.2's code facts stand. I also checked one new fact: `AuthStore.isAuthenticated` is `session !== null && Date.now() < expiresAt` (`auth.store.ts:34-36`), and `authGuard` calls `authService.refresh()` directly (`auth.guard.ts:27`). Only the interceptor de-duplicates, through the module-private `refreshInFlight` (`auth.interceptor.ts:25`, `:63-74`).
+
+### 10.1 Per-RC verdicts
+
+| RC | Verdict | Where it landed | Note |
+|---|---|---|---|
+| **RC-55** | **Confirmed** | §10.3 steps 4, 7 and 9; §10.5 (`If-Match` exactly one strong tag; list, `*` and weak-only give 428); soundness paragraph rewritten; §10.8 case (g) and the two-tag unit test; ADR-0027 D1, D2 | See §10.2(a) |
+| **RC-56** | **Confirmed with one regression** (T-D28) | §10.4 rows for queued assign and attach; §10.9; §2.2 `RBAC_012`; detector §10.9 and §17; ADR-0021 R3-3; harness §10.8. ◆ RC-56.5 landed in S3c | Attach's post-insert read is **unconditional**, so *any* two concurrent attaches to one role deadlock (T-D28, RC-64) |
+| **RC-57** | **Confirmed** | §10.3 step 10, step 11; §10.9 (revoke, softDelete, break-glass); §10.4 RES-28 text; ADR-0021 R3-4; ADR-0027 D5; privilege-IT row | ◆ RC-57.2 adopted. The lock-order check is in §10.2(a) |
+| **RC-58** | **Confirmed** | §10.3 steps 6 and 7 (403, then 412, then no-op); §10.5 order of checks; 412/428 bodies without state (§10.5, §10.7); §10.8 RC-58.3 tests. ◆ live `role:read` adopted (ADR-0021 R3-2, ADR-0027 D3) | No 412-versus-200 signal remains for a caller who cannot read roles |
+| **RC-59** | **Confirmed** | §10.7 handlers (400/415/405/400, never `getMessage()`); §4.7 malformed-body log scan; §4.2 1 KiB cap; §2.3 rule | Platform-wide status change 500 → 400/405/415 is benign; record it in release notes (T-R18) |
+| **RC-60** | **Confirmed with Low gaps** (T-E54) | §4.8; ADR-0026 §7; §3.6 seeded id; decision 30; default ON via `nexus.rbac.pii-grant-requires-administrator` | The assign check uses the pre-wait M14 snapshot; the denial posture on assign contradicts assign's audited-denial posture; evaluation order relative to A2 is unstated; turning the switch off is silent |
+| **RC-61** | **Confirmed** | §17 row-volume alerts (ticket and page); §4.2 `countByIdIn` with the three containment conditions; §4.5 `USER_DIR_002` ceiling | My allowlist sign-off (RC-61.2) stands on the three conditions as written in §4.2 |
+| **RC-62** | **Confirmed** | §12.4; §1.2 S2c exit gate; decision 31 | — |
+| **RC-63(a)** | **Confirmed** | §10.4 attach row; §10.8 case (b), both orders, as `nexus_app` | — |
+| **RC-63(b)** | **Confirmed** | §10.3 paragraph (RES-27 restated) | Not adopting `SET SESSION innodb_lock_wait_timeout` is correct: the session variable would leak to the next borrower of the pooled connection |
+| **RC-63(c)** | **Confirmed** | §4.2 (`page × size > 10,000`), §4.5 (`selfReported`, one WARN per window) | — |
+| **RC-63(d)** | **Confirmed** | §3.3; decision 2 | — |
+| **RC-63(e)** | **Confirmed** | §4.5 | Carried to D5 and US-020 |
+| **RC-63(f)** | **Confirmed in §10.3 and §10.6; not confirmed in §0 decision 17** | §10.3 steps 13–14, §10.6, §17 | Decision 17 still says rows are grouped by the correlation id and omits `replaceId` (T-R18) |
+| **RC-63(g)** | **Confirmed** | §13.1 (`!prod`, `DEV_SEED_ACTIVE`, `assigned_by` = seeded administrator, `dev,prod` guard test) | — |
+| **RC-63(h)** | **Confirmed** | §13.2, §13.4 (CI-only compose override, HMAC scan, traces, `pull_request`, read-only, retention ≤ 7 days, one page per context) | — |
+| **RC-63(i)** | **Confirmed for `safeReturnUrl` and the route hygiene; NOT confirmed for the optional `canActivateChild`** | §12.9 | Adopting `canActivateChild: [authGuard]` introduces T-S14 (Medium). The claim "the single-refresh test (§12.2) covers it" is false: that test covers cold start, not mid-session navigation |
+| **RC-63(j)** | **Confirmed** | §4.1, §4.2, §4.7 | — |
+| **RC-63(k)** | **Confirmed** | §7 | — |
+| **RC-63(l)** | **Confirmed** | §9.2, §9.5, S3b exit gate, ADR-0021 R3-1 | — |
+
+**Totals: 8 of 8 RCs and 12 of 12 RC-63 items landed. Fully confirmed: RC-55, RC-57, RC-58, RC-59, RC-61, RC-62 and RC-63(a)–(e), (g), (h), (j)–(l). Confirmed with a defect: RC-56 (T-D28), RC-60 (T-E54), RC-63(f) (one stale sentence) and RC-63(i) (`canActivateChild`, T-S14).**
+
+### 10.2 In-depth checks
+
+**(a) B8 steps 6–11 against the lock order and RC-46. Sound.**
+- **Step 9 compares against `v0`.** Steps 5–7 are computed from the same `S0`, and step 7 requires the single client tag to equal `v0`. So `S1 = S0` under the lock, and every snapshot decision applies to the locked state. A classification flip between snapshot and lock now ends either in a 412, or in a RES-45 deadlock victim when the lock path was chosen from the stale class. It can no longer end in a wrong decision.
+- **403 before 412 and before the no-op.** This closes T-I20. The no-op is authorised by L-1 plus live `role:read`.
+- **Step 10's new `FOR SHARE` on `role_permissions` of the locked roles comes last on both paths:**
+  - demotion: `user_roles` X, then `roles` R X, then `rp(R)` S, then `rp(locked)` S;
+  - promotion: `roles` R X, then `user_roles` X, then `rp(R)` S, then `rp(locked)` S.
+- **No new cycle.** I checked each writer that could hold a `role_permissions` lock:
+  - detach holds a record X and then only writes audit;
+  - attach holds its new record X and then requests only `role_permissions` S (and, after RC-64, nothing on `roles` that B8 holds);
+  - revoke and softDelete under RC-57.2 take `role_permissions` S after their own `user_roles` and `roles` locks.
+
+  None of them waits on `user_roles` or `roles` while holding a `role_permissions` lock. RC-46's order by current class is unchanged.
+- **Residual.** Revoke still chooses *whether* to take the set lock from a pre-lock classification. A B8 promotion that commits just before a revoke of R therefore runs that revoke without the administrator requirement or the lockout. This is RES-45's classification-flip class, Low, already recorded.
+
+**(b) §10.9 post-insert `FOR SHARE` on assign and attach.**
+
+| Question | Assign (non-admin-defining path) | Attach |
+|---|---|---|
+| New deadlock cycle? | **No.** Assign holds `roles` R S plus its new `user_roles` row X, and waits only on uncommitted `role_permissions` writers (attach, detach, B8). None of them waits on anything assign holds: B8 cannot hold R's X while assign holds R's S; attach's FK check S on R is compatible with assign's S | **Yes, for every concurrent pair, not only catalogue-completing ones** (T-D28). Two attaches of different ids on R each insert, then each `FOR SHARE` scans R's range and blocks on the other's uncommitted record. One gets a 1213 and a 500, on a shipped us015 verb, for a routine parallel edit. The design scopes the deadlock to "two racing catalogue-completing attaches" (§10.9, ADR-0027 Consequences), which is inaccurate |
+| Lost update? | **No.** `RBAC_012` rolls back the insert, and the client retries | **No** (rollback), but see the availability row |
+| Availability and contention | **Low.** Assign holds next-key S locks on R's `role_permissions` range until commit, a few milliseconds (audit insert and commit). Attach, detach and B8 writes on that one role wait that long. Concurrent assigns are mutually compatible (S/S). Role-definition writes are rare and admin-driven. **No flag needed** (it rides us012 and is reverted by deploy) | **Medium** until RC-64: parallel attaches, for example a script or two administrators, produce 500s |
+| Needs its own IT? | **Yes**, folded into RC-67: assign ∥ attach, ∥ detach and ∥ B8 on the same R, as `nexus_app`, no 1213, bounded wait. The privilege row in §10.4 (`FOR SHARE` on `role_permissions`) covers the grant | Yes: RC-64's harness case |
+
+### 10.3 The architect's three reported risks
+
+- **(i) `canActivateChild: [authGuard]` racing the interceptor's refresh: real, Medium, merge-blocking for S5a (T-S14).** `isAuthenticated()` turns false the moment the access token expires. After an idle tab, the next in-shell navigation runs `authGuard`, which calls `AuthService.refresh()` directly. Any request in flight at that moment (the shell's priming `httpResource`, a page's list call answered 401, the proactive path) starts the interceptor's own refresh. The two POSTs carry the same rotating cookie, and with no grace window the second is a **reuse** (`RefreshTokenUseCase.java:47-53`). The result:
+  - the family is revoked and the user is logged out;
+  - a `TOKEN_REFRESH_REUSE` theft signal fires, a false positive on the priority audit lane that trains responders to ignore real theft signals.
+
+  This is R5 reintroduced on every child navigation. **Fix:** move the de-duplicated refresh (`sharedRefresh` and `refreshInFlight`) out of the interceptor into one injectable session-refresh service that `authGuard` and the interceptor both use. Add a test: guard-triggered and interceptor-triggered refresh in the same tick gives exactly one `POST /refresh`. Alternatively, drop `canActivateChild` (RC-63(i) marked it optional). The same shared service also hardens the existing cold-start path.
+- **(ii) S-lock contention on non-admin assign: accepted, Low, not merge-blocking (T-D29),** subject to the RC-67 IT. No separate flag.
+- **(iii) US-020 must treat 409 `RBAC_012` as retry-once: accepted, Low, not merge-blocking for US-019 (T-D30).** US-019 must still:
+  - add `RBAC_012` to the A11 contract fixtures and the `RbacDenialReason` / `AppError` mapping;
+  - add it to the D3 content deck;
+  - add a US-020 acceptance note: retry exactly once, with a fresh request; on a second `RBAC_012` show the error; never loop;
+  - leave the interceptor unchanged (no redirect on `RBAC_012`).
+
+  The retry can legitimately turn into a 403, because the set-lock path then applies A2 to the now admin-defining role.
+
+### 10.4 New findings (regressions introduced by Revision 1)
+
+| ID | Severity | Finding | Required |
+|---|---|---|---|
+| **T-D28** | **Medium** | RC-56.3's post-insert `FOR SHARE` makes every pair of concurrent attaches on one role deadlock: a 500 on a shipped verb. The design and ADR-0027 describe only the catalogue-completing case | **RC-64** |
+| **T-S14** | **Medium** | `canActivateChild: [authGuard]` triggers a second, non-de-duplicated refresh mid-session: false theft detection, family revocation, logout (R5 regression) | **RC-65** |
+| **T-E54** | Low | RC-60 rule gaps:<ul><li>on assign, the check uses the pre-wait M14 snapshot, so an attach of `user:directory:read` committed while the assign waited is not seen (the post-insert read checks only admin-defining);</li><li>the evaluation order against A2/A3 is unstated: if the rule runs first, `ADMINISTRATOR_REQUIRED` tells a non-holder that the role carries `user:directory:read`, a new named-permission composition bit;</li><li>on assign, "no audit row" contradicts assign's audited denials and throttle accounting (US-018 B8 posture);</li><li>switching the property off is silent</li></ul> | **RC-66** |
+| **T-D29** | Low | Assign's post-insert S locks delay `role_permissions` writes on that role by the assign's remaining transaction time | RC-67(a) |
+| **T-D30** | Low | New client-visible 409 `RBAC_012` (retry-once contract) | RC-67(b) |
+| **T-R18** | Low | Text contradictions:<ul><li>§0 decision 17 (correlation-id grouping; no `replaceId`) versus §10.6;</li><li>§12.9 "the single-refresh test covers `canActivateChild`" versus §12.2;</li><li>§10.9 and ADR-0027 "catalogue-completing attaches" deadlock scope versus T-D28.</li></ul>The RC-59 status changes (500 → 400/405/415 platform-wide) are unflagged; benign, but they need a release-note line | RC-67(c) |
+
+PII check of new log lines and endpoints:
+- `IDENTITY_DIRECTORY_THROTTLED`, `RBAC_PII_PERMISSION_GRANT_DENIED`, `RBAC_PII_PERMISSION_DELEGATED`, `RBAC_ADMIN_DEFINING_ROLE_HAS_NON_ADMIN_ASSIGNED_HOLDER`, `RBAC_ROLE_CEASED_ADMIN_DEFINING` and `DEV_SEED_ACTIVE` carry ids, counts, bucket names or profile names only. **Clean.**
+- New metrics carry no tenant or user tag. **Clean.**
+- New endpoints: none. New codes: `RBAC_012`, `USER_DIR_002`, `UNSUPPORTED_MEDIA_TYPE`, `METHOD_NOT_ALLOWED`. None of their `detail` texts names an id, an email or a permission.
+- Numbering: `RBAC_012` and `USER_DIR_002` are free; no RC or RES id collides.
+
+### 10.5 Required changes (delta)
+
+- **RC-64 — Serialise attach on the role row (T-D28, Medium; S3c).**
+  1. Attach takes R's role-row X (`lockRoleRow`, the statement B8 uses) **before** its INSERT, then inserts, then runs the §10.9 current read. Two attaches on R then queue instead of deadlocking, and the second's current read sees the first's committed row.
+  2. Lock order is checked:
+     - attach (`roles` R X, then `role_permissions`) matches B8's non-admin path and RC-46;
+     - set-lock verbs (`user_roles` X, then `roles` S or X) wait on attach's role row, while attach requests no `user_roles` lock;
+     - detach and assign interleave without a cycle.
+  3. Correct §10.9, §10.4 (attach row) and ADR-0027 "Consequences" to say that attach ∥ attach serialises.
+  4. Harness: two non-completing attaches on one role, 50 iterations, as `nexus_app`: both succeed, no 1213.
+  5. Alternative if rejected: run the current read only on the branch where it can matter, and record the remaining 1213 rate as RES-45. Security prefers item 1.
+- **RC-65 — One de-duplicated refresh for guard and interceptor (T-S14, Medium; S5a, also hardens S2b).**
+  1. Extract `sharedRefresh` and `refreshInFlight` into an injectable `SessionRefresh` service (shareReplay and the 429 retry policy unchanged). `authGuard` and `authInterceptor` both call it; `AuthService.refresh()` is called only from it (an ESLint `no-restricted-syntax` rule or a spec enforces this).
+  2. Test: an expired session, a child navigation and a concurrent 401-triggered reactive refresh in the same tick give exactly one `POST /refresh`, and the session survives.
+  3. If RC-65 is not done, remove `canActivateChild` from §12.9 (it was optional).
+- **RC-66 — RC-60 precision (T-E54, Low; S1c/S3c).**
+  1. Evaluate the PII grant rule **after** A2/A3, so only a caller who already holds every permission of the role sees `ADMINISTRATOR_REQUIRED`.
+  2. The assign path follows assign's denial posture: a `ROLE_ASSIGNMENT_DENIED` row and throttle accounting, as A4/A2 do. Attach and B8 keep Decision 7.
+  3. Assign's §10.9 post-insert current read also re-evaluates the PII rule, rolling back with `RBAC_012` when the role gained `user:directory:read` while the assign waited.
+  4. At startup, `nexus.rbac.pii-grant-requires-administrator=false` logs WARN `RBAC_PII_GRANT_RULE_DISABLED`. A prod-profile test pins `true` until D5 rules.
+- **RC-67 — Tasks (Low).**
+  - **(a) T-D29:** `AssignRoleContentionIT`: assign ∥ attach, ∥ detach and ∥ B8 on the same R, as `nexus_app`, no 1213, wait below 50 ms p95 at dev volume. `nexus.rbac.role_classification_changed` is already in §17.
+  - **(b) T-D30:** `RBAC_012` goes into A11 fixtures, `AppError` mapping and D3 copy, plus the US-020 retry-once note from §10.3(iii).
+  - **(c) T-R18:** fix decision 17, §12.9's test claim and the deadlock-scope sentences; add the RC-59 status changes to release notes.
+
+### 10.6 Residuals (changed or new)
+
+| # | Residual | Severity | Owner | Disposition |
+|---|---|---|---|---|
+| **RES-26** | Unchanged at Medium: RC-56 landed in S3c with the detector | Medium | Platform Security Owner | Escalate (acceptance at Gate 2, as before) |
+| **RES-28** | Remains only for detach ∥ detach; single-actor-triggerable; detected | Low (RC-57.1 and RC-57.2 adopted) | Architect + SRE | Accept |
+| **RES-45** | Classification flip; after RC-64, attach ∥ attach no longer deadlocks; a flip-driven 1213 remains | Low | Architect | Accept |
+| **RES-51** | PII delegation | Low (preventive rule ON; D5 confirms) | Platform Security Owner + DPO | Accept at D5, conditional on RC-66 |
+| **RES-53** *(new)* | Clients must retry `RBAC_012` once; a stale client sees one extra 409 | Low | US-020 Frontend Tech Lead | Accept with RC-67(b) |
+
+### 10.7 Final merge-blocking list (supersedes §9.2 where it differs)
+
+- **S3c (B8, the US-018 verb changes, CORS, 412/428):**
+  - everything in §9.2 for S3c;
+  - **RC-64** (attach role-row lock and its harness case);
+  - RC-66.3;
+  - RC-67(a);
+  - the RC-57.2 revoke/softDelete/break-glass changes with `LastAdminLockoutIT` outcomes unchanged;
+  - all privilege ITs green as `nexus_app`.
+- **S1c (directory):**
+  - everything in §9.2 for S1c;
+  - RC-66.1, RC-66.2 and RC-66.4;
+  - D5 sign-off, including the RC-60 default;
+  - Ops thresholds for the RC-61.1 alerts.
+- **S5a (A7–A10):** **RC-65**, or `canActivateChild` removed.
+- **S2c:** RC-62 (unchanged).
+- **S3b:** RC-63(l) and RES-47 acceptance (unchanged).
+- **S1a, S4a, S4c:** unchanged from §9.2.
+- **Docs before Gate 2 closes:** RC-67(c) text fixes. They are text-only and do not change the threat picture.
+
+**Delta verdict.** The two highest-risk changes (B8 step 9 with the reordered checks, and current-read classification under the set lock) are correct and sound against RC-46. Revision 1 introduced two Medium regressions:
+- T-D28 (attach deadlocks), whose fix is one statement plus a text correction;
+- T-S14 (guard refresh race), whose fix is a frontend refactor, or dropping an optional guard.
+
+Both are confined to their slices, and neither reopens a Gate 1 decision. The design can go to Gate 2 once RC-64 and RC-65 (or dropping `canActivateChild`) and the RC-67(c) text fixes are folded in. RC-66 and RC-67(a)–(b) can land as tasks inside their slices' merge gates.
