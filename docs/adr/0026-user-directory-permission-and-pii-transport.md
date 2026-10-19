@@ -1,6 +1,6 @@
 # ADR 0026 — User Directory Permission, PII Transport and Delegation
 
-**Status:** Proposed (2026-10-19; US-019 threat-model RC-60, RC-61 and RC-63(e) folded in, 2026-10-19)
+**Status:** Proposed (2026-10-19; US-019 threat-model RC-60, RC-61 and RC-63(e) folded in, 2026-10-19; delta review RC-66 folded in, 2026-10-19)
 **Date:** 2026-10-19
 **Author:** Principal Architect
 **Feature:** EPIC-002, US-019 B1/B2 and B5
@@ -19,7 +19,7 @@ US-020's console must show tenant users with their email addresses. Every `MEMBE
 5. **Cross-tenant ids and emails** behave exactly like missing ones (same status, body and statements). Lookup normalisation is `EmailBlindIndexService`'s only.
 6. **Abuse controls are detective plus rate bounds, not prevention of enumeration by a holder.** A holder can list the directory. Bounds: 30 lookups per minute per actor, and a per-actor ceiling across all directory operations; both fail open with the rate-limit store (ADR-0016). Detection: a row-volume alert per actor across all operations, a cross-tenant WARN for by-id and batch, a lookup-volume alert.
 7. **Delegation (RC-60).** Under grant-subset, a holder of `user:directory:read` with `user:role:assign` or `role:write` could otherwise grant tenant-wide email access onward, including to a self-registered second account (the RES-26 shape applied to PII). Decided, pending explicit D5 confirmation:
-   - **Preventive (default ON):** attaching `user:directory:read` to a role, or assigning a role that carries it, requires the caller to be an administrator (ADR-0021 D3). The rule is keyed by permission id, never by `isSensitive`, and is evaluated with A2/A3; a denial is 403 `RBAC_001` with reason `ADMINISTRATOR_REQUIRED`.
+   - **Preventive (default ON):** attaching `user:directory:read` to a role, or assigning a role that carries it, requires the caller to be an administrator (ADR-0021 D3). The rule is keyed by permission id, never by `isSensitive`, and is evaluated **after** A2/A3, so only a caller who already holds every permission being granted can see it; a denial is 403 `RBAC_001` with reason `ADMINISTRATOR_REQUIRED`. On assign it follows assign's denial posture (a `ROLE_ASSIGNMENT_DENIED` row, throttle accounting), and assign's post-insert re-read re-checks it (409 `RBAC_012` when the role gained the permission while the assign waited). Switching it off (`nexus.rbac.pii-grant-requires-administrator=false`) logs a startup WARN `RBAC_PII_GRANT_RULE_DISABLED`; the `prod` profile pins `true` until D5 rules (US-019 RC-66).
    - **Detective:** any grant of the permission by a non-administrator that nonetheless succeeds (for example if D5 turns the preventive rule off) emits WARN `RBAC_PII_PERMISSION_DELEGATED` (ids only, ≥ 1-year retention) and a ticket-level counter.
 8. **`isSensitive` (B5)** is a static partition of the catalogue in `Permissions` (`SENSITIVE`, `NON_SENSITIVE`), UX only: no server rule may read it (ArchUnit). Sensitive means: holding it confers control over identities, role assignments, role definitions or the tenant, or read access to personal data or the audit trail. Membership is a Security decision.
 9. **Emails are self-asserted until verified** (anonymous registration into the default tenant; PENDING rows). The console shows `status` and `emailVerified` next to every email, and any CSV export escapes formula-leading characters.
