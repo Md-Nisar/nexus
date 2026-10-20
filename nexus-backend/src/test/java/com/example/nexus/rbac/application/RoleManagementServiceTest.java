@@ -85,6 +85,7 @@ class RoleManagementServiceTest {
   private static final String ROLE_READ = "role:read";
   private static final UUID ROLE_WRITE_ID = RbacSeededPermissionIds.ROLE_WRITE;
   private static final UUID USER_ROLE_ASSIGN_ID = RbacSeededPermissionIds.USER_ROLE_ASSIGN;
+  private static final UUID USER_DIRECTORY_READ_ID = RbacSeededPermissionIds.USER_DIRECTORY_READ;
 
   // Fixture catalogue: two permissions. A role carrying both is admin-defining (ADR-0021 D3).
   private static final UUID P1 = UUID.fromString("00000000-0000-7000-8000-000000000001");
@@ -121,6 +122,7 @@ class RoleManagementServiceTest {
             permissionCachePort,
             transactionManager,
             meterRegistry,
+            new PiiPermissionGrantRule(true, meterRegistry),
             MAX_ROLES_PER_TENANT);
 
     actorId = UUID.randomUUID();
@@ -625,6 +627,197 @@ class RoleManagementServiceTest {
 
     verify(roleManagementPort, never()).hasPermission(any(), any());
     verify(roleManagementPort, never()).attachPermission(any(), any());
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // attachPermission() -- US-019 T-007: administrator-only grant of user:directory:read (RC-60)
+  // ---------------------------------------------------------------------------------------
+
+  private void stubDirectoryReadAttach() {
+    permissionId = USER_DIRECTORY_READ_ID;
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    when(roleManagementPort.findPermission(permissionId))
+        .thenReturn(
+            Optional.of(
+                new PermissionView(permissionId, "user:directory:read", "Read the directory")));
+  }
+
+  /** M13: one admin-defining role (the whole fixture catalogue), plus role:write and the PII id. */
+  private void stubCallerIsAdministratorHoldingDirectoryRead() {
+    UUID adminDefiningRoleId = UUID.randomUUID();
+    stubCallerHoldsRefs(
+        new RolePermissionRef(adminDefiningRoleId, P1),
+        new RolePermissionRef(adminDefiningRoleId, P2),
+        new RolePermissionRef(UUID.randomUUID(), ROLE_WRITE_ID),
+        new RolePermissionRef(UUID.randomUUID(), USER_DIRECTORY_READ_ID));
+  }
+
+  @Test
+  void should_denyNotTenantAdminWithWarnAndNoAudit_when_nonAdministratorHolderAttachesDirectoryRead() {
+    stubDirectoryReadAttach();
+    stubCallerHolds(USER_DIRECTORY_READ_ID);
+
+    ListAppender<ILoggingEvent> ruleLogs = startRuleLogCapture();
+    try {
+      assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
+          .isInstanceOfSatisfying(
+              InsufficientPermissionException.class,
+              e -> {
+                assertThat(e.getReason()).isEqualTo(DenialReason.NOT_TENANT_ADMIN);
+                assertThat(e.getRequiredPermission()).isEqualTo(ROLE_WRITE);
+              });
+
+      assertThat(ruleLogs.list)
+          .singleElement()
+          .satisfies(
+              warn -> {
+                assertThat(warn.getLevel()).isEqualTo(Level.WARN);
+                assertThat(keyValueMap(warn))
+                    .containsEntry("event", "RBAC_PII_PERMISSION_GRANT_DENIED")
+                    .containsEntry("tenantId", tenantId)
+                    .containsEntry("actorUserId", actorId)
+                    .containsEntry("roleId", roleId)
+                    .containsEntry("operation", "attach");
+              });
+    } finally {
+      stopLogCapture(ruleLogs, PiiPermissionGrantRule.class);
+    }
+
+    // Before the duplicate check and the insert; Decision 7: no audit row on attach.
+    verify(roleManagementPort, never()).hasPermission(any(), any());
+    verify(roleManagementPort, never()).attachPermission(any(), any());
+    verifyNoInteractions(rbacAuditPort, permissionCachePort);
+    assertThat(meterRegistry.get("nexus.rbac.pii_permission_delegated").counter().count())
+        .isZero();
+  }
+
+  /**
+   * RC-66.1: an empty catalogue read makes nobody an administrator (MC-1), so the rule denies; it
+   * never turns missing evidence into an allow.
+   */
+  @Test
+  void should_deny_when_catalogueReadsBackEmpty() {
+    stubDirectoryReadAttach();
+    stubCallerIsAdministratorHoldingDirectoryRead();
+    when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(Set.of());
+
+    assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> assertThat(e.getReason()).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
+  }
+
+  /** RC-66.1: A3 runs first, so a non-holder never learns the rule exists. */
+  @Test
+  void should_denyGrantExceedsCallerNeverNotTenantAdmin_when_nonHolderAttachesDirectoryRead() {
+    stubDirectoryReadAttach();
+    stubCallerHolds(UUID.randomUUID());
+
+    ListAppender<ILoggingEvent> ruleLogs = startRuleLogCapture();
+    try {
+      assertThatThrownBy(() -> service.attachPermission(actor, roleId, permissionId, ctx))
+          .isInstanceOfSatisfying(
+              InsufficientPermissionException.class,
+              e -> assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+      assertThat(ruleLogs.list).isEmpty();
+    } finally {
+      stopLogCapture(ruleLogs, PiiPermissionGrantRule.class);
+    }
+  }
+
+  @Test
+  void should_attachAndEmitNothing_when_administratorAttachesDirectoryRead() {
+    stubDirectoryReadAttach();
+    stubCallerIsAdministratorHoldingDirectoryRead();
+    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
+
+    ListAppender<ILoggingEvent> ruleLogs = startRuleLogCapture();
+    try {
+      service.attachPermission(actor, roleId, permissionId, ctx);
+      assertThat(ruleLogs.list).isEmpty();
+    } finally {
+      stopLogCapture(ruleLogs, PiiPermissionGrantRule.class);
+    }
+
+    verify(roleManagementPort).attachPermission(roleId, permissionId);
+    assertThat(meterRegistry.get("nexus.rbac.pii_permission_delegated").counter().count())
+        .isZero();
+  }
+
+  @Test
+  void should_attachAndEmitDelegatedWarnAndCounterOnce_when_ruleOffAndNonAdministratorAttaches() {
+    RoleManagementService ruleOffService = serviceWithRule(false);
+    stubDirectoryReadAttach();
+    stubCallerHolds(USER_DIRECTORY_READ_ID);
+    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
+
+    ListAppender<ILoggingEvent> ruleLogs = startRuleLogCapture();
+    try {
+      ruleOffService.attachPermission(actor, roleId, permissionId, ctx);
+
+      assertThat(ruleLogs.list)
+          .singleElement()
+          .satisfies(
+              warn -> {
+                assertThat(warn.getLevel()).isEqualTo(Level.WARN);
+                Map<String, Object> fields = keyValueMap(warn);
+                assertThat(fields)
+                    .containsEntry("event", "RBAC_PII_PERMISSION_DELEGATED")
+                    .containsEntry("tenantId", tenantId)
+                    .containsEntry("actorUserId", actorId)
+                    .containsEntry("roleId", roleId);
+                assertThat(fields.get("targetUserId")).isNull();
+              });
+    } finally {
+      stopLogCapture(ruleLogs, PiiPermissionGrantRule.class);
+    }
+
+    verify(roleManagementPort).attachPermission(roleId, permissionId);
+    Counter delegated = meterRegistry.find("nexus.rbac.pii_permission_delegated").counter();
+    assertThat(delegated).isNotNull();
+    assertThat(delegated.count()).isEqualTo(1.0);
+  }
+
+  /** The detective signal is after commit: an uncommitted attach emits nothing. */
+  @Test
+  void should_notEmitDelegatedSignal_when_attachDoesNotCommit() {
+    RoleManagementService ruleOffService = serviceWithRule(false);
+    stubDirectoryReadAttach();
+    stubCallerHolds(USER_DIRECTORY_READ_ID);
+    when(roleManagementPort.hasPermission(roleId, permissionId)).thenReturn(false);
+
+    inUncommittedSynchronization(
+        () -> ruleOffService.attachPermission(actor, roleId, permissionId, ctx));
+
+    assertThat(meterRegistry.get("nexus.rbac.pii_permission_delegated").counter().count())
+        .isZero();
+  }
+
+  private RoleManagementService serviceWithRule(boolean enforced) {
+    return new RoleManagementService(
+        roleManagementPort,
+        userRoleAssignmentPort,
+        rbacAuditPort,
+        permissionFreshness,
+        permissionCachePort,
+        transactionManager,
+        meterRegistry,
+        new PiiPermissionGrantRule(enforced, meterRegistry),
+        MAX_ROLES_PER_TENANT);
+  }
+
+  private static ListAppender<ILoggingEvent> startRuleLogCapture() {
+    Logger logger = (Logger) LoggerFactory.getLogger(PiiPermissionGrantRule.class);
+    ListAppender<ILoggingEvent> listAppender = new ListAppender<>();
+    listAppender.start();
+    logger.addAppender(listAppender);
+    return listAppender;
+  }
+
+  private static void stopLogCapture(ListAppender<ILoggingEvent> listAppender, Class<?> source) {
+    Logger logger = (Logger) LoggerFactory.getLogger(source);
+    logger.detachAppender(listAppender);
+    listAppender.stop();
   }
 
   /** M13 failure must never be read as "allow". */

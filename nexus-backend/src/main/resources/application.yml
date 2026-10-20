@@ -170,6 +170,11 @@ nexus:
     # sets it to true.
     throttle:
       require-shared-store: ${NEXUS_RBAC_THROTTLE_REQUIRE_SHARED_STORE:false}
+    # US-019 RC-60.3: granting user:directory:read (attach, or assign of a role carrying it)
+    # requires an administrator. Default ON until D5 rules; no profile file overrides it, so prod
+    # resolves true (pinned by PiiPermissionGrantRuleTest). false logs WARN
+    # RBAC_PII_GRANT_RULE_DISABLED at startup (RC-66.4).
+    pii-grant-requires-administrator: true
     # Per-user permission epoch (US-018 A9, design §9.2, §9.5). Both timeouts apply to dedicated
     # Redis connections built from spring.data.redis.*; the 2 s timeout above never applies here.
     epoch:

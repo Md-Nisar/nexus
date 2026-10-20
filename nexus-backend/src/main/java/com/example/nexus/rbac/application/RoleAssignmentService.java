@@ -150,6 +150,7 @@ public class RoleAssignmentService {
   private final PermissionFreshnessService permissionFreshnessService;
   private final MeterRegistry meterRegistry;
   private final RoleChangeThrottlePort throttlePort;
+  private final PiiPermissionGrantRule piiGrantRule;
   private final int maxDenials;
   private final int windowSeconds;
 
@@ -161,6 +162,7 @@ public class RoleAssignmentService {
       PermissionFreshnessService permissionFreshnessService,
       MeterRegistry meterRegistry,
       RoleChangeThrottlePort throttlePort,
+      PiiPermissionGrantRule piiGrantRule,
       @Value("${nexus.rbac.denial-throttle.max-denials}") int maxDenials,
       @Value("${nexus.rbac.denial-throttle.window-seconds}") int windowSeconds) {
     this.userRoleAssignmentPort = userRoleAssignmentPort;
@@ -170,6 +172,7 @@ public class RoleAssignmentService {
     this.permissionFreshnessService = permissionFreshnessService;
     this.meterRegistry = meterRegistry;
     this.throttlePort = throttlePort;
+    this.piiGrantRule = piiGrantRule;
     this.maxDenials = maxDenials;
     this.windowSeconds = windowSeconds;
   }
@@ -181,9 +184,16 @@ public class RoleAssignmentService {
    * <p>Order: tenant checks (404/403), throttle, classify the target role (is it admin-defining?),
    * the set lock when it is, the caller's live holdings, then in this order the {@code
    * user:role:assign} re-check (07-security-review.md L-1), A4 (self-assignment needs an
-   * administrator), A2 (the role's permissions must be a subset of the caller's), the duplicate
-   * 409 and the insert. One denial row carries the first reason. Neither A4 nor A2 closes RES-26
-   * (pre-positioning through a second account).
+   * administrator), A2 (the role's permissions must be a subset of the caller's), the PII grant
+   * rule, the duplicate 409 and the insert. One denial row carries the first reason. Neither A4 nor
+   * A2 closes RES-26 (pre-positioning through a second account).
+   *
+   * <p>The PII grant rule (US-019 §4.8, RC-60.3) runs after A2 (RC-66.1): a role whose permissions
+   * (M14) include {@code user:directory:read} may only be assigned by an administrator, decided as
+   * A4 decides it (the set lock's rows, or the snapshot's per-role rows). A denial follows assign's
+   * posture (RC-66.2): 403 {@code NOT_TENANT_ADMIN}, one {@code ROLE_ASSIGNMENT_DENIED} row and a
+   * throttle denial, as for A4 and A2. With the rule switched off, a non-administrator's assign is
+   * reported after commit (RC-60.2).
    *
    * <p>A4's "is the caller an administrator?" comes from the set lock's rows when the target is
    * admin-defining and from the snapshot otherwise; A2 compares against the snapshot's union in
@@ -221,6 +231,13 @@ public class RoleAssignmentService {
       requireGrantWithinCallerHoldings(
           actor, targetUserId, role, target, heldRolePermissions, OPERATION_ASSIGN,
           requestContext, throttled);
+      PiiPermissionGrantRule.Outcome piiGrant =
+          piiGrantRule.evaluate(
+              target.targetPermissionIds(),
+              () -> callerIsAdministrator(actor, setLock, heldRolePermissions, target));
+      if (piiGrant == PiiPermissionGrantRule.Outcome.DENIED) {
+        denyPiiPermissionGrant(actor, targetUserId, role, requestContext, throttled);
+      }
 
       if (userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)) {
         // Deliberately DEBUG, not WARN: a duplicate-assignment attempt is a benign client bug,
@@ -270,6 +287,9 @@ public class RoleAssignmentService {
                 .addKeyValue(LOG_KEY_ROLE_ID, roleId)
                 .addKeyValue("assignedBy", actor.userId())
                 .log("Role assigned");
+            if (piiGrant == PiiPermissionGrantRule.Outcome.DELEGATED) {
+              piiGrantRule.recordDelegated(actor.tenantId(), actor.userId(), roleId, targetUserId);
+            }
             // Stopped from afterCommit(), the true "at commit" point.
             stopLockHoldTimer(lockHoldSample, OPERATION_ASSIGN, OUTCOME_ASSIGNED);
             // Row 9: an administrator was minted. Ticket, never page: a self-target by an
@@ -758,6 +778,31 @@ public class RoleAssignmentService {
         actor, targetUserId, role.getId(), role.getName(), DenialReason.SELF_ASSIGNMENT,
         OPERATION_ASSIGN, requestContext, null);
     throw new InsufficientPermissionException(USER_ROLE_ASSIGN, DenialReason.SELF_ASSIGNMENT);
+  }
+
+  /**
+   * The PII grant rule's denial on assign (US-019 §4.8, RC-66.2), in A2's posture: a throttled
+   * actor's denial is counted without an audit row ({@link #suppressThrottledDenial}); otherwise a
+   * throttle denial, the WARN {@code RBAC_PII_PERMISSION_GRANT_DENIED} and one {@code
+   * ROLE_ASSIGNMENT_DENIED} row. Always throws.
+   */
+  private void denyPiiPermissionGrant(
+      RoleChangeActor actor,
+      UUID targetUserId,
+      Role role,
+      RequestContext requestContext,
+      boolean throttled) {
+    if (throttled) {
+      suppressThrottledDenial(actor, OPERATION_ASSIGN);
+      throw new InsufficientPermissionException(USER_ROLE_ASSIGN, DenialReason.NOT_TENANT_ADMIN);
+    }
+    recordThrottleDenialAndMaybeWarn(actor, OPERATION_ASSIGN);
+    piiGrantRule.warnDenied(
+        actor.tenantId(), actor.userId(), role.getId(), targetUserId, OPERATION_ASSIGN);
+    recordDenial(
+        actor, targetUserId, role.getId(), role.getName(), DenialReason.NOT_TENANT_ADMIN,
+        OPERATION_ASSIGN, requestContext, null);
+    throw new InsufficientPermissionException(USER_ROLE_ASSIGN, DenialReason.NOT_TENANT_ADMIN);
   }
 
   /**

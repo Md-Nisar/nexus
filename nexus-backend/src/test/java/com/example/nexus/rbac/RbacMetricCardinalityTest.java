@@ -10,6 +10,7 @@ import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.common.security.InsufficientPermissionException;
 import com.example.nexus.rbac.application.PermissionFreshnessService;
+import com.example.nexus.rbac.application.PiiPermissionGrantRule;
 import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.application.port.out.PermissionCachePort;
@@ -65,12 +66,13 @@ class RbacMetricCardinalityTest {
         new RoleAssignmentService(
             assignmentPort, directoryPort, mock(RbacAuditPort.class),
             mock(PermissionCachePort.class), mock(PermissionFreshnessService.class), registry,
-            throttlePort, 5, 60);
+            throttlePort, new PiiPermissionGrantRule(true, registry), 5, 60);
     RoleManagementService managementService =
         new RoleManagementService(
             managementPort, assignmentPort, mock(RbacAuditPort.class),
             mock(PermissionFreshnessService.class), mock(PermissionCachePort.class),
-            mock(PlatformTransactionManager.class), registry, 500L);
+            mock(PlatformTransactionManager.class), registry,
+            new PiiPermissionGrantRule(true, registry), 500L);
 
     Role role = new Role(roleId, tenantId, "MEMBER", "desc", false);
     when(directoryPort.findTenantId(targetId)).thenReturn(Optional.of(tenantId));

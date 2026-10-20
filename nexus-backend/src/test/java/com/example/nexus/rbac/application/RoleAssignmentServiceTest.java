@@ -112,7 +112,8 @@ class RoleAssignmentServiceTest {
     service =
         new RoleAssignmentService(
             userRoleAssignmentPort, userDirectoryPort, rbacAuditPort, permissionCachePort,
-            permissionFreshness, meterRegistry, throttlePort, MAX_DENIALS, WINDOW_SECONDS);
+            permissionFreshness, meterRegistry, throttlePort,
+            new PiiPermissionGrantRule(true, meterRegistry), MAX_DENIALS, WINDOW_SECONDS);
 
     actorId = UUID.randomUUID();
     tenantId = UUID.randomUUID();
@@ -2548,8 +2549,225 @@ class RoleAssignmentServiceTest {
   }
 
   // ---------------------------------------------------------------------------------------
+  // assign() -- US-019 T-007: administrator-only grant of user:directory:read (RC-60, RC-66)
+  // ---------------------------------------------------------------------------------------
+
+  private static final UUID PII = RbacSeededPermissionIds.USER_DIRECTORY_READ;
+
+  /** A benign (not admin-defining) target role carrying {@code user:directory:read}. */
+  private void stubBenignTargetCarryingDirectoryRead() {
+    stubBenignAssignTarget();
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(Set.of(PII)));
+  }
+
+  /** M13: the caller holds {@code user:directory:read} through a partial role (no administrator). */
+  private void stubCallerHoldsDirectoryReadOnly() {
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(withUserRoleAssign(List.of(ref(UUID.randomUUID(), PII))));
+  }
+
+  @Test
+  void should_denyNotTenantAdminWithOneDenialRowAndThrottleDenial_when_nonAdministratorHolderAssignsDirectoryReadRole() {
+    stubBenignTargetCarryingDirectoryRead();
+    stubCallerHoldsDirectoryReadOnly();
+
+    ListAppender<ILoggingEvent> ruleLogs = startLogCapture(PiiPermissionGrantRule.class);
+    try {
+      assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+          .isInstanceOfSatisfying(
+              InsufficientPermissionException.class,
+              e -> {
+                assertThat(e.getReason()).isEqualTo(DenialReason.NOT_TENANT_ADMIN);
+                assertThat(e.getRequiredPermission()).isEqualTo("user:role:assign");
+              });
+
+      assertThat(ruleLogs.list)
+          .singleElement()
+          .satisfies(
+              warn -> {
+                assertThat(warn.getLevel()).isEqualTo(Level.WARN);
+                assertThat(keyValueMap(warn))
+                    .containsOnly(
+                        Map.entry("event", "RBAC_PII_PERMISSION_GRANT_DENIED"),
+                        Map.entry("tenantId", tenantId),
+                        Map.entry("actorUserId", actorId),
+                        Map.entry("roleId", roleId),
+                        Map.entry("targetUserId", targetUserId),
+                        Map.entry("operation", "assign"));
+              });
+    } finally {
+      stopLogCapture(ruleLogs, PiiPermissionGrantRule.class);
+    }
+
+    verify(rbacAuditPort, times(1))
+        .recordRoleAssignmentDenied(
+            new RbacAuditEvent(tenantId, targetUserId, roleId, "MEMBER", actorId, ctx),
+            DenialReason.NOT_TENANT_ADMIN, "assign");
+    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
+    verify(throttlePort, times(1)).recordDenial(tenantId, actorId);
+    verify(userRoleAssignmentPort, never()).hasActiveAssignment(any(), any());
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+    assertThat(meterRegistry.get("nexus.rbac.pii_permission_delegated").counter().count())
+        .isZero();
+  }
+
+  /** RC-66.1: A2 runs first, so a non-holder gets GRANT_EXCEEDS_CALLER and no rule WARN. */
+  @Test
+  void should_denyGrantExceedsCallerNeverNotTenantAdmin_when_nonHolderAssignsDirectoryReadRole() {
+    stubBenignTargetCarryingDirectoryRead();
+    stubCallerHoldsP1Only();
+
+    ListAppender<ILoggingEvent> ruleLogs = startLogCapture(PiiPermissionGrantRule.class);
+    try {
+      assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+          .isInstanceOfSatisfying(
+              InsufficientPermissionException.class,
+              e -> assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+      assertThat(ruleLogs.list).isEmpty();
+    } finally {
+      stopLogCapture(ruleLogs, PiiPermissionGrantRule.class);
+    }
+
+    verify(rbacAuditPort, times(1))
+        .recordRoleAssignmentDenied(any(), eq(DenialReason.GRANT_EXCEEDS_CALLER), eq("assign"), eq(1));
+    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
+  }
+
+  /** A throttled actor's evaluated denial follows A2's throttled posture: counted, no audit row. */
+  @Test
+  void should_denyWithoutAuditRow_when_throttledNonAdministratorHolderAssignsDirectoryReadRole() {
+    stubBenignTargetCarryingDirectoryRead();
+    stubCallerHoldsDirectoryReadOnly();
+    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
+    when(throttlePort.recordSuppressedDenial(tenantId, actorId)).thenReturn(2);
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> assertThat(e.getReason()).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
+
+    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
+    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any(), any());
+    verify(throttlePort, never()).recordDenial(any(), any());
+    assertThat(deniedThrottledCount("assign")).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_assignAndEmitNothing_when_administratorAssignsDirectoryReadRole() {
+    stubBenignTargetCarryingDirectoryRead();
+    UUID adminDefiningRoleId = UUID.randomUUID();
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(
+            withUserRoleAssign(
+                List.of(
+                    ref(adminDefiningRoleId, P1),
+                    ref(adminDefiningRoleId, P2),
+                    ref(UUID.randomUUID(), PII))));
+    stubSuccessfulInsert();
+
+    ListAppender<ILoggingEvent> ruleLogs = startLogCapture(PiiPermissionGrantRule.class);
+    try {
+      service.assign(actor, targetUserId, roleId, ctx);
+      assertThat(ruleLogs.list).isEmpty();
+    } finally {
+      stopLogCapture(ruleLogs, PiiPermissionGrantRule.class);
+    }
+
+    verify(userRoleAssignmentPort).assign(targetUserId, roleId, tenantId, actorId);
+    assertThat(meterRegistry.get("nexus.rbac.pii_permission_delegated").counter().count())
+        .isZero();
+  }
+
+  /**
+   * On the set-lock path the administrator answer comes from the locked rows, never the snapshot:
+   * a caller the snapshot calls an administrator but who holds no locked admin-defining row is
+   * denied.
+   */
+  @Test
+  void should_denyFromSetLockRows_when_adminDefiningTargetCarriesDirectoryReadAndCallerNotInLock() {
+    Set<UUID> catalogueWithPii = Set.of(P1, P2, PII);
+    when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(catalogueWithPii);
+    stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(catalogueWithPii));
+    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId))
+        .thenReturn(List.of(ref(roleId, P1), ref(roleId, P2), ref(roleId, PII)));
+    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
+        .thenReturn(List.of(holder(UUID.randomUUID(), roleId)));
+    UUID snapshotAdminRoleId = UUID.randomUUID();
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(
+            withUserRoleAssign(
+                List.of(
+                    ref(snapshotAdminRoleId, P1),
+                    ref(snapshotAdminRoleId, P2),
+                    ref(snapshotAdminRoleId, PII))));
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> assertThat(e.getReason()).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
+
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+  }
+
+  @Test
+  void should_assignAndEmitDelegatedWarnAndCounterOnce_when_ruleOffAndNonAdministratorAssigns() {
+    RoleAssignmentService ruleOffService =
+        new RoleAssignmentService(
+            userRoleAssignmentPort, userDirectoryPort, rbacAuditPort, permissionCachePort,
+            permissionFreshness, meterRegistry, throttlePort,
+            new PiiPermissionGrantRule(false, meterRegistry), MAX_DENIALS, WINDOW_SECONDS);
+    stubBenignTargetCarryingDirectoryRead();
+    stubCallerHoldsDirectoryReadOnly();
+    stubSuccessfulInsert();
+
+    ListAppender<ILoggingEvent> ruleLogs = startLogCapture(PiiPermissionGrantRule.class);
+    try {
+      ruleOffService.assign(actor, targetUserId, roleId, ctx);
+
+      assertThat(ruleLogs.list)
+          .singleElement()
+          .satisfies(
+              warn -> {
+                assertThat(warn.getLevel()).isEqualTo(Level.WARN);
+                assertThat(keyValueMap(warn))
+                    .containsOnly(
+                        Map.entry("event", "RBAC_PII_PERMISSION_DELEGATED"),
+                        Map.entry("tenantId", tenantId),
+                        Map.entry("actorUserId", actorId),
+                        Map.entry("roleId", roleId),
+                        Map.entry("targetUserId", targetUserId));
+              });
+    } finally {
+      stopLogCapture(ruleLogs, PiiPermissionGrantRule.class);
+    }
+
+    verify(userRoleAssignmentPort).assign(targetUserId, roleId, tenantId, actorId);
+    verify(rbacAuditPort, never()).recordRoleAssignmentDenied(any(), any(), any());
+    Counter delegated = meterRegistry.find("nexus.rbac.pii_permission_delegated").counter();
+    assertThat(delegated).isNotNull();
+    assertThat(delegated.count()).isEqualTo(1.0);
+  }
+
+  // ---------------------------------------------------------------------------------------
   // Log-capture helpers
   // ---------------------------------------------------------------------------------------
+
+  private static ListAppender<ILoggingEvent> startLogCapture(Class<?> source) {
+    Logger logger = (Logger) LoggerFactory.getLogger(source);
+    ListAppender<ILoggingEvent> listAppender = new ListAppender<>();
+    listAppender.start();
+    logger.addAppender(listAppender);
+    return listAppender;
+  }
+
+  private static void stopLogCapture(ListAppender<ILoggingEvent> listAppender, Class<?> source) {
+    Logger logger = (Logger) LoggerFactory.getLogger(source);
+    logger.detachAppender(listAppender);
+    listAppender.stop();
+  }
 
   private ListAppender<ILoggingEvent> startLogCapture() {
     Logger logger = (Logger) LoggerFactory.getLogger(RoleAssignmentService.class);

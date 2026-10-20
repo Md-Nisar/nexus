@@ -119,6 +119,7 @@ public class RoleManagementService {
   private final PermissionCachePort permissionCachePort;
   private final TransactionTemplate holderReadTransaction;
   private final MeterRegistry meterRegistry;
+  private final PiiPermissionGrantRule piiGrantRule;
   private final long maxRolesPerTenant;
 
   public RoleManagementService(
@@ -129,6 +130,7 @@ public class RoleManagementService {
       PermissionCachePort permissionCachePort,
       PlatformTransactionManager transactionManager,
       MeterRegistry meterRegistry,
+      PiiPermissionGrantRule piiGrantRule,
       @Value("${nexus.rbac.max-roles-per-tenant:500}") long maxRolesPerTenant) {
     this.roleManagementPort = roleManagementPort;
     this.userRoleAssignmentPort = userRoleAssignmentPort;
@@ -142,6 +144,7 @@ public class RoleManagementService {
         TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     this.holderReadTransaction.setReadOnly(true);
     this.meterRegistry = meterRegistry;
+    this.piiGrantRule = piiGrantRule;
     this.maxRolesPerTenant = maxRolesPerTenant;
   }
 
@@ -220,8 +223,9 @@ public class RoleManagementService {
   /**
    * Attaches {@code permissionId} to a custom role. Order: tenant resolution (404/403), system-role
    * immutability (409), permission existence (404), A3 (403: the caller must hold the permission,
-   * {@link #requireCallerHoldsPermission}), the narrow provenance rule (409 {@code RBAC_010}, only
-   * when this attach would make the role admin-defining), the duplicate pre-check (409 {@code
+   * {@link #requireCallerHoldsPermission}), the PII grant rule (403, below), the narrow provenance
+   * rule (409 {@code RBAC_010}, only when this attach would make the role admin-defining), the
+   * duplicate pre-check (409 {@code
    * RBAC_005}), the insert. A3 sits before the duplicate check so a denied caller learns nothing
    * about attachment state.
    *
@@ -233,6 +237,12 @@ public class RoleManagementService {
    * duplicate attach still gets {@code RBAC_005}. Partial escalations stay detective, see the
    * signals below. The only extra reads are on the rare branch where the attach completes the
    * catalogue, and they are non-locking.
+   *
+   * <p><b>PII grant rule (US-019 §4.8, RC-60.3).</b> Right after A3 (RC-66.1) and before the
+   * provenance rule and the duplicate check: attaching {@code user:directory:read} requires the
+   * caller to be an administrator by A3's own M13 rows and the catalogue. A denial is 403 {@code
+   * NOT_TENANT_ADMIN} with WARN {@code RBAC_PII_PERMISSION_GRANT_DENIED} and no audit row (Decision
+   * 7). With the rule switched off, a non-administrator's attach is reported after commit (RC-60.2).
    *
    * <p><b>Signals (rows 13 and 14).</b> After commit, from one holder read, a WARN and a counter
    * report an attach that escalates holders assigned by non-administrators, and a second pair
@@ -250,7 +260,18 @@ public class RoleManagementService {
             .orElseThrow(
                 () -> new ResourceNotFoundException("PERMISSION_NOT_FOUND", "No such permission"));
 
-    requireCallerHoldsPermission(actor, role, permissionId);
+    List<RolePermissionRef> heldRolePermissions =
+        requireCallerHoldsPermission(actor, role, permissionId);
+    PiiPermissionGrantRule.Outcome piiGrant =
+        piiGrantRule.evaluate(
+            Set.of(permissionId),
+            () ->
+                RbacAdministrators.isAdministrator(
+                    heldRolePermissions, userRoleAssignmentPort.findCatalogueIds()));
+    if (piiGrant == PiiPermissionGrantRule.Outcome.DENIED) {
+      piiGrantRule.warnDenied(actor.tenantId(), actor.userId(), role.id(), null, OPERATION_ATTACH);
+      throw new InsufficientPermissionException(ROLE_WRITE, DenialReason.NOT_TENANT_ADMIN);
+    }
 
     boolean becameAdminDefining = attachWouldMakeRoleAdminDefining(actor, role, permissionId);
     if (becameAdminDefining) {
@@ -281,6 +302,9 @@ public class RoleManagementService {
               .addKeyValue(LOG_KEY_PERMISSION_NAME, permission.name())
               .addKeyValue("grantedBy", actor.userId())
               .log("Role permission granted");
+          if (piiGrant == PiiPermissionGrantRule.Outcome.DELEGATED) {
+            piiGrantRule.recordDelegated(actor.tenantId(), actor.userId(), role.id(), null);
+          }
 
           Optional<AttachSnapshot> snapshot =
               readAfterCommit(
@@ -577,7 +601,7 @@ public class RoleManagementService {
    * {@code RBAC_ENDPOINT_PERMISSION_NOT_HELD} (ids only), checked first, no extra read, and no
    * audit row for the same Decision 7 reason.
    */
-  private void requireCallerHoldsPermission(
+  private List<RolePermissionRef> requireCallerHoldsPermission(
       RoleChangeActor actor, RoleView role, UUID permissionId) {
     List<RolePermissionRef> heldRolePermissions =
         userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(
@@ -607,6 +631,7 @@ public class RoleManagementService {
           .log("Blocked attach of a permission the caller does not hold");
       throw new InsufficientPermissionException(ROLE_WRITE, DenialReason.GRANT_EXCEEDS_CALLER);
     }
+    return heldRolePermissions;
   }
 
   /**
