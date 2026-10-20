@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -21,6 +23,7 @@ import com.example.nexus.common.web.GlobalExceptionHandler;
 import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.PermissionView;
+import com.example.nexus.rbac.domain.RoleCounts;
 import com.example.nexus.rbac.domain.RoleView;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Method;
@@ -596,6 +599,77 @@ class RoleControllerTest {
 
   private static String ROLE_READ() {
     return "role:read";
+  }
+
+  // ── B6 counts: all four RoleResponse producers carry both fields ─────────────────────
+
+  @Test
+  void should_returnZeroCountsWithoutQueryingThem_when_createRoleSucceeds() throws Exception {
+    when(roleManagementService.createRole(any(), any(), any(), any()))
+        .thenReturn(roleView(ROLE_ID, "Billing Manager", null, false));
+
+    mockMvc
+        .perform(
+            post("/api/v1/roles")
+                .principal(authentication())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"Billing Manager\"}"))
+        .andExpect(jsonPath("$.memberCount").value(0))
+        .andExpect(jsonPath("$.permissionCount").value(0));
+
+    verify(roleManagementService, never()).countsForRoles(any(), any());
+  }
+
+  @Test
+  void should_returnCountsPerRole_when_listingRoles() throws Exception {
+    UUID otherRoleId = UUID.fromString("00000000-0000-7000-8000-000000000009");
+    when(roleManagementService.listRoles(any(), eq(0), eq(20)))
+        .thenReturn(
+            new PageResult<>(
+                List.of(
+                    roleView(ROLE_ID, "A", null, false), roleView(otherRoleId, "B", null, false)),
+                2,
+                0,
+                20));
+    when(roleManagementService.countsForRoles(any(), any()))
+        .thenReturn(Map.of(ROLE_ID, new RoleCounts(ROLE_ID, 3L, 5)));
+
+    mockMvc
+        .perform(get("/api/v1/roles").principal(authentication()))
+        .andExpect(jsonPath("$.data[0].memberCount").value(3))
+        .andExpect(jsonPath("$.data[0].permissionCount").value(5))
+        .andExpect(jsonPath("$.data[1].memberCount").value(0))
+        .andExpect(jsonPath("$.data[1].permissionCount").value(0));
+  }
+
+  @Test
+  void should_returnCounts_when_gettingOneRole() throws Exception {
+    when(roleManagementService.getRole(any(), eq(ROLE_ID)))
+        .thenReturn(roleView(ROLE_ID, "A", null, false));
+    when(roleManagementService.countsForRoles(any(), eq(List.of(ROLE_ID))))
+        .thenReturn(Map.of(ROLE_ID, new RoleCounts(ROLE_ID, 1L, 7)));
+
+    mockMvc
+        .perform(get("/api/v1/roles/{roleId}", ROLE_ID).principal(authentication()))
+        .andExpect(jsonPath("$.memberCount").value(1))
+        .andExpect(jsonPath("$.permissionCount").value(7));
+  }
+
+  @Test
+  void should_returnCounts_when_patchSucceeds() throws Exception {
+    when(roleManagementService.updateRole(any(), eq(ROLE_ID), any(), any(), any()))
+        .thenReturn(roleView(ROLE_ID, "Renamed", null, false));
+    when(roleManagementService.countsForRoles(any(), eq(List.of(ROLE_ID))))
+        .thenReturn(Map.of(ROLE_ID, new RoleCounts(ROLE_ID, 2L, 4)));
+
+    mockMvc
+        .perform(
+            patch("/api/v1/roles/{roleId}", ROLE_ID)
+                .principal(authentication())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"Renamed\"}"))
+        .andExpect(jsonPath("$.memberCount").value(2))
+        .andExpect(jsonPath("$.permissionCount").value(4));
   }
 
   private static void assertRequiresPermission(String methodName, String expectedPermission)

@@ -9,6 +9,7 @@ import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.RoleChangeActor;
+import com.example.nexus.rbac.domain.RoleCounts;
 import com.example.nexus.rbac.domain.RoleView;
 import com.example.nexus.rbac.interfaces.rest.dto.AttachPermissionRequest;
 import com.example.nexus.rbac.interfaces.rest.dto.CreateRoleRequest;
@@ -25,6 +26,8 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.net.URI;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpStatus;
@@ -98,7 +101,8 @@ public class RoleController {
         roleManagementService.createRole(
             actor, request.name(), request.description(), RbacControllerSupport.requestContext(httpRequest));
 
-    return ResponseEntity.created(URI.create("/api/v1/roles/" + role.id())).body(toResponse(role));
+    return ResponseEntity.created(URI.create("/api/v1/roles/" + role.id()))
+        .body(toResponse(role, null));
   }
 
   /**
@@ -122,8 +126,11 @@ public class RoleController {
     PageParams params = PageParams.parse(page, size);
 
     PageResult<RoleView> result = roleManagementService.listRoles(actor, params.page(), params.size());
+    Map<UUID, RoleCounts> counts =
+        roleManagementService.countsForRoles(
+            actor, result.items().stream().map(RoleView::id).toList());
     return new RoleListResponse(
-        result.items().stream().map(RoleController::toResponse).toList(),
+        result.items().stream().map(view -> toResponse(view, counts.get(view.id()))).toList(),
         PageMetadata.of(result),
         PageLinks.of("/api/v1/roles", result));
   }
@@ -147,7 +154,8 @@ public class RoleController {
     RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, ROLE_READ);
     UUID parsedRoleId = RbacControllerSupport.parsePathUuid(roleId, PATH_PARAM_ROLE_ID);
 
-    return toResponse(roleManagementService.getRole(actor, parsedRoleId));
+    RoleView role = roleManagementService.getRole(actor, parsedRoleId);
+    return toResponse(role, countsOf(actor, role));
   }
 
   /**
@@ -296,7 +304,7 @@ public class RoleController {
             request.name(),
             request.description(),
             RbacControllerSupport.requestContext(httpRequest));
-    return toResponse(role);
+    return toResponse(role, countsOf(actor, role));
   }
 
   /**
@@ -331,8 +339,19 @@ public class RoleController {
         actor, parsedRoleId, RbacControllerSupport.requestContext(httpRequest));
   }
 
-  private static RoleResponse toResponse(RoleView view) {
+  private RoleCounts countsOf(RoleChangeActor actor, RoleView role) {
+    return roleManagementService.countsForRoles(actor, List.of(role.id())).get(role.id());
+  }
+
+  /** A {@code null} {@code counts} (a new role, or no entry) reports 0 members and 0 permissions. */
+  private static RoleResponse toResponse(RoleView view, RoleCounts counts) {
     return new RoleResponse(
-        view.id().toString(), view.name(), view.description(), view.systemRole(), view.createdAt());
+        view.id().toString(),
+        view.name(),
+        view.description(),
+        view.systemRole(),
+        view.createdAt(),
+        counts == null ? 0L : counts.memberCount(),
+        counts == null ? 0 : counts.permissionCount());
   }
 }

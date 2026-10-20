@@ -46,6 +46,7 @@ import org.springframework.data.domain.Sort;
 class JpaRoleManagementAdapterTest {
 
   @Mock private JpaRoleRepository roleRepository;
+  @Mock private JpaUserRoleRepository userRoleRepository;
   @Mock private JpaRolePermissionRepository rolePermissionRepository;
   @Mock private JpaPermissionRepository permissionRepository;
   @Mock private IdGenerator idGenerator;
@@ -60,7 +61,11 @@ class JpaRoleManagementAdapterTest {
   void setUp() {
     adapter =
         new JpaRoleManagementAdapter(
-            roleRepository, rolePermissionRepository, permissionRepository, idGenerator);
+            roleRepository,
+            userRoleRepository,
+            rolePermissionRepository,
+            permissionRepository,
+            idGenerator);
     roleId = UUID.randomUUID();
     tenantId = UUID.randomUUID();
     permissionId = UUID.randomUUID();

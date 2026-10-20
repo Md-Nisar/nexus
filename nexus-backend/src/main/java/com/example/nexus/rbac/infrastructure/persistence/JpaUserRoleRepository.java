@@ -386,6 +386,23 @@ public interface JpaUserRoleRepository
       @Param("userId") UUID userId, @Param("tenantId") UUID tenantId);
 
   /**
+   * US-019 B6 — {@code (role id, active holder count)} for the live roles of one tenant among {@code
+   * roleIds}, one statement. A holder is an active assignment; the user's status is ignored (no
+   * join to {@code users}: {@code rbac} must not read {@code identity}). Tenant predicate on both
+   * tables. Non-locking.
+   */
+  @Query(
+      """
+      SELECT ur.roleId, COUNT(ur) FROM UserRole ur, Role r
+      WHERE ur.roleId = r.id AND ur.roleId IN :roleIds
+        AND ur.tenantId = :tenantId AND r.tenantId = :tenantId
+        AND r.deletedAt IS NULL AND ur.revokedAt IS NULL
+      GROUP BY ur.roleId
+      """)
+  List<Object[]> countActiveHoldersByRole(
+      @Param("tenantId") UUID tenantId, @Param("roleIds") Collection<UUID> roleIds);
+
+  /**
    * RC-6 — every user id holding an ACTIVE (non-revoked) assignment of {@code roleId}. Backs
    * {@link com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort#findActiveUserIdsForRole}
    * — see that method's Javadoc for why this is deliberately not tenant-scoped.

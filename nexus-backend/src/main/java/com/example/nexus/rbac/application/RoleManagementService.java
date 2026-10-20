@@ -23,6 +23,7 @@ import com.example.nexus.rbac.domain.RbacAdministrators;
 import com.example.nexus.rbac.domain.RbacRoleNames;
 import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.ReservedRoleNameException;
+import com.example.nexus.rbac.domain.RoleCounts;
 import com.example.nexus.rbac.domain.RoleHasHoldersException;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RoleLimitExceededException;
@@ -32,8 +33,11 @@ import com.example.nexus.rbac.domain.SystemRoleImmutableException;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Instant;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -211,6 +215,32 @@ public class RoleManagementService {
   @Transactional(readOnly = true)
   public RoleView getRole(RoleChangeActor actor, UUID roleId) {
     return resolveRoleInTenant(roleId, actor, ROLE_READ, OPERATION_GET);
+  }
+
+  /**
+   * US-019 B6. The member and permission counts of the given roles of the actor's tenant, from two
+   * grouped statements however many roles there are (none for an empty collection). Every id gets an
+   * entry; a role with no holder or permission reports zero. Callers pass ids they have already
+   * resolved in the actor's tenant, and both statements carry the tenant predicate regardless.
+   */
+  @Transactional(readOnly = true)
+  public Map<UUID, RoleCounts> countsForRoles(RoleChangeActor actor, Collection<UUID> roleIds) {
+    if (roleIds.isEmpty()) {
+      return Map.of();
+    }
+    Map<UUID, Long> holders = roleManagementPort.countActiveHoldersByRole(actor.tenantId(), roleIds);
+    Map<UUID, Long> permissions =
+        roleManagementPort.countPermissionsByRole(actor.tenantId(), roleIds);
+    Map<UUID, RoleCounts> counts = new HashMap<>();
+    for (UUID roleId : roleIds) {
+      counts.put(
+          roleId,
+          new RoleCounts(
+              roleId,
+              holders.getOrDefault(roleId, 0L),
+              Math.toIntExact(permissions.getOrDefault(roleId, 0L))));
+    }
+    return counts;
   }
 
   /** AC3, AC8. 404 then 403; empty list is a valid 200. */

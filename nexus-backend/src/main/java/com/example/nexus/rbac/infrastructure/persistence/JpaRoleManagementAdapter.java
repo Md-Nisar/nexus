@@ -12,7 +12,10 @@ import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.domain.RolePermissionId;
 import com.example.nexus.rbac.domain.RoleView;
 import java.time.Instant;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -50,16 +53,19 @@ import org.springframework.stereotype.Component;
 public class JpaRoleManagementAdapter implements RoleManagementPort {
 
   private final JpaRoleRepository roleRepository;
+  private final JpaUserRoleRepository userRoleRepository;
   private final JpaRolePermissionRepository rolePermissionRepository;
   private final JpaPermissionRepository permissionRepository;
   private final IdGenerator idGenerator;
 
   public JpaRoleManagementAdapter(
       JpaRoleRepository roleRepository,
+      JpaUserRoleRepository userRoleRepository,
       JpaRolePermissionRepository rolePermissionRepository,
       JpaPermissionRepository permissionRepository,
       IdGenerator idGenerator) {
     this.roleRepository = roleRepository;
+    this.userRoleRepository = userRoleRepository;
     this.rolePermissionRepository = rolePermissionRepository;
     this.permissionRepository = permissionRepository;
     this.idGenerator = idGenerator;
@@ -105,6 +111,30 @@ public class JpaRoleManagementAdapter implements RoleManagementPort {
   @Override
   public long countRolesInTenant(UUID tenantId) {
     return roleRepository.countByTenantIdAndDeletedAtIsNull(tenantId);
+  }
+
+  @Override
+  public Map<UUID, Long> countActiveHoldersByRole(UUID tenantId, Collection<UUID> roleIds) {
+    if (roleIds.isEmpty()) {
+      return Map.of();
+    }
+    return toCountMap(userRoleRepository.countActiveHoldersByRole(tenantId, roleIds));
+  }
+
+  @Override
+  public Map<UUID, Long> countPermissionsByRole(UUID tenantId, Collection<UUID> roleIds) {
+    if (roleIds.isEmpty()) {
+      return Map.of();
+    }
+    return toCountMap(roleRepository.countPermissionsByRole(tenantId, roleIds));
+  }
+
+  private static Map<UUID, Long> toCountMap(List<Object[]> rows) {
+    Map<UUID, Long> counts = new HashMap<>();
+    for (Object[] row : rows) {
+      counts.put((UUID) row[0], ((Number) row[1]).longValue());
+    }
+    return counts;
   }
 
   @Override

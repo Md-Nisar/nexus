@@ -4,7 +4,9 @@ import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.RoleView;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -77,6 +79,21 @@ public interface RoleManagementPort {
    * by {@code uq_roles_tenant_name}'s leftmost prefix — same index as Q1, no new cost.
    */
   long countRolesInTenant(UUID tenantId);
+
+  /**
+   * US-019 B6 — active (non-revoked) assignments per LIVE role of {@code tenantId}, one {@code
+   * GROUP BY role_id} statement for the whole {@code roleIds} page. The user's status is ignored.
+   * Roles with no holder are absent from the map. An empty {@code roleIds} issues no statement.
+   */
+  Map<UUID, Long> countActiveHoldersByRole(UUID tenantId, Collection<UUID> roleIds);
+
+  /**
+   * US-019 B6 — attached permissions per LIVE role of {@code tenantId}, one {@code GROUP BY
+   * role_id} statement for the whole {@code roleIds} page. {@code role_permissions} has no tenant
+   * column, so the statement joins {@code roles} for the tenant predicate. Roles with no permission
+   * are absent from the map. An empty {@code roleIds} issues no statement.
+   */
+  Map<UUID, Long> countPermissionsByRole(UUID tenantId, Collection<UUID> roleIds);
 
   // --- permissions (read-only, ADR-0013 D1) --------------------------------
 
