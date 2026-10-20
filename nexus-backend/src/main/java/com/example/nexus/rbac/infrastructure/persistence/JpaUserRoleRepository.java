@@ -5,6 +5,7 @@ import com.example.nexus.rbac.domain.HolderProvenance;
 import com.example.nexus.rbac.domain.PermissionViaRole;
 import com.example.nexus.rbac.domain.RoleHolder;
 import com.example.nexus.rbac.domain.RolePermissionRef;
+import com.example.nexus.rbac.domain.RoleRef;
 import com.example.nexus.rbac.domain.UserViaRole;
 import com.example.nexus.rbac.domain.UserRole;
 import java.util.Collection;
@@ -51,6 +52,25 @@ public interface JpaUserRoleRepository
         AND ur.revokedAt IS NULL
       """)
   List<String> findActiveRoleNames(@Param("userId") UUID userId, @Param("tenantId") UUID tenantId);
+
+  /**
+   * US-019 B4 — the live roles a user actively holds within a tenant, as {@code (id, name)},
+   * ordered by name then id. Same predicates as {@link #findActiveRoleNames}, including the {@code
+   * r.tenantId} cross-check. Non-locking.
+   */
+  @Query(
+      """
+      SELECT new com.example.nexus.rbac.domain.RoleRef(r.id, r.name)
+      FROM UserRole ur, Role r
+      WHERE ur.roleId = r.id
+        AND ur.userId = :userId
+        AND ur.tenantId = :tenantId
+        AND r.tenantId = :tenantId
+        AND r.deletedAt IS NULL
+        AND ur.revokedAt IS NULL
+      ORDER BY r.name, r.id
+      """)
+  List<RoleRef> findActiveRoles(@Param("userId") UUID userId, @Param("tenantId") UUID tenantId);
 
   /**
    * Deduplicated names of every permission granted (transitively, via {@code role_permissions})

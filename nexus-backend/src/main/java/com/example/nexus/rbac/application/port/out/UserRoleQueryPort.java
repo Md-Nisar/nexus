@@ -1,6 +1,7 @@
 package com.example.nexus.rbac.application.port.out;
 
 import com.example.nexus.rbac.domain.PermissionViaRole;
+import com.example.nexus.rbac.domain.RoleRef;
 import java.util.List;
 import java.util.UUID;
 
@@ -14,6 +15,12 @@ public interface UserRoleQueryPort {
 
   /** Names of all active roles assigned to a user within a tenant. */
   List<String> findActiveRoleNames(UUID userId, UUID tenantId);
+
+  /**
+   * US-019 B4 — the live roles a user actively holds within a tenant, ordered by name then id.
+   * Soft-deleted roles and revoked assignments are excluded.
+   */
+  List<RoleRef> findActiveRoles(UUID userId, UUID tenantId);
 
   /**
    * Deduplicated names of every permission granted (via {@code role_permissions}) by any active

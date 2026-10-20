@@ -191,4 +191,14 @@
         <Class name="com.example.nexus.identity.application.UserDirectoryService" />
         <Bug pattern="EI_EXPOSE_REP2" />
     </Match>
+    <!--
+      US-019 T-008: CallerAuthorizationService constructor-injects the Spring-managed singleton
+      MeterRegistry bean (to count nexus.rbac.caller_authorization.reads) and stores it directly. Same
+      rationale as AccessReviewService above: a MeterRegistry is a metrics factory with no sensible
+      defensive copy.
+    -->
+    <Match>
+        <Class name="com.example.nexus.rbac.application.CallerAuthorizationService" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
 </FindBugsFilter>

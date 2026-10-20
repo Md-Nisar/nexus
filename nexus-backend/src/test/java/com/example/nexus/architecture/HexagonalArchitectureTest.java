@@ -439,6 +439,24 @@ class HexagonalArchitectureTest {
                             + "endpoint that takes an identifier must use @RequiresPermission.")
                     .allowEmptyShould(true);
 
+    // US-019 T-008 (design §6.2 "Must not", T-S13): the caller authorization profile is read live.
+    // A dependency on the permission cache, the token-time resolution or the JWT claim keys would
+    // turn it into an echo of what the token or the cache last saw, misguiding every UI affordance.
+    @ArchTest
+    static final ArchRule caller_authorization_reads_neither_cache_nor_token_claims =
+            noClasses()
+                    .that().haveSimpleNameStartingWith("CallerAuthorization")
+                    .and().resideInAPackage("..rbac..")
+                    .should().dependOnClassesThat().haveFullyQualifiedName(
+                            "com.example.nexus.rbac.application.port.out.PermissionCachePort")
+                    .orShould().dependOnClassesThat().haveFullyQualifiedName(
+                            "com.example.nexus.rbac.application.RoleResolutionService")
+                    .orShould().dependOnClassesThat().haveFullyQualifiedName(
+                            "com.example.nexus.common.security.AuthenticationDetailKeys")
+                    .because("US-019 design §6.2 and threat T-S13: B4 makes live reads in one "
+                            + "snapshot; it never reads the permission cache, the token-time role "
+                            + "resolution or JWT claims beyond the principal and tenant.");
+
     // US-018 T-007 (03-design.md §7.2, EC2). Defined in ArchitectureRules so the fixture tests
     // that prove each rule fires can reach them while this class stays package-private.
     @ArchTest

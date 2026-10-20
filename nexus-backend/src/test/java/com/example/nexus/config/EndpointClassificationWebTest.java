@@ -18,6 +18,7 @@ import com.example.nexus.identity.application.service.LogoutUseCase;
 import com.example.nexus.identity.infrastructure.web.PublicEndpointRequestMatcher;
 import com.example.nexus.identity.interfaces.rest.UserDirectoryController;
 import com.example.nexus.identity.interfaces.rest.UserProfileController;
+import com.example.nexus.rbac.interfaces.rest.CallerAuthorizationController;
 import com.jayway.jsonpath.JsonPath;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
@@ -351,6 +352,27 @@ class EndpointClassificationWebTest {
         .isInstanceOfSatisfying(HandlerMethod.class, handler ->
             assertThat(handler.getBeanType()).isEqualTo(UserProfileController.class));
     assertThat(mvc.perform(request(HttpMethod.GET, URI.create("/api/v1/users/me"))
+            .with(authentication(authenticatedWithoutPermissions())))
+        .andReturn().getResponse().getStatus())
+        .isEqualTo(HttpStatus.OK.value());
+  }
+
+  /**
+   * US-019 T-008 (design §4.2 Route coexistence, §6.2): with every flag on, {@code GET
+   * /api/v1/users/me/authorization} reaches {@link CallerAuthorizationController}, never a {@code
+   * /users/{userId}/...} handler, and answers a caller holding no permission.
+   */
+  @Test
+  void should_dispatch_users_me_authorization_to_caller_authorization_controller()
+      throws Exception {
+    MockHttpServletRequest request =
+        new MockHttpServletRequest("GET", "/api/v1/users/me/authorization");
+    ServletRequestPathUtils.parseAndCache(request);
+
+    assertThat(firstHandler(orderedHandlerMappings(context), request))
+        .isInstanceOfSatisfying(HandlerMethod.class, handler ->
+            assertThat(handler.getBeanType()).isEqualTo(CallerAuthorizationController.class));
+    assertThat(mvc.perform(request(HttpMethod.GET, URI.create("/api/v1/users/me/authorization"))
             .with(authentication(authenticatedWithoutPermissions())))
         .andReturn().getResponse().getStatus())
         .isEqualTo(HttpStatus.OK.value());
