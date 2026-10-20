@@ -40,5 +40,17 @@ public final class Permissions {
           USER_ROLE_ASSIGN,
           USER_DIRECTORY_READ);
 
+  /**
+   * Permissions whose holder controls identities, role assignments, role definitions or the
+   * tenant, or can read personal data or the audit trail. A display hint only: no server rule may
+   * read it (US-019 RC-63(k), enforced by ArchUnit). Together with {@link #NON_SENSITIVE} it
+   * partitions {@link #ALL}.
+   */
+  public static final Set<String> SENSITIVE =
+      Set.of(TENANT_WRITE, USER_WRITE, ROLE_WRITE, USER_ROLE_ASSIGN, USER_DIRECTORY_READ, AUDIT_READ);
+
+  /** The rest of the catalogue; see {@link #SENSITIVE}. */
+  public static final Set<String> NON_SENSITIVE = Set.of(TENANT_READ, USER_READ, ROLE_READ);
+
   private Permissions() {}
 }

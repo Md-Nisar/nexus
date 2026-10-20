@@ -271,6 +271,57 @@ class RoleControllerTest {
     assertRequiresPermission("listRoles", ROLE_READ());
   }
 
+  // ── getRole ──────────────────────────────────────────────────────────
+
+  @Test
+  void should_return200WithRoleShape_when_gettingOneRole() throws Exception {
+    Authentication auth = authentication();
+    when(roleManagementService.getRole(any(), eq(ROLE_ID)))
+        .thenReturn(roleView(ROLE_ID, "Billing Manager", "Manages invoices", false));
+
+    String body =
+        mockMvc
+            .perform(get("/api/v1/roles/{roleId}", ROLE_ID).principal(auth))
+            .andExpect(status().isOk())
+            .andExpect(header().doesNotExist("ETag"))
+            .andExpect(jsonPath("$.id").value(ROLE_ID.toString()))
+            .andExpect(jsonPath("$.name").value("Billing Manager"))
+            .andExpect(jsonPath("$.description").value("Manages invoices"))
+            .andExpect(jsonPath("$.isSystemRole").value(false))
+            .andReturn()
+            .getResponse()
+            .getContentAsString();
+
+    assertThat(body).contains("\"createdAt\"");
+  }
+
+  @Test
+  void should_return400_when_getRolePathRoleIdIsMalformed() throws Exception {
+    Authentication auth = authentication();
+
+    mockMvc
+        .perform(get("/api/v1/roles/{roleId}", "not-a-uuid").principal(auth))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.details[0].field").value("roleId"));
+  }
+
+  @Test
+  void should_return404RoleNotFound_when_serviceReportsNoSuchRole() throws Exception {
+    Authentication auth = authentication();
+    when(roleManagementService.getRole(any(), eq(ROLE_ID)))
+        .thenThrow(new com.example.nexus.common.domain.ResourceNotFoundException("ROLE_NOT_FOUND", "No such role"));
+
+    mockMvc
+        .perform(get("/api/v1/roles/{roleId}", ROLE_ID).principal(auth))
+        .andExpect(status().isNotFound())
+        .andExpect(jsonPath("$.code").value("ROLE_NOT_FOUND"));
+  }
+
+  @Test
+  void should_havePermissionAnnotationPresent_when_getRoleInspected() throws Exception {
+    assertRequiresPermission("getRole", ROLE_READ());
+  }
+
   // ── listRolePermissions ──────────────────────────────────────────────
 
   @Test

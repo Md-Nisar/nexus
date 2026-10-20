@@ -195,6 +195,24 @@ class CrossTenantNotFoundEquivalenceIT {
         foreignRole.getId());
   }
 
+  @Test
+  void should_matchNotFound_when_gettingRoleInAnotherTenant() {
+    assertEquivalent("ROLE_NOT_FOUND", id -> get("/api/v1/roles/" + id), foreignRole.getId());
+  }
+
+  @Test
+  void should_matchNotFound_when_gettingDeletedRole() {
+    Role deleted = seedRole(tenantA, "deleted");
+    jdbc.update("UPDATE roles SET deleted_at = NOW(6) WHERE id = ?", toBytes(deleted.getId()));
+
+    ResponseEntity<Map> missing = get("/api/v1/roles/" + uuidGenerator.newId());
+    ResponseEntity<Map> gone = get("/api/v1/roles/" + deleted.getId());
+
+    assertThat(gone.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(gone.getBody()).containsEntry("code", "ROLE_NOT_FOUND");
+    assertThat(comparableBody(gone)).isEqualTo(comparableBody(missing));
+  }
+
   // ── The equivalence check ────────────────────────────────────────────
 
   private void assertEquivalent(

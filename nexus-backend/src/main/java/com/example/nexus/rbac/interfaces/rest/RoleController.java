@@ -129,6 +129,28 @@ public class RoleController {
   }
 
   /**
+   * Reads one role of the caller's own tenant (US-019 B3). Missing, deleted and other-tenant ids
+   * are one indistinguishable 404. There is no ETag.
+   *
+   * @return 200 with the role
+   */
+  @GetMapping("/{roleId}")
+  @RequiresPermission(ROLE_READ)
+  @Operation(summary = "Read one role in the caller's tenant")
+  @ApiResponse(responseCode = "200", description = "The role")
+  @ApiResponse(responseCode = "400", description = "Malformed path UUID")
+  @ApiResponse(responseCode = "403", description = "Missing role:read")
+  @ApiResponse(
+      responseCode = "404",
+      description = "Role not found, deleted, or in another tenant (indistinguishable)")
+  public RoleResponse getRole(@PathVariable String roleId, Authentication authentication) {
+    RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, ROLE_READ);
+    UUID parsedRoleId = RbacControllerSupport.parsePathUuid(roleId, PATH_PARAM_ROLE_ID);
+
+    return toResponse(roleManagementService.getRole(actor, parsedRoleId));
+  }
+
+  /**
    * Lists the permissions attached to a role in the caller's own tenant (AC3, AC8). Reads against
    * a system role are allowed — AC7's guard is scoped to writes.
    *

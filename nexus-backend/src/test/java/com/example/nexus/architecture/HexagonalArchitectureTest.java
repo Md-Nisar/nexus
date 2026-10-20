@@ -463,6 +463,11 @@ class HexagonalArchitectureTest {
     static final ArchRule global_break_glass_replay_query_is_called_only_by_its_adapter =
             ArchitectureRules.GLOBAL_BREAK_GLASS_REPLAY_QUERY_IS_CALLED_ONLY_BY_ITS_ADAPTER;
 
+    // US-019 RC-63(k): isSensitive is UX only; only the response mapper reads the sets.
+    @ArchTest
+    static final ArchRule sensitivity_sets_are_read_only_by_the_response_mapper =
+            ArchitectureRules.SENSITIVITY_SETS_ARE_READ_ONLY_BY_THE_RESPONSE_MAPPER;
+
     @ArchTest
     static final ArchRule no_field_injection =
             GeneralCodingRules.NO_CLASSES_SHOULD_USE_FIELD_INJECTION;

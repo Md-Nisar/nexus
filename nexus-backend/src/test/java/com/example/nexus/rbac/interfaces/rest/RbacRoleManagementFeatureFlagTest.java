@@ -83,4 +83,20 @@ class RbacRoleManagementFeatureFlagTest {
               assertThat(context).hasSingleBean(RoleController.class);
             });
   }
+
+  /** US-019 B3: the single-role read rides the us015 flag with the other role endpoints. */
+  @Test
+  void should_registerGetRoleHandlerOnlyWithTheRoleController_when_flagTrue() {
+    contextRunner
+        .withPropertyValues(FLAG + "=true")
+        .run(
+            context ->
+                assertThat(RoleController.class.getMethods())
+                    .anyMatch(
+                        m ->
+                            m.getName().equals("getRole")
+                                && m.isAnnotationPresent(
+                                    org.springframework.web.bind.annotation.GetMapping.class)));
+    contextRunner.run(context -> assertThat(context).doesNotHaveBean(RoleController.class));
+  }
 }

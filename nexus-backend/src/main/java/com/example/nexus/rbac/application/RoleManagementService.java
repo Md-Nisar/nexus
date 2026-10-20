@@ -101,6 +101,7 @@ public class RoleManagementService {
   private static final String OPERATION_DELETE = "delete";
   private static final String OPERATION_UPDATE = "update";
   private static final String OPERATION_LIST = "list";
+  private static final String OPERATION_GET = "get";
 
   private static final String COUNTER_PERMISSION_DENIED = "nexus.rbac.permission_denied";
   private static final String REASON_ATTACH_PROVENANCE = "ATTACH_PROVENANCE";
@@ -201,6 +202,12 @@ public class RoleManagementService {
   @Transactional(readOnly = true)
   public PageResult<RoleView> listRoles(RoleChangeActor actor, int page, int size) {
     return roleManagementPort.findRolesInTenant(actor.tenantId(), page, size);
+  }
+
+  /** US-019 B3. One live role of the actor's tenant; missing, deleted and foreign ids are one 404. */
+  @Transactional(readOnly = true)
+  public RoleView getRole(RoleChangeActor actor, UUID roleId) {
+    return resolveRoleInTenant(roleId, actor, ROLE_READ, OPERATION_GET);
   }
 
   /** AC3, AC8. 404 then 403; empty list is a valid 200. */

@@ -2,6 +2,7 @@ package com.example.nexus.rbac.interfaces.rest;
 
 import static com.example.nexus.common.security.Permissions.ROLE_READ;
 
+import com.example.nexus.common.security.Permissions;
 import com.example.nexus.common.security.RequiresPermission;
 import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.domain.PageResult;
@@ -71,6 +72,10 @@ public class PermissionController {
   }
 
   static PermissionResponse toResponse(PermissionView view) {
-    return new PermissionResponse(view.id().toString(), view.name(), view.description());
+    return new PermissionResponse(
+        view.id().toString(),
+        view.name(),
+        view.description(),
+        Permissions.SENSITIVE.contains(view.name()));
   }
 }
