@@ -5,12 +5,14 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -18,18 +20,21 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import com.example.nexus.common.domain.PreconditionFailedException;
 import com.example.nexus.common.security.RequiresPermission;
 import com.example.nexus.common.web.GlobalExceptionHandler;
 import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.RoleCounts;
+import com.example.nexus.rbac.domain.RolePermissionSet;
 import com.example.nexus.rbac.domain.RoleView;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Method;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
@@ -61,14 +66,17 @@ class RoleControllerTest {
       UUID.fromString("00000000-0000-7000-8000-000000000004");
   private static final Instant CREATED_AT = Instant.parse("2026-07-28T09:12:00.123456Z");
 
+  private static final String ETAG_VALUE = "rp1-F06EYk4CPm7zxsme_6h7xQ1ikSY55XJ7I2ZMbjEshXY";
+
   private RoleManagementService roleManagementService;
+  private SimpleMeterRegistry meterRegistry;
   private MockMvc mockMvc;
 
   @BeforeEach
   void setUp() {
     roleManagementService = mock(RoleManagementService.class);
-    SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
-    RoleController controller = new RoleController(roleManagementService);
+    meterRegistry = new SimpleMeterRegistry();
+    RoleController controller = new RoleController(roleManagementService, meterRegistry);
     mockMvc =
         MockMvcBuilders.standaloneSetup(controller)
             .setControllerAdvice(new GlobalExceptionHandler(meterRegistry))
@@ -331,13 +339,222 @@ class RoleControllerTest {
   void should_return200WithDataEnvelope_when_listingRolePermissions() throws Exception {
     Authentication auth = authentication();
     when(roleManagementService.listRolePermissions(any(), eq(ROLE_ID)))
-        .thenReturn(List.of(new PermissionView(PERMISSION_ID, "user:read", "Read users")));
+        .thenReturn(
+            new RolePermissionSet(
+                ROLE_ID,
+                List.of(new PermissionView(PERMISSION_ID, "user:read", "Read users")),
+                ETAG_VALUE));
 
     mockMvc
         .perform(get("/api/v1/roles/{roleId}/permissions", ROLE_ID).principal(auth))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.data").isArray())
         .andExpect(jsonPath("$.data[0].id").value(PERMISSION_ID.toString()));
+  }
+
+  /** US-019 B8: the GET serves the set's version as a strong, quoted ETag. */
+  @Test
+  void should_serveTheSetVersionAsAStrongETag_when_listingRolePermissions() throws Exception {
+    when(roleManagementService.listRolePermissions(any(), eq(ROLE_ID)))
+        .thenReturn(new RolePermissionSet(ROLE_ID, List.of(), ETAG_VALUE));
+
+    mockMvc
+        .perform(get("/api/v1/roles/{roleId}/permissions", ROLE_ID).principal(authentication()))
+        .andExpect(status().isOk())
+        .andExpect(header().string("ETag", "\"" + ETAG_VALUE + "\""));
+  }
+
+  // ── replaceRolePermissions (US-019 B8) ───────────────────────────────
+
+  private static final UUID OTHER_PERMISSION_ID =
+      UUID.fromString("00000000-0000-7000-8000-000000000005");
+
+  private org.springframework.test.web.servlet.ResultActions putReplace(String body, String ifMatch)
+      throws Exception {
+    var request =
+        put("/api/v1/roles/{roleId}/permissions", ROLE_ID)
+            .principal(authentication())
+            .contentType(MediaType.APPLICATION_JSON)
+            .content(body);
+    if (ifMatch != null) {
+      request = request.header("If-Match", ifMatch);
+    }
+    return mockMvc.perform(request);
+  }
+
+  @Test
+  void should_return200WithTheNewSetAndETag_when_replaceSucceeds() throws Exception {
+    when(roleManagementService.replaceRolePermissions(
+            any(), eq(ROLE_ID), eq(Set.of(PERMISSION_ID)), eq("rp1-old"), any()))
+        .thenReturn(
+            new RolePermissionSet(
+                ROLE_ID,
+                List.of(new PermissionView(PERMISSION_ID, "user:read", "Read users")),
+                ETAG_VALUE));
+
+    putReplace("{\"permissionIds\":[\"" + PERMISSION_ID + "\"]}", "\"rp1-old\"")
+        .andExpect(status().isOk())
+        .andExpect(header().string("ETag", "\"" + ETAG_VALUE + "\""))
+        .andExpect(jsonPath("$.data[0].id").value(PERMISSION_ID.toString()))
+        .andExpect(jsonPath("$.data[0].isSensitive").value(false));
+  }
+
+  @Test
+  void should_passAnEmptySet_when_theBodyListIsEmpty() throws Exception {
+    when(roleManagementService.replaceRolePermissions(
+            any(), eq(ROLE_ID), eq(Set.of()), eq("rp1-old"), any()))
+        .thenReturn(new RolePermissionSet(ROLE_ID, List.of(), ETAG_VALUE));
+
+    putReplace("{\"permissionIds\":[]}", "\"rp1-old\"")
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data").isEmpty());
+  }
+
+  @Test
+  void should_return428WithoutCallingTheService_when_ifMatchIsAbsent() throws Exception {
+    putReplace("{\"permissionIds\":[]}", null)
+        .andExpect(status().isPreconditionRequired())
+        .andExpect(jsonPath("$.code").value("PRECONDITION_REQUIRED"));
+
+    verifyNoInteractions(roleManagementService);
+    assertThat(
+            meterRegistry
+                .get("nexus.rbac.permission_replace")
+                .tag("outcome", "precondition_required")
+                .tag("lockPath", "none")
+                .counter()
+                .count())
+        .isEqualTo(1.0);
+  }
+
+  @Test
+  void should_return428_when_ifMatchListsTwoTags() throws Exception {
+    putReplace("{\"permissionIds\":[]}", "\"rp1-a\", \"rp1-b\"")
+        .andExpect(status().isPreconditionRequired());
+
+    verifyNoInteractions(roleManagementService);
+  }
+
+  @Test
+  void should_return428_when_ifMatchIsAStar() throws Exception {
+    putReplace("{\"permissionIds\":[]}", "*").andExpect(status().isPreconditionRequired());
+  }
+
+  @Test
+  void should_return428_when_ifMatchIsWeak() throws Exception {
+    putReplace("{\"permissionIds\":[]}", "W/\"rp1-a\"")
+        .andExpect(status().isPreconditionRequired());
+  }
+
+  /** RC-58.1: 400 is decided before 428, so a malformed body without If-Match is a 400. */
+  @Test
+  void should_return400Not428_when_theBodyIsInvalidAndIfMatchIsAbsent() throws Exception {
+    putReplace("{\"permissionIds\":[\"nope\"]}", null)
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.details[0].field").value("permissionIds[0]"));
+
+    verifyNoInteractions(roleManagementService);
+  }
+
+  @Test
+  void should_return400_when_permissionIdsIsMissing() throws Exception {
+    putReplace("{}", "\"rp1-a\"")
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.details[0].field").value("permissionIds"));
+  }
+
+  @Test
+  void should_return400_when_moreThanOneHundredIdsAreSent() throws Exception {
+    StringBuilder ids = new StringBuilder();
+    for (int i = 0; i < 101; i++) {
+      ids.append(i == 0 ? "" : ",")
+          .append('"')
+          .append(String.format("00000000-0000-7000-8000-%012d", i))
+          .append('"');
+    }
+
+    putReplace("{\"permissionIds\":[" + ids + "]}", "\"rp1-a\"")
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.details[0].field").value("permissionIds"));
+    verifyNoInteractions(roleManagementService);
+  }
+
+  @Test
+  void should_acceptExactlyOneHundredIds_when_atTheBound() throws Exception {
+    StringBuilder ids = new StringBuilder();
+    for (int i = 0; i < 100; i++) {
+      ids.append(i == 0 ? "" : ",")
+          .append('"')
+          .append(String.format("00000000-0000-7000-8000-%012d", i))
+          .append('"');
+    }
+    when(roleManagementService.replaceRolePermissions(any(), eq(ROLE_ID), any(), any(), any()))
+        .thenReturn(new RolePermissionSet(ROLE_ID, List.of(), ETAG_VALUE));
+
+    putReplace("{\"permissionIds\":[" + ids + "]}", "\"rp1-a\"").andExpect(status().isOk());
+  }
+
+  @Test
+  void should_return400_when_anIdRepeatsInAnotherCase() throws Exception {
+    String lower = OTHER_PERMISSION_ID.toString();
+    String upper = lower.toUpperCase(java.util.Locale.ROOT);
+
+    putReplace("{\"permissionIds\":[\"" + lower + "\",\"" + upper + "\"]}", "\"rp1-a\"")
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.details[0].field").value("permissionIds[1]"));
+    verifyNoInteractions(roleManagementService);
+  }
+
+  @Test
+  void should_return400_when_anElementIsNull() throws Exception {
+    putReplace("{\"permissionIds\":[null]}", "\"rp1-a\"")
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.details[0].field").value("permissionIds[0]"));
+  }
+
+  @Test
+  void should_return400_when_theReplacePathRoleIdIsMalformed() throws Exception {
+    mockMvc
+        .perform(
+            put("/api/v1/roles/{roleId}/permissions", "not-a-uuid")
+                .principal(authentication())
+                .contentType(MediaType.APPLICATION_JSON)
+                .header("If-Match", "\"rp1-a\"")
+                .content("{\"permissionIds\":[]}"))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.details[0].field").value("roleId"));
+  }
+
+  @Test
+  void should_return415_when_theReplaceBodyIsNotJson() throws Exception {
+    mockMvc
+        .perform(
+            put("/api/v1/roles/{roleId}/permissions", ROLE_ID)
+                .principal(authentication())
+                .contentType(MediaType.TEXT_PLAIN)
+                .header("If-Match", "\"rp1-a\"")
+                .content("permissionIds"))
+        .andExpect(status().isUnsupportedMediaType());
+  }
+
+  /** RC-58.2: the 412 body is the standard problem fields only, and no ETag header is sent. */
+  @Test
+  void should_return412WithoutETagOrState_when_theServiceReportsAStaleTag() throws Exception {
+    when(roleManagementService.replaceRolePermissions(any(), eq(ROLE_ID), any(), any(), any()))
+        .thenThrow(new PreconditionFailedException());
+
+    putReplace("{\"permissionIds\":[\"" + PERMISSION_ID + "\"]}", "\"rp1-old\"")
+        .andExpect(status().isPreconditionFailed())
+        .andExpect(header().doesNotExist("ETag"))
+        .andExpect(jsonPath("$.code").value("PRECONDITION_FAILED"))
+        .andExpect(jsonPath("$.data").doesNotExist())
+        .andExpect(jsonPath("$.permissionIds").doesNotExist());
+  }
+
+  @Test
+  void should_havePermissionAnnotationPresent_when_replaceRolePermissionsInspected()
+      throws Exception {
+    assertRequiresPermission("replaceRolePermissions", ROLE_WRITE());
   }
 
   @Test

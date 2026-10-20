@@ -27,6 +27,12 @@ import java.util.UUID;
  * detachPermission}, and every non-dangerous {@code attachPermission} — and therefore omitted
  * from the durable audit metadata by {@code RbacAuthEventAdapter}'s existing omit-when-null
  * convention (never serialised as a JSON {@code null}).
+ *
+ * <p>{@code operation} and {@code replaceId} (US-019 design §10.6) are set only on the grant and
+ * revoke rows of a permission-set replace: {@code operation} is {@code "REPLACE"} and {@code
+ * replaceId} is the one server-generated UUIDv7 shared by every row of that PUT, the grouping key
+ * reviewers use (the correlation id is client-controllable). {@code null} everywhere else, and
+ * omitted from the metadata like {@code holderCount}.
  */
 public record RoleAuditEvent(
     UUID tenantId,
@@ -36,4 +42,30 @@ public record RoleAuditEvent(
     String permissionName,
     UUID actorUserId,
     RequestContext requestContext,
-    Integer holderCount) {}
+    Integer holderCount,
+    String operation,
+    UUID replaceId) {
+
+  /** An event that is not part of a permission-set replace. */
+  public RoleAuditEvent(
+      UUID tenantId,
+      UUID roleId,
+      String roleName,
+      UUID permissionId,
+      String permissionName,
+      UUID actorUserId,
+      RequestContext requestContext,
+      Integer holderCount) {
+    this(
+        tenantId,
+        roleId,
+        roleName,
+        permissionId,
+        permissionName,
+        actorUserId,
+        requestContext,
+        holderCount,
+        null,
+        null);
+  }
+}

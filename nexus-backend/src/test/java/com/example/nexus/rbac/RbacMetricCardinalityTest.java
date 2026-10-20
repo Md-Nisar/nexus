@@ -74,7 +74,7 @@ class RbacMetricCardinalityTest {
             managementPort, assignmentPort, mock(RbacAuditPort.class),
             mock(PermissionFreshnessService.class), mock(PermissionCachePort.class),
             mock(PlatformTransactionManager.class), registry,
-            new PiiPermissionGrantRule(true, registry), 500L);
+            new PiiPermissionGrantRule(true, registry), UUID::randomUUID, 500L);
 
     Role role = new Role(roleId, tenantId, "MEMBER", "desc", false);
     when(directoryPort.findTenantId(targetId)).thenReturn(Optional.of(tenantId));

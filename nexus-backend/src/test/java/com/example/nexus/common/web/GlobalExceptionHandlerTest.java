@@ -14,6 +14,8 @@ import com.example.nexus.common.domain.AuthenticationException;
 import com.example.nexus.common.domain.ConflictException;
 import com.example.nexus.common.domain.DomainException;
 import com.example.nexus.common.domain.FieldValidationException;
+import com.example.nexus.common.domain.PreconditionFailedException;
+import com.example.nexus.common.domain.PreconditionRequiredException;
 import com.example.nexus.common.domain.RateLimitException;
 import com.example.nexus.common.domain.RefreshThrottledException;
 import com.example.nexus.common.domain.ResourceNotFoundException;
@@ -66,6 +68,27 @@ class GlobalExceptionHandlerTest {
     @AfterEach
     void clearMdc() {
         MDC.clear();
+    }
+
+    /** US-019 T-018 (RC-58.2): a stale If-Match is 412 and the body carries no state. */
+    @Test
+    void should_return412WithOnlyStandardFields_when_preconditionFailed() {
+        ProblemDetail problem = handler.handlePreconditionFailed(new PreconditionFailedException());
+
+        assertThat(problem.getStatus()).isEqualTo(412);
+        assertThat(problem.getProperties()).containsOnlyKeys("code", "traceId");
+        assertThat(problem.getProperties()).containsEntry("code", "PRECONDITION_FAILED");
+    }
+
+    /** US-019 T-018 (RC-55.2): a missing or unusable If-Match is 428 and the body carries no state. */
+    @Test
+    void should_return428WithOnlyStandardFields_when_preconditionRequired() {
+        ProblemDetail problem =
+                handler.handlePreconditionRequired(new PreconditionRequiredException());
+
+        assertThat(problem.getStatus()).isEqualTo(428);
+        assertThat(problem.getProperties()).containsOnlyKeys("code", "traceId");
+        assertThat(problem.getProperties()).containsEntry("code", "PRECONDITION_REQUIRED");
     }
 
     @Test

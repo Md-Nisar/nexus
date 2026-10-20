@@ -5,6 +5,8 @@ import static org.mockito.Mockito.mock;
 
 import com.example.nexus.rbac.application.AccessReviewService;
 import com.example.nexus.rbac.application.RoleManagementService;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -25,6 +27,7 @@ class RbacRoleManagementFeatureFlagTest {
           .withUserConfiguration(
               RoleController.class, PermissionController.class, AccessReviewController.class)
           .withBean(RoleManagementService.class, () -> mock(RoleManagementService.class))
+          .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
           .withBean(AccessReviewService.class, () -> mock(AccessReviewService.class));
 
   @Test

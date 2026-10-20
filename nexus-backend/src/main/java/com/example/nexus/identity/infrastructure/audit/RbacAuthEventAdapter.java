@@ -262,6 +262,12 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
     if (event.holderCount() != null) {
       metadata.put("holderCount", event.holderCount());
     }
+    if (event.operation() != null) {
+      metadata.put("operation", event.operation());
+    }
+    if (event.replaceId() != null) {
+      metadata.put("replaceId", event.replaceId().toString());
+    }
     if (event.actorUserId() != null) {
       metadata.put(actorFieldName, event.actorUserId().toString());
     }

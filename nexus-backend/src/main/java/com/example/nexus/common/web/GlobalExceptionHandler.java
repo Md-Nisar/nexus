@@ -6,6 +6,8 @@ import com.example.nexus.common.domain.AuthenticationException;
 import com.example.nexus.common.domain.ConflictException;
 import com.example.nexus.common.domain.DomainException;
 import com.example.nexus.common.domain.FieldValidationException;
+import com.example.nexus.common.domain.PreconditionFailedException;
+import com.example.nexus.common.domain.PreconditionRequiredException;
 import com.example.nexus.common.domain.RateLimitException;
 import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.common.domain.TokenExpiredException;
@@ -80,6 +82,23 @@ public class GlobalExceptionHandler {
     logHandledException(e, LEVEL_DEBUG, e.code());
     Counter.builder("nexus.domain.conflict").tag("code", e.code()).register(meterRegistry).increment();
     return problem(HttpStatus.CONFLICT, e.code(), e.getMessage());
+  }
+
+  /**
+   * US-019 RC-58.2: the body is the standard problem fields only, never the current ETag, ids or a
+   * count. The replace counter is incremented by the service, keeping this class context-free.
+   */
+  @ExceptionHandler(PreconditionFailedException.class)
+  ProblemDetail handlePreconditionFailed(PreconditionFailedException e) {
+    logHandledException(e, LEVEL_DEBUG, e.code());
+    return problem(HttpStatus.PRECONDITION_FAILED, e.code(), e.getMessage());
+  }
+
+  /** US-019 RC-55.2: as {@link #handlePreconditionFailed}; the header is never echoed. */
+  @ExceptionHandler(PreconditionRequiredException.class)
+  ProblemDetail handlePreconditionRequired(PreconditionRequiredException e) {
+    logHandledException(e, LEVEL_DEBUG, e.code());
+    return problem(HttpStatus.PRECONDITION_REQUIRED, e.code(), e.getMessage());
   }
 
   @ExceptionHandler(FieldValidationException.class)

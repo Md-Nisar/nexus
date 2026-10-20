@@ -261,4 +261,82 @@ class JpaRoleManagementAdapterTest {
 
     assertThat(adapter.detachPermission(roleId, permissionId)).isZero();
   }
+  // ── US-019 B8 replace ───────────────────────────────────────────────────
+
+  private static byte[] bytesOf(UUID id) {
+    return java.nio.ByteBuffer.allocate(16)
+        .putLong(id.getMostSignificantBits())
+        .putLong(id.getLeastSignificantBits())
+        .array();
+  }
+
+  @Test
+  void should_bindIdsAsBytesAndReportTheLock_when_theLiveRoleRowIsLocked() {
+    when(roleRepository.lockLiveRoleRow(any(byte[].class), any(byte[].class)))
+        .thenAnswer(
+            inv ->
+                java.util.Arrays.equals(inv.getArgument(0), bytesOf(roleId))
+                        && java.util.Arrays.equals(inv.getArgument(1), bytesOf(tenantId))
+                    ? List.<byte[]>of(bytesOf(roleId))
+                    : List.<byte[]>of());
+
+    assertThat(adapter.lockRoleRow(roleId, tenantId)).isTrue();
+  }
+
+  @Test
+  void should_reportGone_when_noLiveRoleRowMatches() {
+    when(roleRepository.lockLiveRoleRow(any(byte[].class), any(byte[].class)))
+        .thenReturn(List.of());
+
+    assertThat(adapter.lockRoleRow(roleId, tenantId)).isFalse();
+  }
+
+  @Test
+  void should_decodeTheLockedPermissionIds_when_readingTheCurrentSet() {
+    UUID other = UUID.fromString("ffffffff-0000-7000-8000-000000000001");
+    when(rolePermissionRepository.lockPermissionIdsByRoleId(any(byte[].class)))
+        .thenReturn(List.of(bytesOf(permissionId), bytesOf(other)));
+
+    assertThat(adapter.lockPermissionIdsForRole(roleId)).containsExactlyInAnyOrder(permissionId, other);
+  }
+
+  @Test
+  void should_returnTheBulkDeleteCount_when_detachingSeveralPermissions() {
+    List<UUID> ids = List.of(permissionId, UUID.randomUUID());
+    when(rolePermissionRepository.deleteByRoleIdAndPermissionIdIn(roleId, ids)).thenReturn(2);
+
+    assertThat(adapter.detachPermissions(roleId, ids)).isEqualTo(2);
+  }
+
+  @Test
+  void should_issueNoStatement_when_detachingNoPermissions() {
+    assertThat(adapter.detachPermissions(roleId, List.of())).isZero();
+    org.mockito.Mockito.verifyNoInteractions(rolePermissionRepository);
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void should_saveAllAndFlushOneRowPerId_when_attachingSeveralPermissions() {
+    UUID other = UUID.randomUUID();
+    ArgumentCaptor<List<RolePermission>> rows = ArgumentCaptor.forClass(List.class);
+
+    adapter.attachPermissions(roleId, List.of(permissionId, other));
+
+    org.mockito.Mockito.verify(rolePermissionRepository).saveAllAndFlush(rows.capture());
+    assertThat(rows.getValue())
+        .extracting(RolePermission::getRoleId, RolePermission::getPermissionId)
+        .containsExactly(
+            org.assertj.core.groups.Tuple.tuple(roleId, permissionId),
+            org.assertj.core.groups.Tuple.tuple(roleId, other));
+  }
+
+  @Test
+  void should_translateAKeyViolation_when_attachingSeveralPermissions() {
+    when(rolePermissionRepository.saveAllAndFlush(any()))
+        .thenThrow(new DataIntegrityViolationException("duplicate key secret-detail"));
+
+    assertThatThrownBy(() -> adapter.attachPermissions(roleId, List.of(permissionId)))
+        .isInstanceOf(DuplicateRolePermissionException.class)
+        .hasMessageNotContaining("secret-detail");
+  }
 }

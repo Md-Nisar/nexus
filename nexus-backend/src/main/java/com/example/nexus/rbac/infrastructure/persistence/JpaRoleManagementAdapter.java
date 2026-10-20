@@ -11,12 +11,15 @@ import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.domain.RolePermissionId;
 import com.example.nexus.rbac.domain.RoleView;
+import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
@@ -181,6 +184,56 @@ public class JpaRoleManagementAdapter implements RoleManagementPort {
   @Override
   public int detachPermission(UUID roleId, UUID permissionId) {
     return rolePermissionRepository.deleteByRoleIdAndPermissionId(roleId, permissionId);
+  }
+
+  @Override
+  public boolean lockRoleRow(UUID roleId, UUID tenantId) {
+    return !roleRepository.lockLiveRoleRow(toBytes(roleId), toBytes(tenantId)).isEmpty();
+  }
+
+  @Override
+  public Set<UUID> lockPermissionIdsForRole(UUID roleId) {
+    Set<UUID> permissionIds = new HashSet<>();
+    for (byte[] id : rolePermissionRepository.lockPermissionIdsByRoleId(toBytes(roleId))) {
+      permissionIds.add(fromBytes(id));
+    }
+    return permissionIds;
+  }
+
+  @Override
+  public int detachPermissions(UUID roleId, Collection<UUID> permissionIds) {
+    if (permissionIds.isEmpty()) {
+      return 0;
+    }
+    return rolePermissionRepository.deleteByRoleIdAndPermissionIdIn(roleId, permissionIds);
+  }
+
+  /**
+   * Inserts through {@code saveAllAndFlush} for the reason {@link #attachPermission} documents: a
+   * key violation must surface here, translated to {@link DuplicateRolePermissionException}. Under
+   * the replace's role-row lock and its current-read check none is expected.
+   */
+  @Override
+  public void attachPermissions(UUID roleId, Collection<UUID> permissionIds) {
+    try {
+      rolePermissionRepository.saveAllAndFlush(
+          permissionIds.stream().map(id -> new RolePermission(roleId, id)).toList());
+    } catch (DataIntegrityViolationException e) {
+      throw new DuplicateRolePermissionException();
+    }
+  }
+
+  /** Native queries bypass {@code UuidV7Converter}: ids are bound and read as 16 bytes. */
+  private static byte[] toBytes(UUID uuid) {
+    return ByteBuffer.allocate(16)
+        .putLong(uuid.getMostSignificantBits())
+        .putLong(uuid.getLeastSignificantBits())
+        .array();
+  }
+
+  private static UUID fromBytes(byte[] bytes) {
+    ByteBuffer buf = ByteBuffer.wrap(bytes);
+    return new UUID(buf.getLong(), buf.getLong());
   }
 
   private static PermissionView toPermissionView(Permission permission) {

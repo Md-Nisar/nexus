@@ -172,6 +172,21 @@
         <Bug pattern="EI_EXPOSE_REP2" />
     </Match>
     <!--
+      US-019 T-018: RoleController and PermissionController constructor-inject the Spring-managed
+      singleton RoleManagementService (and RoleController the MeterRegistry, for the 428 counter)
+      and store them directly, per the constructor-injection-only convention (CLAUDE.md).
+      SpotBugs' mutability heuristic counts RoleManagementService as mutable once it has a
+      "replace..." method (replaceRolePermissions, the design's name); it is a stateless singleton
+      service, not a value object, with no sensible defensive copy.
+    -->
+    <Match>
+        <Or>
+            <Class name="com.example.nexus.rbac.interfaces.rest.RoleController" />
+            <Class name="com.example.nexus.rbac.interfaces.rest.PermissionController" />
+        </Or>
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
+    <!--
       US-018 T-029: AccessReviewService constructor-injects the Spring-managed singleton MeterRegistry
       bean (to count nexus.rbac.access_review_query and the cross-tenant permission_denied series) and
       stores it directly, per this project's constructor-injection-only convention (CLAUDE.md). Same

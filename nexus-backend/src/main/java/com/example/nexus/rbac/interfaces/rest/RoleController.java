@@ -3,6 +3,8 @@ package com.example.nexus.rbac.interfaces.rest;
 import static com.example.nexus.common.security.Permissions.ROLE_READ;
 import static com.example.nexus.common.security.Permissions.ROLE_WRITE;
 
+import com.example.nexus.common.domain.FieldValidationException;
+import com.example.nexus.common.domain.PreconditionRequiredException;
 import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.security.RequiresPermission;
 import com.example.nexus.rbac.application.RoleManagementService;
@@ -10,6 +12,7 @@ import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RoleCounts;
+import com.example.nexus.rbac.domain.RolePermissionSet;
 import com.example.nexus.rbac.domain.RoleView;
 import com.example.nexus.rbac.interfaces.rest.dto.AttachPermissionRequest;
 import com.example.nexus.rbac.interfaces.rest.dto.CreateRoleRequest;
@@ -17,19 +20,25 @@ import com.example.nexus.rbac.interfaces.rest.dto.PageLinks;
 import com.example.nexus.rbac.interfaces.rest.dto.PageMetadata;
 import com.example.nexus.rbac.interfaces.rest.dto.PermissionListResponse;
 import com.example.nexus.rbac.interfaces.rest.dto.PermissionResponse;
+import com.example.nexus.rbac.interfaces.rest.dto.ReplaceRolePermissionsRequest;
 import com.example.nexus.rbac.interfaces.rest.dto.RoleListResponse;
 import com.example.nexus.rbac.interfaces.rest.dto.RoleResponse;
 import com.example.nexus.rbac.interfaces.rest.dto.UpdateRoleRequest;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.net.URI;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
@@ -38,7 +47,9 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
@@ -71,11 +82,14 @@ public class RoleController {
 
   private static final String PATH_PARAM_ROLE_ID = "roleId";
   private static final String PATH_PARAM_PERMISSION_ID = "permissionId";
+  private static final String BODY_FIELD_PERMISSION_IDS = "permissionIds";
 
   private final RoleManagementService roleManagementService;
+  private final MeterRegistry meterRegistry;
 
-  public RoleController(RoleManagementService roleManagementService) {
+  public RoleController(RoleManagementService roleManagementService, MeterRegistry meterRegistry) {
     this.roleManagementService = roleManagementService;
+    this.meterRegistry = meterRegistry;
   }
 
   /**
@@ -160,26 +174,121 @@ public class RoleController {
 
   /**
    * Lists the permissions attached to a role in the caller's own tenant (AC3, AC8). Reads against
-   * a system role are allowed — AC7's guard is scoped to writes.
+   * a system role are allowed — AC7's guard is scoped to writes. US-019 B8: the {@code ETag} is the
+   * version of exactly this set, the value a replace sends back in {@code If-Match}.
    *
-   * @return 200 with a {@code data} envelope; empty list is a valid 200
+   * @return 200 with a {@code data} envelope and an {@code ETag}; empty list is a valid 200
    */
   @GetMapping("/{roleId}/permissions")
   @RequiresPermission(ROLE_READ)
-  @Operation(summary = "List the permissions attached to a role in the caller's tenant")
-  @ApiResponse(responseCode = "200", description = "Permissions attached to the role")
+  @Operation(
+      summary = "List the permissions attached to a role in the caller's tenant",
+      description =
+          "The ETag validates the permission set and is what PUT expects in If-Match."
+              + " If-None-Match and 304 are not supported; responses are not cacheable.")
+  @ApiResponse(responseCode = "200", description = "Permissions attached to the role, with an ETag")
   @ApiResponse(responseCode = "403", description = "Missing role:read")
   @ApiResponse(responseCode = "404", description = "Role not found, or in another tenant (indistinguishable)")
-  public PermissionListResponse listRolePermissions(
+  public ResponseEntity<PermissionListResponse> listRolePermissions(
       @PathVariable String roleId, Authentication authentication) {
     RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, ROLE_READ);
     UUID parsedRoleId = RbacControllerSupport.parsePathUuid(roleId, PATH_PARAM_ROLE_ID);
 
-    var data =
-        roleManagementService.listRolePermissions(actor, parsedRoleId).stream()
-            .map(PermissionController::toResponse)
-            .toList();
-    return new PermissionListResponse(data);
+    return withEtag(roleManagementService.listRolePermissions(actor, parsedRoleId));
+  }
+
+  /**
+   * Atomically replaces the permission set of a role in the caller's own tenant (US-019 B8, design
+   * §10.5). {@code If-Match} must carry exactly one strong entity-tag, the {@code ETag} of the set
+   * the editor read. The order of outcomes is fixed so an unauthorised caller learns nothing about
+   * the set: 400, 428, 404, 409, 404 permission, 403, then 412, then an unchanged set's 200.
+   *
+   * @return 200 with the new set and its {@code ETag}
+   */
+  @PutMapping("/{roleId}/permissions")
+  @RequiresPermission(ROLE_WRITE)
+  @Operation(
+      summary = "Replace the permission set of a role in the caller's tenant",
+      description =
+          "If-Match must be exactly one strong entity tag, the ETag of the set being replaced. The"
+              + " ETag validates the permission set. An unchanged set is an authorised no-op 200.")
+  @ApiResponse(responseCode = "200", description = "Applied, or unchanged; the set and its ETag")
+  @ApiResponse(
+      responseCode = "400",
+      description =
+          "Malformed path UUID or body: permissionIds missing, over 100, a malformed or duplicate"
+              + " id")
+  @ApiResponse(
+      responseCode = "403",
+      description =
+          "Missing role:write or role:read (also in live holdings), an added permission the caller"
+              + " does not hold, or a removal from a role whose permissions the caller does not all"
+              + " hold (for an administrator role: or is not an administrator through another"
+              + " role)")
+  @ApiResponse(
+      responseCode = "404",
+      description =
+          "Role not found, deleted or in another tenant (indistinguishable), or a permission id"
+              + " not in the catalogue")
+  @ApiResponse(responseCode = "409", description = "System role (RBAC_003)")
+  @ApiResponse(
+      responseCode = "412",
+      description = "The If-Match tag is not the current version of the set; the body has no state")
+  @ApiResponse(responseCode = "415", description = "Content type is not application/json")
+  @ApiResponse(
+      responseCode = "428",
+      description = "If-Match absent, *, a list, weak, empty or unparseable; the body has no state")
+  public ResponseEntity<PermissionListResponse> replaceRolePermissions(
+      @PathVariable String roleId,
+      @Valid @RequestBody ReplaceRolePermissionsRequest request,
+      @RequestHeader(name = HttpHeaders.IF_MATCH, required = false) String ifMatch,
+      Authentication authentication,
+      HttpServletRequest httpRequest) {
+    RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, ROLE_WRITE);
+    UUID parsedRoleId = RbacControllerSupport.parsePathUuid(roleId, PATH_PARAM_ROLE_ID);
+    Set<UUID> permissionIds = parseDistinctPermissionIds(request.permissionIds());
+    String ifMatchTag;
+    try {
+      ifMatchTag = IfMatchHeader.parse(ifMatch);
+    } catch (PreconditionRequiredException e) {
+      Counter.builder("nexus.rbac.permission_replace")
+          .tag("outcome", "precondition_required")
+          .tag("lockPath", "none")
+          .register(meterRegistry)
+          .increment();
+      throw e;
+    }
+
+    return withEtag(
+        roleManagementService.replaceRolePermissions(
+            actor,
+            parsedRoleId,
+            permissionIds,
+            ifMatchTag,
+            RbacControllerSupport.requestContext(httpRequest)));
+  }
+
+  /**
+   * Parses the body's ids (already shape-checked by bean validation) and rejects a repeated id,
+   * however it is cased, as a 400 on the repeating element.
+   */
+  private static Set<UUID> parseDistinctPermissionIds(List<String> permissionIds) {
+    Set<UUID> parsed = new LinkedHashSet<>();
+    for (int i = 0; i < permissionIds.size(); i++) {
+      String field = BODY_FIELD_PERMISSION_IDS + "[" + i + "]";
+      if (!parsed.add(RbacControllerSupport.parsePathUuid(permissionIds.get(i), field))) {
+        throw new FieldValidationException("VALIDATION_FAILED", field, "must not repeat an id");
+      }
+    }
+    return parsed;
+  }
+
+  private static ResponseEntity<PermissionListResponse> withEtag(RolePermissionSet set) {
+    return ResponseEntity.ok()
+        .eTag(set.version())
+        .body(
+            new PermissionListResponse(
+                set.permissions().stream().map(PermissionController::toResponse).toList()));
   }
 
   /**

@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.jpa.repository.Query;
 import org.testcontainers.containers.MySQLContainer;
 
 /**
@@ -203,6 +204,63 @@ class RolePermissionsPrivilegeIT {
         });
     rolePermissionsGrants.forEach(
         g -> assertThat(g.toUpperCase(Locale.ROOT)).as(g).doesNotContain("UPDATE"));
+  }
+
+  // ── US-019 B8 (design §10.4): the replace's current reads, as nexus_app ────────────────
+
+  /** The production step-9 read: {@code FOR SHARE} needs SELECT plus DELETE, which nexus_app has. */
+  @Test
+  void should_readTheCurrentSetForShare_when_lockingOneRolesPermissionsAsNexusApp()
+      throws Exception {
+    Role role = seedRole("for-share");
+    rolePermissionRepository.save(new RolePermission(role.getId(), RbacSeededPermissionIds.ROLE_READ));
+    String sql =
+        JpaRolePermissionRepository.class
+            .getMethod("lockPermissionIdsByRoleId", byte[].class)
+            .getAnnotation(Query.class)
+            .value()
+            .replace(":roleId", "?");
+
+    List<byte[]> ids = new ArrayList<>();
+    nexusAppConnection.setAutoCommit(false);
+    try (PreparedStatement select = nexusAppConnection.prepareStatement(sql)) {
+      select.setBytes(1, toBytes(role.getId()));
+      try (ResultSet rs = select.executeQuery()) {
+        while (rs.next()) {
+          ids.add(rs.getBytes(1));
+        }
+      }
+    }
+    nexusAppConnection.rollback();
+
+    assertThat(ids).singleElement().isEqualTo(toBytes(RbacSeededPermissionIds.ROLE_READ));
+  }
+
+  /** RC-57.1: the multi-role current read the set-lock verbs use is allowed too. */
+  @Test
+  void should_readSeveralRolesForShare_when_lockingWithAnInListAsNexusApp() throws SQLException {
+    Role first = seedRole("for-share-in-1");
+    Role second = seedRole("for-share-in-2");
+    rolePermissionRepository.save(new RolePermission(first.getId(), RbacSeededPermissionIds.ROLE_READ));
+    rolePermissionRepository.save(new RolePermission(second.getId(), RbacSeededPermissionIds.ROLE_WRITE));
+
+    int rows = 0;
+    nexusAppConnection.setAutoCommit(false);
+    try (PreparedStatement select =
+        nexusAppConnection.prepareStatement(
+            "SELECT role_id, permission_id FROM role_permissions WHERE role_id IN (?, ?)"
+                + " FOR SHARE")) {
+      select.setBytes(1, toBytes(first.getId()));
+      select.setBytes(2, toBytes(second.getId()));
+      try (ResultSet rs = select.executeQuery()) {
+        while (rs.next()) {
+          rows++;
+        }
+      }
+    }
+    nexusAppConnection.rollback();
+
+    assertThat(rows).isEqualTo(2);
   }
 
   private static void assertCommandDenied(Throwable ex) {
