@@ -30,6 +30,15 @@ import java.util.Set;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.core.MethodParameter;
+import org.springframework.http.HttpInputMessage;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.http.HttpMethod;
@@ -44,6 +53,7 @@ import org.springframework.web.method.annotation.ExceptionHandlerMethodResolver;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 @Tag("UnitTest")
+@ExtendWith(OutputCaptureExtension.class)
 class GlobalExceptionHandlerTest {
 
     private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
@@ -410,6 +420,114 @@ class GlobalExceptionHandlerTest {
                     .containsEntry("tenantId", "t-1")
                     .containsEntry("requiredPermission", "tenant:write")
                     .containsEntry("correlationId", "corr-1");
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+            logger.setLevel(Level.OFF);
+        }
+    }
+
+    @Test
+    void should_return400ValidationFailed_when_bodyNotReadable() {
+        ProblemDetail problem = handler.handleBodyNotReadable(
+                new HttpMessageNotReadableException("boom", mock(HttpInputMessage.class)));
+
+        assertThat(problem.getStatus()).isEqualTo(400);
+        assertThat(problem.getProperties()).containsEntry("code", "VALIDATION_FAILED");
+        assertThat(problem.getDetail()).isEqualTo("Request body is not valid JSON.");
+    }
+
+    @Test
+    void should_return415UnsupportedMediaType_when_contentTypeNotSupported() {
+        ProblemDetail problem = handler.handleMediaTypeNotSupported(
+                new HttpMediaTypeNotSupportedException("text/plain"));
+
+        assertThat(problem.getStatus()).isEqualTo(415);
+        assertThat(problem.getProperties()).containsEntry("code", "UNSUPPORTED_MEDIA_TYPE");
+    }
+
+    @Test
+    void should_return405WithAllowHeader_when_methodNotSupported() {
+        ResponseEntity<ProblemDetail> response = handler.handleMethodNotSupported(
+                new HttpRequestMethodNotSupportedException("DELETE", List.of("GET", "PUT")));
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
+        assertThat(response.getHeaders().getFirst("Allow")).isEqualTo("GET,PUT");
+        assertThat(response.getBody().getProperties()).containsEntry("code", "METHOD_NOT_ALLOWED");
+    }
+
+    @Test
+    void should_return400WithHeaderNameOnly_when_requiredHeaderMissing() {
+        MethodParameter parameter = mock(MethodParameter.class);
+        ProblemDetail problem = handler.handleMissingHeader(
+                new MissingRequestHeaderException("If-Match", parameter));
+
+        assertThat(problem.getStatus()).isEqualTo(400);
+        assertThat(problem.getProperties()).containsEntry("code", "VALIDATION_FAILED");
+        assertThat(problem.getProperties().get("details"))
+                .isEqualTo(List.of(Map.of("field", "If-Match", "message", "Header is required.")));
+    }
+
+    @Test
+    void should_neverLogExceptionText_when_bodyNotReadableCarriesSentinelToken(CapturedOutput output) {
+        Logger logger = (Logger) LoggerFactory.getLogger(GlobalExceptionHandler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.DEBUG);
+        try {
+            String sentinel = "sentinel.local-part";
+            RuntimeException cause = new RuntimeException("Unrecognized token '" + sentinel + "'");
+            handler.handleBodyNotReadable(new HttpMessageNotReadableException(
+                    "JSON parse error: Unrecognized token '" + sentinel + "'",
+                    cause,
+                    mock(HttpInputMessage.class)));
+
+            assertThat(appender.list).isNotEmpty();
+            assertThat(appender.list).allSatisfy(event -> {
+                assertThat(event.getFormattedMessage()).doesNotContain(sentinel);
+                assertThat(keyValueMap(event).values().toString()).doesNotContain(sentinel);
+                assertThat(event.getThrowableProxy()).isNull();
+            });
+            assertThat(output.getAll()).doesNotContain(sentinel);
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+            logger.setLevel(Level.OFF);
+        }
+    }
+
+    @Test
+    void should_logAtDebugAndNotWarn_when_selfReportedRateLimit() {
+        assertThat(new RefreshThrottledException(5L).selfReported()).isTrue();
+        assertThat(new RateLimitException("X", "m", 5L).selfReported()).isFalse();
+        Logger logger = (Logger) LoggerFactory.getLogger(GlobalExceptionHandler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.DEBUG);
+        try {
+            handler.handleRateLimit(new RefreshThrottledException(5L));
+
+            assertThat(appender.list).extracting(ILoggingEvent::getLevel).containsOnly(Level.DEBUG);
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+            logger.setLevel(Level.OFF);
+        }
+    }
+
+    @Test
+    void should_logAtWarn_when_plainRateLimit() {
+        Logger logger = (Logger) LoggerFactory.getLogger(GlobalExceptionHandler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.DEBUG);
+        try {
+            handler.handleRateLimit(new RateLimitException("X", "m", 5L));
+
+            assertThat(appender.list).extracting(ILoggingEvent::getLevel).containsOnly(Level.WARN);
         } finally {
             logger.detachAppender(appender);
             appender.stop();
