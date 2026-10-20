@@ -5,7 +5,7 @@
 **Author:** Principal Architect
 **Status:** Revision 1 (2026-10-19), threat-model required changes RC-55 to RC-63 folded in (`03b-threat-model.md` §6, §9.1), and the delta-review changes RC-64 to RC-67 (`03b-threat-model.md` §10). Approved at Gate 2.
 
-**Gate 2:** approved 2026-10-19 by the story owner (approver name to be recorded). The approval includes accepting RES-47 (the two bits the B7 `reason` discloses) and RES-26, as recorded in `03b-threat-model.md`. Still open for people and not blocking the design: D5 confirmation that the PII-grant rule stays ON (RES-51), Ops alert thresholds and RES-6 retention sign-off, and the US-020 acceptance of RES-53 (retry `RBAC_012` once).
+**Gate 2:** approved 2026-10-19 by the story owner, Md Nisar Ahmed. The approval includes accepting RES-47 (the two bits the B7 `reason` discloses) and RES-26, as recorded in `03b-threat-model.md`. Still open for people and not blocking the design: D5 confirmation that the PII-grant rule stays ON (RES-51), Ops alert thresholds and RES-6 retention sign-off, and the US-020 acceptance of RES-53 (retry `RBAC_012` once).
 
 > **Revision 1 (2026-10-19) — threat model RC-55..RC-63**
 > - **RC-55** (T-T22, High): step 9 compares the locked version to the snapshot version `v0`; `If-Match` takes exactly one strong tag; soundness paragraph rewritten; IT case (g), two-tag unit test; ADR-0027 states the ETag is not a secret (§0 #15–16, §10.3, §10.5, §10.8).

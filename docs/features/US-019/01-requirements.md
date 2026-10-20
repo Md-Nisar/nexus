@@ -2,7 +2,7 @@
 
 **Status:** Approved at Gate 1 · **Owner:** Business Analyst
 
-**Gate 1:** approved 2026-10-19 by the story owner (approver name to be recorded)
+**Gate 1:** approved 2026-10-19 by the story owner, Md Nisar Ahmed
 **Date:** 2026-10-18 · **Base:** `main` @ `2962b0e` (US-018 merged), branch `feature/US-019`
 **Risk tier (from discovery):** high-risk (new PII-bearing endpoints, live authorization profile, atomic permission write path, change to denial disclosure). Full Gate 2 threat model and Phase 7 audit apply.
 
