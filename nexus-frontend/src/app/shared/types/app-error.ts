@@ -81,6 +81,26 @@ export interface AppError {
    * an explicit serializer/scrubber.
    */
   readonly requiredPermission?: string;
+
+  /**
+   * Why the backend refused an `RBAC_001` (US-019 B7): `GRANT_EXCEEDS_CALLER`,
+   * `SELF_ASSIGNMENT`, `ADMINISTRATOR_REQUIRED` or `UNSPECIFIED`.
+   *
+   * Present **only** when `code` is `RBAC_001`; never on `ACCESS_DENIED` or any other code.
+   * A component may use it to choose an inline explanation; the Access Denied page never
+   * shows it (A9). Do not put it in a URL or send it to analytics.
+   */
+  readonly reason?: string;
+
+  /**
+   * Whole seconds the backend asked the client to wait, from a delta-seconds `Retry-After`
+   * header (e.g. 429 `RBAC_011`, 503 `AUTH_005`). Absent when the header is missing or not a
+   * positive integer.
+   *
+   * Informational only: nothing retries a request on the strength of this value
+   * (`RBAC_011` is never auto-retried, RC-63(l)).
+   */
+  readonly retryAfterSeconds?: number;
 }
 
 /**

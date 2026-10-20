@@ -9,6 +9,7 @@ import { APP_CONFIG } from '../config/app-config';
 import { correlationIdInterceptor } from './correlation-id.interceptor';
 import { AppError } from '../../shared/types/app-error';
 import { SKIP_ACCESS_DENIED_REDIRECT } from './skip-access-denied-redirect';
+import { NxToast } from '../../shared/ui';
 
 describe('apiErrorInterceptor', () => {
   let loggerSpy: {
@@ -18,6 +19,7 @@ describe('apiErrorInterceptor', () => {
     error: ReturnType<typeof vi.fn>;
   };
   let routerSpy: { navigate: ReturnType<typeof vi.fn> };
+  let toastSpy: { warning: ReturnType<typeof vi.fn> };
 
   function setup() {
     loggerSpy = {
@@ -28,6 +30,7 @@ describe('apiErrorInterceptor', () => {
     };
 
     routerSpy = { navigate: vi.fn().mockResolvedValue(true) };
+    toastSpy = { warning: vi.fn() };
 
     TestBed.configureTestingModule({
       providers: [
@@ -35,6 +38,7 @@ describe('apiErrorInterceptor', () => {
         provideHttpClientTesting(),
         { provide: LoggerService, useValue: loggerSpy },
         { provide: Router, useValue: routerSpy },
+        { provide: NxToast, useValue: toastSpy },
         {
           provide: APP_CONFIG,
           useValue: { production: false, apiBaseUrl: '/api', logLevel: 'debug' },
@@ -48,6 +52,7 @@ describe('apiErrorInterceptor', () => {
   }
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -273,6 +278,125 @@ describe('apiErrorInterceptor', () => {
 
     it('should default the opt-out token to false', () => {
       expect(new HttpContext().get(SKIP_ACCESS_DENIED_REDIRECT)).toBe(false);
+    });
+  });
+
+  describe('caller-facing reason and Retry-After (US-019 B7)', () => {
+    function failWith(
+      status: number,
+      body: Record<string, unknown>,
+      headers: Record<string, string> = {},
+    ): { captured: AppError | undefined; controller: HttpTestingController } {
+      const { http, controller } = setup();
+      const result: { captured: AppError | undefined; controller: HttpTestingController } = {
+        captured: undefined,
+        controller,
+      };
+      http.post('/api/v1/users/u-1/roles', {}).subscribe({
+        error: (e: AppError) => (result.captured = e),
+      });
+      controller
+        .expectOne('/api/v1/users/u-1/roles')
+        .flush(body, { status, statusText: 'Error', headers });
+      return result;
+    }
+
+    it('should map reason from an RBAC_001 problem response onto AppError', () => {
+      const { captured } = failWith(403, {
+        code: 'RBAC_001',
+        detail: 'You do not have permission to perform this action',
+        requiredPermission: 'user:role:assign',
+        reason: 'GRANT_EXCEEDS_CALLER',
+      });
+
+      expect(captured?.reason).toBe('GRANT_EXCEEDS_CALLER');
+    });
+
+    it('should ignore a non-string reason in a malformed RBAC_001 response', () => {
+      const { captured } = failWith(403, { code: 'RBAC_001', reason: 7 });
+
+      expect(captured?.reason).toBeUndefined();
+    });
+
+    it('should never carry a reason on a non-RBAC_001 response', () => {
+      const { captured } = failWith(403, { code: 'ACCESS_DENIED', reason: 'UNSPECIFIED' });
+
+      expect(captured?.reason).toBeUndefined();
+    });
+
+    it('should surface a 429 RBAC_011 as an AppError with retryAfterSeconds and no redirect', () => {
+      const { captured } = failWith(
+        429,
+        { code: 'RBAC_011', detail: 'Too many denied role changes; try again later' },
+        { 'Retry-After': '42' },
+      );
+
+      expect(captured).toEqual(
+        expect.objectContaining({
+          code: 'RBAC_011',
+          message: 'Too many denied role changes; try again later',
+          retryAfterSeconds: 42,
+        }),
+      );
+      expect(captured?.reason).toBeUndefined();
+      expect(routerSpy.navigate).not.toHaveBeenCalled();
+    });
+
+    it('should never auto-retry a 429 RBAC_011, even after its Retry-After has passed', () => {
+      vi.useFakeTimers();
+      const { controller } = failWith(429, { code: 'RBAC_011' }, { 'Retry-After': '1' });
+
+      vi.advanceTimersByTime(120_000);
+
+      controller.expectNone('/api/v1/users/u-1/roles');
+      controller.verify();
+    });
+
+    it.each(['', 'soon', '-5', '0', '1.5', 'Wed, 21 Oct 2026 07:28:00 GMT'])(
+      'should leave retryAfterSeconds undefined for Retry-After %j',
+      (value) => {
+        const { captured } = failWith(429, { code: 'RBAC_011' }, { 'Retry-After': value });
+
+        expect(captured?.retryAfterSeconds).toBeUndefined();
+      },
+    );
+
+    it('should map a 503 AUTH_005 Retry-After and show one availability toast, never navigating', async () => {
+      const { captured } = failWith(503, { code: 'AUTH_005' }, { 'Retry-After': '30' });
+      await vi.dynamicImportSettled();
+
+      expect(captured?.retryAfterSeconds).toBe(30);
+      expect(toastSpy.warning).toHaveBeenCalledOnce();
+      expect(toastSpy.warning).toHaveBeenCalledWith(
+        'Nexus is temporarily unavailable. Try again in 30 seconds.',
+      );
+      expect(routerSpy.navigate).not.toHaveBeenCalled();
+    });
+
+    it('should show one toast for two 503 AUTH_005 responses within the window', async () => {
+      const { http, controller } = setup();
+      for (const url of ['/api/a', '/api/b']) {
+        http.get(url).subscribe({ error: () => undefined });
+        controller.expectOne(url).flush(
+          { code: 'AUTH_005' },
+          {
+            status: 503,
+            statusText: 'Service Unavailable',
+            headers: { 'Retry-After': '30' },
+          },
+        );
+      }
+      await vi.dynamicImportSettled();
+
+      expect(toastSpy.warning).toHaveBeenCalledOnce();
+      expect(routerSpy.navigate).not.toHaveBeenCalled();
+    });
+
+    it('should not show the availability toast for a 503 with another code', async () => {
+      failWith(503, { code: 'SERVICE_UNAVAILABLE' }, { 'Retry-After': '30' });
+      await vi.dynamicImportSettled();
+
+      expect(toastSpy.warning).not.toHaveBeenCalled();
     });
   });
 });

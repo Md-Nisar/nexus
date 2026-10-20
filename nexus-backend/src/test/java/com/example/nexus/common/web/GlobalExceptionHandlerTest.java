@@ -20,6 +20,7 @@ import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.common.domain.TokenExpiredException;
 import com.example.nexus.common.security.DenialReason;
 import com.example.nexus.common.security.InsufficientPermissionException;
+import com.example.nexus.rbac.domain.RoleChangeThrottledException;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.validation.ConstraintViolationException;
 import java.lang.reflect.Method;
@@ -31,6 +32,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.core.MethodParameter;
@@ -212,6 +216,72 @@ class GlobalExceptionHandlerTest {
                         new InsufficientPermissionException("tenant:write", DenialReason.PERMISSION_ABSENT));
 
         assertThat(resolved.getName()).isEqualTo("handleInsufficientPermission");
+    }
+
+    // US-019 B7 (design §9.2, RC-63(l)): RBAC_001 always carries the caller-facing reason.
+
+    @ParameterizedTest
+    @CsvSource({
+        "GRANT_EXCEEDS_CALLER, GRANT_EXCEEDS_CALLER",
+        "SELF_ASSIGNMENT, SELF_ASSIGNMENT",
+        "NOT_TENANT_ADMIN, ADMINISTRATOR_REQUIRED",
+        "PERMISSION_ABSENT, UNSPECIFIED",
+        "MALFORMED_AUTHENTICATION, UNSPECIFIED",
+        "MISSING_TENANT, UNSPECIFIED",
+        "CROSS_TENANT_TARGET, UNSPECIFIED"
+    })
+    void should_writeTheCallerFacingReason_when_insufficientPermissionThrown(
+            DenialReason internal, String wire) {
+        ProblemDetail problem = handler.handleInsufficientPermission(
+                new InsufficientPermissionException("user:role:assign", internal));
+
+        assertThat(problem.getProperties()).containsEntry("reason", wire);
+    }
+
+    @ParameterizedTest
+    @EnumSource(DenialReason.class)
+    void should_alwaysWriteReasonAndKeepRequiredPermission_when_insufficientPermissionThrown(
+            DenialReason internal) {
+        ProblemDetail problem = handler.handleInsufficientPermission(
+                new InsufficientPermissionException("user:role:assign", internal));
+
+        assertThat(problem.getProperties())
+                .containsKey("reason")
+                .containsEntry("requiredPermission", "user:role:assign")
+                .containsEntry("code", "RBAC_001");
+    }
+
+    @Test
+    void should_notWriteAReason_when_genericAccessDenied() {
+        ProblemDetail problem = handler.handleAccessDenied(new AccessDeniedException("denied"));
+
+        assertThat(problem.getProperties()).doesNotContainKey("reason");
+    }
+
+    @Test
+    void should_return429Rbac011WithRetryAfterAndNoWarn_when_roleChangeThrottled() {
+        Logger logger = (Logger) LoggerFactory.getLogger(GlobalExceptionHandler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.WARN);
+        try {
+            ResponseEntity<ProblemDetail> response =
+                    handler.handleRateLimit(new RoleChangeThrottledException(42L));
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+            assertThat(response.getHeaders().getFirst("Retry-After")).isEqualTo("42");
+            assertThat(response.getBody().getProperties())
+                    .containsEntry("code", "RBAC_011")
+                    .doesNotContainKey("reason");
+            assertThat(response.getBody().getDetail())
+                    .isEqualTo("Too many denied role changes; try again later");
+            assertThat(appender.list).as("selfReported: no WARN per throttled request").isEmpty();
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+            logger.setLevel(Level.OFF);
+        }
     }
 
     @Test

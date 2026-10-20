@@ -11,6 +11,7 @@ import com.example.nexus.rbac.application.port.out.PermissionCachePort;
 import com.example.nexus.rbac.application.port.out.RbacAuditEvent;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.RoleChangeThrottlePort;
+import com.example.nexus.rbac.application.port.out.ThrottleStatus;
 import com.example.nexus.rbac.application.port.out.UserDirectoryPort;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
@@ -23,6 +24,7 @@ import com.example.nexus.rbac.domain.RbacAdministrators;
 import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
+import com.example.nexus.rbac.domain.RoleChangeThrottledException;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.DistributionSummary;
@@ -626,7 +628,8 @@ public class RoleAssignmentService {
   /**
    * D14, re-scoped by US-018 B8 (Decision 25; 03-design.md §10.8): after the 404s and the target's
    * classification, before every authorization read of the caller. Returns whether the actor is
-   * currently throttled. A throttled actor is BLOCKED (403, no audit row, counter) only when the
+   * currently throttled. A throttled actor is BLOCKED (US-019 B7: 429 {@code RBAC_011} with a
+   * {@code Retry-After} bounded to [1, window]; no audit row; counter) only when the
    * request would take the set lock (the target role is admin-defining) or targets the actor
    * themself: those are the paths the throttle exists to bound (T-D10, T-D11, RES-8; ADR-0018 D7).
    * Every other request is evaluated normally, so an authorized benign change still succeeds
@@ -634,33 +637,35 @@ public class RoleAssignmentService {
    *
    * <p>A throttled actor never reaches the set lock: this runs before {@link #acquireSetLock}.
    * Classifying first tells a throttled actor whether a target is admin-defining by whether the
-   * request is blocked (one bit, RES-33, accepted).
+   * request is blocked; the 429 makes that bit explicit on every target (RES-33, T-I22, RES-47,
+   * accepted).
    *
-   * <p>Defense in depth (MC-7(i)): {@link RoleChangeThrottlePort#isThrottled} is documented to
+   * <p>Defense in depth (MC-7(i)): {@link RoleChangeThrottlePort#throttleStatus} is documented to
    * fail safe and never throw, but a throwing implementation must not turn an availability
-   * problem into a false block here: any exception is swallowed and treated as "not throttled",
-   * falling through to the real gate, which remains authoritative.
+   * problem into a false block here: any exception, or a {@code null} answer, is treated as "not
+   * throttled", falling through to the real gate, which remains authoritative.
    */
   private boolean evaluateThrottle(
       RoleChangeActor actor, UUID targetUserId, TargetClassification target, String operation) {
-    boolean throttled;
+    ThrottleStatus status;
     try {
-      throttled = throttlePort.isThrottled(actor.tenantId(), actor.userId());
+      status = throttlePort.throttleStatus(actor.tenantId(), actor.userId());
     } catch (RuntimeException e) {
       log.atError()
           .addKeyValue(LOG_KEY_EVENT, "RBAC_THROTTLE_IS_THROTTLED_CALL_FAILED")
           .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
           .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
           .addKeyValue(LOG_KEY_OPERATION, operation)
-          .log("isThrottled threw despite its never-throw contract", e);
+          .log("throttleStatus threw despite its never-throw contract", e);
       return false;
     }
-    if (!throttled) {
+    if (status == null || !status.throttled()) {
       return false;
     }
     if (target.adminDefining() || targetUserId.equals(actor.userId())) {
       countThrottled(operation);
-      throw new InsufficientPermissionException(USER_ROLE_ASSIGN, DenialReason.NOT_TENANT_ADMIN);
+      throw new RoleChangeThrottledException(
+          Math.clamp(status.retryAfterSeconds(), 1L, (long) windowSeconds));
     }
     return true;
   }

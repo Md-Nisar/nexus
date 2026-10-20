@@ -5,6 +5,7 @@ import { catchError, throwError } from 'rxjs';
 import { AppError, isAppError } from '../../shared/types/app-error';
 import { LoggerService } from '../logging/logger.service';
 import { CORRELATION_HEADER } from './correlation-id.interceptor';
+import { ServiceAvailabilityNotifier } from './service-availability-notifier';
 import { SKIP_ACCESS_DENIED_REDIRECT } from './skip-access-denied-redirect';
 
 /**
@@ -16,10 +17,16 @@ import { SKIP_ACCESS_DENIED_REDIRECT } from './skip-access-denied-redirect';
  * response may reach the URL, which keeps this out of the open-redirect class. The `AppError` is
  * still rethrown, so components that handle 403 inline keep working. The filter-level
  * `ACCESS_DENIED`, 401 and 404 never redirect.
+ *
+ * US-019 B7: `RBAC_001` carries a caller-facing `reason`, and a delta-seconds `Retry-After`
+ * becomes `retryAfterSeconds`. A 429 (including `RBAC_011`) is surfaced once and never retried
+ * here. A 503 `AUTH_005` additionally shows one availability toast per `Retry-After` window
+ * through {@link ServiceAvailabilityNotifier}; it never navigates.
  */
 export const apiErrorInterceptor: HttpInterceptorFn = (req, next) => {
   const logger = inject(LoggerService);
   const router = inject(Router);
+  const availabilityNotifier = inject(ServiceAvailabilityNotifier);
 
   return next(req).pipe(
     catchError((error: unknown) => {
@@ -70,6 +77,10 @@ export const apiErrorInterceptor: HttpInterceptorFn = (req, next) => {
         void router.navigate(['/access-denied']);
       }
 
+      if (status === 503 && appError.code === 'AUTH_005') {
+        availabilityNotifier.notifyUnavailable(appError.retryAfterSeconds);
+      }
+
       return throwError(() => appError);
     }),
   );
@@ -93,6 +104,10 @@ function toAppError(error: unknown, correlationId?: string): AppError {
         // it through unchecked.
         requiredPermission:
           typeof body.requiredPermission === 'string' ? body.requiredPermission : undefined,
+        // RC-63(l): only RBAC_001 carries a reason; anything else is ignored.
+        reason:
+          body.code === 'RBAC_001' && typeof body.reason === 'string' ? body.reason : undefined,
+        retryAfterSeconds: parseRetryAfterSeconds(error.headers?.get('Retry-After')),
       };
     }
     if (error.status === 0) {
@@ -120,6 +135,21 @@ interface ProblemDocument {
   readonly details: AppError['details'];
   /** Set only by the backend's RBAC_001 403 branch; absent on ACCESS_DENIED. */
   readonly requiredPermission?: string;
+  /** Set only by the backend's RBAC_001 403 branch (US-019 B7). */
+  readonly reason?: unknown;
+}
+
+/**
+ * Reads a delta-seconds `Retry-After` value. Anything else (absent, an HTTP date, a fraction,
+ * zero or a negative number) yields `undefined`.
+ */
+function parseRetryAfterSeconds(raw: string | null | undefined): number | undefined {
+  const value = raw?.trim() ?? '';
+  if (!/^\d+$/.test(value)) {
+    return undefined;
+  }
+  const seconds = Number(value);
+  return seconds > 0 ? seconds : undefined;
 }
 
 /**

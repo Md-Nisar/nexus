@@ -17,12 +17,14 @@ import com.example.nexus.rbac.application.port.out.PermissionCachePort;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.RoleChangeThrottlePort;
 import com.example.nexus.rbac.application.port.out.RoleManagementPort;
+import com.example.nexus.rbac.application.port.out.ThrottleStatus;
 import com.example.nexus.rbac.application.port.out.UserDirectoryPort;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
+import com.example.nexus.rbac.domain.RoleChangeThrottledException;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.RoleView;
 import io.micrometer.core.instrument.Meter;
@@ -104,9 +106,9 @@ class RbacMetricCardinalityTest {
     assertThatThrownBy(() -> managementService.listRolePermissions(actor, foreignRoleId))
         .isInstanceOf(ResourceNotFoundException.class);
     // Throttled path (a throttled actor is blocked on a self-target).
-    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
+    when(throttlePort.throttleStatus(tenantId, actorId)).thenReturn(new ThrottleStatus(true, 30));
     assertThatThrownBy(() -> assignmentService.assign(actor, actorId, roleId, RequestContext.UNKNOWN))
-        .isInstanceOf(InsufficientPermissionException.class);
+        .isInstanceOf(RoleChangeThrottledException.class);
 
     assertThat(registry.getMeters()).as("the paths above must have emitted meters").isNotEmpty();
     for (Meter meter : registry.getMeters()) {

@@ -10,6 +10,7 @@ import com.example.nexus.common.domain.RateLimitException;
 import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.common.domain.TokenExpiredException;
 import com.example.nexus.common.security.AuthenticationDetailKeys;
+import com.example.nexus.common.security.CallerFacingDenialReason;
 import com.example.nexus.common.security.InsufficientPermissionException;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -97,7 +98,7 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler(RateLimitException.class)
   ResponseEntity<ProblemDetail> handleRateLimit(RateLimitException e) {
-    // RefreshThrottledException: the use case emits its own one-per-window WARN (US-018 T-013).
+    // Self-reported throttles (refresh, RBAC_011) emit their own once-per-window WARN (RC-33.1).
     logHandledException(e, e.selfReported() ? LEVEL_DEBUG : "WARN", e.code());
     ProblemDetail problem = problem(HttpStatus.TOO_MANY_REQUESTS, e.code(), e.getMessage());
     HttpHeaders headers = new HttpHeaders();
@@ -179,6 +180,7 @@ public class GlobalExceptionHandler {
     ProblemDetail problem =
         problem(HttpStatus.FORBIDDEN, "RBAC_001", "You do not have permission to perform this action");
     problem.setProperty("requiredPermission", e.getRequiredPermission());
+    problem.setProperty("reason", CallerFacingDenialReason.of(e.getReason()).name());
     return problem;
   }
 
