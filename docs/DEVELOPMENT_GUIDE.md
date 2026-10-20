@@ -294,6 +294,7 @@ An agent's context grows with everything it reads and is re-sent on every model 
 - **Read selectively.** `Grep` for headings or identifiers, then ranged `Read`. Whole-file reads are for the document being reviewed adversarially (first-pass threat model reads the whole design). Do not re-read a file you just wrote; grep the changed lines.
 - **Upstream documents are read once per agent** and cited by section number. Briefs carry the gate decisions (for example requirements section 13a) so the agent does not re-derive them.
 - **Short final answers.** The artifact is the deliverable; the final answer is path, counts, decisions and human asks.
+- **Usage transparency.** A `SubagentStop` hook (`.claude/hooks/agent-usage.mjs`) prints a one-line token report when each agent stops: calls, tool uses, last context (the figure the UI shows), max context, cache-read, cache-write, uncached input, output (a lower bound) and an input-equivalent total, plus the delta for a resumed agent. Every report is appended to `~/.claude/nexus-agent-usage.jsonl`. `node .claude/hooks/agent-usage.mjs --report` prints one row per agent for the latest session. The input-equivalent weights (`0.1,1.25,5` for cache-read, cache-write, output) are an assumption, overridable with `NEXUS_USAGE_WEIGHTS`; billing comes from the provider's usage page.
 - **Resume cost check.** After a usage-limit stop, resuming is right only if the agent had no deliverable yet and its exploration is the work to keep.
 
 ### Action half — build, prove, ship
