@@ -41,3 +41,4 @@ date,story,task,agent_type,model,agent_id,calls,tool_uses,cache_read,cache_write
 2026-10-20,US-019,T-007,backend-engineer,claude-opus-5-5,ac40fa3,64,76,7807638,191200,7945,197485,1059617
 2026-10-20,US-019,T-015,frontend-engineer,claude-sonnet-5-5,a07e9dc,10,14,242437,34048,352,34050,68584
 2026-10-20,US-019,T-017,backend-engineer,claude-opus-5-5,aa6eaa1,88,111,10486465,184199,2191,190484,1290026
+2026-10-20,US-019,T-005,backend-engineer,claude-opus-5-5,a791fc7,51,60,4230603,125170,2290,131455,591075
