@@ -3,6 +3,8 @@
 **Phase:** 4 (Task Breakdown), Gate 3
 
 **Gate 3:** approved 2026-10-19 by the story owner, Md Nisar Ahmed. Open item O-2 is resolved as recommended: T-007 (the administrator-only rule for granting `user:directory:read`) may merge ahead of the D5-gated directory tasks, so the permission replace (T-019) does not wait on D5. Open item O-1 stays open: no request-rate or latency budget is stated, so no load test is added.
+
+**D5 privacy and security sign-off:** given 2026-10-20 by Md Nisar Ahmed, as story owner, for the proposed defaults (design §7 Q-D1: `SENSITIVE` / `NON_SENSITIVE` sets, `user:directory:read` PII grant rule). The directory slice is no longer blocked on D5; Ops and D2/D3/D4 items remain open.
 **Epic:** EPIC-002 (RBAC Foundation)
 
 **Why 28 tasks rather than ≤ 8:** the approved design spans six slices (S0–S5) and about 31 items across backend, frontend and CI. Its estimated production code is about 11,000 lines (backend ≈ 6,500, frontend ≈ 4,000, CI and fixtures ≈ 500), and 11,000 ÷ 400 ≈ 27. One more slice isolates a real risk: the platform-wide body and protocol handlers (T-003) that both the directory slice and B8 depend on, and that must not wait for D5.
