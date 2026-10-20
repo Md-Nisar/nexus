@@ -12,6 +12,8 @@ feature:
     enabled: true
   nexus-us015-rbac-role-management:
     enabled: true
+  nexus-us019-user-directory:
+    enabled: true
 
 # --- Security: Rate Limiting (Test Overrides) ---
 # Increased limits to prevent test interference from rate-limiting filters

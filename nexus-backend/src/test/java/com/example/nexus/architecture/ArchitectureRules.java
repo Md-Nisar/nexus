@@ -7,6 +7,8 @@ import com.example.nexus.common.Profiles;
 import com.example.nexus.common.security.Permissions;
 import com.example.nexus.identity.infrastructure.persistence.BreakGlassGrantLookupAdapter;
 import com.example.nexus.identity.infrastructure.persistence.JpaAuthEventRepository;
+import com.example.nexus.identity.infrastructure.persistence.JpaUserDirectoryQueryAdapter;
+import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
 import com.example.nexus.rbac.application.BootstrapAdminService;
 import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.application.port.out.BreakGlassGrantLookupPort;
@@ -138,6 +140,27 @@ public final class ArchitectureRules {
           .because(
               "US-018 M5 L-3: the query is unscoped by tenant by design; a second caller would"
                   + " turn it into a cross-tenant existence oracle.")
+          .allowEmptyShould(true);
+
+  /**
+   * US-019 RC-61.2 (design §4.2, Security sign-off condition 2): the unscoped, count-only {@code
+   * JpaUserRepository#countByIdIn} is allowlisted in {@code TenantIsolationArchitectureTest} only
+   * while {@link JpaUserDirectoryQueryAdapter} is its one caller.
+   */
+  public static final ArchRule UNSCOPED_USER_COUNT_IS_CALLED_ONLY_BY_THE_DIRECTORY_ADAPTER =
+      noClasses()
+          .that()
+          .doNotBelongToAnyOf(JpaUserDirectoryQueryAdapter.class)
+          .should()
+          .callMethodWhere(
+              DescribedPredicate.describe(
+                  "target is JpaUserRepository.countByIdIn",
+                  (JavaMethodCall call) ->
+                      call.getTargetOwner().isEquivalentTo(JpaUserRepository.class)
+                          && "countByIdIn".equals(call.getName())))
+          .because(
+              "US-019 RC-61.2: the count is unscoped by tenant by design; a second caller could turn"
+                  + " it into a cross-tenant existence oracle.")
           .allowEmptyShould(true);
 
   /**

@@ -16,6 +16,8 @@ import com.example.nexus.common.security.PublicEndpoint;
 import com.example.nexus.common.security.RequiresPermission;
 import com.example.nexus.identity.application.service.LogoutUseCase;
 import com.example.nexus.identity.infrastructure.web.PublicEndpointRequestMatcher;
+import com.example.nexus.identity.interfaces.rest.UserDirectoryController;
+import com.example.nexus.identity.interfaces.rest.UserProfileController;
 import com.jayway.jsonpath.JsonPath;
 import com.tngtech.archunit.core.domain.JavaClass;
 import com.tngtech.archunit.core.domain.JavaClasses;
@@ -330,6 +332,28 @@ class EndpointClassificationWebTest {
         .as("production @Controller classes registered as handlers (a feature flag is off?)")
         .isNotEmpty()
         .allMatch(registered::contains);
+  }
+
+  /**
+   * US-019 T-004 (design §4.2 Route coexistence, AS-4): with us003 and us019 both on, the literal
+   * {@code GET /api/v1/users/me} still reaches {@link UserProfileController}, never the directory's
+   * {@code /{userId}} handler, and answers a caller holding no permission.
+   */
+  @Test
+  void should_dispatch_users_me_to_profile_controller_when_directory_flag_is_on() throws Exception {
+    assertThat(handlerMapping.getHandlerMethods().values())
+        .as("the directory controller is registered (us019 on in the test profile)")
+        .anyMatch(handler -> handler.getBeanType().equals(UserDirectoryController.class));
+    MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/users/me");
+    ServletRequestPathUtils.parseAndCache(request);
+
+    assertThat(firstHandler(orderedHandlerMappings(context), request))
+        .isInstanceOfSatisfying(HandlerMethod.class, handler ->
+            assertThat(handler.getBeanType()).isEqualTo(UserProfileController.class));
+    assertThat(mvc.perform(request(HttpMethod.GET, URI.create("/api/v1/users/me"))
+            .with(authentication(authenticatedWithoutPermissions())))
+        .andReturn().getResponse().getStatus())
+        .isEqualTo(HttpStatus.OK.value());
   }
 
   /**

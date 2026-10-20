@@ -182,4 +182,13 @@
         <Class name="com.example.nexus.rbac.application.AccessReviewService" />
         <Bug pattern="EI_EXPOSE_REP2" />
     </Match>
+    <!--
+      US-019 T-004: UserDirectoryService constructor-injects the Spring-managed singleton MeterRegistry
+      bean (to count nexus.identity.directory.cross_tenant_miss) and stores it directly. Same rationale
+      as AccessReviewService above: a MeterRegistry is a metrics factory with no sensible defensive copy.
+    -->
+    <Match>
+        <Class name="com.example.nexus.identity.application.UserDirectoryService" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
 </FindBugsFilter>
