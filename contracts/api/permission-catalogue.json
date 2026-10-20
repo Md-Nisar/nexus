@@ -1,0 +1,14 @@
+[
+  { "name": "tenant:read", "description": "Read tenant configuration and metadata" },
+  { "name": "tenant:write", "description": "Create and modify tenant configuration" },
+  { "name": "user:read", "description": "Read user accounts and profiles" },
+  { "name": "user:write", "description": "Create and modify user accounts" },
+  { "name": "role:read", "description": "Read roles and their permission assignments" },
+  { "name": "role:write", "description": "Create roles and manage role-permission assignments" },
+  { "name": "audit:read", "description": "Read the authentication and audit event trail" },
+  { "name": "user:role:assign", "description": "Assign and revoke roles for users in the tenant" },
+  {
+    "name": "user:directory:read",
+    "description": "Read the tenant user directory, including email addresses"
+  }
+]
