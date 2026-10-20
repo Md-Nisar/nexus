@@ -66,9 +66,9 @@ import org.springframework.web.client.RestTemplate;
 @Tag("IT")
 class CrossTenantNotFoundEquivalenceIT {
 
-  private static final UUID USER_READ = UUID.fromString("019f6839-1802-7000-8000-000000000003");
-  private static final UUID ROLE_READ = UUID.fromString("019f6839-1804-7000-8000-000000000005");
-  private static final UUID ROLE_WRITE = UUID.fromString("019f6839-1805-7000-8000-000000000006");
+  private static final UUID USER_READ = RbacSeededPermissionIds.USER_READ;
+  private static final UUID ROLE_READ = RbacSeededPermissionIds.ROLE_READ;
+  private static final UUID ROLE_WRITE = RbacSeededPermissionIds.ROLE_WRITE;
   private static final UUID USER_ROLE_ASSIGN = RbacSeededPermissionIds.USER_ROLE_ASSIGN;
   private static final Set<String> VOLATILE_BODY_KEYS = Set.of("traceId", "instance");
 

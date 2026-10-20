@@ -8,6 +8,7 @@ import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
 import com.example.nexus.rbac.domain.RbacAdministrators;
+import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.domain.UserRole;
@@ -51,8 +52,7 @@ import org.springframework.test.context.ActiveProfiles;
 @Tag("IT")
 class AdminEquivalenceSqlJavaEquivalenceIT {
 
-  private static final UUID USER_READ_PERMISSION_ID =
-      UUID.fromString("019f6839-1802-7000-8000-000000000003");
+  private static final UUID USER_READ_PERMISSION_ID = RbacSeededPermissionIds.USER_READ;
 
   @Autowired private JpaRoleRepository roleRepository;
   @Autowired private JpaRolePermissionRepository rolePermissionRepository;

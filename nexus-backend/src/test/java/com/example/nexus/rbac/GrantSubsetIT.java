@@ -10,6 +10,7 @@ import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
+import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.domain.UserRole;
@@ -69,12 +70,10 @@ import org.springframework.web.client.RestTemplate;
 class GrantSubsetIT {
 
   // Seeded literals -- V5__rbac_schema.sql and V6__rbac_user_role_assign_permission.sql headers.
-  private static final UUID ROLE_WRITE_PERMISSION_ID =
-      UUID.fromString("019f6839-1805-7000-8000-000000000006");
-  private static final UUID AUDIT_READ_PERMISSION_ID =
-      UUID.fromString("019f6839-1806-7000-8000-000000000007");
+  private static final UUID ROLE_WRITE_PERMISSION_ID = RbacSeededPermissionIds.ROLE_WRITE;
+  private static final UUID AUDIT_READ_PERMISSION_ID = RbacSeededPermissionIds.AUDIT_READ;
   private static final UUID USER_ROLE_ASSIGN_PERMISSION_ID =
-      UUID.fromString("019f6839-1807-7000-8000-000000000008");
+      RbacSeededPermissionIds.USER_ROLE_ASSIGN;
 
   @Value("${local.server.port}")
   private int port;

@@ -13,6 +13,7 @@ import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
 import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.domain.PermissionView;
+import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RolePermission;
@@ -67,12 +68,9 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Tag("IT")
 class RoleManagementAdminGateIT {
 
-  private static final UUID ROLE_WRITE_PERMISSION_ID =
-      UUID.fromString("019f6839-1805-7000-8000-000000000006");
-  private static final UUID AUDIT_READ_PERMISSION_ID =
-      UUID.fromString("019f6839-1806-7000-8000-000000000007");
-  private static final UUID USER_READ_PERMISSION_ID =
-      UUID.fromString("019f6839-1802-7000-8000-000000000003");
+  private static final UUID ROLE_WRITE_PERMISSION_ID = RbacSeededPermissionIds.ROLE_WRITE;
+  private static final UUID AUDIT_READ_PERMISSION_ID = RbacSeededPermissionIds.AUDIT_READ;
+  private static final UUID USER_READ_PERMISSION_ID = RbacSeededPermissionIds.USER_READ;
 
   @Autowired private RoleManagementService roleManagementService;
   @Autowired private JpaRoleRepository roleRepository;

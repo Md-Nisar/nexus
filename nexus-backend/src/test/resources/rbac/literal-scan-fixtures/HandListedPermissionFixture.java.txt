@@ -1,0 +1,4 @@
+// Negative fixture for SeededPermissionLiteralScanTest: a fixture that hand-lists a seeded
+// permission id instead of using RbacSeededPermissionIds or RbacTestCatalogue.
+private static final UUID ROLE_WRITE_PERMISSION_ID =
+    UUID.fromString("019f6839-1805-7000-8000-000000000006");

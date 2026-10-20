@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.nexus.TestcontainersConfiguration;
 import com.example.nexus.identity.domain.UuidGenerator;
+import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
@@ -222,7 +223,7 @@ class RolePermissionsPrivilegeIT {
 
   /** {@code role:write}, per V5__rbac_schema.sql's header comment seeded literals. */
   private UUID anySeededPermissionId() {
-    return UUID.fromString("019f6839-1805-7000-8000-000000000006");
+    return RbacSeededPermissionIds.ROLE_WRITE;
   }
 
   private static byte[] toBytes(UUID uuid) {

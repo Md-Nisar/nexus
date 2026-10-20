@@ -47,8 +47,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 @Tag("IT")
 class RoleAssignmentEscalationIT {
 
-  private static final UUID ROLE_WRITE_PERMISSION_ID =
-      UUID.fromString("019f6839-1805-7000-8000-000000000006");
+  private static final UUID ROLE_WRITE_PERMISSION_ID = RbacSeededPermissionIds.ROLE_WRITE;
 
   /** Meters retired by M3 (ledger rows 7 and 9); none may reappear. */
   private static final List<String> RETIRED_METERS =

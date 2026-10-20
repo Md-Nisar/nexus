@@ -10,6 +10,7 @@ import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
 import com.example.nexus.identity.infrastructure.security.RsaKeyConfig;
+import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.domain.UserRole;
@@ -79,22 +80,18 @@ import org.springframework.web.client.RestTemplate;
 class RoleAssignmentSecurityIT {
 
   // Seeded literals — V5__rbac_schema.sql header comment.
-  private static final UUID USER_READ_PERMISSION_ID =
-      UUID.fromString("019f6839-1802-7000-8000-000000000003");
-  private static final UUID USER_WRITE_PERMISSION_ID =
-      UUID.fromString("019f6839-1803-7000-8000-000000000004");
+  private static final UUID USER_READ_PERMISSION_ID = RbacSeededPermissionIds.USER_READ;
+  private static final UUID USER_WRITE_PERMISSION_ID = RbacSeededPermissionIds.USER_WRITE;
   // US-018 A1 (V6): the endpoint permission for POST and DELETE /users/{id}/roles.
   private static final UUID USER_ROLE_ASSIGN_PERMISSION_ID =
-      UUID.fromString("019f6839-1807-7000-8000-000000000008");
+      RbacSeededPermissionIds.USER_ROLE_ASSIGN;
   // Dangerous per RbacDangerousPermissions.NAMES -- used by the T-S7 freshness-on-the-privilege-
   // path extension below to construct a role that is privileged WITHOUT being named TENANT_ADMIN.
-  private static final UUID ROLE_WRITE_PERMISSION_ID =
-      UUID.fromString("019f6839-1805-7000-8000-000000000006");
+  private static final UUID ROLE_WRITE_PERMISSION_ID = RbacSeededPermissionIds.ROLE_WRITE;
   // Dangerous per RbacDangerousPermissions.NAMES -- used by T-007(c)/(d) below to construct a
   // caller who qualifies via RbacAdminEquivalence#isFullyAdminEquivalent (ALL three), never named
   // TENANT_ADMIN.
-  private static final UUID TENANT_WRITE_PERMISSION_ID =
-      UUID.fromString("019f6839-1801-7000-8000-000000000002");
+  private static final UUID TENANT_WRITE_PERMISSION_ID = RbacSeededPermissionIds.TENANT_WRITE;
 
   @Value("${local.server.port}")
   private int port;

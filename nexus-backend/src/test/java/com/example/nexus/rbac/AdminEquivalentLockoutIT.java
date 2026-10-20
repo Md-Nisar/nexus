@@ -65,8 +65,7 @@ class AdminEquivalentLockoutIT {
 
   // Seeded literals — V5__rbac_schema.sql header comment (same constants used elsewhere in this
   // package, e.g. LastAdminLockoutIT/RoleRevocationSymmetryIT).
-  private static final UUID ROLE_WRITE_PERMISSION_ID =
-      UUID.fromString("019f6839-1805-7000-8000-000000000006");
+  private static final UUID ROLE_WRITE_PERMISSION_ID = RbacSeededPermissionIds.ROLE_WRITE;
 
   @Autowired private RoleAssignmentService roleAssignmentService;
   @Autowired private UserRoleAssignmentPort userRoleAssignmentPort;

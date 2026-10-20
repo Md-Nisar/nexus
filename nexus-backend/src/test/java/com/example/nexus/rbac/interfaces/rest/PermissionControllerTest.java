@@ -11,6 +11,7 @@ import com.example.nexus.common.web.GlobalExceptionHandler;
 import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.PermissionView;
+import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.List;
 import java.util.UUID;
@@ -30,8 +31,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 @Tag("UnitTest")
 class PermissionControllerTest {
 
-  private static final UUID PERMISSION_ID =
-      UUID.fromString("019f6839-1802-7000-8000-000000000003");
+  private static final UUID PERMISSION_ID = RbacSeededPermissionIds.USER_READ;
 
   private RoleManagementService roleManagementService;
   private MockMvc mockMvc;

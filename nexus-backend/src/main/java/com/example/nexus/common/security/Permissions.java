@@ -4,7 +4,7 @@ import java.util.Set;
 
 /**
  * The permission catalogue as compile-time constants: one {@code String} per row of the {@code
- * permissions} table (V5 seeds seven, V6 adds {@code user:role:assign}). Every {@code
+ * permissions} table (V5 seeds seven, V6 and V11 add one each). Every {@code
  * @RequiresPermission} value and every service-level {@code requiredPermission} references a
  * constant here, so a typo is a compile error and a name that is not in the catalogue is caught by
  * {@code PermissionsCatalogueTest}, not by a silently unguardable endpoint (US-018 B5).
@@ -25,6 +25,7 @@ public final class Permissions {
   public static final String ROLE_WRITE = "role:write";
   public static final String AUDIT_READ = "audit:read";
   public static final String USER_ROLE_ASSIGN = "user:role:assign";
+  public static final String USER_DIRECTORY_READ = "user:directory:read";
 
   /** Every catalogue entry. Immutable. */
   public static final Set<String> ALL =
@@ -36,7 +37,8 @@ public final class Permissions {
           ROLE_READ,
           ROLE_WRITE,
           AUDIT_READ,
-          USER_ROLE_ASSIGN);
+          USER_ROLE_ASSIGN,
+          USER_DIRECTORY_READ);
 
   private Permissions() {}
 }

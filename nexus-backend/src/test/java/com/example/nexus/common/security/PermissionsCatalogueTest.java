@@ -41,11 +41,11 @@ class PermissionsCatalogueTest {
   }
 
   @Test
-  void should_listAllEightCatalogueEntries_when_readingPermissionsAll() {
+  void should_listAllNineCatalogueEntries_when_readingPermissionsAll() {
     assertThat(Permissions.ALL)
         .containsExactlyInAnyOrder(
             "tenant:read", "tenant:write", "user:read", "user:write", "role:read", "role:write",
-            "audit:read", "user:role:assign");
+            "audit:read", "user:role:assign", "user:directory:read");
   }
 
   private static List<String> requiredPermissionValues(JavaClasses classes) {

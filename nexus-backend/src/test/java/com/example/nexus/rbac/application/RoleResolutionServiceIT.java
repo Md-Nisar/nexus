@@ -51,6 +51,7 @@ class RoleResolutionServiceIT {
           "role:write",
           "tenant:read",
           "tenant:write",
+          "user:directory:read", // US-019 V11
           "user:read",
           "user:role:assign", // US-018 V6
           "user:write");
