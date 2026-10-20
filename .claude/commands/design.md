@@ -31,7 +31,9 @@ Use the **security-reviewer** sub-agent.
 ## Step C — Revision loop, if Step B raises required changes
 
 1. Dispatch the **architect** sub-agent with the specific required-change list (not "re-read the threat model and figure out what to do") — extract the concrete asks yourself first so the agent isn't re-deriving them.
+   - Dispatch a **fresh** architect (a new `Agent` call), not a `SendMessage` resume of the design agent, when the prior run ended more than ~5 minutes ago or its context is large: a resume rebuilds the whole cached context (hundreds of thousands of tokens) before doing the first edit. Put the concrete asks, the section numbers to change, and the decisions already made in the brief; the agent greps and reads only those sections. Resume only if the agent has written nothing yet (its exploration is the work to keep).
 2. The architect revises `03-design.md` **in place with `Edit`**, not a full rewrite, and amends the relevant ADR's mutable sections (e.g. "does not close" / follow-on rules) the same way.
 3. Send the revision back to **security-reviewer** for a **delta review**: confirm each required change landed correctly and flag any new regression — not a fresh full STRIDE pass. Reserve the full pass for the next new story.
+   - Same dispatch rule: a fresh security-reviewer, briefed with the RC list and the changed section numbers, reading only those sections plus the threat entries they answer. The full STRIDE pass (first pass) still reads the whole design.
 
 Approval gate before `/breakdown $1`. Do not write implementation code in this phase.

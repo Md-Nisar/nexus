@@ -286,6 +286,16 @@ Every non-trivial change follows this model. It is enforced by approval gates (h
 - **Security** (`SECURITY.md`): STRIDE threat model; each threat → a mitigation task; authz/PII/tenant concerns.
 - **Frontend** (`angular-standards`): routes, smart/dumb components, signal state, guards.
 
+### Agent dispatch and context economy
+
+An agent's context grows with everything it reads and is re-sent on every model call, so cost is driven by context size times call count, not by the token figure the UI shows (that figure is the size of the last context, not a total). Measured on US-019 (design, threat model, breakdown): 197 calls, 58M cache-read tokens, and three resumes after long waits that each rebuilt a 380K-550K context. None of the rules below reduce what an agent must verify.
+
+- **Fresh agent for revisions and delta reviews.** Brief it with the concrete asks and section numbers; do not `SendMessage`-resume a finished agent after more than ~5 minutes (the prompt cache has expired and the whole context is rewritten). Resume only an agent that died before writing its deliverable.
+- **Read selectively.** `Grep` for headings or identifiers, then ranged `Read`. Whole-file reads are for the document being reviewed adversarially (first-pass threat model reads the whole design). Do not re-read a file you just wrote; grep the changed lines.
+- **Upstream documents are read once per agent** and cited by section number. Briefs carry the gate decisions (for example requirements section 13a) so the agent does not re-derive them.
+- **Short final answers.** The artifact is the deliverable; the final answer is path, counts, decisions and human asks.
+- **Resume cost check.** After a usage-limit stop, resuming is right only if the agent had no deliverable yet and its exploration is the work to keep.
+
 ### Action half — build, prove, ship
 
 | # | Step | Command | Agent | Output | Gate |
