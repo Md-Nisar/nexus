@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.authentication;
 import static org.springframework.security.test.web.servlet.setup.SecurityMockMvcConfigurers.springSecurity;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 import com.example.nexus.common.security.AuthenticationDetailKeys;
 import com.example.nexus.common.security.Permissions;
@@ -12,12 +13,14 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
 import org.springframework.context.ApplicationContext;
+import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
@@ -83,6 +86,22 @@ class UserDirectoryFeatureFlagTest {
             .getResponse();
 
     assertThat(response.getStatus()).as("GET %s", uri).isEqualTo(404);
+    assertThat((String) JsonPath.read(response.getContentAsString(), "$.code"))
+        .isEqualTo("RESOURCE_NOT_FOUND");
+  }
+
+  @Test
+  void should_return404ResourceNotFound_when_flagIsOffAndTheLookupIsPosted() throws Exception {
+    MockHttpServletResponse response =
+        mvc.perform(
+                post("/api/v1/users/lookup")
+                    .with(authentication(directoryReader()))
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"email\":\"reader@example.test\"}"))
+            .andReturn()
+            .getResponse();
+
+    assertThat(response.getStatus()).isEqualTo(404);
     assertThat((String) JsonPath.read(response.getContentAsString(), "$.code"))
         .isEqualTo("RESOURCE_NOT_FOUND");
   }

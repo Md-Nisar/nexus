@@ -7,6 +7,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.example.nexus.TestcontainersConfiguration;
+import com.example.nexus.identity.application.EmailBlindIndexService;
 import com.example.nexus.identity.application.UserDirectoryService;
 import com.example.nexus.identity.application.port.out.JwtPort;
 import com.example.nexus.identity.domain.EmailCipher;
@@ -20,12 +21,19 @@ import com.example.nexus.rbac.domain.UserRole;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
+import java.io.ByteArrayInputStream;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
@@ -44,6 +52,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.ClientHttpResponse;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -55,9 +64,10 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
 
 /**
- * US-019 T-004 (design §4.2, §4.7): the user directory's list, batch and by-id reads through the
- * real server and filter chain against MySQL, with two tenants. Each test seeds fresh tenants, so
- * the tests are independent of each other and of the migration seed.
+ * US-019 T-004/T-005 (design §4.2–§4.4, §4.7): the user directory's list, batch, by-id and
+ * exact-email lookup reads through the real server and filter chain against MySQL, with two
+ * tenants. Each test seeds fresh tenants, so the tests are independent of each other and of the
+ * migration seed.
  */
 @SpringBootTest(
     webEnvironment = WebEnvironment.RANDOM_PORT,
@@ -86,6 +96,7 @@ class UserDirectoryIT {
   @Autowired private UuidGenerator uuidGenerator;
   @Autowired private JwtPort jwtPort;
   @Autowired private JdbcTemplate jdbc;
+  @Autowired private EmailBlindIndexService blindIndex;
 
   private RestTemplate restTemplate;
 
@@ -236,6 +247,130 @@ class UserDirectoryIT {
     assertThat(failures).isEmpty();
   }
 
+  // ── lookup ────────────────────────────────────────────────────────────────────────────
+
+  @Test
+  void should_returnTheOneEntryWithTheFiveFields_when_theEmailMatchesAUserOfTheTenant() {
+    Tenant a = tenantWithReader();
+    User target = seedUserWithEmail(a.id(), "lookup-hit-" + UUID.randomUUID() + "@example.test");
+
+    ResponseEntity<String> response = lookup(a.token(), emailBody(target.getEmailCipher().value()));
+
+    assertThat(response.getStatusCode().value()).isEqualTo(200);
+    JsonNode data = JSON.readTree(response.getBody()).get("data");
+    assertThat(data).hasSize(1);
+    assertThat(keys(data.get(0))).isEqualTo(new TreeSet<>(ENTRY_FIELDS));
+    assertThat(data.get(0).get("userId").asString()).isEqualTo(target.getId().toString());
+    assertThat(keys(JSON.readTree(response.getBody()))).containsExactly("data");
+  }
+
+  @Test
+  void should_answerByteIdenticalEmptyData_when_theEmailIsMissingOrBelongsToAnotherTenant() {
+    Tenant a = tenantWithReader();
+    Tenant b = tenantWithReader();
+    User foreign = seedUserWithEmail(b.id(), "lookup-foreign-" + UUID.randomUUID() + "@example.test");
+
+    ResponseEntity<String> otherTenantHit = lookup(a.token(), emailBody(foreign.getEmailCipher().value()));
+    ResponseEntity<String> miss =
+        lookup(a.token(), emailBody("lookup-missing-" + UUID.randomUUID() + "@example.test"));
+
+    assertThat(otherTenantHit.getStatusCode().value()).isEqualTo(200).isEqualTo(miss.getStatusCode().value());
+    assertThat(otherTenantHit.getBody()).isEqualTo("{\"data\":[]}").isEqualTo(miss.getBody());
+  }
+
+  @Test
+  void should_hit_when_theEmailDiffersOnlyInCaseWhitespaceOrUnicodeNormalisation() {
+    Tenant a = tenantWithReader();
+    String suffix = UUID.randomUUID().toString().substring(0, 8);
+    // Stored in NFC (precomposed U+00E9); one variant sends the NFD form (e + U+0301).
+    User target = seedUserWithEmail(a.id(), "jos\u00e9-" + suffix + "@example.test");
+    List<String> variants =
+        List.of(
+            "JOS\u00c9-" + suffix.toUpperCase(Locale.ROOT) + "@EXAMPLE.TEST",
+            "  jos\u00e9-" + suffix + "@example.test\t",
+            "jose\u0301-" + suffix + "@example.test");
+
+    for (String variant : variants) {
+      ResponseEntity<String> response = lookup(a.token(), emailBody(variant));
+      assertThat(response.getStatusCode().value()).as(variant).isEqualTo(200);
+      JsonNode data = JSON.readTree(response.getBody()).get("data");
+      assertThat(data).as(variant).hasSize(1);
+      assertThat(data.get(0).get("userId").asString()).isEqualTo(target.getId().toString());
+    }
+  }
+
+  @Test
+  void should_return400ValidationFailedWithoutEchoingTheValue_when_theLookupBodyIsInvalid() {
+    Tenant a = tenantWithReader();
+    String tooLong = "sentinel-local" + "a".repeat(321 - 14 - "@example.test".length()) + "@example.test";
+    String oversized = "{\"email\":\"sentinel-local@example.test\"" + " ".repeat(1100) + "}";
+    Map<String, String> bodies =
+        Map.of(
+            "blank", emailBody("   "),
+            "321 characters", emailBody(tooLong),
+            "malformed", emailBody("sentinel-local-at-example.test"),
+            "over 1 KiB", oversized,
+            "missing email", "{}");
+    assertThat(tooLong).hasSize(321);
+    assertThat(oversized.getBytes(StandardCharsets.UTF_8).length).isGreaterThan(1024);
+
+    List<String> failures = new ArrayList<>();
+    bodies.forEach(
+        (name, body) -> {
+          ResponseEntity<String> response = lookup(a.token(), body);
+          String code = response.getBody() == null ? null : JSON.readTree(response.getBody()).path("code").asString();
+          if (response.getStatusCode().value() != 400 || !"VALIDATION_FAILED".equals(code)) {
+            failures.add(name + " -> " + response.getStatusCode().value() + " " + code);
+          }
+          assertThat(response.getBody()).as(name).doesNotContain("sentinel-local");
+        });
+    assertThat(failures).isEmpty();
+  }
+
+  @Test
+  void should_return400_when_aChunkedBodyWithoutContentLengthExceeds1KiB() throws Exception {
+    Tenant a = tenantWithReader();
+    byte[] oversized =
+        ("{\"email\":\"sentinel-local@example.test\"" + " ".repeat(1100) + "}")
+            .getBytes(StandardCharsets.UTF_8);
+    HttpRequest request =
+        HttpRequest.newBuilder(
+                URI.create("http://localhost:" + port + "/api/v1/users/lookup"))
+            .header(HttpHeaders.AUTHORIZATION, "Bearer " + a.token())
+            .header(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+            .POST(
+                HttpRequest.BodyPublishers.ofInputStream(
+                    () -> new ByteArrayInputStream(oversized)))
+            .build();
+
+    HttpResponse<String> response;
+    try (HttpClient client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1).build()) {
+      response = client.send(request, HttpResponse.BodyHandlers.ofString());
+    }
+
+    assertThat(response.statusCode()).isEqualTo(400);
+    assertThat(JSON.readTree(response.body()).path("code").asString()).isEqualTo("VALIDATION_FAILED");
+    assertThat(response.body()).doesNotContain("sentinel-local");
+  }
+
+  @Test
+  void should_return415_when_theLookupBodyIsNotJson() {
+    Tenant a = tenantWithReader();
+    HttpHeaders headers = new HttpHeaders();
+    headers.setBearerAuth(a.token());
+    headers.setContentType(MediaType.TEXT_PLAIN);
+
+    ResponseEntity<String> response =
+        restTemplate.exchange(
+            "http://localhost:" + port + "/api/v1/users/lookup",
+            HttpMethod.POST,
+            new HttpEntity<>(emailBody("sentinel-local@example.test"), headers),
+            String.class);
+
+    assertThat(response.getStatusCode().value()).isEqualTo(415);
+    assertThat(response.getBody()).doesNotContain("sentinel-local");
+  }
+
   // ── decryption failure ────────────────────────────────────────────────────────────────
 
   @Test
@@ -316,6 +451,29 @@ class UserDirectoryIT {
       user.verify(Instant.now().truncatedTo(ChronoUnit.MICROS));
     }
     return userRepository.save(user);
+  }
+
+  private User seedUserWithEmail(UUID tenantId, String email) {
+    User user =
+        new User(
+            uuidGenerator.newId(), tenantId, new EmailCipher(email), blindIndex.blindIndex(email), "test-hash", null);
+    user.verify(Instant.now().truncatedTo(ChronoUnit.MICROS));
+    return userRepository.save(user);
+  }
+
+  private ResponseEntity<String> lookup(String token, String body) {
+    HttpHeaders headers = new HttpHeaders();
+    headers.setBearerAuth(token);
+    headers.setContentType(MediaType.APPLICATION_JSON);
+    return restTemplate.exchange(
+        "http://localhost:" + port + "/api/v1/users/lookup",
+        HttpMethod.POST,
+        new HttpEntity<>(body, headers),
+        String.class);
+  }
+
+  private static String emailBody(String email) {
+    return JSON.writeValueAsString(Map.of("email", email));
   }
 
   private ResponseEntity<String> get(String token, String uri) {

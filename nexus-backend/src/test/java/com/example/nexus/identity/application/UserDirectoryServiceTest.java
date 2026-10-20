@@ -4,8 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import ch.qos.logback.classic.Level;
@@ -13,9 +15,12 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.example.nexus.common.domain.ResourceNotFoundException;
+import com.example.nexus.identity.application.port.out.RateLimitResult;
+import com.example.nexus.identity.application.port.out.RateLimitStore;
 import com.example.nexus.identity.application.port.out.UserDirectoryQueryPort;
 import com.example.nexus.identity.domain.DirectoryPage;
 import com.example.nexus.identity.domain.DirectoryUserView;
+import com.example.nexus.identity.domain.UserDirectoryThrottledException;
 import com.example.nexus.identity.domain.UserStatus;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
@@ -28,11 +33,14 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
 import org.slf4j.LoggerFactory;
 
 /**
  * US-019 T-004 (design §4.2): tenant-scoped reads, the by-id miss path that runs {@code existsById}
- * on every miss, and the batch parity count that only ever feeds the cross-tenant WARN.
+ * on every miss, and the batch parity count that only ever feeds the cross-tenant WARN. US-019
+ * T-005 (design §4.4, §4.5): the exact-email lookup, throttled per actor before any hashing, with
+ * at most one WARN per window.
  */
 @Tag("UnitTest")
 class UserDirectoryServiceTest {
@@ -43,10 +51,20 @@ class UserDirectoryServiceTest {
   private static final UUID USER_1 = UUID.fromString("019f6839-0000-7000-8000-0000000000b1");
   private static final UUID USER_2 = UUID.fromString("019f6839-0000-7000-8000-0000000000b2");
   private static final UUID FOREIGN = UUID.fromString("019f6839-0000-7000-8000-0000000000c1");
+  private static final int LOOKUP_MAX_ATTEMPTS = 30;
+  private static final int LOOKUP_WINDOW_SECONDS = 60;
+  private static final String EMAIL = "Sentinel.Lookup@Example.test";
+  private static final String HMAC = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  private static final String LOOKUP_BUCKET = "DIR_LOOKUP:" + TENANT + ":" + ACTOR;
+  private static final String LOOKUP_WARN_BUCKET = "DIR_LOOKUP_WARN:" + TENANT + ":" + ACTOR;
 
   private final UserDirectoryQueryPort port = mock(UserDirectoryQueryPort.class);
   private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
-  private final UserDirectoryService service = new UserDirectoryService(port, meterRegistry);
+  private final EmailBlindIndexService blindIndex = mock(EmailBlindIndexService.class);
+  private final RateLimitStore rateLimitStore = mock(RateLimitStore.class);
+  private final UserDirectoryService service =
+      new UserDirectoryService(
+          port, blindIndex, rateLimitStore, meterRegistry, LOOKUP_MAX_ATTEMPTS, LOOKUP_WINDOW_SECONDS);
 
   private ListAppender<ILoggingEvent> appender;
 
@@ -188,6 +206,84 @@ class UserDirectoryServiceTest {
     assertThat(crossTenantMisses()).isZero();
   }
 
+  // ── lookup ────────────────────────────────────────────────────────────────────────────
+
+  @Test
+  void should_consultTheThrottleBeforeTheBlindIndex_when_lookingUp() {
+    permitLookup();
+    when(blindIndex.blindIndex(EMAIL)).thenReturn(HMAC);
+    when(port.findByTenantAndEmailHmac(TENANT, HMAC)).thenReturn(Optional.empty());
+
+    service.lookup(TENANT, ACTOR, EMAIL);
+
+    InOrder order = inOrder(rateLimitStore, blindIndex, port);
+    order.verify(rateLimitStore).tryConsume(LOOKUP_BUCKET, LOOKUP_WINDOW_SECONDS, LOOKUP_MAX_ATTEMPTS);
+    order.verify(blindIndex).blindIndex(EMAIL);
+    order.verify(port).findByTenantAndEmailHmac(TENANT, HMAC);
+  }
+
+  @Test
+  void should_returnTheTenantsUser_when_theBlindIndexMatches() {
+    permitLookup();
+    when(blindIndex.blindIndex(EMAIL)).thenReturn(HMAC);
+    when(port.findByTenantAndEmailHmac(TENANT, HMAC)).thenReturn(Optional.of(view(USER_1)));
+
+    assertThat(service.lookup(TENANT, ACTOR, EMAIL)).contains(view(USER_1));
+  }
+
+  @Test
+  void should_returnEmpty_when_noUserOfTheTenantMatches() {
+    permitLookup();
+    when(blindIndex.blindIndex(EMAIL)).thenReturn(HMAC);
+    when(port.findByTenantAndEmailHmac(TENANT, HMAC)).thenReturn(Optional.empty());
+
+    assertThat(service.lookup(TENANT, ACTOR, EMAIL)).isEmpty();
+  }
+
+  @Test
+  void should_throwUserDir001WithoutHashingOrQuerying_when_theLookupIsThrottled() {
+    when(rateLimitStore.tryConsume(LOOKUP_BUCKET, LOOKUP_WINDOW_SECONDS, LOOKUP_MAX_ATTEMPTS))
+        .thenReturn(RateLimitResult.reject(17));
+    when(rateLimitStore.tryConsume(LOOKUP_WARN_BUCKET, LOOKUP_WINDOW_SECONDS, 1))
+        .thenReturn(RateLimitResult.permit());
+
+    assertThatThrownBy(() -> service.lookup(TENANT, ACTOR, EMAIL))
+        .isInstanceOfSatisfying(
+            UserDirectoryThrottledException.class,
+            e -> {
+              assertThat(e.code()).isEqualTo("USER_DIR_001");
+              assertThat(e.retryAfterSeconds()).isEqualTo(17);
+              assertThat(e.selfReported()).isTrue();
+              assertThat(e.getMessage()).doesNotContain(EMAIL);
+            });
+    verifyNoInteractions(blindIndex);
+    verify(port, never()).findByTenantAndEmailHmac(any(), any());
+  }
+
+  @Test
+  void should_warnOncePerWindowWithoutTheEmail_when_lookupsAreThrottledRepeatedly() {
+    when(rateLimitStore.tryConsume(LOOKUP_BUCKET, LOOKUP_WINDOW_SECONDS, LOOKUP_MAX_ATTEMPTS))
+        .thenReturn(RateLimitResult.reject(5));
+    when(rateLimitStore.tryConsume(LOOKUP_WARN_BUCKET, LOOKUP_WINDOW_SECONDS, 1))
+        .thenReturn(RateLimitResult.permit(), RateLimitResult.reject(5));
+
+    for (int i = 0; i < 3; i++) {
+      catchThrowable(() -> service.lookup(TENANT, ACTOR, EMAIL));
+    }
+
+    assertThat(warnings())
+        .singleElement()
+        .satisfies(
+            event -> {
+              assertThat(keyValues(event))
+                  .containsEntry("event", "IDENTITY_DIRECTORY_THROTTLED")
+                  .containsEntry("tenantId", TENANT)
+                  .containsEntry("actorUserId", ACTOR)
+                  .containsEntry("bucket", "DIR_LOOKUP");
+              assertThat(event.getFormattedMessage() + keyValues(event)).doesNotContain(EMAIL, HMAC);
+            });
+  }
+
   // ── view ──────────────────────────────────────────────────────────────────────────────
 
   @Test
@@ -196,6 +292,11 @@ class UserDirectoryServiceTest {
   }
 
   // ── helpers ───────────────────────────────────────────────────────────────────────────
+
+  private void permitLookup() {
+    when(rateLimitStore.tryConsume(LOOKUP_BUCKET, LOOKUP_WINDOW_SECONDS, LOOKUP_MAX_ATTEMPTS))
+        .thenReturn(RateLimitResult.permit());
+  }
 
   private static DirectoryUserView view(UUID id) {
     return new DirectoryUserView(

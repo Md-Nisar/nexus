@@ -249,6 +249,13 @@ nexus:
           depth-warn: 250          # 25% of standard-capacity
           depth-critical: 720      # 90% of standard-capacity
           age-critical: 15m
+    # --- User directory (US-019 design §4.5) ---
+    directory:
+      # POST /api/v1/users/lookup, per (tenant, actor) bucket DIR_LOOKUP on the rate-limit store
+      # (NF-S5). Fails open with the store (ADR-0016): the permission is the authorization gate.
+      lookup:
+        max-attempts: 30
+        window-seconds: 60
   # --- JWT Configuration ---
   jwt:
     private-key-pem: ${NEXUS_JWT_PRIVATE_KEY_PEM:}   # RSA-2048+ PKCS#8 PEM — required in prod; blank = ephemeral key in dev

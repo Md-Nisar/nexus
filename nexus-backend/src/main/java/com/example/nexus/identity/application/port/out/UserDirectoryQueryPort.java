@@ -26,6 +26,14 @@ public interface UserDirectoryQueryPort {
   /** The tenant's users among {@code ids}, ordered by id; ids of other tenants are omitted. */
   List<DirectoryUserView> findByTenantAndIds(UUID tenantId, Collection<UUID> ids);
 
+  /**
+   * The user of {@code tenantId} whose email blind index is {@code emailHmac}; another tenant's
+   * user with the same email is simply absent.
+   *
+   * @param emailHmac computed by {@code EmailBlindIndexService.blindIndex} only (ADR-0006)
+   */
+  Optional<DirectoryUserView> findByTenantAndEmailHmac(UUID tenantId, String emailHmac);
+
   /** The user {@code userId} if it belongs to {@code tenantId}. */
   Optional<DirectoryUserView> findByTenantAndId(UUID tenantId, UUID userId);
 

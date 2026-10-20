@@ -61,6 +61,13 @@ public class JpaUserDirectoryQueryAdapter implements UserDirectoryQueryPort {
   }
 
   @Override
+  public Optional<DirectoryUserView> findByTenantAndEmailHmac(UUID tenantId, String emailHmac) {
+    return userRepository
+        .findByTenantIdAndEmailHmac(tenantId, emailHmac)
+        .map(JpaUserDirectoryQueryAdapter::toView);
+  }
+
+  @Override
   public boolean existsById(UUID userId) {
     return userRepository.existsById(userId);
   }
