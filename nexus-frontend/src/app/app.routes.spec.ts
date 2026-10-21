@@ -130,3 +130,36 @@ describe('route tree shape (US-019 A2)', () => {
     expect(router.url).toBe('/dashboard');
   });
 });
+
+describe('route titles (US-019 A8)', () => {
+  /** Leaf routes: those that render a page rather than only wrap children or redirect. */
+  async function untitledLeaves(table: Routes, prefix = ''): Promise<string[]> {
+    const found: string[] = [];
+    for (const route of table) {
+      const path = `${prefix}/${route.path ?? ''}`.replace(/\/+/g, '/');
+      const children = await childrenOf(route);
+      if (children.length > 0) {
+        found.push(...(await untitledLeaves(children, path)));
+      } else if (route.redirectTo === undefined && !route.title) {
+        found.push(path);
+      }
+    }
+    return found;
+  }
+
+  it('gives every page route a title', async () => {
+    expect(await untitledLeaves(routes)).toEqual([]);
+  });
+
+  it('reports a fixture leaf route without a title', async () => {
+    expect(await untitledLeaves([{ path: 'x', children: [{ path: 'y', children: [] }] }])).toEqual([
+      '/x/y',
+    ]);
+  });
+
+  it('marks access-denied as self-managing its focus', () => {
+    const layout = routes.find((r) => r.children?.some((c) => c.path === 'auth')) as Route;
+    const denied = layout.children?.find((c) => c.path === 'access-denied');
+    expect(denied?.data?.['selfManagedFocus']).toBe(true);
+  });
+});

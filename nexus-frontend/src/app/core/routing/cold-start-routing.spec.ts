@@ -27,14 +27,15 @@ function buildRoutes(): Routes {
     ...routes.slice(0, -1),
     {
       ...shell,
+      // Before the shell's `**` Not Found catch-all, which would otherwise match first.
       children: [
-        ...(shell.children ?? []),
         {
           path: 'role-test',
           canActivate: [permissionGuard],
           data: { permission: 'role:read' },
           component: RolePage,
         },
+        ...(shell.children ?? []),
       ],
     },
   ];

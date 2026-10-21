@@ -62,6 +62,7 @@ export const routes: Routes = [
        */
       {
         path: 'design-system',
+        title: 'Design system',
         loadComponent: () =>
           import('./features/design-system/design-system-preview.component').then(
             (m) => m.DesignSystemPreviewComponent,
@@ -87,6 +88,9 @@ export const routes: Routes = [
        */
       {
         path: 'access-denied',
+        title: 'Access denied',
+        // The component focuses its own h1; route-focus must not double-handle it.
+        data: { selfManagedFocus: true },
         loadComponent: () =>
           import('./shared/pages/access-denied/access-denied.component').then(
             (m) => m.AccessDeniedComponent,
@@ -115,6 +119,12 @@ export const routes: Routes = [
         title: 'Dashboard',
         loadComponent: () =>
           import('./features/dashboard/dashboard.component').then((m) => m.DashboardComponent),
+      },
+      {
+        path: '**',
+        title: 'Page not found',
+        loadComponent: () =>
+          import('./shared/pages/not-found/not-found.component').then((m) => m.NotFoundComponent),
       },
     ],
   },
