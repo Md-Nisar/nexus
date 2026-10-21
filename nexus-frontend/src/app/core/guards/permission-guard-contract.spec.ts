@@ -23,8 +23,10 @@ class StubAccessDeniedComponent {}
 
 /**
  * Checks one guard array (`canActivate` or `canActivateChild`) for `permissionGuard`
- * usage violations: a non-empty string `data.permission`, and `authGuard` composed
- * earlier in the SAME array or present on an ancestor.
+ * usage violations: a non-empty string `data.permission`, and `authGuard` present on an
+ * ancestor. Guards in one array run concurrently (the router combines their results), so an
+ * array holding both guards is itself a violation: `permissionGuard` would read the store
+ * before the silent refresh completes.
  */
 function checkGuardArray(
   guards: unknown[],
@@ -43,13 +45,13 @@ function checkGuardArray(
     );
   }
 
-  const authIndex = guards.indexOf(authGuard);
-  const permissionIndex = guards.indexOf(permissionGuard);
-  const composedInOwnArray = authIndex !== -1 && authIndex < permissionIndex;
-
-  if (!composedInOwnArray && !ancestorHasAuthGuard) {
+  if (guards.includes(authGuard)) {
     violations.push(
-      `${path}: authGuard must appear before permissionGuard in ${arrayLabel}, or on an ancestor route`,
+      `${path}: authGuard and permissionGuard must not share ${arrayLabel}; put authGuard on an ancestor route`,
+    );
+  } else if (!ancestorHasAuthGuard) {
+    violations.push(
+      `${path}: permissionGuard in ${arrayLabel} requires an authGuard ancestor route`,
     );
   }
 
@@ -119,8 +121,8 @@ function findPermissionGuardViolations(
  *
  * Replaces two documentation-only invariants (permission.guard.ts's own JSDoc and the
  * developer guide) with a check that actually runs: every route that uses
- * `permissionGuard` must declare a valid `data.permission`, and must compose `authGuard`
- * — either earlier in its own `canActivate` array, or on an ancestor route. This is
+ * `permissionGuard` must declare a valid `data.permission`, and must sit under a route that
+ * carries `authGuard` (never in the same array, which would run both concurrently). This is
  * deliberately NOT an ESLint rule — trivially defeated by aliasing/`@let` — it is a plain
  * assertion against the real, imported route table, so it cannot silently drift from
  * what's actually shipped.
@@ -167,12 +169,43 @@ describe('permissionGuard route-table contract', () => {
 
     const violations = findPermissionGuardViolations(synthetic);
     expect(violations).toHaveLength(1);
-    expect(violations[0]).toContain('authGuard must appear before permissionGuard');
+    expect(violations[0]).toContain('requires an authGuard ancestor');
+  });
+
+  it.each([
+    ['authGuard first', [authGuard, permissionGuard]],
+    ['permissionGuard first', [permissionGuard, authGuard]],
+  ])('rejects an array holding both guards (%s)', (_label, guards) => {
+    const synthetic: Routes = [
+      { path: 'roles', canActivate: guards, data: { permission: 'role:read' }, children: [] },
+    ];
+
+    const violations = findPermissionGuardViolations(synthetic);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain('must not share canActivate');
+  });
+
+  it('rejects an array holding both guards in canActivateChild', () => {
+    const synthetic: Routes = [
+      {
+        path: 'admin',
+        canActivateChild: [authGuard, permissionGuard],
+        data: { permission: 'role:read' },
+        children: [],
+      },
+    ];
+
+    const violations = findPermissionGuardViolations(synthetic);
+    expect(violations.some((v) => v.includes('must not share canActivateChild'))).toBe(true);
   });
 
   it('flags a route using permissionGuard without a non-empty data.permission', () => {
     const synthetic: Routes = [
-      { path: 'roles', canActivate: [authGuard, permissionGuard], children: [] },
+      {
+        path: 'admin',
+        canActivate: [authGuard],
+        children: [{ path: 'roles', canActivate: [permissionGuard], children: [] }],
+      },
     ];
 
     const violations = findPermissionGuardViolations(synthetic);
@@ -241,16 +274,20 @@ describe('permissionGuard route-table contract', () => {
 describe('permissionGuard router integration', () => {
   let stub: AuthStoreStub;
 
-  function configureTestRoutes(canActivate: CanActivateFn[]): void {
+  function configureTestRoutes(withAuthAncestor: boolean): void {
+    const gated: Routes = [
+      {
+        path: 'test-gated',
+        canActivate: [permissionGuard],
+        data: { permission: 'role:read' },
+        component: StubGatedComponent,
+      },
+    ];
+    const ancestorGuards: CanActivateFn[] = withAuthAncestor ? [authGuard] : [];
     TestBed.configureTestingModule({
       providers: [
         provideRouter([
-          {
-            path: 'test-gated',
-            canActivate,
-            data: { permission: 'role:read' },
-            component: StubGatedComponent,
-          },
+          { path: '', canActivate: ancestorGuards, children: gated },
           { path: 'access-denied', component: StubAccessDeniedComponent },
         ]),
         { provide: AuthStore, useValue: stub },
@@ -267,7 +304,7 @@ describe('permissionGuard router integration', () => {
   it('allows navigation to the gated route when the user holds the permission', async () => {
     stub.session.set(createAuthSession());
     stub.permissions.set(['role:read']);
-    configureTestRoutes([authGuard, permissionGuard]);
+    configureTestRoutes(true);
 
     const harness = await RouterTestingHarness.create();
     await harness.navigateByUrl('/test-gated');
@@ -278,7 +315,7 @@ describe('permissionGuard router integration', () => {
   it('redirects to /access-denied when the user lacks the permission', async () => {
     stub.session.set(createAuthSession());
     stub.permissions.set([]);
-    configureTestRoutes([authGuard, permissionGuard]);
+    configureTestRoutes(true);
 
     const harness = await RouterTestingHarness.create();
     await harness.navigateByUrl('/test-gated');
@@ -292,7 +329,7 @@ describe('permissionGuard router integration', () => {
     // be composed without authGuard ahead of it: on its own, it has no way to distinguish
     // "not yet authenticated" from "authenticated but lacking the permission", and denies
     // in both cases.
-    configureTestRoutes([permissionGuard]);
+    configureTestRoutes(false);
 
     const harness = await RouterTestingHarness.create();
     await harness.navigateByUrl('/test-gated');
