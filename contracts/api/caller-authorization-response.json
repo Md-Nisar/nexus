@@ -1,0 +1,9 @@
+{
+  "userId" : "0190a000-0000-7000-8000-000000000001",
+  "roles" : [ {
+    "roleId" : "0190a000-0000-7000-8000-00000000000a",
+    "name" : "Support"
+  } ],
+  "permissions" : [ "audit:read", "role:read" ],
+  "isAdministrator" : false
+}

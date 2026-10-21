@@ -6,7 +6,7 @@ import {
   permissionResource,
 } from './permission';
 
-const backendNames: readonly string[] = catalogue.map((entry) => entry.name);
+const backendNames: readonly string[] = catalogue.data.map((entry) => entry.name);
 
 describe('permission catalogue', () => {
   it('should know every backend permission name in PERMISSIONS with a label and a group', () => {

@@ -10,6 +10,7 @@ import { correlationIdInterceptor } from './correlation-id.interceptor';
 import { AppError } from '../../shared/types/app-error';
 import { SKIP_ACCESS_DENIED_REDIRECT } from './skip-access-denied-redirect';
 import { NxToast } from '../../shared/ui';
+import recordedRbac012 from '../../../../../contracts/api/problem-rbac-012.json';
 
 describe('apiErrorInterceptor', () => {
   let loggerSpy: {
@@ -345,6 +346,27 @@ describe('apiErrorInterceptor', () => {
     it('should never auto-retry a 429 RBAC_011, even after its Retry-After has passed', () => {
       vi.useFakeTimers();
       const { controller } = failWith(429, { code: 'RBAC_011' }, { 'Retry-After': '1' });
+
+      vi.advanceTimersByTime(120_000);
+
+      controller.expectNone('/api/v1/users/u-1/roles');
+      controller.verify();
+    });
+
+    it('should surface the recorded 409 RBAC_012 as a plain AppError, with no navigation', () => {
+      const { captured } = failWith(409, recordedRbac012);
+
+      expect(captured).toEqual(
+        expect.objectContaining({ code: 'RBAC_012', message: recordedRbac012.detail }),
+      );
+      expect(captured?.reason).toBeUndefined();
+      expect(captured?.retryAfterSeconds).toBeUndefined();
+      expect(routerSpy.navigate).not.toHaveBeenCalled();
+    });
+
+    it('should never retry a 409 RBAC_012, even after time has passed', () => {
+      vi.useFakeTimers();
+      const { controller } = failWith(409, recordedRbac012);
 
       vi.advanceTimersByTime(120_000);
 

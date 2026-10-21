@@ -1,0 +1,7 @@
+{
+  "detail" : "The role's classification changed while the request waited; retry",
+  "status" : 409,
+  "title" : "Conflict",
+  "code" : "RBAC_012",
+  "traceId" : "0190a000-0000-7000-8000-0000000000ff"
+}
