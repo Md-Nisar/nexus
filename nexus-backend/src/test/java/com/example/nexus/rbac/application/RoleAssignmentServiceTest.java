@@ -32,12 +32,14 @@ import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.ActiveAssignmentRef;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
+import com.example.nexus.rbac.domain.HolderProvenance;
 import com.example.nexus.rbac.domain.LastAdminRoleException;
 import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RoleChangeThrottledException;
+import com.example.nexus.rbac.domain.RoleClassificationChangedException;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.DistributionSummary;
@@ -62,6 +64,7 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.slf4j.LoggerFactory;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
@@ -103,6 +106,7 @@ class RoleAssignmentServiceTest {
   @Mock private PermissionCachePort permissionCachePort;
   @Mock private PermissionFreshnessService permissionFreshness;
   @Mock private RoleChangeThrottlePort throttlePort;
+  @Mock private PlatformTransactionManager transactionManager;
 
   private SimpleMeterRegistry meterRegistry;
   private RoleAssignmentService service;
@@ -121,7 +125,7 @@ class RoleAssignmentServiceTest {
     service =
         new RoleAssignmentService(
             userRoleAssignmentPort, userDirectoryPort, rbacAuditPort, permissionCachePort,
-            permissionFreshness, meterRegistry, throttlePort,
+            permissionFreshness, transactionManager, meterRegistry, throttlePort,
             new PiiPermissionGrantRule(true, meterRegistry), MAX_DENIALS, WINDOW_SECONDS);
 
     actorId = UUID.randomUUID();
@@ -2776,7 +2780,7 @@ class RoleAssignmentServiceTest {
     RoleAssignmentService ruleOffService =
         new RoleAssignmentService(
             userRoleAssignmentPort, userDirectoryPort, rbacAuditPort, permissionCachePort,
-            permissionFreshness, meterRegistry, throttlePort,
+            permissionFreshness, transactionManager, meterRegistry, throttlePort,
             new PiiPermissionGrantRule(false, meterRegistry), MAX_DENIALS, WINDOW_SECONDS);
     stubBenignTargetCarryingDirectoryRead();
     stubCallerHoldsDirectoryReadOnly();
@@ -2808,6 +2812,201 @@ class RoleAssignmentServiceTest {
     Counter delegated = meterRegistry.find("nexus.rbac.pii_permission_delegated").counter();
     assertThat(delegated).isNotNull();
     assertThat(delegated.count()).isEqualTo(1.0);
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // assign() -- US-019 T-020 (design §10.9; RC-56.2, RC-66.3): the non-admin-defining path
+  // re-classifies R from a post-insert current read, and rolls back with 409 RBAC_012
+  // ---------------------------------------------------------------------------------------
+
+  /** The insert of a benign assign succeeds; nothing after it is stubbed. */
+  private void stubInsertOnly() {
+    when(userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)).thenReturn(false);
+    when(userRoleAssignmentPort.assign(targetUserId, roleId, tenantId, actorId))
+        .thenReturn(UUID.randomUUID());
+  }
+
+  /** The post-insert current read of R's role_permissions returns {@code permissionIds}. */
+  private void stubCurrentRolePermissions(UUID... permissionIds) {
+    List<RolePermissionRef> rows = new ArrayList<>();
+    for (UUID permissionId : permissionIds) {
+      rows.add(ref(roleId, permissionId));
+    }
+    when(userRoleAssignmentPort.lockRolePermissionsForRoles(tenantId, List.of(roleId)))
+        .thenReturn(rows);
+  }
+
+  private double classificationChangedCount(String operation) {
+    Counter counter =
+        meterRegistry
+            .find("nexus.rbac.role_classification_changed")
+            .tag("operation", operation)
+            .counter();
+    return counter == null ? 0.0 : counter.count();
+  }
+
+  @Test
+  void should_insertThenReadTheRolesCurrentPermissionsThenAudit_when_assigningANonAdminDefiningRole() {
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    InOrder order = Mockito.inOrder(userRoleAssignmentPort, rbacAuditPort);
+    order.verify(userRoleAssignmentPort).assign(targetUserId, roleId, tenantId, actorId);
+    order.verify(userRoleAssignmentPort).lockRolePermissionsForRoles(tenantId, List.of(roleId));
+    order.verify(rbacAuditPort).recordRoleAssigned(any());
+    assertThat(classificationChangedCount("assign")).isZero();
+  }
+
+  /**
+   * RC-56.2: the snapshot classified R as not admin-defining, but a B8 promotion committed while
+   * this assign waited on R's row. The current read sees the whole catalogue: 409 RBAC_012, the
+   * insert rolls back, and no audit row (success or denial) is written.
+   */
+  @Test
+  void should_throw409Rbac012WithNoAuditCall_when_thePostInsertReadShowsTheRoleBecameAdminDefining() {
+    stubBenignAssignTarget();
+    stubInsertOnly();
+    stubCurrentRolePermissions(P1, P2);
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(RoleClassificationChangedException.class)
+        .hasFieldOrPropertyWithValue("code", "RBAC_012");
+
+    verifyNoInteractions(rbacAuditPort, permissionCachePort);
+    verify(throttlePort, never()).recordDenial(any(), any());
+    assertThat(classificationChangedCount("assign")).isEqualTo(1.0);
+  }
+
+  /** RC-66.3: R gained user:directory:read while the assign waited; the caller is no administrator. */
+  @Test
+  void should_throw409Rbac012WithNoAuditCall_when_theRoleGainedDirectoryReadWhileWaitingAndTheCallerIsNotAnAdministrator() {
+    stubBenignAssignTarget();
+    stubInsertOnly();
+    stubCurrentRolePermissions(PII);
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(RoleClassificationChangedException.class)
+        .hasFieldOrPropertyWithValue("code", "RBAC_012");
+
+    verifyNoInteractions(rbacAuditPort, permissionCachePort);
+    assertThat(classificationChangedCount("assign")).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_assign_when_theRoleGainedDirectoryReadWhileWaitingAndTheCallerIsAnAdministrator() {
+    stubBenignAssignTarget();
+    stubCallerIsAdministrator();
+    stubSuccessfulInsert();
+    stubCurrentRolePermissions(PII);
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    verify(rbacAuditPort).recordRoleAssigned(any());
+    assertThat(classificationChangedCount("assign")).isZero();
+  }
+
+  /** With the rule off, a gain seen only by the current read still emits the delegation WARN. */
+  @Test
+  void should_assignAndEmitDelegated_when_ruleOffAndTheRoleGainedDirectoryReadWhileWaiting() {
+    RoleAssignmentService ruleOffService =
+        new RoleAssignmentService(
+            userRoleAssignmentPort, userDirectoryPort, rbacAuditPort, permissionCachePort,
+            permissionFreshness, transactionManager, meterRegistry, throttlePort,
+            new PiiPermissionGrantRule(false, meterRegistry), MAX_DENIALS, WINDOW_SECONDS);
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+    stubCurrentRolePermissions(PII);
+
+    ruleOffService.assign(actor, targetUserId, roleId, ctx);
+
+    assertThat(meterRegistry.get("nexus.rbac.pii_permission_delegated").counter().count())
+        .isEqualTo(1.0);
+  }
+
+  /** The set-lock path is not re-read here: R is in the lock set and assign holds its rows. */
+  @Test
+  void should_notReadTheRolesCurrentPermissions_when_assigningAnAdminDefiningRole() {
+    stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of());
+    stubCallerIsUnionHolder();
+    stubSuccessfulInsert();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    verify(userRoleAssignmentPort, never()).lockRolePermissionsForRoles(any(), any());
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // assign() -- US-019 T-020 (RC-56.4): the committed-state detector after an admin-defining assign
+  // ---------------------------------------------------------------------------------------
+
+  /**
+   * An admin-defining assign that commits; after commit R has one holder assigned by {@code
+   * assigner}, and the tenant's administrators are {@code administrators}.
+   */
+  private void stubCommittedAdminDefiningAssign(UUID assigner, Set<UUID> administrators) {
+    stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of());
+    stubCallerIsUnionHolder();
+    stubSuccessfulInsert();
+    when(userRoleAssignmentPort.findActiveHoldersForRole(roleId, tenantId))
+        .thenReturn(List.of(new HolderProvenance(targetUserId, assigner)));
+    when(userRoleAssignmentPort.findActiveHolderUserIdsForRoles(tenantId, Set.of(roleId)))
+        .thenReturn(administrators);
+  }
+
+  @Test
+  void should_warnAndCountTheUntaggedPagingDetector_when_anAdminDefiningRoleHasANonAdministratorAssignedHolderAfterCommit() {
+    stubCommittedAdminDefiningAssign(actorId, Set.of(targetUserId));
+
+    ListAppender<ILoggingEvent> appender =
+        startLogCapture(AdminDefiningRoleProvenanceDetector.class);
+    try {
+      service.assign(actor, targetUserId, roleId, ctx);
+
+      assertThat(appender.list)
+          .singleElement()
+          .satisfies(
+              warn -> {
+                assertThat(warn.getLevel()).isEqualTo(Level.WARN);
+                assertThat(keyValueMap(warn))
+                    .containsOnly(
+                        Map.entry("event", "RBAC_ADMIN_DEFINING_ROLE_HAS_NON_ADMIN_ASSIGNED_HOLDER"),
+                        Map.entry("tenantId", tenantId),
+                        Map.entry("roleId", roleId),
+                        Map.entry("holderCount", 1),
+                        Map.entry("nonAdminAssignedCount", 1));
+              });
+    } finally {
+      stopLogCapture(appender, AdminDefiningRoleProvenanceDetector.class);
+    }
+    Counter detector =
+        meterRegistry.get("nexus.rbac.admin_defining_role_non_admin_assigned_holder").counter();
+    assertThat(detector.count()).isEqualTo(1.0);
+    assertThat(detector.getId().getTags()).isEmpty();
+  }
+
+  @Test
+  void should_staySilent_when_everyHolderOfTheAssignedAdminDefiningRoleWasAssignedByAnAdministrator() {
+    stubCommittedAdminDefiningAssign(actorId, Set.of(actorId, targetUserId));
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    assertThat(meterRegistry.find("nexus.rbac.admin_defining_role_non_admin_assigned_holder")
+            .counter())
+        .isNull();
+  }
+
+  @Test
+  void should_notRunTheDetector_when_theAssignedRoleIsNotAdminDefining() {
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    verify(userRoleAssignmentPort, never()).findActiveHoldersForRole(any(), any());
   }
 
   // ---------------------------------------------------------------------------------------

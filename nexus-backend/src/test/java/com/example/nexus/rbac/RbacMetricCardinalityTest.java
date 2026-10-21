@@ -67,8 +67,9 @@ class RbacMetricCardinalityTest {
     RoleAssignmentService assignmentService =
         new RoleAssignmentService(
             assignmentPort, directoryPort, mock(RbacAuditPort.class),
-            mock(PermissionCachePort.class), mock(PermissionFreshnessService.class), registry,
-            throttlePort, new PiiPermissionGrantRule(true, registry), 5, 60);
+            mock(PermissionCachePort.class), mock(PermissionFreshnessService.class),
+            mock(PlatformTransactionManager.class), registry, throttlePort,
+            new PiiPermissionGrantRule(true, registry), 5, 60);
     RoleManagementService managementService =
         new RoleManagementService(
             managementPort, assignmentPort, mock(RbacAuditPort.class),

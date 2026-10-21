@@ -139,7 +139,8 @@ public interface RoleManagementPort {
   //
   // The two locking reads are new, named lock... methods so MC-A (no lock on M13-M15, M10') stays
   // untouched. A replace takes the role row first, then role_permissions, and never asks for a lock
-  // on roles or user_roles while it holds a role_permissions lock (RC-46).
+  // on roles or user_roles while it holds a role_permissions lock (RC-46). Attach uses the same two
+  // in the same order (RC-64): the role row before its insert, the current read after it.
 
   /**
    * Step 8: {@code SELECT id FROM roles WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL FOR

@@ -97,11 +97,14 @@ public interface UserRoleAssignmentPort {
    * a set-lock verb classifies which locked roles are admin-defining <b>now</b>, never from the
    * pre-lock M10' snapshot. An uncommitted detach on one of them is waited for, then seen.
    *
-   * <p>Called only while holding the set lock ({@link #lockActiveAssignmentHolders}) and, on a
-   * replace, the role row: B8 never requests a {@code user_roles} or {@code roles} lock after this
-   * one (RC-46). {@code roleIds} are the lock set's role ids, tenant-derived by the caller. An
-   * empty collection returns an empty list without a read. Ids only. MC-A is untouched: this is a
-   * new, explicitly locking method; M10', M13, M14 and M15 stay non-locking.
+   * <p>Called while holding the set lock ({@link #lockActiveAssignmentHolders}) and, on a replace,
+   * the role row: B8 never requests a {@code user_roles} or {@code roles} lock after this one
+   * (RC-46). {@code roleIds} are the lock set's role ids, tenant-derived by the caller. Also called
+   * by assign on its non-admin-defining path (US-019 RC-56.2) with the target role alone, after the
+   * conditional insert has taken that role's row S lock and its {@code user_roles} row, and as the
+   * last lock that assign takes. An empty collection returns an empty list without a read. Ids
+   * only. MC-A is untouched: this is a new, explicitly locking method; M10', M13, M14 and M15 stay
+   * non-locking.
    */
   List<RolePermissionRef> lockRolePermissionsForRoles(UUID tenantId, Collection<UUID> roleIds);
 

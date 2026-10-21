@@ -174,8 +174,8 @@ class RoleAssignmentCacheIT {
     RoleAssignmentService service =
         new RoleAssignmentService(
             userRoleAssignmentPort, userDirectoryPort, rbacAuditPort, brokenCache,
-            permissionFreshness, meterRegistry, throttlePort, piiPermissionGrantRule, maxDenials,
-            windowSeconds);
+            permissionFreshness, transactionManager, meterRegistry, throttlePort,
+            piiPermissionGrantRule, maxDenials, windowSeconds);
     return new RoleAssignmentServiceWithBrokenCache(service, brokenFactory);
   }
 

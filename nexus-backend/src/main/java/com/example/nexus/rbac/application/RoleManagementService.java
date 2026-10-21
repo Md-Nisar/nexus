@@ -28,6 +28,7 @@ import com.example.nexus.rbac.domain.ReservedRoleNameException;
 import com.example.nexus.rbac.domain.RoleCounts;
 import com.example.nexus.rbac.domain.RoleHasHoldersException;
 import com.example.nexus.rbac.domain.RoleChangeActor;
+import com.example.nexus.rbac.domain.RoleClassificationChangedException;
 import com.example.nexus.rbac.domain.RoleLimitExceededException;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.RolePermissionSet;
@@ -138,6 +139,9 @@ public class RoleManagementService {
   private static final String OUTCOME_ERROR = "error";
   private static final String COUNTER_ROLE_CEASED_ADMIN_DEFINING =
       "nexus.rbac.role_ceased_admin_defining";
+  // RC-56.2-3: 409 RBAC_012, tagged with the operation (assign, attach).
+  private static final String COUNTER_ROLE_CLASSIFICATION_CHANGED =
+      "nexus.rbac.role_classification_changed";
   // The set-lock hold timer of RoleAssignmentService; B8 adds operation="replace" (design §10.8).
   private static final String TIMER_LOCK_HOLD = "nexus.rbac.privileged_revoke_lock_hold";
 
@@ -293,8 +297,17 @@ public class RoleManagementService {
    * {@link #requireCallerHoldsPermission}), the PII grant rule (403, below), the narrow provenance
    * rule (409 {@code RBAC_010}, only when this attach would make the role admin-defining), the
    * duplicate pre-check (409 {@code
-   * RBAC_005}), the insert. A3 sits before the duplicate check so a denied caller learns nothing
-   * about attachment state.
+   * RBAC_005}), the role-row lock (404 if the role is gone), the insert, the post-insert current
+   * read (409 {@code RBAC_012}). A3 sits before the duplicate check so a denied caller learns
+   * nothing about attachment state.
+   *
+   * <p><b>Serialised on the role row (US-019 RC-64, RC-56.3).</b> Only after every authorization
+   * check, attach X-locks R's row ({@code lockRoleRow}, the statement B8 uses) and then inserts, so
+   * concurrent attaches on R queue on the row instead of deadlocking (T-D28). After the insert, a
+   * {@code FOR SHARE} read of R's permissions re-classifies R; if it now covers the catalogue while
+   * the snapshot said this attach would not complete it, a change committed while the attach waited
+   * and the provenance rule never judged it, so the attach rolls back with the retryable 409 {@code
+   * RBAC_012} and no audit row. Lock order is roles, then role_permissions (RC-46).
    *
    * <p><b>Provenance rule (design §5.6, R1-1).</b> If the role is not admin-defining now and its
    * permissions plus the attached one cover the catalogue, the role would turn every holder into an
@@ -313,7 +326,8 @@ public class RoleManagementService {
    *
    * <p><b>Signals (rows 13 and 14).</b> After commit, from one holder read, a WARN and a counter
    * report an attach that escalates holders assigned by non-administrators, and a second pair
-   * reports that the role became admin-defining. See {@link #emitAttachSignals}.
+   * reports that the role became admin-defining. See {@link #emitAttachSignals}. The same read
+   * feeds the committed-state detector ({@link AdminDefiningRoleProvenanceDetector}, RC-56.4).
    */
   @Transactional
   public PermissionView attachPermission(
@@ -340,7 +354,9 @@ public class RoleManagementService {
       throw new InsufficientPermissionException(ROLE_WRITE, DenialReason.NOT_TENANT_ADMIN);
     }
 
-    boolean becameAdminDefining = attachWouldMakeRoleAdminDefining(actor, role, permissionId);
+    Set<UUID> catalogueIds = userRoleAssignmentPort.findCatalogueIds();
+    boolean becameAdminDefining =
+        attachWouldMakeRoleAdminDefining(actor, role, permissionId, catalogueIds);
     if (becameAdminDefining) {
       requireNoNonAdministratorAssignedHolder(actor, role, permissionId);
     }
@@ -348,7 +364,14 @@ public class RoleManagementService {
     if (roleManagementPort.hasPermission(role.id(), permissionId)) {
       throw new DuplicateRolePermissionException();
     }
+    // RC-64: R's row X lock before the insert, so concurrent attaches on R queue here instead of
+    // deadlocking in the current read below (T-D28). Order: roles, then role_permissions (RC-46).
+    if (!roleManagementPort.lockRoleRow(role.id(), actor.tenantId())) {
+      throw new ResourceNotFoundException("ROLE_NOT_FOUND", "No such role");
+    }
     roleManagementPort.attachPermission(role.id(), permissionId);
+    requireAttachKeptItsClassification(
+        actor, role, permissionId, becameAdminDefining, catalogueIds);
 
     // A6 (design §6.2): the success audit is written INLINE, inside this transaction. The port
     // contract requires it to throw on failure, so a lost audit write rolls the attach back.
@@ -382,6 +405,7 @@ public class RoleManagementService {
                   () -> readAttachSnapshot(actor.tenantId(), role.id()));
           emitAttachSignals(
               actor, role, List.of(permission.id()), becameAdminDefining, snapshot);
+          detectNonAdministratorAssignedHolder(actor.tenantId(), role.id(), snapshot);
           // A10 (Decision 15): evict every holder's cached set so their next mint carries the new
           // permission; never bump, since a token lacking an added permission is fail-safe. A mint
           // that read the pre-attach set may still put it back after this eviction, so that holder
@@ -888,6 +912,7 @@ public class RoleManagementService {
             revokes,
             () -> readAttachSnapshot(actor.tenantId(), role.id()));
     emitAttachSignals(actor, role, sorted(adds), false, snapshot);
+    detectNonAdministratorAssignedHolder(actor.tenantId(), role.id(), snapshot);
     snapshot.ifPresent(
         read -> {
           List<UUID> holders = read.holders().stream().map(HolderProvenance::userId).toList();
@@ -1271,19 +1296,51 @@ public class RoleManagementService {
    * caller's tenant, unreachable after {@link #resolveRoleInTenant}).
    */
   private boolean attachWouldMakeRoleAdminDefining(
-      RoleChangeActor actor, RoleView role, UUID permissionId) {
+      RoleChangeActor actor, RoleView role, UUID permissionId, Set<UUID> catalogueIds) {
     Set<UUID> rolePermissionIds =
         userRoleAssignmentPort
             .findPermissionIdsForRole(role.id(), actor.tenantId())
             .orElseThrow(
                 () -> new ResourceNotFoundException("ROLE_NOT_FOUND", "No such role"));
-    Set<UUID> catalogueIds = userRoleAssignmentPort.findCatalogueIds();
     if (RbacAdministrators.isAdminDefining(rolePermissionIds, catalogueIds)) {
       return false;
     }
     Set<UUID> afterAttach = new HashSet<>(rolePermissionIds);
     afterAttach.add(permissionId);
     return RbacAdministrators.isAdminDefining(afterAttach, catalogueIds);
+  }
+
+  /**
+   * RC-56.3, after the insert and under R's row lock: the current {@code FOR SHARE} read of R's
+   * permissions (the committed rows plus this insert). If they now cover the catalogue while the
+   * snapshot said this attach would not complete it ({@code becameAdminDefining} false), another
+   * change committed while this attach waited on the row and the provenance rule never ran: 409
+   * {@code RBAC_012}, which rolls the insert back before the audit. The retry's snapshot sees the
+   * completion, so {@code RBAC_010} applies to it.
+   */
+  private void requireAttachKeptItsClassification(
+      RoleChangeActor actor,
+      RoleView role,
+      UUID permissionId,
+      boolean becameAdminDefining,
+      Set<UUID> catalogueIds) {
+    Set<UUID> current = roleManagementPort.lockPermissionIdsForRole(role.id());
+    if (becameAdminDefining || !RbacAdministrators.isAdminDefining(current, catalogueIds)) {
+      return;
+    }
+    log.atInfo()
+        .addKeyValue(LOG_KEY_EVENT, "RBAC_ROLE_CLASSIFICATION_CHANGED")
+        .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+        .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+        .addKeyValue(LOG_KEY_ROLE_ID, role.id())
+        .addKeyValue(LOG_KEY_PERMISSION_ID, permissionId)
+        .addKeyValue("operation", OPERATION_ATTACH)
+        .log("Rolled back an attach: the role became admin-defining while the attach waited");
+    Counter.builder(COUNTER_ROLE_CLASSIFICATION_CHANGED)
+        .tag("operation", OPERATION_ATTACH)
+        .register(meterRegistry)
+        .increment();
+    throw new RoleClassificationChangedException();
   }
 
   /**
@@ -1330,29 +1387,64 @@ public class RoleManagementService {
     if (holders.isEmpty()) {
       return 0;
     }
-    Set<UUID> adminDefiningRoleIds =
-        RbacAdministrators.adminDefiningRoleIds(
-            userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId),
-            userRoleAssignmentPort.findCatalogueIds());
+    return countAssignedByNonAdministrators(
+        tenantId, holders, tenantAdminDefiningRoleIds(tenantId));
+  }
+
+  private int countAssignedByNonAdministrators(
+      UUID tenantId, List<HolderProvenance> holders, Set<UUID> adminDefiningRoleIds) {
     Set<UUID> administratorUserIds =
         userRoleAssignmentPort.findActiveHolderUserIdsForRoles(tenantId, adminDefiningRoleIds);
     return (int)
         holders.stream().filter(h -> !administratorUserIds.contains(h.assignedBy())).count();
   }
 
-  /** What the after-commit attach read saw: the role's holders and the tenant's administrators. */
-  private record AttachSnapshot(List<HolderProvenance> holders, int nonAdminAssignedCount) {}
+  /** The tenant's admin-defining role ids, from M10' and the catalogue (both non-locking). */
+  private Set<UUID> tenantAdminDefiningRoleIds(UUID tenantId) {
+    return RbacAdministrators.adminDefiningRoleIds(
+        userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId),
+        userRoleAssignmentPort.findCatalogueIds());
+  }
+
+  /**
+   * What the after-commit attach read saw: the role's holders, how many of them were assigned by a
+   * non-administrator, and whether the role itself is admin-defining (from the same M10' read; only
+   * known, and only needed, when there are holders).
+   */
+  private record AttachSnapshot(
+      List<HolderProvenance> holders, int nonAdminAssignedCount, boolean roleAdminDefining) {}
 
   /**
    * The after-commit read of an attach, in a read-only transaction of its own: the role's active
    * holders with their assigners (the A10 holder read, extended) and the count of those assigned by
    * a non-administrator (one more read of the administrator user set, skipped when there are no
-   * holders).
+   * holders). The committed-state detector (RC-56.4) reuses it and adds no statement.
    */
   private AttachSnapshot readAttachSnapshot(UUID tenantId, UUID roleId) {
     List<HolderProvenance> holders =
         userRoleAssignmentPort.findActiveHoldersForRole(roleId, tenantId);
-    return new AttachSnapshot(holders, countAssignedByNonAdministrators(tenantId, holders));
+    if (holders.isEmpty()) {
+      return new AttachSnapshot(holders, 0, false);
+    }
+    Set<UUID> adminDefiningRoleIds = tenantAdminDefiningRoleIds(tenantId);
+    return new AttachSnapshot(
+        holders,
+        countAssignedByNonAdministrators(tenantId, holders, adminDefiningRoleIds),
+        adminDefiningRoleIds.contains(roleId));
+  }
+
+  /** RC-56.4 after an attach or a replace that added permissions, from the attach read. */
+  private void detectNonAdministratorAssignedHolder(
+      UUID tenantId, UUID roleId, Optional<AttachSnapshot> snapshot) {
+    snapshot.ifPresent(
+        read ->
+            AdminDefiningRoleProvenanceDetector.check(
+                meterRegistry,
+                tenantId,
+                roleId,
+                read.roleAdminDefining(),
+                read.holders().size(),
+                read.nonAdminAssignedCount()));
   }
 
   /**

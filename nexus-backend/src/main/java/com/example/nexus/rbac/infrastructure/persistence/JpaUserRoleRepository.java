@@ -139,8 +139,9 @@ public interface JpaUserRoleRepository
   /**
    * US-019 RC-57.1 (design §10.3 step 10): the CURRENT {@code (role_id, permission_id)} rows of
    * {@code roleIds}, {@code FOR SHARE}, driven by {@code pk_role_permissions}'s leading {@code
-   * role_id}. Taken only after the set lock (and, on a replace, the role row), never as a snapshot
-   * read (MC-A). The join to {@code roles} is the tenant predicate (T-S1, defense in depth: the
+   * role_id}. Taken only after the set lock (and, on a replace, the role row), or by assign's
+   * non-admin-defining path after its conditional insert (RC-56.2), never as a snapshot read
+   * (MC-A). The join to {@code roles} is the tenant predicate (T-S1, defense in depth: the
    * role ids are tenant-derived by the caller); {@code FOR SHARE OF rp} locks only {@code
    * role_permissions} rows, never a {@code roles} row, so the statement adds no lock outside
    * RC-46's order (proven by {@code RolePermissionsPrivilegeIT}). Native for the same reason as {@link
