@@ -18,6 +18,7 @@
       <li><a class="ds-nav__link" href="#menu">Menu</a></li>
       <li><a class="ds-nav__link" href="#selection">Selection</a></li>
       <li><a class="ds-nav__link" href="#navigation">Navigation</a></li>
+      <li><a class="ds-nav__link" href="#confirm">Confirm &amp; announce</a></li>
     </ul>
   </nav>
 
@@ -369,6 +370,8 @@
         [columns]="tableColumns"
         [rows]="tableRows"
         [clickable]="true"
+        [stickyHeader]="true"
+        caption="Recent issues"
         style="
           display: block;
           background: var(--nx-color-surface);
@@ -376,7 +379,11 @@
           border-radius: var(--nx-radius-lg);
           overflow: hidden;
         "
-      />
+      >
+        <ng-template nxTableCell="actions">
+          <nx-menu triggerLabel="Row actions" [items]="menuItems" />
+        </ng-template>
+      </nx-table>
     </section>
 
     <!-- Empty state section: nx-empty-state component for zero-data and no-results conditions -->
@@ -516,6 +523,17 @@
         <nx-skeleton variant="circle" />
         <nx-skeleton [lines]="3" width="240px" />
         <nx-skeleton variant="rect" width="160px" />
+      </div>
+    </section>
+
+    <!-- Confirm section: NxDialog.confirmTyped and NxAnnouncer -->
+    <section id="confirm" class="ds-section">
+      <h2 class="ds-section__heading">
+        Confirm &amp; announce — NxDialog.confirmTyped, NxAnnouncer
+      </h2>
+      <div class="ds-row">
+        <nx-button variant="danger" (clicked)="confirmDelete()">Delete role…</nx-button>
+        <nx-button variant="secondary" (clicked)="announce()">Announce politely</nx-button>
       </div>
     </section>
   </main>

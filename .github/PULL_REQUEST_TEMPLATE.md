@@ -20,4 +20,11 @@ The canonical checklist lives in [CONTRIBUTING.md → Definition of Done](../CON
 
 - [ ] I ran `/pre-pr-check` (or walked the checklist manually) and every item passes
 
+### UI changes: manual WCAG 2.2 checks
+
+<!-- axe cannot fully cover these. Tick or write "n/a" for PRs without UI changes. -->
+
+- [ ] 2.4.11 Focus Not Obscured: tabbing through the page never leaves the focused element hidden under a sticky header, the shell header or an overlay
+- [ ] 2.5.8 Target Size (Minimum): every new pointer target (icon buttons, chips, checkboxes) is at least 24 by 24 CSS px, taken from tokens
+
 <!-- For substantial features, link the docs/features/<ID>/ artifacts and confirm code + security reviews passed. -->

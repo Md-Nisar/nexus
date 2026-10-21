@@ -1,8 +1,10 @@
+import { Component, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
 import { describe, it, expect } from 'vitest';
-import { NxTable, TableColumn } from './table';
+import { expectNoAxeViolations } from '../../testing/axe';
+import { NxTable, NxTableCellDef, TableColumn } from './table';
 
 /**
  * Test data: standard table columns and rows for baseline tests.
@@ -84,5 +86,107 @@ describe('NxTable', () => {
     fixture.componentRef.setInput('loading', false);
     fixture.detectChanges();
     expect(fixture.debugElement.query(By.css('mat-progress-bar'))).toBeNull();
+  });
+});
+
+@Component({
+  imports: [NxTable, NxTableCellDef],
+  template: `
+    <nx-table
+      [columns]="columns"
+      [rows]="rows"
+      [stickyHeader]="sticky()"
+      [caption]="caption()"
+      [captionVisuallyHidden]="hidden()"
+    >
+      <ng-template nxTableCell="actions" let-row>
+        <button type="button" class="row-action">Edit {{ row['name'] }}</button>
+      </ng-template>
+    </nx-table>
+  `,
+})
+class CustomCellHost {
+  readonly columns: TableColumn[] = [
+    ...COLS,
+    { key: 'actions', header: 'Actions', type: 'custom' },
+  ];
+  readonly rows = ROWS;
+  readonly sticky = signal(false);
+  readonly caption = signal('Team members');
+  readonly hidden = signal(false);
+}
+
+@Component({
+  imports: [NxTable],
+  template: `<nx-table [columns]="columns" [rows]="rows" />`,
+})
+class MissingTemplateHost {
+  readonly columns: TableColumn[] = [{ key: 'x', header: 'X', type: 'custom' }];
+  readonly rows = [{ x: 1 }];
+}
+
+describe('NxTable A4 additions', () => {
+  beforeEach(() => {
+    TestBed.configureTestingModule({ providers: [provideAnimationsAsync()] });
+  });
+
+  async function setup() {
+    const fixture = TestBed.createComponent(CustomCellHost);
+    await fixture.whenStable();
+    return fixture;
+  }
+
+  it('renders the nxTableCell template for custom columns, once per row, with the row', async () => {
+    const fixture = await setup();
+    const buttons = Array.from(fixture.nativeElement.querySelectorAll('.row-action'));
+    expect(buttons.map((b) => (b as HTMLElement).textContent?.trim())).toEqual([
+      'Edit Alice',
+      'Edit Bob',
+    ]);
+  });
+
+  it('renders an empty cell for a custom column without a template', async () => {
+    const fixture = TestBed.createComponent(MissingTemplateHost);
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('td')?.textContent?.trim()).toBe('');
+  });
+
+  it('renders a caption element when caption is set, visible by default', async () => {
+    const fixture = await setup();
+    const caption = fixture.nativeElement.querySelector('table > caption') as HTMLElement;
+    expect(caption.textContent?.trim()).toBe('Team members');
+    expect(caption.classList).not.toContain('nx-table__caption--hidden');
+  });
+
+  it('visually hides the caption but keeps it in the DOM', async () => {
+    const fixture = await setup();
+    fixture.componentInstance.hidden.set(true);
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('caption')?.classList).toContain(
+      'nx-table__caption--hidden',
+    );
+  });
+
+  it('omits the caption when empty', async () => {
+    const fixture = await setup();
+    fixture.componentInstance.caption.set('');
+    await fixture.whenStable();
+    expect(fixture.nativeElement.querySelector('caption')).toBeNull();
+  });
+
+  it('applies the sticky classes only when stickyHeader is set', async () => {
+    const fixture = await setup();
+    const root = fixture.nativeElement as HTMLElement;
+    expect(root.querySelector('.nx-table-wrapper--sticky')).toBeNull();
+    expect(root.querySelector('th.mat-mdc-table-sticky')).toBeNull();
+    fixture.componentInstance.sticky.set(true);
+    await fixture.whenStable();
+    expect(root.querySelector('.nx-table-wrapper--sticky')).not.toBeNull();
+    expect(root.querySelector('th.mat-mdc-table-sticky')).not.toBeNull();
+  });
+
+  it('has no axe violations with a caption and custom cells', async () => {
+    const fixture = await setup();
+    await expectNoAxeViolations(fixture.nativeElement);
   });
 });

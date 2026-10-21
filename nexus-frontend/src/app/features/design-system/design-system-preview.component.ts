@@ -3,12 +3,14 @@ import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { MatIconModule } from '@angular/material/icon';
 import { ThemeService } from '../../core/theme.service';
 import {
+  NxAnnouncer,
   NxBadge,
   NxButton,
   NxBreadcrumb,
   NxCard,
   NxCheckbox,
   NxChip,
+  NxDialog,
   MenuItem,
   NxInput,
   NxMenu,
@@ -17,6 +19,7 @@ import {
   NxSelect,
   NxSkeleton,
   NxTable,
+  NxTableCellDef,
   NxTabs,
   NxTooltip,
   BreadcrumbItem,
@@ -48,6 +51,7 @@ import {
     NxSelect,
     NxSkeleton,
     NxTable,
+    NxTableCellDef,
     NxTabs,
     NxTooltip,
     NxEmptyState,
@@ -58,6 +62,8 @@ import {
 })
 export class DesignSystemPreviewComponent {
   private readonly toast = inject(NxToast);
+  private readonly dialog = inject(NxDialog);
+  private readonly announcer = inject(NxAnnouncer);
   readonly themeService = inject(ThemeService);
   readonly themeIcon = computed(() =>
     this.themeService.theme() === 'dark' ? 'light_mode' : 'dark_mode',
@@ -136,6 +142,7 @@ export class DesignSystemPreviewComponent {
         return map[v as string] ?? 'neutral';
       },
     },
+    { key: 'actions', header: 'Actions', type: 'custom', width: '88px' },
   ];
 
   readonly tableRows = [
@@ -209,6 +216,19 @@ export class DesignSystemPreviewComponent {
       info: 'Email verification link has been re-sent.',
     };
     this.toast.show({ message: messages[variant], variant, action: 'Dismiss' });
+  }
+
+  confirmDelete(): void {
+    this.dialog.confirmTyped({
+      title: 'Delete role',
+      message: 'This removes the role from every user. It cannot be undone.',
+      expectedText: 'DELETE',
+      confirmLabel: 'Delete role',
+    });
+  }
+
+  announce(): void {
+    void this.announcer.announce('Preview announcement');
   }
 
   retryAction(): void {

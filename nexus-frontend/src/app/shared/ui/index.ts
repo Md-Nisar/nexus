@@ -109,6 +109,9 @@
  * - ADR 0011: Accessibility Standards
  */
 
+export { NxAnnouncer } from './announcer/announcer';
+export type { AnnouncerPoliteness } from './announcer/announcer';
+
 export { NxBadge } from './badge/badge';
 export type { BadgeVariant } from './badge/badge';
 
@@ -141,11 +144,11 @@ export type { SkeletonVariant } from './skeleton/skeleton';
 export { NxTabs } from './tabs/tabs';
 export type { NavTab } from './tabs/tabs';
 
-export { NxTable } from './table/table';
-export type { TableColumn, CellType } from './table/table';
+export { NxTable, NxTableCellDef } from './table/table';
+export type { TableColumn, CellType, NxTableCellContext } from './table/table';
 
 export { NxDialog, NxDialogShell } from './dialog/dialog';
-export type { DialogData } from './dialog/dialog';
+export type { DialogData, TypedConfirmData } from './dialog/dialog';
 
 export { NxMenu } from './menu/menu';
 export type { MenuItem } from './menu/menu';

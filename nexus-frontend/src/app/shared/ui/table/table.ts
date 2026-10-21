@@ -1,4 +1,14 @@
-import { Component, input, output } from '@angular/core';
+import { NgTemplateOutlet } from '@angular/common';
+import {
+  Component,
+  computed,
+  contentChildren,
+  Directive,
+  inject,
+  input,
+  output,
+  TemplateRef,
+} from '@angular/core';
 import { MatTableModule } from '@angular/material/table';
 import { MatSortModule, Sort } from '@angular/material/sort';
 import { MatPaginatorModule, PageEvent } from '@angular/material/paginator';
@@ -11,7 +21,23 @@ import { NxBadge, BadgeVariant } from '../badge/badge';
  * - `badge`: Colored status badge with semantic variant
  * - `mono`: Monospace font (IDs, tokens, hashes)
  */
-export type CellType = 'text' | 'badge' | 'mono';
+export type CellType = 'text' | 'badge' | 'mono' | 'custom';
+
+/** Template context of an {@link NxTableCellDef}: the row is the implicit value. */
+export interface NxTableCellContext {
+  readonly $implicit: Record<string, unknown>;
+}
+
+/**
+ * Supplies the cell template of a `custom` column, matched by column key:
+ * `<ng-template nxTableCell="actions" let-row>…</ng-template>` inside `<nx-table>`.
+ */
+@Directive({ selector: 'ng-template[nxTableCell]' })
+export class NxTableCellDef {
+  /** Key of the `custom` column this template renders. */
+  readonly key = input.required<string>({ alias: 'nxTableCell' });
+  readonly template = inject<TemplateRef<NxTableCellContext>>(TemplateRef);
+}
 
 /**
  * Column definition for `NxTable`.
@@ -162,9 +188,20 @@ export interface TableColumn {
 
 @Component({
   selector: 'nx-table',
-  imports: [MatTableModule, MatSortModule, MatPaginatorModule, MatProgressBarModule, NxBadge],
+  imports: [
+    MatTableModule,
+    MatSortModule,
+    MatPaginatorModule,
+    MatProgressBarModule,
+    NgTemplateOutlet,
+    NxBadge,
+  ],
   template: `
-    <div class="nx-table-wrapper" data-testid="nx-table">
+    <div
+      class="nx-table-wrapper"
+      [class.nx-table-wrapper--sticky]="stickyHeader()"
+      data-testid="nx-table"
+    >
       @if (loading()) {
         <mat-progress-bar mode="indeterminate" aria-label="Loading table data" />
       }
@@ -175,6 +212,16 @@ export interface TableColumn {
         class="nx-table"
         (matSortChange)="sortChange.emit($event)"
       >
+        @if (caption()) {
+          <caption
+            class="nx-table__caption"
+            [class.nx-table__caption--hidden]="captionVisuallyHidden()"
+          >
+            {{
+              caption()
+            }}
+          </caption>
+        }
         @for (col of columns(); track col.key) {
           <ng-container [matColumnDef]="col.key">
             <th
@@ -198,6 +245,11 @@ export interface TableColumn {
                 @case ('mono') {
                   <span class="nx-table__mono">{{ row[col.key] }}</span>
                 }
+                @case ('custom') {
+                  @if (cellTemplates().get(col.key); as tpl) {
+                    <ng-container *ngTemplateOutlet="tpl; context: { $implicit: row }" />
+                  }
+                }
                 @default {
                   {{ row[col.key] }}
                 }
@@ -205,7 +257,7 @@ export interface TableColumn {
             </td>
           </ng-container>
         }
-        <tr mat-header-row *matHeaderRowDef="columnKeys()"></tr>
+        <tr mat-header-row *matHeaderRowDef="columnKeys(); sticky: stickyHeader()"></tr>
         <tr
           mat-row
           *matRowDef="let row; columns: columnKeys()"
@@ -337,6 +389,32 @@ export class NxTable<T extends Record<string, unknown> = Record<string, unknown>
    * @example (pageChange)="loadPage($event.pageIndex, $event.pageSize)"
    */
   readonly pageChange = output<PageEvent>();
+
+  /**
+   * Keeps the header row visible while the body scrolls. The wrapper becomes the scroll
+   * container and reserves the header height as `scroll-padding-top`, so a focused row is
+   * never hidden under the header (WCAG 2.4.11).
+   * @default false
+   */
+  readonly stickyHeader = input(false);
+
+  /**
+   * Accessible name of the table, rendered as a `<caption>`. Omitted when empty.
+   * @default ''
+   */
+  readonly caption = input('');
+
+  /**
+   * Hides the caption visually while leaving it available to assistive technology.
+   * @default false
+   */
+  readonly captionVisuallyHidden = input(false);
+
+  private readonly cellDefs = contentChildren(NxTableCellDef);
+
+  protected readonly cellTemplates = computed(
+    () => new Map(this.cellDefs().map((def) => [def.key(), def.template])),
+  );
 
   protected columnKeys(): string[] {
     return this.columns().map((c) => c.key);
