@@ -632,13 +632,10 @@ public class RoleManagementService {
     }
 
     if (setLock != null) {
-      Set<UUID> adminDefiningNow =
-          RbacAdministrators.adminDefiningRoleIds(
-              userRoleAssignmentPort.lockRolePermissionsForRoles(
-                  actor.tenantId(), setLock.roleIds()),
-              plan.catalogueIds());
+      Set<UUID> adminDefiningNow = adminDefiningNow(actor, setLock, plan.catalogueIds());
       if (plan.demotion()) {
-        requireAdministratorThroughAnotherLockedRole(actor, role, setLock, adminDefiningNow);
+        requireAdministratorThroughAnotherLockedRole(
+            actor, role, setLock, adminDefiningNow, OPERATION_REPLACE);
       }
       if (plan.promotion()) {
         requireNoLockedHolderAssignedByNonAdministrator(actor, role, setLock, adminDefiningNow);
@@ -698,16 +695,34 @@ public class RoleManagementService {
   }
 
   /**
-   * Step 10 on a demotion (RC-25.1, RC-57.1): the caller must hold a locked {@code user_roles} row
-   * of a role other than R that is admin-defining in the current read. The snapshot said so at
-   * step 6, but a concurrent demotion or revoke that committed while this request waited on the
-   * set lock may have changed it; deciding from locked rows and the current read is what keeps one
-   * caller's two demotions from removing the tenant's last administrator. 403 {@code
-   * GRANT_EXCEEDS_CALLER}, WARN {@code RBAC_ROLE_SUBSET_DENIED} (ids only) and no audit row, as
-   * step 6's denial.
+   * RC-57.1 and RC-57.2 (T-E49): which of the set lock's roles are admin-defining <b>now</b>, from
+   * a {@code FOR SHARE} read of their {@code role_permissions} taken under the set lock, never from
+   * the pre-lock M10' read. An uncommitted detach or replace on one of them is waited for, then
+   * seen.
+   */
+  private Set<UUID> adminDefiningNow(
+      RoleChangeActor actor, SetLockRows setLock, Set<UUID> catalogueIds) {
+    return RbacAdministrators.adminDefiningRoleIds(
+        userRoleAssignmentPort.lockRolePermissionsForRoles(actor.tenantId(), setLock.roleIds()),
+        catalogueIds);
+  }
+
+  /**
+   * Step 10 on a demotion (RC-25.1, RC-57.1), and the locked half of role-subset on deleting an
+   * admin-defining role (RC-57.2): the caller must hold a locked {@code user_roles} row of a role
+   * other than R that is admin-defining in the current read. The snapshot said so at step 6 (or at
+   * role-subset), but a concurrent demotion or revoke that committed while this request waited on
+   * the set lock may have changed it; deciding from locked rows and the current read is what keeps
+   * one caller's two demotions from removing the tenant's last administrator. 403 {@code
+   * GRANT_EXCEEDS_CALLER}, WARN {@code RBAC_ROLE_SUBSET_DENIED} (ids only) and no audit row, as the
+   * snapshot denial; a replace also counts the denial on its set-lock path.
    */
   private void requireAdministratorThroughAnotherLockedRole(
-      RoleChangeActor actor, RoleView role, SetLockRows setLock, Set<UUID> adminDefiningNow) {
+      RoleChangeActor actor,
+      RoleView role,
+      SetLockRows setLock,
+      Set<UUID> adminDefiningNow,
+      String operation) {
     boolean administratorElsewhere =
         setLock.holders().stream()
             .anyMatch(
@@ -723,11 +738,13 @@ public class RoleManagementService {
         .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
         .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
         .addKeyValue(LOG_KEY_ROLE_ID, role.id())
-        .addKeyValue("operation", OPERATION_REPLACE)
+        .addKeyValue("operation", operation)
         .addKeyValue("stage", "locked")
-        .log("Blocked a demotion: under the set lock the caller is no longer an administrator"
-            + " through another role");
-    countReplace(OUTCOME_DENIED, LOCK_PATH_SET_LOCK);
+        .log("Blocked a change to an admin-defining role: under the set lock the caller is no"
+            + " longer an administrator through another role");
+    if (OPERATION_REPLACE.equals(operation)) {
+      countReplace(OUTCOME_DENIED, LOCK_PATH_SET_LOCK);
+    }
     throw new InsufficientPermissionException(ROLE_WRITE, DenialReason.GRANT_EXCEEDS_CALLER);
   }
 
@@ -1060,7 +1077,9 @@ public class RoleManagementService {
    * system-role immutability (409 {@code RBAC_003}), then, when the role is admin-defining, the
    * <b>set lock first</b> (M10' then M11, as assign does: RC-46 option (a), so the two cannot
    * deadlock on the role row), the single-column {@code UPDATE} that sets {@code deleted_at} (0 rows
-   * is a 404), a {@code FOR UPDATE} read of the role's active assignments (any row is 409 {@code
+   * is a 404), on the set-lock path the administrator-through-another-role check again from the
+   * locked rows and a current {@code FOR SHARE} read of the lock set's permissions (403, RC-57.2),
+   * a {@code FOR UPDATE} read of the role's active assignments (any row is 409 {@code
    * RBAC_009} and rolls the {@code UPDATE} back), and the atomic {@code ROLE_DELETED} audit row.
    *
    * <p>Together with assign's conditional INSERT this keeps the invariant "a deleted role has no
@@ -1077,12 +1096,23 @@ public class RoleManagementService {
     SubsetCheck subset = requireRoleSubset(actor, role, OPERATION_DELETE);
     requireMutableRole(role);
 
-    if (subset.adminDefining()) {
-      acquireSetLock(actor, role, subset.catalogueIds());
-    }
+    SetLockRows setLock =
+        subset.adminDefining() ? acquireSetLock(actor, role, subset.catalogueIds()) : null;
 
     if (roleManagementPort.softDeleteRole(role.id(), actor.tenantId(), Instant.now()) == 0) {
       throw new ResourceNotFoundException("ROLE_NOT_FOUND", "No such role");
+    }
+
+    if (setLock != null) {
+      // RC-57.2 (SD-17): role-subset's "administrator through another role" again, from the locked
+      // rows and a current read, after the UPDATE's role-row lock, so the new FOR SHARE follows
+      // both the user_roles and the roles locks this request takes. A 403 precedes the 409 below.
+      requireAdministratorThroughAnotherLockedRole(
+          actor,
+          role,
+          setLock,
+          adminDefiningNow(actor, setLock, subset.catalogueIds()),
+          OPERATION_DELETE);
     }
 
     List<ActiveAssignmentHolder> holders =
@@ -1120,8 +1150,8 @@ public class RoleManagementService {
    * the role row: before it for an admin-defining role (DELETE, a demoting replace, the order
    * assign takes on an admin-defining target), after it for a promoting replace. Returns the lock
    * set's role ids and the locked rows, current and X-locked, from which a replace decides its
-   * steps 10 and 11; DELETE does not use them (its holder check re-reads the role's own rows after
-   * the {@code UPDATE}).
+   * steps 10 and 11 and DELETE its locked administrator check (RC-57.2); DELETE's holder check
+   * still re-reads the role's own rows after the {@code UPDATE}.
    */
   private SetLockRows acquireSetLock(RoleChangeActor actor, RoleView role, Set<UUID> catalogueIds) {
     Set<UUID> adminDefiningRoleIds =

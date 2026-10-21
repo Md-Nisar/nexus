@@ -346,7 +346,9 @@ public class RoleAssignmentService {
    * Revokes {@code roleId} from {@code targetUserId} within the actor's own tenant.
    *
    * <p>Order (design §5.3): tenant checks (404/403), the assignment lookup (404), throttle, classify
-   * the target role, the set lock when it is admin-defining, then <b>revoke-subset</b> (403): when
+   * the target role, the set lock when it is admin-defining and a current {@code FOR SHARE} read
+   * of the locked roles' permissions that classifies them for the rest (RC-57.2), then
+   * <b>revoke-subset</b> (403): when
    * the role is admin-defining the caller must be an administrator according to the set lock's own
    * rows ({@code NOT_TENANT_ADMIN}, evaluated first because it needs no other read), then the
    * {@code user:role:assign} re-check (L-1), then the caller must hold every permission of the role
@@ -366,10 +368,17 @@ public class RoleAssignmentService {
 
     TargetClassification target = classifyTarget(actor, role, OPERATION_REVOKE);
     boolean throttled = evaluateThrottle(actor, targetUserId, target, OPERATION_REVOKE);
-    SetLock setLock = target.adminDefining() ? acquireSetLock(actor, target, role) : null;
-    Timer.Sample lockHoldSample = setLock == null ? null : setLock.holdTimer();
+    SetLock preLockClassified = target.adminDefining() ? acquireSetLock(actor, target, role) : null;
+    Timer.Sample lockHoldSample = preLockClassified == null ? null : preLockClassified.holdTimer();
 
     try {
+      // RC-57.2: both decisions below classify the locked roles from a current read under the set
+      // lock, never from the pre-lock M10' read, so a demotion that committed while this revoke
+      // waited cannot leave its holders counted as administrators.
+      SetLock setLock =
+          preLockClassified == null
+              ? null
+              : classifyLockedRolesNow(actor, target, preLockClassified);
       // The administrator requirement first: it needs only the rows the set lock just returned,
       // and it keeps the reason a non-administrator sees on an admin-defining role stable
       // (NOT_TENANT_ADMIN, A-13) whatever else they lack.
@@ -514,9 +523,12 @@ public class RoleAssignmentService {
   /**
    * The set lock and what it returned. {@code lockedHolders} are current and X-locked rows, so
    * {@link #callerHoldsAdministratorRole} answers "is the caller an administrator?" without
-   * touching the snapshot (ADR-0021 D2).
+   * touching the snapshot (ADR-0021 D2). {@code adminDefiningRoleIds} comes from M10' as returned
+   * by {@link #acquireSetLock}; revoke replaces it with the current read through {@link
+   * #classifyLockedRolesNow} (RC-57.2).
    */
   private record SetLock(
+      List<UUID> lockedRoleIds,
       Set<UUID> adminDefiningRoleIds,
       List<ActiveAssignmentHolder> lockedHolders,
       Timer.Sample holdTimer) {
@@ -570,7 +582,26 @@ public class RoleAssignmentService {
     List<ActiveAssignmentHolder> lockedHolders =
         userRoleAssignmentPort.lockActiveAssignmentHolders(actor.tenantId(), lockSet);
     recordLockSetSize(lockedHolders.size());
-    return new SetLock(adminDefiningRoleIds, lockedHolders, Timer.start(meterRegistry));
+    return new SetLock(lockSet, adminDefiningRoleIds, lockedHolders, Timer.start(meterRegistry));
+  }
+
+  /**
+   * RC-57.2 (T-E49): which locked roles are admin-defining <b>now</b>, from a {@code FOR SHARE}
+   * read of the lock set's {@code role_permissions} taken after the set lock, replacing the
+   * pre-lock M10' classification. An uncommitted detach or permission-set replace on one of them is
+   * waited for, then seen. Lock order: after the requester's {@code user_roles} locks, and no
+   * {@code role_permissions} writer waits on {@code user_roles} or {@code roles} while holding a
+   * record (T-T24), so no cycle.
+   */
+  private SetLock classifyLockedRolesNow(
+      RoleChangeActor actor, TargetClassification target, SetLock setLock) {
+    Set<UUID> adminDefiningNow =
+        RbacAdministrators.adminDefiningRoleIds(
+            userRoleAssignmentPort.lockRolePermissionsForRoles(
+                actor.tenantId(), setLock.lockedRoleIds()),
+            target.catalogueIds());
+    return new SetLock(
+        setLock.lockedRoleIds(), adminDefiningNow, setLock.lockedHolders(), setLock.holdTimer());
   }
 
   /**

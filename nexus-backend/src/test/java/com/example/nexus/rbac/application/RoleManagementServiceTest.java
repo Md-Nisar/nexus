@@ -3,6 +3,7 @@ package com.example.nexus.rbac.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
@@ -2352,10 +2353,13 @@ class RoleManagementServiceTest {
     verify(roleManagementPort, never()).softDeleteRole(any(), any(), any());
   }
 
-  /** RC-46: on an admin-defining role the set lock (M10' then M11) precedes the UPDATE. */
-  @Test
-  void should_takeTheSetLockBeforeTheUpdate_when_deletingAnAdminDefiningRole() {
-    UUID otherAdminRoleId = UUID.randomUUID();
+  /**
+   * An admin-defining role being deleted while the caller is an administrator through {@code
+   * otherAdminRoleId}: M10' and the snapshot holdings say both roles carry the whole catalogue, the
+   * set lock returns the caller's row of the other role, and the locked current read returns
+   * {@code currentRows}.
+   */
+  private void stubAdminDefiningDelete(UUID otherAdminRoleId, List<RolePermissionRef> currentRows) {
     when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
     stubRolePermissions(CATALOGUE);
     stubCallerHoldsRefs(
@@ -2367,10 +2371,35 @@ class RoleManagementServiceTest {
                 new RolePermissionRef(roleId, P2),
                 new RolePermissionRef(otherAdminRoleId, P1),
                 new RolePermissionRef(otherAdminRoleId, P2)));
-    when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
-        .thenReturn(List.of());
+    when(userRoleAssignmentPort.lockActiveAssignmentHolders(
+            eq(tenantId), argThat(ids -> ids.size() == 2)))
+        .thenReturn(
+            List.of(
+                new ActiveAssignmentHolder(
+                    UUID.randomUUID(), actorId, otherAdminRoleId, ANY_ASSIGNER)));
+    when(userRoleAssignmentPort.lockRolePermissionsForRoles(eq(tenantId), any()))
+        .thenReturn(currentRows);
     when(roleManagementPort.softDeleteRole(eq(roleId), eq(tenantId), any(Instant.class)))
         .thenReturn(1);
+  }
+
+  /**
+   * RC-46: on an admin-defining role the set lock (M10' then M11) precedes the UPDATE; RC-57.2:
+   * the current read of the lock set comes after the UPDATE's role-row lock and before the holder
+   * check.
+   */
+  @Test
+  void should_takeTheSetLockBeforeTheUpdate_when_deletingAnAdminDefiningRole() {
+    UUID otherAdminRoleId = UUID.randomUUID();
+    stubAdminDefiningDelete(
+        otherAdminRoleId,
+        List.of(
+            new RolePermissionRef(roleId, P1),
+            new RolePermissionRef(roleId, P2),
+            new RolePermissionRef(otherAdminRoleId, P1),
+            new RolePermissionRef(otherAdminRoleId, P2)));
+    when(userRoleAssignmentPort.lockActiveAssignmentHolders(tenantId, List.of(roleId)))
+        .thenReturn(List.of());
 
     service.softDeleteRole(actor, roleId, ctx);
 
@@ -2379,9 +2408,34 @@ class RoleManagementServiceTest {
     ArgumentCaptor<List<UUID>> lockSet = ArgumentCaptor.forClass(List.class);
     order.verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), lockSet.capture());
     order.verify(roleManagementPort).softDeleteRole(eq(roleId), eq(tenantId), any(Instant.class));
+    order.verify(userRoleAssignmentPort).lockRolePermissionsForRoles(tenantId, lockSet.getValue());
     order.verify(userRoleAssignmentPort).lockActiveAssignmentHolders(tenantId, List.of(roleId));
     order.verify(rbacAuditPort).recordRoleDeleted(any(RoleAuditEvent.class));
     assertThat(lockSet.getValue()).containsExactlyInAnyOrder(roleId, otherAdminRoleId);
+  }
+
+  /**
+   * RC-57.2 (SD-17): the caller's other administrator role was demoted while the delete waited on
+   * the set lock. Judged from the locked rows and the current read, the caller is no longer an
+   * administrator through another role: 403 GRANT_EXCEEDS_CALLER before the holder check, no audit.
+   */
+  @Test
+  void should_deny403BeforeTheHolderCheck_when_theCallersOtherAdminRoleIsNoLongerAdminDefiningUnderTheSetLock() {
+    UUID otherAdminRoleId = UUID.randomUUID();
+    stubAdminDefiningDelete(
+        otherAdminRoleId,
+        List.of(
+            new RolePermissionRef(roleId, P1),
+            new RolePermissionRef(roleId, P2),
+            new RolePermissionRef(otherAdminRoleId, P1)));
+
+    assertThatThrownBy(() -> service.softDeleteRole(actor, roleId, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(tenantId, List.of(roleId));
+    verifyNoInteractions(rbacAuditPort);
   }
 
   @Test

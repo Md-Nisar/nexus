@@ -775,6 +775,71 @@ class LastAdminLockoutIT {
     }
   }
 
+  // ── RC-57.4 (b) (US-019 T-021, RC-57.2, T-E49, design §10.9) ─────────────────────────────
+
+  /**
+   * A B8 demotion ∥ a revoke of the last other administrator. Custom admin-defining roles R and S:
+   * a user holds R, the caller holds S. The caller demotes R (an administrator through S) and, at
+   * the same time, revokes their own S. Order is forced: a gate X-locks R's {@code
+   * role_permissions} rows, so the demotion holds the set lock and R's row and waits at its
+   * current read; the revoke, whose snapshot still calls R admin-defining, then queues on the set
+   * lock. The gate commits and the demotion commits. The revoke classifies the locked roles from
+   * its current read: R's holder is no administrator now, so the lockout holds (409 RBAC_002) and
+   * the tenant keeps its administrator, in every iteration.
+   */
+  @Test
+  void should_keepTheLockout_when_aRevokeOfTheLastOtherAdministratorQueuedBehindADemotion()
+      throws Exception {
+    List<UUID> catalogue = List.copyOf(permissionCatalogueRepository.findCatalogueIds());
+    Set<UUID> withoutFirstId = new HashSet<>(catalogue.subList(1, catalogue.size()));
+    for (int i = 0; i < 10; i++) {
+      UUID tenantId = uuidGenerator.newId();
+      Role demoted = seedRole(tenantId, "RC574B-R", "rc574b");
+      Role remaining = seedRole(tenantId, "RC574B-S", "rc574b");
+      grantWholeCatalogue(demoted.getId());
+      grantWholeCatalogue(remaining.getId());
+      User caller = seedUser(tenantId, "rc574b-caller");
+      User holderOfDemoted = seedUser(tenantId, "rc574b-holder");
+      seedActiveAssignment(tenantId, demoted.getId(), holderOfDemoted.getId(), caller.getId());
+      seedActiveAssignment(tenantId, remaining.getId(), caller.getId(), caller.getId());
+      RoleChangeActor actor = new RoleChangeActor(caller.getId(), tenantId);
+      String fullVersion = RolePermissionSetVersion.of(demoted.getId(), catalogue);
+
+      ExecutorService executor = Executors.newFixedThreadPool(2);
+      Future<String> demotion;
+      Future<String> revocation;
+      try (Connection gate = lockRolePermissionRows(demoted.getId())) {
+        demotion =
+            executor.submit(
+                () -> replaceOutcome(actor, demoted.getId(), withoutFirstId, fullVersion));
+        awaitLockWaiters(1);
+        revocation =
+            executor.submit(() -> revokeOutcome(actor, caller.getId(), remaining.getId()));
+        awaitLockWaiters(2);
+        gate.commit();
+      }
+      executor.shutdown();
+      assertThat(executor.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+
+      assertThat(demotion.get()).as("iteration %d", i).isEqualTo("OK");
+      assertThat(revocation.get()).as("iteration %d: the lockout holds", i).isEqualTo("RBAC_002");
+      assertThat(rolePermissionIds(demoted.getId())).as("iteration %d", i).isEqualTo(withoutFirstId);
+      assertThat(countActiveAdminAssignments(tenantId, remaining.getId()))
+          .as("iteration %d: the tenant keeps its one administrator", i)
+          .isEqualTo(1);
+    }
+  }
+
+  /** RC-57.4 (b): "OK", or the lockout's code; anything else propagates and fails the test. */
+  private String revokeOutcome(RoleChangeActor actor, UUID targetUserId, UUID roleId) {
+    try {
+      roleAssignmentService.revoke(actor, targetUserId, roleId, requestContext());
+      return "OK";
+    } catch (LastAdminRoleException e) {
+      return e.code();
+    }
+  }
+
   // ── RC-56.7 (US-019 T-020, T-E48, design §10.8, §10.9): RBAC_010 holds under concurrency ──
 
   /**
@@ -1055,8 +1120,9 @@ class LastAdminLockoutIT {
    * retired with the gate (ledger rows 1 and 2): the administrator status now comes from M11's own
    * rows, so there is no second locking read to contain. The control that replaces D8's
    * containment proof is that nothing else locks {@code user_roles} on this path, which the
-   * "exactly one captured statement contains {@code for update}, none {@code for share}" lookups
-   * below assert.
+   * "exactly one captured statement contains {@code for update}" lookup below asserts; the one
+   * {@code for share} allowed since US-019 RC-57.2 is the current read of {@code role_permissions},
+   * which locks no {@code user_roles} row.
    *
    * <p><strong>If M11's key is ever observed to NOT be {@code fk_user_roles_role_tenant}, do not relax
    * this assertion.</strong> That is a real gap in the deadlock-freedom argument requiring an
@@ -1082,9 +1148,14 @@ class LastAdminLockoutIT {
     // M11 -- PESSIMISTIC_WRITE renders "for update"
     // (JpaUserRoleRepository#lockActiveAssignmentHoldersByRoles).
     String m11Sql = findCapturedStatement(emittedSql, "for update");
-    assertThat(emittedSql)
-        .as("no locking read other than M11 may be emitted on this path: " + emittedSql)
-        .noneMatch(sql -> sql.toLowerCase(Locale.ROOT).contains("for share"));
+    // US-019 RC-57.2: the one other locking read is the current classification of the lock set,
+    // a FOR SHARE on role_permissions only; nothing else locks user_roles on this path.
+    String currentReadSql = findCapturedStatement(emittedSql, "for share");
+    assertThat(currentReadSql.toLowerCase(Locale.ROOT))
+        .as("the only FOR SHARE is the RC-57.2 read of role_permissions: " + currentReadSql)
+        .contains("for share of rp")
+        .contains("from role_permissions rp")
+        .doesNotContain("user_roles");
 
     // M11's bind order: roleIds, tenantId (revokedAt IS NULL has no parameter).
     assertThat(explainKey(m11Sql, toBytes(adminRole.getId()), toBytes(tenantId)))
@@ -1131,9 +1202,12 @@ class LastAdminLockoutIT {
                 roleAssignmentService.revoke(
                     actor, holder1.getId(), customAdminRole.getId(), requestContext()));
 
+    // "rp.role_id in (" excludes the RC-57.2 current read (US-019), scoped to the lock set's ids.
     String m10PrimeSql =
         findStatementMatching(
-            emittedSql, List.of("role_permissions", "tenant_id"), List.of("user_roles", "left join"));
+            emittedSql,
+            List.of("role_permissions", "tenant_id"),
+            List.of("user_roles", "left join", "rp.role_id in ("));
     assertNoLockingClause(m10PrimeSql, "M10' (findRolePermissionIdsForTenantRoles)");
   }
 

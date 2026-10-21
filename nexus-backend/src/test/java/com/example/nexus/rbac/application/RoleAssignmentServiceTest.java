@@ -46,6 +46,7 @@ import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -247,7 +248,8 @@ class RoleAssignmentServiceTest {
   /**
    * The target role (id {@link #roleId}) carries the whole catalogue, so it is admin-defining. M10'
    * lists it plus {@code otherAdminDefiningRoleIds}, each carrying the whole catalogue, and M11
-   * returns {@code lockedHolders}.
+   * returns {@code lockedHolders}. The locked current read (RC-57.2) agrees with M10' unless a test
+   * overrides it with {@link #stubCurrentReadUnderTheSetLock}.
    */
   private void stubAdminDefiningTarget(
       List<ActiveAssignmentHolder> lockedHolders, UUID... otherAdminDefiningRoleIds) {
@@ -261,6 +263,19 @@ class RoleAssignmentServiceTest {
         .thenReturn(tenantRows);
     when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), any()))
         .thenReturn(lockedHolders);
+    stubCurrentReadUnderTheSetLock(tenantRows);
+  }
+
+  /** The locked {@code FOR SHARE} read of the lock set's role permissions returns {@code rows}. */
+  private void stubCurrentReadUnderTheSetLock(List<RolePermissionRef> rows) {
+    Mockito.lenient()
+        .doAnswer(
+            invocation -> {
+              Collection<UUID> requested = invocation.getArgument(1);
+              return rows.stream().filter(row -> requested.contains(row.roleId())).toList();
+            })
+        .when(userRoleAssignmentPort)
+        .lockRolePermissionsForRoles(eq(tenantId), any());
   }
 
   private static ActiveAssignmentHolder holder(UUID userId, UUID roleId) {
@@ -1783,6 +1798,86 @@ class RoleAssignmentServiceTest {
     service.revoke(actor, targetUserId, roleId, ctx);
 
     verify(userRoleAssignmentPort).revoke(eq(ref.id()), any());
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // US-019 T-021 (RC-57.2, T-E49): under the set lock, revoke classifies the locked roles from
+  // the current FOR SHARE read, never from the pre-lock M10' read
+  // ---------------------------------------------------------------------------------------
+
+  /**
+   * A B8 demotion of the other administrator's role committed while this revoke waited on the set
+   * lock: M10' still calls that role admin-defining, the current read does not. The lockout must
+   * count from the current read, so the caller's own last administrator assignment stays.
+   */
+  @Test
+  void should_throwLastAdminRoleException_when_m10PrimeCallsTheOtherHoldersRoleAdminDefiningButTheCurrentReadDoesNot() {
+    UUID demotedRoleId = UUID.randomUUID();
+    ActiveAssignmentRef ref = stubRevokeTargetFor(actorId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(
+        List.of(
+            new ActiveAssignmentHolder(ref.id(), actorId, roleId, ANY_ASSIGNER),
+            holder(UUID.randomUUID(), demotedRoleId)),
+        demotedRoleId);
+    List<RolePermissionRef> current = new ArrayList<>(wholeCatalogue(roleId));
+    current.add(ref(demotedRoleId, P1));
+    stubCurrentReadUnderTheSetLock(current);
+    stubCallerIsAdministrator();
+
+    assertThatThrownBy(() -> service.revoke(actor, actorId, roleId, ctx))
+        .isInstanceOf(LastAdminRoleException.class);
+
+    verify(userRoleAssignmentPort, never()).revoke(any(), any());
+    verifyNoInteractions(rbacAuditPort);
+  }
+
+  /**
+   * The caller's only administrator role was demoted while this revoke waited on the set lock: the
+   * administrator requirement follows the current read, so 403 NOT_TENANT_ADMIN, whatever M10' and
+   * the snapshot holdings say.
+   */
+  @Test
+  void should_deny403NotTenantAdmin_when_theCallersOnlyAdministratorRoleIsNoLongerAdminDefiningInTheCurrentRead() {
+    UUID demotedRoleId = UUID.randomUUID();
+    ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(
+        List.of(
+            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId, ANY_ASSIGNER),
+            holder(actorId, demotedRoleId)),
+        demotedRoleId);
+    List<RolePermissionRef> current = new ArrayList<>(wholeCatalogue(roleId));
+    current.add(ref(demotedRoleId, P1));
+    stubCurrentReadUnderTheSetLock(current);
+    lenientCallerIsAdministrator();
+
+    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
+
+    verify(userRoleAssignmentPort, never()).revoke(any(), any());
+  }
+
+  /** The current read covers exactly the lock set and runs after the set lock, before the write. */
+  @Test
+  void should_readTheLockSetsCurrentPermissionsAfterTheSetLock_when_revokingAnAdminDefiningRole() {
+    UUID otherAdminRoleId = UUID.randomUUID();
+    ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(
+        List.of(
+            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId, ANY_ASSIGNER),
+            holder(actorId, otherAdminRoleId)),
+        otherAdminRoleId);
+    stubCallerIsAdministrator();
+    when(userRoleAssignmentPort.revoke(eq(ref.id()), any())).thenReturn(1);
+
+    service.revoke(actor, targetUserId, roleId, ctx);
+
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<UUID>> lockSet = ArgumentCaptor.forClass(List.class);
+    InOrder order = Mockito.inOrder(userRoleAssignmentPort);
+    order.verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), lockSet.capture());
+    order.verify(userRoleAssignmentPort).lockRolePermissionsForRoles(tenantId, lockSet.getValue());
+    order.verify(userRoleAssignmentPort).revoke(eq(ref.id()), any());
+    assertThat(lockSet.getValue()).containsExactlyInAnyOrder(roleId, otherAdminRoleId);
   }
 
   /**

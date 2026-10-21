@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.inOrder;
@@ -127,8 +128,7 @@ class BootstrapAdminServiceTest {
     when(userRoleAssignmentPort.findRole(tenantAdminRoleId))
         .thenReturn(Optional.of(role(tenantAdminRoleId, "TENANT_ADMIN", true)));
     when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(CATALOGUE);
-    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId))
-        .thenReturn(wholeCatalogue(tenantAdminRoleId));
+    tenantRolePermissions(wholeCatalogue(tenantAdminRoleId));
     when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), anyList()))
         .thenReturn(List.of());
     when(userRoleAssignmentPort.assign(targetUserId, tenantAdminRoleId, tenantId, targetUserId))
@@ -212,7 +212,7 @@ class BootstrapAdminServiceTest {
     UUID customRoleId = UUID.randomUUID();
     List<RolePermissionRef> permissions = new ArrayList<>(wholeCatalogue(tenantAdminRoleId));
     permissions.addAll(wholeCatalogue(customRoleId));
-    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId)).thenReturn(permissions);
+    tenantRolePermissions(permissions);
     when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), anyList()))
         .thenReturn(
             List.of(new ActiveAssignmentHolder(
@@ -222,6 +222,47 @@ class BootstrapAdminServiceTest {
 
     assertRefused(outcome, BreakGlassRefusalReason.TENANT_HAS_ADMIN, 5, tenantId);
     verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+  }
+
+  /**
+   * US-019 RC-57.2: under the set lock the grant classifies the locked roles from the current read,
+   * never from M10'. A custom role M10' called admin-defining was demoted before the lock was
+   * granted, so its holder is no administrator and the tenant has none: the grant goes ahead.
+   */
+  @Test
+  void should_grant_when_m10PrimeCallsAHeldCustomRoleAdminDefiningButTheCurrentReadDoesNot() {
+    UUID demotedRoleId = UUID.randomUUID();
+    List<RolePermissionRef> permissions = new ArrayList<>(wholeCatalogue(tenantAdminRoleId));
+    permissions.addAll(wholeCatalogue(demotedRoleId));
+    tenantRolePermissions(permissions);
+    List<RolePermissionRef> current = new ArrayList<>(wholeCatalogue(tenantAdminRoleId));
+    current.add(new RolePermissionRef(demotedRoleId, PERMISSION_A));
+    currentRolePermissionsUnderTheSetLock(current);
+    lockedHolders(holder(UUID.randomUUID(), demotedRoleId));
+
+    BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    assertThat(outcome).isInstanceOf(BreakGlassOutcome.Granted.class);
+    verify(userRoleAssignmentPort).assign(targetUserId, tenantAdminRoleId, tenantId, targetUserId);
+  }
+
+  /** The current read covers exactly the lock set, after the set lock and before the status lock. */
+  @Test
+  void should_readTheLockSetsCurrentPermissionsAfterTheSetLockAndBeforeTheStatusLock() {
+    UUID customRoleId = UUID.randomUUID();
+    List<RolePermissionRef> permissions = new ArrayList<>(wholeCatalogue(tenantAdminRoleId));
+    permissions.addAll(wholeCatalogue(customRoleId));
+    tenantRolePermissions(permissions);
+
+    service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    @SuppressWarnings("unchecked")
+    ArgumentCaptor<List<UUID>> lockSet = ArgumentCaptor.forClass(List.class);
+    InOrder inOrder = inOrder(userRoleAssignmentPort, userDirectoryPort);
+    inOrder.verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), lockSet.capture());
+    inOrder.verify(userRoleAssignmentPort).lockRolePermissionsForRoles(tenantId, lockSet.getValue());
+    inOrder.verify(userDirectoryPort).lockUserStatuses(eq(tenantId), any());
+    assertThat(lockSet.getValue()).containsExactlyInAnyOrder(tenantAdminRoleId, customRoleId);
   }
 
   static Stream<Arguments> refusalsBeforeTheLock() {
@@ -385,7 +426,7 @@ class BootstrapAdminServiceTest {
     UUID partialRoleId = UUID.randomUUID();
     List<RolePermissionRef> permissions = new ArrayList<>(wholeCatalogue(tenantAdminRoleId));
     permissions.add(new RolePermissionRef(partialRoleId, PERMISSION_A));
-    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId)).thenReturn(permissions);
+    tenantRolePermissions(permissions);
     when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), anyList()))
         .thenReturn(
             List.of(new ActiveAssignmentHolder(
@@ -478,7 +519,7 @@ class BootstrapAdminServiceTest {
     permissions.addAll(wholeCatalogue(midFull));
     permissions.add(new RolePermissionRef(lowPartial, PERMISSION_A));
     permissions.add(new RolePermissionRef(benignRole, PERMISSION_B));
-    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId)).thenReturn(permissions);
+    tenantRolePermissions(permissions);
     when(userRoleAssignmentPort.assign(targetUserId, highBitAdmin, tenantId, targetUserId))
         .thenReturn(newAssignmentId);
 
@@ -765,7 +806,7 @@ class BootstrapAdminServiceTest {
     UUID customRoleId = UUID.randomUUID();
     List<RolePermissionRef> permissions = new ArrayList<>(wholeCatalogue(tenantAdminRoleId));
     permissions.addAll(wholeCatalogue(customRoleId));
-    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId)).thenReturn(permissions);
+    tenantRolePermissions(permissions);
     UUID disabledNamed = UUID.randomUUID();
     UUID disabledCustom = UUID.randomUUID();
     lockedHolders(holder(disabledNamed, tenantAdminRoleId), holder(disabledCustom, customRoleId));
@@ -833,7 +874,7 @@ class BootstrapAdminServiceTest {
     UUID partialRoleId = UUID.randomUUID();
     List<RolePermissionRef> permissions = new ArrayList<>(wholeCatalogue(tenantAdminRoleId));
     permissions.add(new RolePermissionRef(partialRoleId, PERMISSION_A));
-    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId)).thenReturn(permissions);
+    tenantRolePermissions(permissions);
     UUID disabledAdmin = UUID.randomUUID();
     UUID partialHolder = UUID.randomUUID();
     lockedHolders(holder(disabledAdmin, tenantAdminRoleId), holder(partialHolder, partialRoleId));
@@ -1053,6 +1094,23 @@ class BootstrapAdminServiceTest {
   private void lockedHolders(ActiveAssignmentHolder... holders) {
     when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), anyList()))
         .thenReturn(List.of(holders));
+  }
+
+  /** M10' returns {@code rows}, and the locked current read under the set lock agrees with it. */
+  private void tenantRolePermissions(List<RolePermissionRef> rows) {
+    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId)).thenReturn(rows);
+    currentRolePermissionsUnderTheSetLock(rows);
+  }
+
+  /** The locked {@code FOR SHARE} read of the lock set's role permissions (RC-57.2) returns {@code rows}. */
+  private void currentRolePermissionsUnderTheSetLock(List<RolePermissionRef> rows) {
+    doAnswer(
+            invocation -> {
+              Collection<UUID> requested = invocation.getArgument(1);
+              return rows.stream().filter(row -> requested.contains(row.roleId())).toList();
+            })
+        .when(userRoleAssignmentPort)
+        .lockRolePermissionsForRoles(eq(tenantId), any());
   }
 
   private void lockedStatuses(Map<UUID, DirectoryUserStatus> statuses) {
