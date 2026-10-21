@@ -129,6 +129,9 @@ export type { TableColumn, CellType } from './table/table';
 export { NxDialog, NxDialogShell } from './dialog/dialog';
 export type { DialogData } from './dialog/dialog';
 
+export { NxMenu } from './menu/menu';
+export type { MenuItem } from './menu/menu';
+
 export { NxToast } from './toast/toast';
 export type { ToastVariant, ToastOptions } from './toast/toast';
 

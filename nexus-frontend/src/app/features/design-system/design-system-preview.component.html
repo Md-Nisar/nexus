@@ -456,5 +456,18 @@
         </div>
       </div>
     </section>
+
+    <!-- Menu section: nx-menu icon-triggered action menu -->
+    <section id="menu" class="ds-section">
+      <h2 class="ds-section__heading">Menu — nx-menu</h2>
+      <div class="ds-row">
+        <nx-menu
+          triggerLabel="Row actions"
+          [items]="menuItems"
+          (selected)="lastMenuSelection = $event"
+        />
+        <span data-testid="menu-selection">Last selected: {{ lastMenuSelection || 'none' }}</span>
+      </div>
+    </section>
   </main>
 </div>

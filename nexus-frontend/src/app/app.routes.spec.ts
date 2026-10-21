@@ -1,6 +1,10 @@
-import { Route, Routes } from '@angular/router';
+import { TestBed } from '@angular/core/testing';
+import { Route, Router, Routes, provideRouter } from '@angular/router';
 import { describe, it, expect } from 'vitest';
 import { routes } from './app.routes';
+import { AuthStore } from './core/auth/auth.store';
+import { authGuard } from './core/guards/auth.guard';
+import { createAuthSession } from './shared/testing/auth.fixtures';
 import { permissionGuard } from './core/guards/permission.guard';
 import { PERMISSIONS } from './shared/types/permission';
 
@@ -90,5 +94,39 @@ describe('route table permissionGuard contract', () => {
     ];
 
     expect(await findOffenders(fixture)).toEqual([{ path: '/parent/child', permission: 42 }]);
+  });
+});
+
+describe('route tree shape (US-019 A2)', () => {
+  const PUBLIC_PATHS = ['auth', 'access-denied', 'design-system'];
+
+  it('declares the public layout before the guarded shell', () => {
+    const publicIndex = routes.findIndex((r) => r.children?.some((c) => c.path === 'auth'));
+    const shellIndex = routes.findIndex((r) => r.canActivate?.includes(authGuard));
+    expect(publicIndex).toBeGreaterThanOrEqual(0);
+    expect(shellIndex).toBeGreaterThan(publicIndex);
+    expect(routes[0]).toMatchObject({ path: '', redirectTo: 'dashboard' });
+  });
+
+  it('keeps auth, access-denied and design-system under an unguarded, data-free public layout', () => {
+    const layout = routes.find((r) => r.children?.some((c) => c.path === 'auth')) as Route;
+    expect(layout.canActivate).toBeUndefined();
+    expect(layout.data).toBeUndefined();
+    expect(layout.children?.map((c) => c.path)).toEqual(expect.arrayContaining(PUBLIC_PATHS));
+  });
+
+  it('does not place any public path inside the shell', () => {
+    const shell = routes.find((r) => r.canActivate?.includes(authGuard)) as Route;
+    const shellPaths = (shell.children ?? []).map((c) => c.path);
+    for (const path of PUBLIC_PATHS) expect(shellPaths).not.toContain(path);
+  });
+
+  it('redirects / to /dashboard before either empty-path parent can swallow it', async () => {
+    TestBed.configureTestingModule({ providers: [provideRouter(routes)] });
+    TestBed.inject(AuthStore).setSession(createAuthSession());
+    const router = TestBed.inject(Router);
+    const ok = await router.navigateByUrl('/');
+    expect(ok).toBe(true);
+    expect(router.url).toBe('/dashboard');
   });
 });

@@ -9,6 +9,8 @@ import { authGuard } from './core/guards/auth.guard';
  *
  * Route architecture:
  * - Each feature (auth, dashboard) is loaded only when its route is activated
+ * - Public pages (auth, access-denied, design-system) render inside PublicLayout
+ * - Signed-in pages render inside the lazy Shell, which carries authGuard
  * - Child routes within features are defined in feature-specific route modules
  *   (e.g., features/auth/auth.routes.ts)
  * - Guards (authGuard) protect routes that require authentication
@@ -28,147 +30,92 @@ import { authGuard } from './core/guards/auth.guard';
  */
 export const routes: Routes = [
   /**
-   * Authentication feature routes.
-   *
-   * Path: /auth
-   * Access: Public (unauthenticated users)
-   * Child routes: login, register, forgot-password, reset-password, verify-email, etc.
-   *
-   * Implementation:
-   * - Lazy-loaded child routes from features/auth/auth.routes.ts
-   * - Contains all authentication-related pages and flows
-   * - No guard required (public feature)
-   * - Child routes define their own paths and components
-   *
-   * Navigation examples:
-   * - /auth/login → login form
-   * - /auth/register → registration form
-   * - /auth/forgot-password → forgot password request
-   * - /auth/reset-password?token=xyz → password reset with token
-   *
-   * Integration note:
-   * The auth feature must not import dashboard or other protected features
-   * to avoid circular dependencies and ensure proper code splitting.
+   * Home redirect. It must precede both empty-path parents: for an empty URL the router accepts
+   * the public layout (no child needs to match nothing) and never backtracks to the shell, so
+   * `/` would render an empty public page instead of reaching the dashboard.
    */
-  {
-    path: 'auth',
-    loadChildren: () => import('./features/auth/auth.routes').then((m) => m.AUTH_ROUTES),
-  },
+  { path: '', pathMatch: 'full', redirectTo: 'dashboard' },
 
   /**
-   * Design system preview and component showcase.
+   * Public pages, rendered inside {@link PublicLayout} (header with wordmark and theme toggle).
    *
-   * Path: /design-system
-   * Access: Public
-   * Component: DesignSystemPreviewComponent
-   *
-   * Purpose:
-   * - Displays all Material 3 components and Nexus design tokens in action
-   * - Serves as a living documentation for frontend developers
-   * - Useful for visual regression testing and design reviews
-   * - Can be hidden behind a feature flag in production if needed
-   *
-   * Implementation:
-   * - Lazy-loaded component (downloaded only if user navigates to it)
-   * - Standalone component, no routes or children
-   * - No guard protection (public, but internal tool)
-   *
-   * Integration note:
-   * This route is typically used by developers during development.
-   * In production, consider removing or gating behind an internal-only
-   * feature flag to reduce bundle exposure.
+   * Declared BEFORE the shell: both parents have an empty path, so the router tries this one
+   * first and backtracks to the shell only when none of these children match. No guard and no
+   * `data` here, on purpose (see the access-denied constraint below).
    */
   {
-    path: 'design-system',
+    path: '',
     loadComponent: () =>
-      import('./features/design-system/design-system-preview.component').then(
-        (m) => m.DesignSystemPreviewComponent,
-      ),
+      import('./core/layout/public-layout/public-layout').then((m) => m.PublicLayout),
+    children: [
+      /**
+       * Authentication feature routes (login, register, forgot-password, reset-password,
+       * verify-email). Public; the auth feature must not import protected features.
+       */
+      {
+        path: 'auth',
+        loadChildren: () => import('./features/auth/auth.routes').then((m) => m.AUTH_ROUTES),
+      },
+
+      /**
+       * Design system preview and component showcase. Public, internal tool.
+       */
+      {
+        path: 'design-system',
+        loadComponent: () =>
+          import('./features/design-system/design-system-preview.component').then(
+            (m) => m.DesignSystemPreviewComponent,
+          ),
+      },
+
+      /**
+       * Access Denied page.
+       *
+       * Destination of {@link permissionGuard}'s denial redirect (US-013 AC-2), so an
+       * authenticated user who lacks a permission is not bounced to the login page.
+       *
+       * Unguarded on purpose: the page makes no HTTP call and reveals nothing, so it must
+       * render for a direct visit or a cold-start redirect.
+       *
+       * Constraint:
+       * - MUST stay outside the shell and MUST NOT become a descendant of a route carrying
+       *   `data.permission`. Angular merges a parent route's `data` into child snapshots, so
+       *   nesting this page under a gated ancestor would make its own denial redirect target
+       *   a route that itself denies: a navigation loop instead of the intended UX.
+       *
+       * @see {@link permissionGuard}
+       */
+      {
+        path: 'access-denied',
+        loadComponent: () =>
+          import('./shared/pages/access-denied/access-denied.component').then(
+            (m) => m.AccessDeniedComponent,
+          ),
+      },
+    ],
   },
 
   /**
-   * Main dashboard (protected by authentication guard).
+   * Signed-in shell (header, permission-filtered nav, user menu, skip link, `main`).
    *
-   * Path: /dashboard
-   * Access: Authenticated users only
-   * Guard: {@link authGuard}
-   * Component: DashboardComponent
+   * Access: authenticated users only; {@link authGuard} sits on this ancestor so every child,
+   * including future routes guarded by `permissionGuard`, runs after the session is restored.
+   * Guards in one `canActivate` array run concurrently, so `authGuard` must never share an
+   * array with `permissionGuard`.
    *
-   * Purpose:
-   * - Primary application interface for authenticated users
-   * - Displays user's main workspace and key information
-   * - Landing page after successful login
-   *
-   * Authentication flow:
-   * - canActivate: [authGuard] checks if user has a valid session
-   * - If authenticated: component is loaded and displayed
-   * - If not authenticated: authGuard redirects to /auth/login
-   *
-   * Implementation:
-   * - Lazy-loaded component (downloaded when user authenticates)
-   * - Standalone component, no child routes in this definition
-   * - Dashboard feature may define sub-routes for analytics, settings, etc.
-   *
-   * Integration note:
-   * The authGuard checks the AuthStore for a valid session token.
-   * If the token is expired, the HTTP interceptors handle refresh or
-   * redirect to login. See {@link auth.interceptor.ts} for details.
-   *
-   * @see {@link authGuard} for the authentication check implementation
-   * @see {@link auth.interceptor.ts} for token refresh and expiry handling
+   * Unknown URLs fall through to this shell: a signed-out visitor is sent to /auth/login.
    */
   {
-    path: 'dashboard',
+    path: '',
     canActivate: [authGuard],
-    loadComponent: () =>
-      import('./features/dashboard/dashboard.component').then((m) => m.DashboardComponent),
+    loadComponent: () => import('./core/layout/shell/shell').then((m) => m.Shell),
+    children: [
+      {
+        path: 'dashboard',
+        title: 'Dashboard',
+        loadComponent: () =>
+          import('./features/dashboard/dashboard.component').then((m) => m.DashboardComponent),
+      },
+    ],
   },
-
-  /**
-   * Access Denied page.
-   *
-   * Path: /access-denied
-   * Access: Public — intentionally unguarded
-   * Component: AccessDeniedComponent
-   *
-   * Purpose:
-   * - Destination of {@link permissionGuard}'s denial redirect (US-013 AC-2), so an
-   *   authenticated user who lacks a permission is not bounced to the login page.
-   *
-   * Implementation:
-   * - Lazy-loaded, following the /design-system precedent (top-level path, no guard).
-   * - Unguarded on purpose: the page makes no HTTP call and reveals nothing, so it must
-   *   render for a direct visit or a cold-start redirect.
-   *
-   * Constraint:
-   * - MUST remain a top-level, unguarded route and MUST NOT become a descendant of a
-   *   route carrying `data.permission`. Angular merges a parent route's `data` into child
-   *   snapshots, so nesting this page under a gated ancestor would make its own denial
-   *   redirect target a route that itself denies — a navigation loop instead of the
-   *   intended UX.
-   *
-   * @see {@link permissionGuard}
-   */
-  {
-    path: 'access-denied',
-    loadComponent: () =>
-      import('./shared/pages/access-denied/access-denied.component').then(
-        (m) => m.AccessDeniedComponent,
-      ),
-  },
-
-  /**
-   * Wildcard fallback route (not defined here).
-   *
-   * Best practice:
-   * Consider adding a wildcard route at the end to catch unknown paths:
-   *
-   * {
-   *   path: '**',
-   *   redirectTo: '/dashboard'  // or point to a 404 component
-   * }
-   *
-   * This prevents blank pages when users navigate to non-existent routes.
-   * Recommended: add this in a future enhancement.
-   */
 ];

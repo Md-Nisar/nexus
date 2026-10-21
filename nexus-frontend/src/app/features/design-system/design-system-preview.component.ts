@@ -6,7 +6,9 @@ import {
   NxBadge,
   NxButton,
   NxCard,
+  MenuItem,
   NxInput,
+  NxMenu,
   NxSelect,
   NxTable,
   NxEmptyState,
@@ -27,6 +29,7 @@ import {
     NxButton,
     NxCard,
     NxInput,
+    NxMenu,
     NxSelect,
     NxTable,
     NxEmptyState,
@@ -44,6 +47,13 @@ export class DesignSystemPreviewComponent {
   readonly themeLabel = computed(() =>
     this.themeService.theme() === 'dark' ? 'Switch to light mode' : 'Switch to dark mode',
   );
+
+  readonly menuItems: readonly MenuItem[] = [
+    { id: 'edit', label: 'Edit', icon: 'edit' },
+    { id: 'archive', label: 'Archive', disabled: true, disabledReason: 'Already archived' },
+    { id: 'delete', label: 'Delete', danger: true },
+  ];
+  lastMenuSelection = '';
 
   // Interactive form controls
   readonly titleControl = new FormControl('');

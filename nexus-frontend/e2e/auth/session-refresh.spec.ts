@@ -16,7 +16,9 @@ import { test, expect } from '@playwright/test';
 const EMAIL = process.env['E2E_TEST_USER_EMAIL'] ?? 'test@example.com';
 const PASSWORD = process.env['E2E_TEST_USER_PASSWORD'] ?? 'TestPass99!';
 
-async function isBackendUp(request: import('@playwright/test').APIRequestContext): Promise<boolean> {
+async function isBackendUp(
+  request: import('@playwright/test').APIRequestContext,
+): Promise<boolean> {
   try {
     const resp = await request.get('http://localhost:1000/actuator/health', { timeout: 2_000 });
     return resp.ok();
@@ -82,6 +84,10 @@ test.describe('US-004 — silent session renewal', () => {
     await expect(page).not.toHaveURL(/\/auth\/login/);
     await expect(page.locator('[data-testid="dashboard-root"]')).toBeVisible({ timeout: 5_000 });
     expect(refreshCallCount).toBeGreaterThanOrEqual(1);
+
+    // The session is still usable: the shell's user menu offers logout.
+    await page.locator('[data-testid="nx-menu-trigger"]').click();
+    await expect(page.locator('[data-testid="logout-button"]')).toBeVisible();
   });
 
   test('TS-4 — replay of revoked refresh token clears session and redirects to login', async ({

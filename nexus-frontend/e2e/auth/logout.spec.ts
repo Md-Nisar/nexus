@@ -16,13 +16,19 @@ import { test, expect } from '@playwright/test';
 const EMAIL = process.env['E2E_TEST_USER_EMAIL'] ?? 'test@example.com';
 const PASSWORD = process.env['E2E_TEST_USER_PASSWORD'] ?? 'TestPass99!';
 
-async function isBackendUp(request: import('@playwright/test').APIRequestContext): Promise<boolean> {
+async function isBackendUp(
+  request: import('@playwright/test').APIRequestContext,
+): Promise<boolean> {
   try {
     const resp = await request.get('http://localhost:1000/actuator/health', { timeout: 2_000 });
     return resp.ok();
   } catch {
     return false;
   }
+}
+
+async function openUserMenu(page: import('@playwright/test').Page): Promise<void> {
+  await page.locator('[data-testid="nx-menu-trigger"]').click();
 }
 
 async function login(page: import('@playwright/test').Page): Promise<void> {
@@ -45,6 +51,7 @@ test.describe('US-005 — logout with refresh token revocation', () => {
   }) => {
     await login(page);
 
+    await openUserMenu(page);
     await page.locator('[data-testid="logout-button"]').click();
 
     // URL assertion first — deterministic; avoids toast-timing flakiness (R7).
@@ -60,6 +67,7 @@ test.describe('US-005 — logout with refresh token revocation', () => {
   test('TS-2 — back button after logout does not restore the dashboard', async ({ page }) => {
     await login(page);
 
+    await openUserMenu(page);
     await page.locator('[data-testid="logout-button"]').click();
     await expect(page).toHaveURL(/\/auth\/login/, { timeout: 10_000 });
 
@@ -83,6 +91,7 @@ test.describe('US-005 — logout with refresh token revocation', () => {
     expect(refreshBefore).toBeDefined();
     const capturedRefreshToken = refreshBefore!.value;
 
+    await openUserMenu(page);
     await page.locator('[data-testid="logout-button"]').click();
     await expect(page).toHaveURL(/\/auth\/login/, { timeout: 10_000 });
 
