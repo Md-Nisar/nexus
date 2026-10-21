@@ -1,6 +1,7 @@
 package com.example.nexus.rbac.interfaces.rest;
 
 import com.example.nexus.common.security.AuthenticatedEndpoint;
+import com.example.nexus.common.web.ProblemResponse;
 import com.example.nexus.rbac.application.CallerAuthorizationService;
 import com.example.nexus.rbac.application.CallerAuthorizationService.CallerAuthorization;
 import com.example.nexus.rbac.domain.RoleChangeActor;
@@ -47,8 +48,16 @@ public class CallerAuthorizationController {
   @AuthenticatedEndpoint
   @Operation(summary = "The caller's own live roles, permissions and administrator status")
   @ApiResponse(responseCode = "200", description = "The caller's authorization profile")
-  @ApiResponse(responseCode = "401", description = "No or invalid bearer token")
-  @ApiResponse(responseCode = "404", description = "Feature disabled")
+  @ProblemResponse(
+      status = 401,
+      codes = {"AUTH_003"},
+      description =
+          "No or invalid bearer token")
+  @ProblemResponse(
+      status = 404,
+      codes = {"RESOURCE_NOT_FOUND"},
+      description =
+          "Feature disabled")
   public CallerAuthorizationResponse authorization(Authentication authentication) {
     RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, AUTHENTICATED);
     CallerAuthorization profile = callerAuthorizationService.read(actor);

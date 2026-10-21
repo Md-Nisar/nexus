@@ -7,6 +7,7 @@ import com.example.nexus.common.domain.FieldValidationException;
 import com.example.nexus.common.domain.PreconditionRequiredException;
 import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.security.RequiresPermission;
+import com.example.nexus.common.web.ProblemResponse;
 import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.PermissionView;
@@ -102,9 +103,21 @@ public class RoleController {
   @RequiresPermission(ROLE_WRITE)
   @Operation(summary = "Create a custom role in the caller's tenant")
   @ApiResponse(responseCode = "201", description = "Role created")
-  @ApiResponse(responseCode = "400", description = "Validation failed")
-  @ApiResponse(responseCode = "403", description = "Missing role:write")
-  @ApiResponse(responseCode = "409", description = "Duplicate or reserved role name, or role limit reached")
+  @ProblemResponse(
+      status = 400,
+      codes = {"VALIDATION_FAILED"},
+      description =
+          "Validation failed")
+  @ProblemResponse(
+      status = 403,
+      codes = {"RBAC_001"},
+      description =
+          "Missing role:write")
+  @ProblemResponse(
+      status = 409,
+      codes = {"RBAC_006", "RBAC_007", "RBAC_008"},
+      description =
+          "Duplicate (RBAC_006) or reserved (RBAC_007) role name, or the tenant's role limit reached (RBAC_008)")
   public ResponseEntity<RoleResponse> createRole(
       @Valid @RequestBody CreateRoleRequest request,
       Authentication authentication,
@@ -130,8 +143,16 @@ public class RoleController {
   @RequiresPermission(ROLE_READ)
   @Operation(summary = "List the roles in the caller's tenant, one page at a time")
   @ApiResponse(responseCode = "200", description = "A page of roles in the caller's tenant")
-  @ApiResponse(responseCode = "400", description = "page or size out of range, or not an integer")
-  @ApiResponse(responseCode = "403", description = "Missing role:read")
+  @ProblemResponse(
+      status = 400,
+      codes = {"VALIDATION_FAILED"},
+      description =
+          "page or size out of range, or not an integer")
+  @ProblemResponse(
+      status = 403,
+      codes = {"RBAC_001"},
+      description =
+          "Missing role:read")
   public RoleListResponse listRoles(
       @RequestParam(name = "page", required = false) String page,
       @RequestParam(name = "size", required = false) String size,
@@ -159,11 +180,21 @@ public class RoleController {
   @RequiresPermission(ROLE_READ)
   @Operation(summary = "Read one role in the caller's tenant")
   @ApiResponse(responseCode = "200", description = "The role")
-  @ApiResponse(responseCode = "400", description = "Malformed path UUID")
-  @ApiResponse(responseCode = "403", description = "Missing role:read")
-  @ApiResponse(
-      responseCode = "404",
-      description = "Role not found, deleted, or in another tenant (indistinguishable)")
+  @ProblemResponse(
+      status = 400,
+      codes = {"VALIDATION_FAILED"},
+      description =
+          "Malformed path UUID")
+  @ProblemResponse(
+      status = 403,
+      codes = {"RBAC_001"},
+      description =
+          "Missing role:read")
+  @ProblemResponse(
+      status = 404,
+      codes = {"ROLE_NOT_FOUND"},
+      description =
+          "Role not found, deleted, or in another tenant (indistinguishable)")
   public RoleResponse getRole(@PathVariable String roleId, Authentication authentication) {
     RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, ROLE_READ);
     UUID parsedRoleId = RbacControllerSupport.parsePathUuid(roleId, PATH_PARAM_ROLE_ID);
@@ -187,8 +218,21 @@ public class RoleController {
           "The ETag validates the permission set and is what PUT expects in If-Match."
               + " If-None-Match and 304 are not supported; responses are not cacheable.")
   @ApiResponse(responseCode = "200", description = "Permissions attached to the role, with an ETag")
-  @ApiResponse(responseCode = "403", description = "Missing role:read")
-  @ApiResponse(responseCode = "404", description = "Role not found, or in another tenant (indistinguishable)")
+  @ProblemResponse(
+      status = 400,
+      codes = {"VALIDATION_FAILED"},
+      description =
+          "Malformed path UUID")
+  @ProblemResponse(
+      status = 403,
+      codes = {"RBAC_001"},
+      description =
+          "Missing role:read")
+  @ProblemResponse(
+      status = 404,
+      codes = {"ROLE_NOT_FOUND"},
+      description =
+          "Role not found, or in another tenant (indistinguishable)")
   public ResponseEntity<PermissionListResponse> listRolePermissions(
       @PathVariable String roleId, Authentication authentication) {
     RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, ROLE_READ);
@@ -211,33 +255,44 @@ public class RoleController {
       summary = "Replace the permission set of a role in the caller's tenant",
       description =
           "If-Match must be exactly one strong entity tag, the ETag of the set being replaced. The"
-              + " ETag validates the permission set. An unchanged set is an authorised no-op 200.")
+              + " ETag validates the permission set (there is no 304). An unchanged set is an"
+              + " authorised no-op 200.")
   @ApiResponse(responseCode = "200", description = "Applied, or unchanged; the set and its ETag")
-  @ApiResponse(
-      responseCode = "400",
+  @ProblemResponse(
+      status = 400,
+      codes = {"VALIDATION_FAILED"},
       description =
-          "Malformed path UUID or body: permissionIds missing, over 100, a malformed or duplicate"
-              + " id")
-  @ApiResponse(
-      responseCode = "403",
+          "Malformed path UUID or body: permissionIds missing, over 100, a malformed or duplicate id")
+  @ProblemResponse(
+      status = 403,
+      codes = {"RBAC_001"},
       description =
-          "Missing role:write or role:read (also in live holdings), an added permission the caller"
-              + " does not hold, or a removal from a role whose permissions the caller does not all"
-              + " hold (for an administrator role: or is not an administrator through another"
-              + " role)")
-  @ApiResponse(
-      responseCode = "404",
+          "Missing role:write or role:read (also in live holdings), an added permission the caller does not hold, or a removal from a role whose permissions the caller does not all hold (for an administrator role: or is not an administrator through another role)")
+  @ProblemResponse(
+      status = 404,
+      codes = {"ROLE_NOT_FOUND", "PERMISSION_NOT_FOUND"},
       description =
-          "Role not found, deleted or in another tenant (indistinguishable), or a permission id"
-              + " not in the catalogue")
-  @ApiResponse(responseCode = "409", description = "System role (RBAC_003)")
-  @ApiResponse(
-      responseCode = "412",
-      description = "The If-Match tag is not the current version of the set; the body has no state")
-  @ApiResponse(responseCode = "415", description = "Content type is not application/json")
-  @ApiResponse(
-      responseCode = "428",
-      description = "If-Match absent, *, a list, weak, empty or unparseable; the body has no state")
+          "Role not found, deleted or in another tenant (indistinguishable), or a permission id not in the catalogue")
+  @ProblemResponse(
+      status = 409,
+      codes = {"RBAC_003", "RBAC_010", "RBAC_012"},
+      description =
+          "System role (RBAC_003); the set would make the role an administrator role while a holder was assigned by a non-administrator (RBAC_010); the role's classification changed while the request waited, retry (RBAC_012)")
+  @ProblemResponse(
+      status = 412,
+      codes = {"PRECONDITION_FAILED"},
+      description =
+          "The If-Match tag is not the current version of the set; the body has no state")
+  @ProblemResponse(
+      status = 415,
+      codes = {"UNSUPPORTED_MEDIA_TYPE"},
+      description =
+          "Content type is not application/json")
+  @ProblemResponse(
+      status = 428,
+      codes = {"PRECONDITION_REQUIRED"},
+      description =
+          "If-Match absent, *, a list, weak, empty or unparseable; the body has no state")
   public ResponseEntity<PermissionListResponse> replaceRolePermissions(
       @PathVariable String roleId,
       @Valid @RequestBody ReplaceRolePermissionsRequest request,
@@ -304,19 +359,26 @@ public class RoleController {
   @RequiresPermission(ROLE_WRITE)
   @Operation(summary = "Attach a permission to a role in the caller's tenant")
   @ApiResponse(responseCode = "201", description = "Permission attached")
-  @ApiResponse(responseCode = "400", description = "Malformed path or body UUID")
-  @ApiResponse(
-      responseCode = "403",
+  @ProblemResponse(
+      status = 400,
+      codes = {"VALIDATION_FAILED"},
       description =
-          "Missing role:write, or the caller does not hold the permission"
-              + " being attached")
-  @ApiResponse(responseCode = "404", description = "Role or permission not found, or role in another tenant (indistinguishable)")
-  @ApiResponse(
-      responseCode = "409",
+          "Malformed path or body UUID")
+  @ProblemResponse(
+      status = 403,
+      codes = {"RBAC_001"},
       description =
-          "System role, already attached (RBAC_005), or the attach would make the role an"
-              + " administrator role while a holder was assigned by a non-administrator"
-              + " (RBAC_010)")
+          "Missing role:write, or the caller does not hold the permission being attached")
+  @ProblemResponse(
+      status = 404,
+      codes = {"ROLE_NOT_FOUND", "PERMISSION_NOT_FOUND"},
+      description =
+          "Role or permission not found, or role in another tenant (indistinguishable)")
+  @ProblemResponse(
+      status = 409,
+      codes = {"RBAC_003", "RBAC_005", "RBAC_010", "RBAC_012"},
+      description =
+          "System role (RBAC_003), already attached (RBAC_005), the attach would make the role an administrator role while a holder was assigned by a non-administrator (RBAC_010), or the role's classification changed while the request waited, retry (RBAC_012)")
   public ResponseEntity<PermissionResponse> attachPermission(
       @PathVariable String roleId,
       @Valid @RequestBody AttachPermissionRequest request,
@@ -346,16 +408,26 @@ public class RoleController {
   @RequiresPermission(ROLE_WRITE)
   @Operation(summary = "Detach a permission from a role in the caller's tenant")
   @ApiResponse(responseCode = "204", description = "Permission detached")
-  @ApiResponse(responseCode = "400", description = "Malformed path UUID")
-  @ApiResponse(
-      responseCode = "403",
+  @ProblemResponse(
+      status = 400,
+      codes = {"VALIDATION_FAILED"},
       description =
-          "Missing role:write, or the caller does not hold every permission of"
-              + " the role (for an administrator role: or is not an administrator through"
-              + " another role)")
-  @ApiResponse(responseCode = "404", description =
+          "Malformed path UUID")
+  @ProblemResponse(
+      status = 403,
+      codes = {"RBAC_001"},
+      description =
+          "Missing role:write, or the caller does not hold every permission of the role (for an administrator role: or is not an administrator through another role)")
+  @ProblemResponse(
+      status = 404,
+      codes = {"ROLE_NOT_FOUND", "PERMISSION_NOT_FOUND", "ROLE_PERMISSION_NOT_FOUND"},
+      description =
           "Role, permission, or pairing not found, or role in another tenant (indistinguishable)")
-  @ApiResponse(responseCode = "409", description = "System role")
+  @ProblemResponse(
+      status = 409,
+      codes = {"RBAC_003"},
+      description =
+          "System role (RBAC_003)")
   public void detachPermission(
       @PathVariable String roleId,
       @PathVariable String permissionId,
@@ -382,22 +454,26 @@ public class RoleController {
   @RequiresPermission(ROLE_WRITE)
   @Operation(summary = "Rename a custom role or change its description in the caller's tenant")
   @ApiResponse(responseCode = "200", description = "Role updated")
-  @ApiResponse(
-      responseCode = "400",
-      description = "Validation failed (empty body, bad name or description) or malformed path UUID")
-  @ApiResponse(
-      responseCode = "403",
+  @ProblemResponse(
+      status = 400,
+      codes = {"VALIDATION_FAILED"},
       description =
-          "Missing role:write, or the caller does not hold every permission of the role (for an"
-              + " administrator role: or is not an administrator through another role)")
-  @ApiResponse(
-      responseCode = "404",
-      description = "Role not found, deleted, or in another tenant (indistinguishable)")
-  @ApiResponse(
-      responseCode = "409",
+          "Validation failed (empty body, bad name or description) or malformed path UUID")
+  @ProblemResponse(
+      status = 403,
+      codes = {"RBAC_001"},
       description =
-          "System role (RBAC_003), name already used by a live role (RBAC_006) or reserved"
-              + " (RBAC_007)")
+          "Missing role:write, or the caller does not hold every permission of the role (for an administrator role: or is not an administrator through another role)")
+  @ProblemResponse(
+      status = 404,
+      codes = {"ROLE_NOT_FOUND"},
+      description =
+          "Role not found, deleted, or in another tenant (indistinguishable)")
+  @ProblemResponse(
+      status = 409,
+      codes = {"RBAC_003", "RBAC_006", "RBAC_007"},
+      description =
+          "System role (RBAC_003), name already used by a live role (RBAC_006) or reserved (RBAC_007)")
   public RoleResponse updateRole(
       @PathVariable String roleId,
       @Valid @RequestBody UpdateRoleRequest request,
@@ -427,18 +503,26 @@ public class RoleController {
   @RequiresPermission(ROLE_WRITE)
   @Operation(summary = "Delete a custom role in the caller's tenant (soft delete)")
   @ApiResponse(responseCode = "204", description = "Role deleted")
-  @ApiResponse(responseCode = "400", description = "Malformed path UUID")
-  @ApiResponse(
-      responseCode = "403",
+  @ProblemResponse(
+      status = 400,
+      codes = {"VALIDATION_FAILED"},
       description =
-          "Missing role:write, or the caller does not hold every permission of the role (for an"
-              + " administrator role: or is not an administrator through another role)")
-  @ApiResponse(
-      responseCode = "404",
-      description = "Role not found, already deleted, or in another tenant (indistinguishable)")
-  @ApiResponse(
-      responseCode = "409",
-      description = "System role (RBAC_003), or the role still has active holders (RBAC_009)")
+          "Malformed path UUID")
+  @ProblemResponse(
+      status = 403,
+      codes = {"RBAC_001"},
+      description =
+          "Missing role:write, or the caller does not hold every permission of the role (for an administrator role: or is not an administrator through another role)")
+  @ProblemResponse(
+      status = 404,
+      codes = {"ROLE_NOT_FOUND"},
+      description =
+          "Role not found, already deleted, or in another tenant (indistinguishable)")
+  @ProblemResponse(
+      status = 409,
+      codes = {"RBAC_003", "RBAC_009"},
+      description =
+          "System role (RBAC_003), or the role still has active holders (RBAC_009)")
   public void softDeleteRole(
       @PathVariable String roleId, Authentication authentication, HttpServletRequest httpRequest) {
     RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, ROLE_WRITE);

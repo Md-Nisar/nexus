@@ -5,6 +5,7 @@ import static com.example.nexus.common.security.Permissions.USER_ROLE_ASSIGN;
 
 import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.security.RequiresPermission;
+import com.example.nexus.common.web.ProblemResponse;
 import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.PageResult;
@@ -90,14 +91,31 @@ public class UserRoleController {
   @RequiresPermission(USER_ROLE_ASSIGN)
   @Operation(summary = "Assign a role to a user within the caller's tenant")
   @ApiResponse(responseCode = "201", description = "Assignment created")
-  @ApiResponse(responseCode = "400", description = "Malformed path or body UUID")
-  @ApiResponse(
-      responseCode = "403",
+  @ProblemResponse(
+      status = 400,
+      codes = {"VALIDATION_FAILED"},
       description =
-          "Missing permission, the role carries a permission the caller does"
-              + " not hold, or a self-assignment by a caller who is not an administrator")
-  @ApiResponse(responseCode = "404", description = "User or role not found, or in another tenant (indistinguishable)")
-  @ApiResponse(responseCode = "409", description = "Duplicate active assignment")
+          "Malformed path or body UUID")
+  @ProblemResponse(
+      status = 403,
+      codes = {"RBAC_001"},
+      description =
+          "Missing permission, the role carries a permission the caller does not hold, or a self-assignment by a caller who is not an administrator")
+  @ProblemResponse(
+      status = 404,
+      codes = {"USER_NOT_FOUND", "ROLE_NOT_FOUND"},
+      description =
+          "User or role not found, or in another tenant (indistinguishable)")
+  @ProblemResponse(
+      status = 409,
+      codes = {"RBAC_004", "RBAC_012"},
+      description =
+          "Duplicate active assignment (RBAC_004), or the role's classification changed while the request waited, retry (RBAC_012)")
+  @ProblemResponse(
+      status = 429,
+      codes = {"RBAC_011"},
+      description =
+          "Too many denied role changes by this actor on an administrator-defining or self target; see Retry-After")
   public ResponseEntity<RoleAssignmentResponse> assignRole(
       @PathVariable String userId,
       @Valid @RequestBody AssignRoleRequest request,
@@ -129,11 +147,21 @@ public class UserRoleController {
   @Operation(
       summary = "List the active role assignments held by a user within the caller's tenant")
   @ApiResponse(responseCode = "200", description = "A page of active role assignments")
-  @ApiResponse(
-      responseCode = "400",
-      description = "Malformed path UUID, or page or size out of range or not an integer")
-  @ApiResponse(responseCode = "403", description = "Missing permission")
-  @ApiResponse(responseCode = "404", description = "User not found, or in another tenant (indistinguishable)")
+  @ProblemResponse(
+      status = 400,
+      codes = {"VALIDATION_FAILED"},
+      description =
+          "Malformed path UUID, or page or size out of range or not an integer")
+  @ProblemResponse(
+      status = 403,
+      codes = {"RBAC_001"},
+      description =
+          "Missing permission")
+  @ProblemResponse(
+      status = 404,
+      codes = {"USER_NOT_FOUND"},
+      description =
+          "User not found, or in another tenant (indistinguishable)")
   public RoleAssignmentListResponse listRoles(
       @PathVariable String userId,
       @RequestParam(name = "page", required = false) String page,
@@ -164,19 +192,31 @@ public class UserRoleController {
   @RequiresPermission(USER_ROLE_ASSIGN)
   @Operation(summary = "Revoke a role from a user within the caller's tenant")
   @ApiResponse(responseCode = "204", description = "Role revoked")
-  @ApiResponse(responseCode = "400", description = "Malformed path UUID")
-  @ApiResponse(
-      responseCode = "403",
+  @ProblemResponse(
+      status = 400,
+      codes = {"VALIDATION_FAILED"},
       description =
-          "Missing permission, the role carries a permission the caller does"
-              + " not hold, or the role is an administrator role and the caller is not an"
-              + " administrator")
-  @ApiResponse(responseCode = "404", description =
-          "User, role, or active assignment not found, or user or role in another tenant"
-              + " (indistinguishable)")
-  @ApiResponse(
-      responseCode = "409",
-      description = "Would revoke the tenant's last active administrator assignment")
+          "Malformed path UUID")
+  @ProblemResponse(
+      status = 403,
+      codes = {"RBAC_001"},
+      description =
+          "Missing permission, the role carries a permission the caller does not hold, or the role is an administrator role and the caller is not an administrator")
+  @ProblemResponse(
+      status = 404,
+      codes = {"USER_NOT_FOUND", "ROLE_NOT_FOUND", "ROLE_ASSIGNMENT_NOT_FOUND"},
+      description =
+          "User, role, or active assignment not found, or user or role in another tenant (indistinguishable)")
+  @ProblemResponse(
+      status = 409,
+      codes = {"RBAC_002"},
+      description =
+          "Would revoke the tenant's last active administrator assignment (RBAC_002)")
+  @ProblemResponse(
+      status = 429,
+      codes = {"RBAC_011"},
+      description =
+          "Too many denied role changes by this actor on an administrator-defining or self target; see Retry-After")
   public void revokeRole(
       @PathVariable String userId,
       @PathVariable String roleId,

@@ -9,6 +9,7 @@ import com.example.nexus.common.security.AuthenticatedRequestDetails;
 import com.example.nexus.common.security.DenialReason;
 import com.example.nexus.common.security.InsufficientPermissionException;
 import com.example.nexus.common.security.RequiresPermission;
+import com.example.nexus.common.web.ProblemResponse;
 import com.example.nexus.identity.application.DirectoryAccessGuard;
 import com.example.nexus.identity.application.UserDirectoryService;
 import com.example.nexus.identity.domain.DirectoryPage;
@@ -89,13 +90,21 @@ public class UserDirectoryController {
   @RequiresPermission(USER_DIRECTORY_READ)
   @Operation(summary = "List the tenant's users, one page at a time, or fetch a batch by ids")
   @ApiResponse(responseCode = "200", description = "A page or batch of users")
-  @ApiResponse(
-      responseCode = "400",
+  @ProblemResponse(
+      status = 400,
+      codes = {"VALIDATION_FAILED"},
       description =
-          "page, size, status or ids invalid; page times size over 10,000; ids combined with another"
-              + " filter; or email present (use POST /api/v1/users/lookup)")
-  @ApiResponse(responseCode = "403", description = "Missing user:directory:read")
-  @ApiResponse(responseCode = "429", description = "USER_DIR_002: too many directory requests")
+          "page, size, status or ids invalid; page times size over 10,000; ids combined with another filter; or email present (use POST /api/v1/users/lookup)")
+  @ProblemResponse(
+      status = 403,
+      codes = {"RBAC_001"},
+      description =
+          "Missing user:directory:read")
+  @ProblemResponse(
+      status = 429,
+      codes = {"USER_DIR_002"},
+      description =
+          "Too many directory requests; see Retry-After")
   public ResponseEntity<UserDirectoryPageResponse> listUsers(
       Authentication authentication,
       @RequestParam(name = "status", required = false) String status,
@@ -140,10 +149,26 @@ public class UserDirectoryController {
   @RequiresPermission(USER_DIRECTORY_READ)
   @Operation(summary = "Get one user of the tenant")
   @ApiResponse(responseCode = "200", description = "The user")
-  @ApiResponse(responseCode = "400", description = "userId is not a canonical UUID")
-  @ApiResponse(responseCode = "403", description = "Missing user:directory:read")
-  @ApiResponse(responseCode = "404", description = "No such user in the caller's tenant")
-  @ApiResponse(responseCode = "429", description = "USER_DIR_002: too many directory requests")
+  @ProblemResponse(
+      status = 400,
+      codes = {"VALIDATION_FAILED"},
+      description =
+          "userId is not a canonical UUID")
+  @ProblemResponse(
+      status = 403,
+      codes = {"RBAC_001"},
+      description =
+          "Missing user:directory:read")
+  @ProblemResponse(
+      status = 404,
+      codes = {"USER_NOT_FOUND"},
+      description =
+          "No such user in the caller's tenant")
+  @ProblemResponse(
+      status = 429,
+      codes = {"USER_DIR_002"},
+      description =
+          "Too many directory requests; see Retry-After")
   public ResponseEntity<UserDirectoryEntryResponse> getUser(
       Authentication authentication, @PathVariable("userId") String userId) {
     return measured(
@@ -169,15 +194,29 @@ public class UserDirectoryController {
   @Operation(
       summary = "Look up one user of the tenant by exact email",
       description =
-          "Safe and read-only; POST only to keep personal data out of URLs. The body is capped at"
+          "The lookup is safe and read-only; POST keeps personal data out of URLs. The body is capped at"
               + " 1 KiB.")
   @ApiResponse(responseCode = "200", description = "Zero or one user")
-  @ApiResponse(
-      responseCode = "400",
-      description = "email blank, longer than 320, or not well formed; body invalid or over 1 KiB")
-  @ApiResponse(responseCode = "403", description = "Missing user:directory:read")
-  @ApiResponse(responseCode = "415", description = "Content-Type is not application/json")
-  @ApiResponse(responseCode = "429", description = "USER_DIR_001 or USER_DIR_002: too many requests; see Retry-After")
+  @ProblemResponse(
+      status = 400,
+      codes = {"VALIDATION_FAILED"},
+      description =
+          "email blank, longer than 320, or not well formed; body invalid or over 1 KiB")
+  @ProblemResponse(
+      status = 403,
+      codes = {"RBAC_001"},
+      description =
+          "Missing user:directory:read")
+  @ProblemResponse(
+      status = 415,
+      codes = {"UNSUPPORTED_MEDIA_TYPE"},
+      description =
+          "Content-Type is not application/json")
+  @ProblemResponse(
+      status = 429,
+      codes = {"USER_DIR_001", "USER_DIR_002"},
+      description =
+          "Too many lookups (USER_DIR_001) or directory requests (USER_DIR_002); see Retry-After")
   public ResponseEntity<UserLookupResponse> lookupUser(
       Authentication authentication, @Valid @RequestBody UserLookupRequest request) {
     return measured(
