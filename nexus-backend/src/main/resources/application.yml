@@ -256,6 +256,12 @@ nexus:
       lookup:
         max-attempts: 30
         window-seconds: 60
+      # Every directory operation (list, batch, by id, lookup), per (tenant, actor) bucket DIR_ALL
+      # (RC-61.3): bounds line-rate paging by a stolen token without affecting a human. Fails open
+      # with the store, like the lookup bucket.
+      ceiling:
+        max-attempts: 600
+        window-seconds: 60
   # --- JWT Configuration ---
   jwt:
     private-key-pem: ${NEXUS_JWT_PRIVATE_KEY_PEM:}   # RSA-2048+ PKCS#8 PEM — required in prod; blank = ephemeral key in dev

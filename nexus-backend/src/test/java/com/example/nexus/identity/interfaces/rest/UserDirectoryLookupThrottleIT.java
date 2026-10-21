@@ -8,7 +8,7 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.example.nexus.TestcontainersConfiguration;
 import com.example.nexus.common.web.GlobalExceptionHandler;
-import com.example.nexus.identity.application.UserDirectoryService;
+import com.example.nexus.identity.application.DirectoryAccessGuard;
 import com.example.nexus.identity.application.port.out.JwtPort;
 import com.example.nexus.identity.domain.EmailCipher;
 import com.example.nexus.identity.domain.User;
@@ -87,7 +87,7 @@ class UserDirectoryLookupThrottleIT {
       permittedStatuses.add(lookup(token, body).getStatusCode().value());
     }
 
-    ListAppender<ILoggingEvent> service = capture(UserDirectoryService.class);
+    ListAppender<ILoggingEvent> service = capture(DirectoryAccessGuard.class);
     ListAppender<ILoggingEvent> handler = capture(GlobalExceptionHandler.class);
     List<ResponseEntity<String>> rejected = new ArrayList<>();
     try {
@@ -95,7 +95,7 @@ class UserDirectoryLookupThrottleIT {
         rejected.add(lookup(token, body));
       }
     } finally {
-      release(UserDirectoryService.class, service);
+      release(DirectoryAccessGuard.class, service);
       release(GlobalExceptionHandler.class, handler);
     }
 

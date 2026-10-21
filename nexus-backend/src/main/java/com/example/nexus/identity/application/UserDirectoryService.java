@@ -1,20 +1,19 @@
 package com.example.nexus.identity.application;
 
 import com.example.nexus.common.domain.ResourceNotFoundException;
-import com.example.nexus.identity.application.port.out.RateLimitResult;
-import com.example.nexus.identity.application.port.out.RateLimitStore;
+import com.example.nexus.identity.application.port.out.DirectoryReadAuditPort;
 import com.example.nexus.identity.application.port.out.UserDirectoryQueryPort;
 import com.example.nexus.identity.domain.DirectoryPage;
 import com.example.nexus.identity.domain.DirectoryUserView;
-import com.example.nexus.identity.domain.UserDirectoryThrottledException;
 import com.example.nexus.identity.domain.UserStatus;
 import io.micrometer.core.instrument.MeterRegistry;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -28,10 +27,14 @@ import org.springframework.transaction.annotation.Transactional;
  * (no target id) and the {@code cross_tenant_miss} counter. Every batch runs the unscoped {@code
  * countByIdIn} (RC-61.2); its result only decides that WARN and never changes the response.
  *
- * <p><b>Lookup (design §4.4, §4.5).</b> The email is hashed only by {@link
- * EmailBlindIndexService#blindIndex} (ADR-0006) and never logged; a hit and a miss run the same
- * throttle, hash and indexed query, and a hit adds one decryption. Lookups are throttled per
- * (tenant, actor), failing open with the store, because the permission is the authorization gate.
+ * <p><b>Lookup (design §4.4).</b> The email is hashed only by {@link
+ * EmailBlindIndexService#blindIndex} (ADR-0006) and never logged. The per-actor throttle and
+ * ceiling live in {@link DirectoryAccessGuard}, consulted by the controller first.
+ *
+ * <p><b>Audit and logs (design §4.5, §17).</b> Every successful read writes one {@code
+ * USER_DIRECTORY_READ} row through {@link DirectoryReadAuditPort} and logs one INFO {@code
+ * IDENTITY_DIRECTORY_READ}, both carrying counts and ids only: never an email, a blind index or the
+ * id list.
  */
 @Service
 @Transactional(readOnly = true)
@@ -45,30 +48,22 @@ public class UserDirectoryService {
   private static final String CODE_USER_NOT_FOUND = "USER_NOT_FOUND";
   private static final String MESSAGE_NO_SUCH_USER = "No such user";
 
-  private static final String EVENT_THROTTLED = "IDENTITY_DIRECTORY_THROTTLED";
-  private static final String LOOKUP_BUCKET = "DIR_LOOKUP";
-  private static final String LOOKUP_WARN_BUCKET = "DIR_LOOKUP_WARN";
+  private static final String EVENT_READ = "IDENTITY_DIRECTORY_READ";
 
   private final UserDirectoryQueryPort queryPort;
   private final EmailBlindIndexService blindIndexService;
-  private final RateLimitStore rateLimitStore;
+  private final DirectoryReadAuditPort auditPort;
   private final MeterRegistry meterRegistry;
-  private final int lookupMaxAttempts;
-  private final int lookupWindowSeconds;
 
   public UserDirectoryService(
       UserDirectoryQueryPort queryPort,
       EmailBlindIndexService blindIndexService,
-      RateLimitStore rateLimitStore,
-      MeterRegistry meterRegistry,
-      @Value("${nexus.identity.directory.lookup.max-attempts}") int lookupMaxAttempts,
-      @Value("${nexus.identity.directory.lookup.window-seconds}") int lookupWindowSeconds) {
+      DirectoryReadAuditPort auditPort,
+      MeterRegistry meterRegistry) {
     this.queryPort = queryPort;
     this.blindIndexService = blindIndexService;
-    this.rateLimitStore = rateLimitStore;
+    this.auditPort = auditPort;
     this.meterRegistry = meterRegistry;
-    this.lookupMaxAttempts = lookupMaxAttempts;
-    this.lookupWindowSeconds = lookupWindowSeconds;
   }
 
   /**
@@ -77,8 +72,12 @@ public class UserDirectoryService {
    * @param status the status to filter by, or {@code null} for every status
    */
   public DirectoryPage<DirectoryUserView> list(
-      UUID tenantId, UserStatus status, int page, int size) {
-    return queryPort.findPageByTenant(tenantId, status, page, size);
+      UUID tenantId, UUID actorUserId, UserStatus status, int page, int size) {
+    DirectoryPage<DirectoryUserView> result =
+        queryPort.findPageByTenant(tenantId, status, page, size);
+    String statusFilter = status == null ? null : status.name();
+    audit(tenantId, actorUserId, new Read("LIST", result.items().size(), statusFilter, null, null, null));
+    return result;
   }
 
   /**
@@ -98,53 +97,74 @@ public class UserDirectoryService {
           .log("Omitted users of another tenant from a directory batch read");
       meterRegistry.counter(COUNTER_CROSS_TENANT_MISS).increment();
     }
+    audit(tenantId, actorUserId, new Read("BATCH", found.size(), null, ids.size(), null, null));
     return found;
   }
 
   /** The user {@code userId} of the tenant; 404 {@code USER_NOT_FOUND} if missing or foreign. */
   public DirectoryUserView get(UUID tenantId, UUID actorUserId, UUID userId) {
-    return queryPort
-        .findByTenantAndId(tenantId, userId)
-        .orElseThrow(() -> notFound(tenantId, actorUserId, userId));
+    DirectoryUserView view =
+        queryPort
+            .findByTenantAndId(tenantId, userId)
+            .orElseThrow(() -> notFound(tenantId, actorUserId, userId));
+    audit(tenantId, actorUserId, new Read("GET", 1, null, null, null, null));
+    return view;
   }
 
   /**
    * The tenant's user with exactly this email, after {@link EmailBlindIndexService}'s
    * normalisation; empty when no user of the tenant has it, including when another tenant's user
-   * does (design §4.4). The per-actor throttle is consumed first, so a throttled lookup never
-   * hashes or queries.
-   *
-   * @throws UserDirectoryThrottledException 429 {@code USER_DIR_001} once the actor exceeds the
-   *     lookup bucket; the store fails open (ADR-0016)
+   * does (design §4.4). The caller consults {@link DirectoryAccessGuard} first, so a throttled
+   * lookup never reaches here.
    */
   public Optional<DirectoryUserView> lookup(UUID tenantId, UUID actorUserId, String email) {
-    String actorKey = tenantId + ":" + actorUserId;
-    RateLimitResult throttle =
-        rateLimitStore.tryConsume(
-            LOOKUP_BUCKET + ":" + actorKey, lookupWindowSeconds, lookupMaxAttempts);
-    if (!throttle.allowed()) {
-      warnOncePerWindow(actorKey, tenantId, actorUserId);
-      throw new UserDirectoryThrottledException(throttle.retryAfterSeconds());
-    }
-    return queryPort.findByTenantAndEmailHmac(tenantId, blindIndexService.blindIndex(email));
+    Optional<DirectoryUserView> found =
+        queryPort.findByTenantAndEmailHmac(tenantId, blindIndexService.blindIndex(email));
+    audit(
+        tenantId,
+        actorUserId,
+        new Read(
+            "LOOKUP",
+            found.isPresent() ? 1 : 0,
+            null,
+            null,
+            found.isPresent() ? "HIT" : "MISS",
+            found.map(DirectoryUserView::id).orElse(null)));
+    return found;
   }
 
   /**
-   * Emits {@code IDENTITY_DIRECTORY_THROTTLED} for the first rejection of a window only. A
-   * one-slot bucket on the same store decides it, so the WARN stays once per window per actor
-   * across replicas when the store is Redis.
+   * Writes the audit row (best-effort, the port never throws) and the INFO log of one read. Only
+   * counts, the status filter and ids go in: never the email, the blind index or the id list.
    */
-  private void warnOncePerWindow(String actorKey, UUID tenantId, UUID actorUserId) {
-    if (rateLimitStore
-        .tryConsume(LOOKUP_WARN_BUCKET + ":" + actorKey, lookupWindowSeconds, 1)
-        .allowed()) {
-      log.atWarn()
-          .addKeyValue("event", EVENT_THROTTLED)
-          .addKeyValue("tenantId", tenantId)
-          .addKeyValue("actorUserId", actorUserId)
-          .addKeyValue("bucket", LOOKUP_BUCKET)
-          .log("Throttled directory lookups for an actor");
+  private void audit(UUID tenantId, UUID actorUserId, Read read) {
+    Map<String, Object> metadata = new LinkedHashMap<>();
+    metadata.put("operation", read.operation());
+    metadata.put("resultCount", read.resultCount());
+    metadata.put("statusFilter", read.statusFilter());
+    if (read.outcome() != null) {
+      metadata.put("outcome", read.outcome());
     }
+    if (read.resolvedUserId() != null) {
+      metadata.put("resolvedUserId", read.resolvedUserId().toString());
+    }
+    auditPort.recordDirectoryRead(tenantId, actorUserId, metadata);
+
+    var entry =
+        log.atInfo()
+            .addKeyValue("event", EVENT_READ)
+            .addKeyValue("tenantId", tenantId)
+            .addKeyValue("actorUserId", actorUserId)
+            .addKeyValue("operation", read.operation())
+            .addKeyValue("resultCount", read.resultCount())
+            .addKeyValue("statusFilter", read.statusFilter());
+    if (read.requestedCount() != null) {
+      entry =
+          entry
+              .addKeyValue("requestedCount", read.requestedCount())
+              .addKeyValue("returnedCount", read.resultCount());
+    }
+    entry.log("Directory read");
   }
 
   private ResourceNotFoundException notFound(UUID tenantId, UUID actorUserId, UUID userId) {
@@ -159,4 +179,12 @@ public class UserDirectoryService {
     }
     return new ResourceNotFoundException(CODE_USER_NOT_FOUND, MESSAGE_NO_SUCH_USER);
   }
+
+  private record Read(
+      String operation,
+      int resultCount,
+      String statusFilter,
+      Integer requestedCount,
+      String outcome,
+      UUID resolvedUserId) {}
 }

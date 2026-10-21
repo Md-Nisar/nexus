@@ -3,10 +3,13 @@ package com.example.nexus.identity.interfaces.rest;
 import static com.example.nexus.common.security.Permissions.USER_DIRECTORY_READ;
 
 import com.example.nexus.common.domain.FieldValidationException;
+import com.example.nexus.common.domain.RateLimitException;
+import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.common.security.AuthenticatedRequestDetails;
 import com.example.nexus.common.security.DenialReason;
 import com.example.nexus.common.security.InsufficientPermissionException;
 import com.example.nexus.common.security.RequiresPermission;
+import com.example.nexus.identity.application.DirectoryAccessGuard;
 import com.example.nexus.identity.application.UserDirectoryService;
 import com.example.nexus.identity.domain.DirectoryPage;
 import com.example.nexus.identity.domain.DirectoryUserView;
@@ -18,10 +21,14 @@ import com.example.nexus.identity.interfaces.rest.dto.UserLookupRequest;
 import com.example.nexus.identity.interfaces.rest.dto.UserLookupResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.MediaType;
@@ -55,10 +62,21 @@ public class UserDirectoryController {
       Pattern.compile(
           "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
 
-  private final UserDirectoryService userDirectoryService;
+  private static final String METRIC_REQUESTS = "nexus.identity.directory.requests";
+  private static final String METRIC_DURATION = "nexus.identity.directory.duration";
+  private static final String METRIC_LOOKUP_RESULT = "nexus.identity.directory.lookup_result";
 
-  public UserDirectoryController(UserDirectoryService userDirectoryService) {
+  private final UserDirectoryService userDirectoryService;
+  private final DirectoryAccessGuard accessGuard;
+  private final MeterRegistry meterRegistry;
+
+  public UserDirectoryController(
+      UserDirectoryService userDirectoryService,
+      DirectoryAccessGuard accessGuard,
+      MeterRegistry meterRegistry) {
     this.userDirectoryService = userDirectoryService;
+    this.accessGuard = accessGuard;
+    this.meterRegistry = meterRegistry;
   }
 
   /**
@@ -77,6 +95,7 @@ public class UserDirectoryController {
           "page, size, status or ids invalid; page times size over 10,000; ids combined with another"
               + " filter; or email present (use POST /api/v1/users/lookup)")
   @ApiResponse(responseCode = "403", description = "Missing user:directory:read")
+  @ApiResponse(responseCode = "429", description = "USER_DIR_002: too many directory requests")
   public ResponseEntity<UserDirectoryPageResponse> listUsers(
       Authentication authentication,
       @RequestParam(name = "status", required = false) String status,
@@ -84,25 +103,32 @@ public class UserDirectoryController {
       @RequestParam(name = "size", required = false) String size,
       @RequestParam(name = "ids", required = false) String ids,
       @RequestParam(name = "email", required = false) String email) {
-    Actor actor = resolveActor(authentication);
-    UserDirectoryPageResponse response =
-        switch (DirectoryPageRequest.parse(status, page, size, ids, email)) {
-          case DirectoryPageRequest.ListPage list -> {
-            DirectoryPage<DirectoryUserView> result =
-                userDirectoryService.list(actor.tenantId(), list.status(), list.page(), list.size());
-            yield new UserDirectoryPageResponse(
-                toResponses(result.items()),
-                DirectoryPageMetadata.of(result),
-                DirectoryPageLinks.of(BASE_PATH, list.status(), result));
-          }
-          case DirectoryPageRequest.Batch batch -> {
-            List<DirectoryUserView> found =
-                userDirectoryService.batch(actor.tenantId(), actor.userId(), batch.ids());
-            yield new UserDirectoryPageResponse(
-                toResponses(found), DirectoryPageMetadata.ofBatch(found.size()), DirectoryPageLinks.NONE);
-          }
-        };
-    return ResponseEntity.ok(response);
+    return measured(
+        ids == null ? "list" : "batch",
+        () -> {
+          Actor actor = resolveActor(authentication);
+          accessGuard.checkCeiling(actor.tenantId(), actor.userId());
+          return ResponseEntity.ok(
+              switch (DirectoryPageRequest.parse(status, page, size, ids, email)) {
+                case DirectoryPageRequest.ListPage list -> {
+                  DirectoryPage<DirectoryUserView> result =
+                      userDirectoryService.list(
+                          actor.tenantId(), actor.userId(), list.status(), list.page(), list.size());
+                  yield new UserDirectoryPageResponse(
+                      toResponses(result.items()),
+                      DirectoryPageMetadata.of(result),
+                      DirectoryPageLinks.of(BASE_PATH, list.status(), result));
+                }
+                case DirectoryPageRequest.Batch batch -> {
+                  List<DirectoryUserView> found =
+                      userDirectoryService.batch(actor.tenantId(), actor.userId(), batch.ids());
+                  yield new UserDirectoryPageResponse(
+                      toResponses(found),
+                      DirectoryPageMetadata.ofBatch(found.size()),
+                      DirectoryPageLinks.NONE);
+                }
+              });
+        });
   }
 
   /**
@@ -117,11 +143,18 @@ public class UserDirectoryController {
   @ApiResponse(responseCode = "400", description = "userId is not a canonical UUID")
   @ApiResponse(responseCode = "403", description = "Missing user:directory:read")
   @ApiResponse(responseCode = "404", description = "No such user in the caller's tenant")
+  @ApiResponse(responseCode = "429", description = "USER_DIR_002: too many directory requests")
   public ResponseEntity<UserDirectoryEntryResponse> getUser(
       Authentication authentication, @PathVariable("userId") String userId) {
-    Actor actor = resolveActor(authentication);
-    UUID id = parseUuid(userId);
-    return ResponseEntity.ok(toResponse(userDirectoryService.get(actor.tenantId(), actor.userId(), id)));
+    return measured(
+        "get",
+        () -> {
+          Actor actor = resolveActor(authentication);
+          accessGuard.checkCeiling(actor.tenantId(), actor.userId());
+          UUID id = parseUuid(userId);
+          return ResponseEntity.ok(
+              toResponse(userDirectoryService.get(actor.tenantId(), actor.userId(), id)));
+        });
   }
 
   /**
@@ -144,17 +177,52 @@ public class UserDirectoryController {
       description = "email blank, longer than 320, or not well formed; body invalid or over 1 KiB")
   @ApiResponse(responseCode = "403", description = "Missing user:directory:read")
   @ApiResponse(responseCode = "415", description = "Content-Type is not application/json")
-  @ApiResponse(responseCode = "429", description = "USER_DIR_001: too many lookups; see Retry-After")
+  @ApiResponse(responseCode = "429", description = "USER_DIR_001 or USER_DIR_002: too many requests; see Retry-After")
   public ResponseEntity<UserLookupResponse> lookupUser(
       Authentication authentication, @Valid @RequestBody UserLookupRequest request) {
-    Actor actor = resolveActor(authentication);
-    List<UserDirectoryEntryResponse> data =
-        userDirectoryService
-            .lookup(actor.tenantId(), actor.userId(), request.email())
-            .map(UserDirectoryController::toResponse)
-            .stream()
-            .toList();
-    return ResponseEntity.ok(new UserLookupResponse(data));
+    return measured(
+        "lookup",
+        () -> {
+          Actor actor = resolveActor(authentication);
+          accessGuard.checkCeiling(actor.tenantId(), actor.userId());
+          accessGuard.checkLookup(actor.tenantId(), actor.userId());
+          Optional<DirectoryUserView> found =
+              userDirectoryService.lookup(actor.tenantId(), actor.userId(), request.email());
+          meterRegistry
+              .counter(METRIC_LOOKUP_RESULT, "result", found.isPresent() ? "hit" : "miss")
+              .increment();
+          return ResponseEntity.ok(
+              new UserLookupResponse(
+                  found.map(UserDirectoryController::toResponse).stream().toList()));
+        });
+  }
+
+  /**
+   * Runs one directory operation and records {@code requests{operation, outcome}} and {@code
+   * duration{operation}}. Outcomes are {@code ok}, {@code not_found}, {@code invalid}, {@code
+   * throttled} and, for anything else (an authorization failure, a server error), {@code error}.
+   * No tag carries a tenant, a user or an email.
+   */
+  private <T> T measured(String operation, Supplier<T> action) {
+    Timer.Sample sample = Timer.start(meterRegistry);
+    String outcome = "error";
+    try {
+      T result = action.get();
+      outcome = "ok";
+      return result;
+    } catch (RateLimitException e) {
+      outcome = "throttled";
+      throw e;
+    } catch (ResourceNotFoundException e) {
+      outcome = "not_found";
+      throw e;
+    } catch (FieldValidationException e) {
+      outcome = "invalid";
+      throw e;
+    } finally {
+      meterRegistry.counter(METRIC_REQUESTS, "operation", operation, "outcome", outcome).increment();
+      sample.stop(meterRegistry.timer(METRIC_DURATION, "operation", operation));
+    }
   }
 
   private static List<UserDirectoryEntryResponse> toResponses(List<DirectoryUserView> views) {

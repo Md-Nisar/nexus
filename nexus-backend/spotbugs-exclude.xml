@@ -216,4 +216,18 @@
         <Class name="com.example.nexus.rbac.application.CallerAuthorizationService" />
         <Bug pattern="EI_EXPOSE_REP2" />
     </Match>
+    <!--
+      US-019 T-006: DirectoryReadAuthEventAdapter and UserDirectoryController constructor-inject the
+      Spring-managed singleton MeterRegistry (and, for the adapter, the ObjectMapper) and store them
+      directly. Same rationale as RbacAuthEventAdapter and AccessReviewService above: shared
+      infrastructure singletons with no sensible defensive copy.
+    -->
+    <Match>
+        <Class name="com.example.nexus.identity.infrastructure.audit.DirectoryReadAuthEventAdapter" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
+    <Match>
+        <Class name="com.example.nexus.identity.interfaces.rest.UserDirectoryController" />
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
 </FindBugsFilter>
