@@ -6,9 +6,12 @@ import {
   NxBadge,
   NxButton,
   NxCard,
+  NxCheckbox,
+  NxChip,
   MenuItem,
   NxInput,
   NxMenu,
+  NxSearchField,
   NxSelect,
   NxTable,
   NxEmptyState,
@@ -28,8 +31,11 @@ import {
     NxBadge,
     NxButton,
     NxCard,
+    NxCheckbox,
+    NxChip,
     NxInput,
     NxMenu,
+    NxSearchField,
     NxSelect,
     NxTable,
     NxEmptyState,
@@ -56,6 +62,7 @@ export class DesignSystemPreviewComponent {
   lastMenuSelection = '';
 
   // Interactive form controls
+  readonly checkedControl = new FormControl(true);
   readonly titleControl = new FormControl('');
   readonly emailControl = new FormControl('you@company.com');
   readonly errorControl = new FormControl('NXS-???');

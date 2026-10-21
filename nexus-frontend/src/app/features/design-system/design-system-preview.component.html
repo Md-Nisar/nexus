@@ -15,6 +15,8 @@
       <li><a class="ds-nav__link" href="#empty">Empty State</a></li>
       <li><a class="ds-nav__link" href="#error">Error State</a></li>
       <li><a class="ds-nav__link" href="#toast">Toast</a></li>
+      <li><a class="ds-nav__link" href="#menu">Menu</a></li>
+      <li><a class="ds-nav__link" href="#selection">Selection</a></li>
     </ul>
   </nav>
 
@@ -467,6 +469,31 @@
           (selected)="lastMenuSelection = $event"
         />
         <span data-testid="menu-selection">Last selected: {{ lastMenuSelection || 'none' }}</span>
+      </div>
+    </section>
+
+    <!-- Selection section: nx-checkbox, nx-search-field and nx-chip -->
+    <section id="selection" class="ds-section">
+      <h2 class="ds-section__heading">Selection — nx-checkbox, nx-search-field, nx-chip</h2>
+      <div class="ds-row">
+        <nx-checkbox label="Checked" [formControl]="checkedControl" />
+        <nx-checkbox label="Partially selected" [indeterminate]="true" />
+        <nx-checkbox
+          label="Locked"
+          [disabled]="true"
+          disabledReason="Requires the admin role"
+          testId="preview-checkbox-locked"
+        />
+      </div>
+      <div class="ds-row">
+        <nx-search-field label="Search issues" placeholder="Search issues" />
+        <nx-search-field label="Find by email" placeholder="Find by email" mode="submit" />
+      </div>
+      <div class="ds-row">
+        <nx-chip label="Admins" />
+        <nx-chip label="Active" variant="success" />
+        <nx-chip label="Billing" variant="warning" [removable]="true" />
+        <nx-chip label="Suspended" variant="error" [removable]="true" />
       </div>
     </section>
   </main>

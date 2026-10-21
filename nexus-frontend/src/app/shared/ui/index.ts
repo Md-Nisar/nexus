@@ -118,7 +118,14 @@ export type { ButtonVariant, ButtonSize } from './button/button';
 export { NxCard } from './card/card';
 export type { CardElevation } from './card/card';
 
+export { NxCheckbox } from './checkbox/checkbox';
+
+export { NxChip } from './chip/chip';
+
 export { NxInput } from './input/input';
+
+export { NxSearchField } from './search-field/search-field';
+export type { SearchMode } from './search-field/search-field';
 
 export { NxSelect } from './select/select';
 export type { SelectOption } from './select/select';
