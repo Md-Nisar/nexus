@@ -1,0 +1,32 @@
+:host {
+  display: block;
+}
+
+.nx-breadcrumb__list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nx-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--nx-font-family);
+  font-size: var(--nx-text-sm);
+  color: var(--nx-color-on-surface-muted);
+}
+
+.nx-breadcrumb__item + .nx-breadcrumb__item::before {
+  content: '/';
+  margin-inline-end: var(--nx-space-2);
+  color: var(--nx-color-on-surface-faint);
+}
+
+.nx-breadcrumb__link {
+  color: var(--nx-color-primary);
+  text-decoration: underline;
+}
+
+.nx-breadcrumb__current {
+  color: var(--nx-color-on-surface);
+  font-weight: var(--nx-weight-medium);
+}

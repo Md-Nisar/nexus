@@ -5,15 +5,22 @@ import { ThemeService } from '../../core/theme.service';
 import {
   NxBadge,
   NxButton,
+  NxBreadcrumb,
   NxCard,
   NxCheckbox,
   NxChip,
   MenuItem,
   NxInput,
   NxMenu,
+  NxPageHeader,
   NxSearchField,
   NxSelect,
+  NxSkeleton,
   NxTable,
+  NxTabs,
+  NxTooltip,
+  BreadcrumbItem,
+  NavTab,
   NxEmptyState,
   NxErrorState,
   NxToast,
@@ -30,14 +37,19 @@ import {
     MatIconModule,
     NxBadge,
     NxButton,
+    NxBreadcrumb,
     NxCard,
     NxCheckbox,
     NxChip,
     NxInput,
     NxMenu,
+    NxPageHeader,
     NxSearchField,
     NxSelect,
+    NxSkeleton,
     NxTable,
+    NxTabs,
+    NxTooltip,
     NxEmptyState,
     NxErrorState,
   ],
@@ -62,6 +74,15 @@ export class DesignSystemPreviewComponent {
   lastMenuSelection = '';
 
   // Interactive form controls
+  readonly previewTabs: readonly NavTab[] = [
+    { label: 'Design system', path: '/design-system' },
+    { label: 'Dashboard', path: '/dashboard' },
+  ];
+  readonly breadcrumbItems: readonly BreadcrumbItem[] = [
+    { label: 'Home', path: '/dashboard' },
+    { label: 'Design system', path: '/design-system' },
+    { label: 'Navigation' },
+  ];
   readonly checkedControl = new FormControl(true);
   readonly titleControl = new FormControl('');
   readonly emailControl = new FormControl('you@company.com');

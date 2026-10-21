@@ -118,6 +118,9 @@ export type { ButtonVariant, ButtonSize } from './button/button';
 export { NxCard } from './card/card';
 export type { CardElevation } from './card/card';
 
+export { NxBreadcrumb } from './breadcrumb/breadcrumb';
+export type { BreadcrumbItem } from './breadcrumb/breadcrumb';
+
 export { NxCheckbox } from './checkbox/checkbox';
 
 export { NxChip } from './chip/chip';
@@ -127,8 +130,16 @@ export { NxInput } from './input/input';
 export { NxSearchField } from './search-field/search-field';
 export type { SearchMode } from './search-field/search-field';
 
+export { NxPageHeader } from './page-header/page-header';
+
 export { NxSelect } from './select/select';
 export type { SelectOption } from './select/select';
+
+export { NxSkeleton } from './skeleton/skeleton';
+export type { SkeletonVariant } from './skeleton/skeleton';
+
+export { NxTabs } from './tabs/tabs';
+export type { NavTab } from './tabs/tabs';
 
 export { NxTable } from './table/table';
 export type { TableColumn, CellType } from './table/table';
@@ -138,6 +149,8 @@ export type { DialogData } from './dialog/dialog';
 
 export { NxMenu } from './menu/menu';
 export type { MenuItem } from './menu/menu';
+
+export { NxTooltip } from './tooltip/tooltip';
 
 export { NxToast } from './toast/toast';
 export type { ToastVariant, ToastOptions } from './toast/toast';

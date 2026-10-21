@@ -17,6 +17,7 @@
       <li><a class="ds-nav__link" href="#toast">Toast</a></li>
       <li><a class="ds-nav__link" href="#menu">Menu</a></li>
       <li><a class="ds-nav__link" href="#selection">Selection</a></li>
+      <li><a class="ds-nav__link" href="#navigation">Navigation</a></li>
     </ul>
   </nav>
 
@@ -25,7 +26,9 @@
     <!-- Page header: title, theme toggle, and description -->
     <header class="ds-header">
       <div class="ds-header__top">
-        <h1 class="ds-header__title">Design System</h1>
+        <nx-page-header title="Design System">
+          <nx-breadcrumb slot="breadcrumb" [items]="breadcrumbItems" />
+        </nx-page-header>
         <!-- Theme toggle: switches between light and dark mode; icon changes with theme -->
         <nx-button
           variant="ghost"
@@ -494,6 +497,25 @@
         <nx-chip label="Active" variant="success" />
         <nx-chip label="Billing" variant="warning" [removable]="true" />
         <nx-chip label="Suspended" variant="error" [removable]="true" />
+      </div>
+    </section>
+
+    <!-- Navigation section: nx-tabs, nx-skeleton, nxTooltip (nx-breadcrumb and nx-page-header: page title above) -->
+    <section id="navigation" class="ds-section">
+      <h2 class="ds-section__heading">
+        Navigation — nx-tabs, nx-skeleton, nxTooltip (nx-breadcrumb and nx-page-header: page title
+        above)
+      </h2>
+      <nx-tabs [tabs]="previewTabs" ariaLabel="Preview sections" />
+      <div class="ds-row">
+        <a class="ds-nav__link" href="#navigation" nxTooltip="Supplementary hint only">
+          Hover or focus me
+        </a>
+      </div>
+      <div class="ds-row" aria-busy="true">
+        <nx-skeleton variant="circle" />
+        <nx-skeleton [lines]="3" width="240px" />
+        <nx-skeleton variant="rect" width="160px" />
       </div>
     </section>
   </main>

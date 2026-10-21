@@ -100,14 +100,6 @@
     margin-bottom: var(--nx-space-2);
   }
 
-  &__title {
-    font-size: var(--nx-text-3xl);
-    font-weight: var(--nx-weight-semibold);
-    letter-spacing: var(--nx-tracking-headline);
-    color: var(--nx-color-on-surface);
-    margin: 0;
-  }
-
   &__subtitle {
     font-size: var(--nx-text-base);
     color: var(--nx-color-on-surface-faint);
