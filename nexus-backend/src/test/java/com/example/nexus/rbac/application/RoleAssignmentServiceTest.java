@@ -84,6 +84,9 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 @Tag("UnitTest")
 class RoleAssignmentServiceTest {
 
+  // The assigner of a locked holder row; irrelevant to every test here except where named.
+  private static final UUID ANY_ASSIGNER = UUID.randomUUID();
+
   private static final int MAX_DENIALS = 5;
   private static final int WINDOW_SECONDS = 60;
   private static final long RETRY_AFTER_SECONDS = 37;
@@ -257,7 +260,7 @@ class RoleAssignmentServiceTest {
   }
 
   private static ActiveAssignmentHolder holder(UUID userId, UUID roleId) {
-    return new ActiveAssignmentHolder(UUID.randomUUID(), userId, roleId);
+    return new ActiveAssignmentHolder(UUID.randomUUID(), userId, roleId, ANY_ASSIGNER);
   }
 
   private ActiveAssignmentRef stubRevokeTarget(Role role) {
@@ -1600,7 +1603,7 @@ class RoleAssignmentServiceTest {
     ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
     stubAdminDefiningTarget(
         List.of(
-            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId),
+            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId, ANY_ASSIGNER),
             holder(UUID.randomUUID(), roleId)));
     lenientCallerIsUnionHolder();
 
@@ -1634,7 +1637,7 @@ class RoleAssignmentServiceTest {
     ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
     stubAdminDefiningTarget(
         List.of(
-            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId),
+            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId, ANY_ASSIGNER),
             holder(UUID.randomUUID(), roleId)));
     lenientCallerIsAdministrator();
 
@@ -1652,7 +1655,8 @@ class RoleAssignmentServiceTest {
   @Test
   void should_denyNotTenantAdminWithoutReadingHoldings_when_callerIsNotAnAdministratorAndLacksPermissions() {
     ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
-    stubAdminDefiningTarget(List.of(new ActiveAssignmentHolder(ref.id(), targetUserId, roleId)));
+    stubAdminDefiningTarget(List.of(new ActiveAssignmentHolder(
+            ref.id(), targetUserId, roleId, ANY_ASSIGNER)));
 
     assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
         .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.NOT_TENANT_ADMIN));
@@ -1667,7 +1671,8 @@ class RoleAssignmentServiceTest {
     ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
     stubAdminDefiningTarget(
         List.of(
-            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId), holder(actorId, roleId)));
+            new ActiveAssignmentHolder(
+                    ref.id(), targetUserId, roleId, ANY_ASSIGNER), holder(actorId, roleId)));
     stubCallerHoldsP1Only();
 
     assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
@@ -1685,7 +1690,8 @@ class RoleAssignmentServiceTest {
   @Test
   void should_return403NotLockoutConflict_when_nonAdministratorRevokesTheLastAdministrator() {
     ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
-    stubAdminDefiningTarget(List.of(new ActiveAssignmentHolder(ref.id(), targetUserId, roleId)));
+    stubAdminDefiningTarget(List.of(new ActiveAssignmentHolder(
+            ref.id(), targetUserId, roleId, ANY_ASSIGNER)));
     lenientCallerIsUnionHolder();
 
     assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
@@ -1699,7 +1705,8 @@ class RoleAssignmentServiceTest {
   @Test
   void should_throwLastAdminRoleException_when_administratorRevokesTheirOwnLastAssignment() {
     ActiveAssignmentRef ref = stubRevokeTargetFor(actorId, role("ADMIN_LIKE"));
-    stubAdminDefiningTarget(List.of(new ActiveAssignmentHolder(ref.id(), actorId, roleId)));
+    stubAdminDefiningTarget(List.of(new ActiveAssignmentHolder(
+            ref.id(), actorId, roleId, ANY_ASSIGNER)));
     stubCallerIsAdministrator();
 
     assertThatThrownBy(() -> service.revoke(actor, actorId, roleId, ctx))
@@ -1718,7 +1725,7 @@ class RoleAssignmentServiceTest {
     ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
     stubAdminDefiningTarget(
         List.of(
-            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId),
+            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId, ANY_ASSIGNER),
             holder(actorId, roleId)));
     stubCallerIsAdministrator();
     when(userRoleAssignmentPort.revoke(eq(ref.id()), any())).thenReturn(1);
@@ -1743,8 +1750,9 @@ class RoleAssignmentServiceTest {
     ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
     stubAdminDefiningTarget(
         List.of(
-            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId),
-            new ActiveAssignmentHolder(UUID.randomUUID(), targetUserId, otherAdminRoleId),
+            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId, ANY_ASSIGNER),
+            new ActiveAssignmentHolder(
+                    UUID.randomUUID(), targetUserId, otherAdminRoleId, ANY_ASSIGNER),
             holder(actorId, otherAdminRoleId)),
         otherAdminRoleId);
     stubCallerIsAdministrator();
@@ -1762,7 +1770,7 @@ class RoleAssignmentServiceTest {
     ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
     stubAdminDefiningTarget(
         List.of(
-            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId),
+            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId, ANY_ASSIGNER),
             holder(actorId, otherAdminRoleId)),
         otherAdminRoleId);
     stubCallerIsAdministrator();
@@ -1784,7 +1792,7 @@ class RoleAssignmentServiceTest {
     ActiveAssignmentRef ref = stubRevokeTargetFor(actorId, role("ADMIN_LIKE"));
     stubAdminDefiningTarget(
         List.of(
-            new ActiveAssignmentHolder(ref.id(), actorId, roleId),
+            new ActiveAssignmentHolder(ref.id(), actorId, roleId, ANY_ASSIGNER),
             holder(UUID.randomUUID(), notAdminDefiningRoleId)));
     stubCallerIsAdministrator();
 
@@ -1799,9 +1807,10 @@ class RoleAssignmentServiceTest {
     UUID otherUserId = UUID.randomUUID();
     UUID otherRoleId = UUID.randomUUID();
     Set<UUID> adminDefiningRoleIds = Set.of(otherRoleId);
-    ActiveAssignmentHolder revoked = new ActiveAssignmentHolder(refId, targetUserId, roleId);
+    ActiveAssignmentHolder revoked = new ActiveAssignmentHolder(
+            refId, targetUserId, roleId, ANY_ASSIGNER);
     ActiveAssignmentHolder other =
-        new ActiveAssignmentHolder(UUID.randomUUID(), otherUserId, otherRoleId);
+        new ActiveAssignmentHolder(UUID.randomUUID(), otherUserId, otherRoleId, ANY_ASSIGNER);
 
     boolean natural =
         RoleAssignmentService.wouldLeaveTenantWithoutAdministrator(
@@ -1816,7 +1825,8 @@ class RoleAssignmentServiceTest {
 
   @Test
   void should_excludeNoRow_when_revokedAssignmentIdIsNull_breakGlassUse() {
-    ActiveAssignmentHolder holder = new ActiveAssignmentHolder(UUID.randomUUID(), targetUserId, roleId);
+    ActiveAssignmentHolder holder = new ActiveAssignmentHolder(
+            UUID.randomUUID(), targetUserId, roleId, ANY_ASSIGNER);
 
     assertThat(
             RoleAssignmentService.wouldLeaveTenantWithoutAdministrator(
@@ -1850,7 +1860,9 @@ class RoleAssignmentServiceTest {
 
     ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
     stubAdminDefiningTarget(
-        List.of(new ActiveAssignmentHolder(ref.id(), targetUserId, lowBitRoleId), holder(actorId, highBitRoleId)),
+        List.of(
+            new ActiveAssignmentHolder(ref.id(), targetUserId, lowBitRoleId, ANY_ASSIGNER),
+            holder(actorId, highBitRoleId)),
         highBitRoleId);
     stubCallerIsAdministrator();
     when(userRoleAssignmentPort.revoke(eq(ref.id()), any())).thenReturn(1);
@@ -1919,7 +1931,8 @@ class RoleAssignmentServiceTest {
   @Test
   void should_recordLockHoldTimerOutcomeLockout_when_administratorRevokesTheirOwnLastAssignment() {
     ActiveAssignmentRef ref = stubRevokeTargetFor(actorId, role("ADMIN_LIKE"));
-    stubAdminDefiningTarget(List.of(new ActiveAssignmentHolder(ref.id(), actorId, roleId)));
+    stubAdminDefiningTarget(List.of(new ActiveAssignmentHolder(
+            ref.id(), actorId, roleId, ANY_ASSIGNER)));
     stubCallerIsAdministrator();
 
     assertThatThrownBy(() -> service.revoke(actor, actorId, roleId, ctx))
@@ -1935,7 +1948,8 @@ class RoleAssignmentServiceTest {
   void should_recordLockHoldTimerOutcomeRevoked_when_adminDefiningRevokeSucceeds() {
     ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
     stubAdminDefiningTarget(
-        List.of(new ActiveAssignmentHolder(ref.id(), targetUserId, roleId), holder(actorId, roleId)));
+        List.of(new ActiveAssignmentHolder(
+                ref.id(), targetUserId, roleId, ANY_ASSIGNER), holder(actorId, roleId)));
     stubCallerIsAdministrator();
     when(userRoleAssignmentPort.revoke(eq(ref.id()), any())).thenReturn(1);
 
@@ -2005,7 +2019,7 @@ class RoleAssignmentServiceTest {
     ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
     stubAdminDefiningTarget(
         List.of(
-            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId),
+            new ActiveAssignmentHolder(ref.id(), targetUserId, roleId, ANY_ASSIGNER),
             holder(actorId, roleId),
             holder(UUID.randomUUID(), roleId)));
     stubCallerIsAdministrator();
@@ -2025,7 +2039,8 @@ class RoleAssignmentServiceTest {
   void should_takeM10PrimeAndM11BeforeTheDecisionReads_when_revokingAdminDefiningRole() {
     ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
     stubAdminDefiningTarget(
-        List.of(new ActiveAssignmentHolder(ref.id(), targetUserId, roleId), holder(actorId, roleId)));
+        List.of(new ActiveAssignmentHolder(
+                ref.id(), targetUserId, roleId, ANY_ASSIGNER), holder(actorId, roleId)));
     stubCallerIsAdministrator();
     when(userRoleAssignmentPort.revoke(eq(ref.id()), any())).thenReturn(1);
 
@@ -2112,7 +2127,8 @@ class RoleAssignmentServiceTest {
   @Test
   void should_logAdministratorRequiredWarnWithIdsOnly_when_revokeOfAdminDefiningRoleDenied() {
     ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
-    stubAdminDefiningTarget(List.of(new ActiveAssignmentHolder(ref.id(), targetUserId, roleId)));
+    stubAdminDefiningTarget(List.of(new ActiveAssignmentHolder(
+            ref.id(), targetUserId, roleId, ANY_ASSIGNER)));
     lenientCallerIsUnionHolder();
     ListAppender<ILoggingEvent> logs = startLogCapture();
 
@@ -2505,7 +2521,8 @@ class RoleAssignmentServiceTest {
   @Test
   void should_callRecordDenialOnThrottlePort_when_anAdministratorRequirementDeniesRevoke() {
     ActiveAssignmentRef ref = stubRevokeTarget(role("ADMIN_LIKE"));
-    stubAdminDefiningTarget(List.of(new ActiveAssignmentHolder(ref.id(), targetUserId, roleId)));
+    stubAdminDefiningTarget(List.of(new ActiveAssignmentHolder(
+            ref.id(), targetUserId, roleId, ANY_ASSIGNER)));
     lenientCallerIsUnionHolder();
 
     assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))

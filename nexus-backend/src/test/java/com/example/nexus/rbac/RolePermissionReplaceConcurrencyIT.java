@@ -5,11 +5,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.example.nexus.TestcontainersConfiguration;
 import com.example.nexus.common.domain.PreconditionFailedException;
 import com.example.nexus.common.domain.RequestContext;
+import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.identity.domain.EmailCipher;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
+import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.application.RoleManagementService;
+import com.example.nexus.rbac.domain.AttachProvenanceConflictException;
 import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
@@ -53,8 +56,10 @@ import org.springframework.test.context.ActiveProfiles;
 import org.testcontainers.containers.MySQLContainer;
 
 /**
- * US-019 T-018 (design §10.4, §10.8 cases (a), (b), (c), (g); RC-55.4, RC-63(a), T-T24): the B8
- * replace races on the role-row path, 50 iterations each, with the <b>application connected as
+ * US-019 T-018 and T-019 (design §10.4, §10.8 cases (a) to (g); RC-55.4, RC-63(a), T-T24,
+ * RC-57.1): the B8 replace races on the role-row path ((a), (b), (c), (g)) and the set-lock path
+ * ((d) promotion versus delete, (e) demotion versus assign, (f) promotion versus revoke), 50
+ * iterations each, with the <b>application connected as
  * {@code nexus_app}</b>, never the Testcontainers user (the US-016 D5 trap): {@link
  * NexusAppConnection} makes {@code nexus_app} the primary datasource's credentials while Flyway
  * keeps migrating as the container user through its own connection details. Fixtures are seeded
@@ -63,8 +68,10 @@ import org.testcontainers.containers.MySQLContainer;
  * <p>Arrival order is forced, not hoped for: a "gate" connection X-locks the role row, the racers
  * are started one at a time and each is observed queued in {@code
  * performance_schema.data_lock_waits} (read as root, which nexus_app cannot) before the next starts
- * or the gate commits. No case here flips a role's admin-defining class, so RES-45 does not apply
- * and any exception other than the expected 412 (a 1213 deadlock above all) fails the run.
+ * or the gate commits. The set-lock cases flip R's class only inside the B8 that holds R's locks,
+ * and no racer here classifies R from a state another racer flips mid-flight on a different lock
+ * order, so RES-45 does not apply: any exception other than each case's expected outcomes (a 1213
+ * deadlock above all) fails the run.
  */
 @SpringBootTest(properties = "spring.datasource.hikari.maximum-pool-size=15")
 @Import({
@@ -111,6 +118,7 @@ class RolePermissionReplaceConcurrencyIT {
   }
 
   @Autowired private RoleManagementService roleManagementService;
+  @Autowired private RoleAssignmentService roleAssignmentService;
   @Autowired private JpaUserRepository userRepository;
   @Autowired private JpaRoleRepository roleRepository;
   @Autowired private JpaRolePermissionRepository rolePermissionRepository;
@@ -279,22 +287,172 @@ class RolePermissionReplaceConcurrencyIT {
     }
   }
 
+  // ── Set-lock path (T-019, design §10.4, §10.8 cases (d), (e), (f)) ───────────────────
+
+  /**
+   * (d) A PUT promoting R and a DELETE of R, queued behind the gate in both arrival orders. Both
+   * start at R's row (the promotion: row, then set lock; the delete of a non-admin-defining role:
+   * row, then its holder read), so they serialise there: the promotion applies and the delete
+   * follows, or the delete wins and the PUT finds the row gone (404). Never a deadlock.
+   */
+  @Test
+  void should_serialiseWithoutDeadlock_when_aPromotionAndADeleteOfTheRoleQueueInEitherOrder()
+      throws Exception {
+    List<UUID> catalogue = catalogueIds();
+    RoleChangeActor admin = seedEditor(catalogue.toArray(UUID[]::new));
+    UUID[] allButOne = catalogue.subList(1, catalogue.size()).toArray(UUID[]::new);
+    Set<Outcome> replaceOutcomes = new HashSet<>();
+    for (int i = 0; i < ITERATIONS; i++) {
+      boolean replaceArrivesFirst = i % 2 == 0;
+      Role role = seedRole(allButOne);
+      String v0 = version(role, allButOne);
+      Callable<Outcome> promote = () -> replace(admin, role, Set.copyOf(catalogue), v0);
+      Callable<Outcome> delete = () -> softDelete(admin, role);
+
+      Future<Outcome> replaced;
+      Future<Outcome> deleted;
+      try (Connection gate = lockRoleRowAsNexusApp(role)) {
+        if (replaceArrivesFirst) {
+          replaced = executor.submit(promote);
+          awaitLockWaiters(1);
+          deleted = executor.submit(delete);
+        } else {
+          deleted = executor.submit(delete);
+          awaitLockWaiters(1);
+          replaced = executor.submit(promote);
+        }
+        awaitLockWaiters(2);
+        gate.commit();
+      }
+      Outcome replaceOutcome = await(replaced);
+      Outcome deleteOutcome = await(deleted);
+
+      assertThat(deleteOutcome).as("iteration %d: the delete always applies", i)
+          .isEqualTo(Outcome.OK);
+      assertThat(replaceOutcome).as("iteration %d", i).isIn(Outcome.OK, Outcome.NOT_FOUND);
+      assertThat(isDeleted(role)).as("iteration %d", i).isTrue();
+      assertThat(rolePermissionIds(role))
+          .as("iteration %d (replace first: %s): a serial order", i, replaceArrivesFirst)
+          .isEqualTo(replaceOutcome == Outcome.OK ? Set.copyOf(catalogue) : Set.of(allButOne));
+      replaceOutcomes.add(replaceOutcome);
+    }
+    assertThat(replaceOutcomes).as("both serial orders occurred").hasSize(2);
+  }
+
+  /**
+   * (e) A PUT demoting an admin-defining R races an assign of R. Both take the set lock first, so
+   * they serialise on it: both always succeed and the final state is the demoted set with the new
+   * holder. Never a deadlock.
+   */
+  @Test
+  void should_serialiseOnTheSetLock_when_aDemotionRacesAnAssignOfTheRole() throws Exception {
+    List<UUID> catalogue = catalogueIds();
+    RoleChangeActor admin = seedEditor(catalogue.toArray(UUID[]::new));
+    Set<UUID> demoted = new HashSet<>(catalogue);
+    demoted.remove(AUDIT_READ);
+    for (int i = 0; i < ITERATIONS; i++) {
+      Role role = seedRole(catalogue.toArray(UUID[]::new));
+      String v0 = version(role, catalogue.toArray(UUID[]::new));
+      User assignee = seedUser();
+      CyclicBarrier start = new CyclicBarrier(2);
+
+      Future<Outcome> replaced =
+          executor.submit(barrier(start, () -> replace(admin, role, demoted, v0)));
+      Future<Outcome> assigned =
+          executor.submit(barrier(start, () -> assign(admin, assignee.getId(), role)));
+
+      assertThat(await(replaced)).as("iteration %d", i).isEqualTo(Outcome.OK);
+      assertThat(await(assigned)).as("iteration %d", i).isEqualTo(Outcome.OK);
+      assertThat(rolePermissionIds(role)).as("iteration %d", i).isEqualTo(demoted);
+      assertThat(activeHolderAssigners(role)).as("iteration %d", i).hasSize(1);
+    }
+  }
+
+  /**
+   * (f) A PUT promoting R, whose one holder was assigned by a non-administrator, races a revoke of
+   * that holder. The promotion's set lock reads the holder row current: either the revoke
+   * committed first and the promotion applies, or the promotion sees the holder and is 409 {@code
+   * RBAC_010} while the revoke then applies. Never an admin-defining R with a non-administrator-
+   * assigned holder, never a deadlock.
+   */
+  @Test
+  void should_neverLeaveANonAdministratorAssignedHolderOnAPromotedRole_when_aPromotionRacesARevoke()
+      throws Exception {
+    List<UUID> catalogue = catalogueIds();
+    RoleChangeActor admin = seedEditor(catalogue.toArray(UUID[]::new));
+    User nonAdministrator = seedUser();
+    UUID[] allButOne = catalogue.subList(1, catalogue.size()).toArray(UUID[]::new);
+    for (int i = 0; i < ITERATIONS; i++) {
+      Role role = seedRole(allButOne);
+      String v0 = version(role, allButOne);
+      User holder = seedUser();
+      userRoleRepository.save(
+          new UserRole(
+              uuidGenerator.newId(), holder.getId(), role.getId(), tenantId,
+              nonAdministrator.getId()));
+      CyclicBarrier start = new CyclicBarrier(2);
+
+      Future<Outcome> replaced =
+          executor.submit(barrier(start, () -> replace(admin, role, Set.copyOf(catalogue), v0)));
+      Future<Outcome> revoked =
+          executor.submit(barrier(start, () -> revoke(admin, holder.getId(), role)));
+      Outcome replaceOutcome = await(replaced);
+
+      assertThat(await(revoked)).as("iteration %d: the revoke always applies", i)
+          .isEqualTo(Outcome.OK);
+      assertThat(replaceOutcome).as("iteration %d", i)
+          .isIn(Outcome.OK, Outcome.PROVENANCE_CONFLICT);
+      assertThat(rolePermissionIds(role))
+          .as("iteration %d", i)
+          .isEqualTo(replaceOutcome == Outcome.OK ? Set.copyOf(catalogue) : Set.of(allButOne));
+      assertThat(activeHolderAssigners(role)).as("iteration %d", i).isEmpty();
+    }
+  }
+
   // ── Racers ───────────────────────────────────────────────────────────────────────────
 
   private enum Outcome {
     OK,
-    PRECONDITION_FAILED
+    PRECONDITION_FAILED,
+    NOT_FOUND,
+    PROVENANCE_CONFLICT
   }
 
-  /** Anything but success or the 412 propagates and fails the test (a 1213 above all). */
   private Outcome replace(Role role, Set<UUID> target, String ifMatch) {
+    return replace(actor, role, target, ifMatch);
+  }
+
+  /**
+   * Anything but success, the 412, the 404 of a role deleted first or the 409 {@code RBAC_010}
+   * propagates and fails the test (a 1213 above all).
+   */
+  private Outcome replace(RoleChangeActor caller, Role role, Set<UUID> target, String ifMatch) {
     try {
       roleManagementService.replaceRolePermissions(
-          actor, role.getId(), target, ifMatch, RequestContext.UNKNOWN);
+          caller, role.getId(), target, ifMatch, RequestContext.UNKNOWN);
       return Outcome.OK;
     } catch (PreconditionFailedException e) {
       return Outcome.PRECONDITION_FAILED;
+    } catch (ResourceNotFoundException e) {
+      return Outcome.NOT_FOUND;
+    } catch (AttachProvenanceConflictException e) {
+      return Outcome.PROVENANCE_CONFLICT;
     }
+  }
+
+  private Outcome softDelete(RoleChangeActor caller, Role role) {
+    roleManagementService.softDeleteRole(caller, role.getId(), RequestContext.UNKNOWN);
+    return Outcome.OK;
+  }
+
+  private Outcome assign(RoleChangeActor caller, UUID userId, Role role) {
+    roleAssignmentService.assign(caller, userId, role.getId(), RequestContext.UNKNOWN);
+    return Outcome.OK;
+  }
+
+  private Outcome revoke(RoleChangeActor caller, UUID userId, Role role) {
+    roleAssignmentService.revoke(caller, userId, role.getId(), RequestContext.UNKNOWN);
+    return Outcome.OK;
   }
 
   private Outcome attach(Role role, UUID permissionId) {
@@ -369,12 +527,15 @@ class RolePermissionReplaceConcurrencyIT {
 
   // ── Fixtures and reads (all as nexus_app) ────────────────────────────────────────────
 
-  private RoleChangeActor seedEditor(UUID... permissionIds) {
+  private User seedUser() {
     String email = "rprc-" + UUID.randomUUID() + "@example.com";
     String hmac = "hmac-" + UUID.randomUUID().toString().replace("-", "");
-    User editor =
-        userRepository.save(
-            new User(uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac, "test-hash", null));
+    return userRepository.save(
+        new User(uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac, "test-hash", null));
+  }
+
+  private RoleChangeActor seedEditor(UUID... permissionIds) {
+    User editor = seedUser();
     Role editorRole = seedRole(permissionIds);
     userRoleRepository.save(
         new UserRole(
@@ -406,6 +567,33 @@ class RolePermissionReplaceConcurrencyIT {
             .stream()
             .map(RolePermissionReplaceConcurrencyIT::fromBytes)
             .toList());
+  }
+
+  private List<UUID> catalogueIds() {
+    return jdbc.queryForList("SELECT id FROM permissions ORDER BY name", byte[].class).stream()
+        .map(RolePermissionReplaceConcurrencyIT::fromBytes)
+        .toList();
+  }
+
+  private boolean isDeleted(Role role) {
+    Integer live =
+        jdbc.queryForObject(
+            "SELECT COUNT(*) FROM roles WHERE id = ? AND deleted_at IS NULL",
+            Integer.class,
+            (Object) toBytes(role.getId()));
+    return live != null && live == 0;
+  }
+
+  /** The assigners of R's active holders, ids only. */
+  private List<UUID> activeHolderAssigners(Role role) {
+    return jdbc
+        .queryForList(
+            "SELECT assigned_by FROM user_roles WHERE role_id = ? AND revoked_at IS NULL",
+            byte[].class,
+            (Object) toBytes(role.getId()))
+        .stream()
+        .map(RolePermissionReplaceConcurrencyIT::fromBytes)
+        .toList();
   }
 
   private int grantedAuditRows(Role role) {

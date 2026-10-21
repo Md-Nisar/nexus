@@ -24,6 +24,7 @@ import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RolePermission;
+import com.example.nexus.rbac.domain.RolePermissionSetVersion;
 import com.example.nexus.rbac.domain.UserRole;
 import com.example.nexus.rbac.infrastructure.persistence.JpaPermissionCatalogueRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
@@ -39,9 +40,11 @@ import java.sql.Statement;
 import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CyclicBarrier;
@@ -112,11 +115,13 @@ import org.testcontainers.containers.MySQLContainer;
 // own JPA transaction/connection; Spring Boot's Hikari default (10) is one short of that, so one
 // thread is guaranteed to queue for a pool slot -- a connection-pool artifact, not a deadlock,
 // that was eating into harness C's awaitTermination budget. Raised past 11 with headroom for the
-// scheduled AuthEventRetryBuffer.drain job sharing the same pool.
+// scheduled AuthEventRetryBuffer.drain job sharing the same pool. US-019 T-019 adds two B8
+// threads (13 in all), each briefly holding a second connection for its after-commit holder read,
+// so the pool is raised again.
 @SpringBootTest(
     properties = {
       "nexus.rbac.denial-throttle.max-denials=100",
-      "spring.datasource.hikari.maximum-pool-size=15"
+      "spring.datasource.hikari.maximum-pool-size=20"
     })
 @Import(TestcontainersConfiguration.class)
 @ActiveProfiles("test")
@@ -489,6 +494,14 @@ class LastAdminLockoutIT {
    *   <li>1× {@code revoke(BENIGN)} by {@code admin1}, targeting {@code admin3} — the SAME row a
    *       {@code revoke(TENANT_ADMIN)} thread above concurrently touches. Same purpose as the
    *       previous item, exercised on the revoke side.
+   *   <li>US-019 T-019: 1× B8 demotion by {@code admin1} of a third admin-defining role ({@code
+   *       B8-DEMOTE}, one holder): set lock, then role row (RC-46), then its current reads. {@code
+   *       admin1} stays an administrator through {@code TENANT_ADMIN}, so it succeeds
+   *       deterministically.
+   *   <li>US-019 T-019: 1× B8 promotion by {@code admin1} of a role one permission short ({@code
+   *       B8-PROMOTE}, one holder assigned by {@code admin1}): role row, then set lock. The holder's
+   *       assigner is an administrator throughout, so step 11 passes and it succeeds
+   *       deterministically.
    * </ol>
    *
    * <p>This is the one harness that can exercise §7.2 property 3's cross-method claim at all:
@@ -558,10 +571,27 @@ class LastAdminLockoutIT {
     Role benignRole = seedRole(tenantId, "BENIGN", "mixed");
     seedActiveAssignment(tenantId, benignRole.getId(), admin3.getId(), admin1.getId());
 
+    // US-019 T-019 B8 fixtures: one admin-defining role to demote, one role to promote.
+    List<UUID> catalogue = List.copyOf(permissionCatalogueRepository.findCatalogueIds());
+    Role demoteRole = seedRole(tenantId, "B8-DEMOTE", "mixed");
+    grantWholeCatalogue(demoteRole.getId());
+    seedActiveAssignment(
+        tenantId, demoteRole.getId(), seedUser(tenantId, "mixed-b8-demote-holder").getId(),
+        admin1.getId());
+    Set<UUID> demotedSet = new HashSet<>(catalogue.subList(1, catalogue.size()));
+    String demoteVersion = RolePermissionSetVersion.of(demoteRole.getId(), catalogue);
+    Role promoteRole = seedRole(tenantId, "B8-PROMOTE", "mixed");
+    List<UUID> oneShort = catalogue.subList(1, catalogue.size());
+    oneShort.forEach(id -> grantPermission(promoteRole.getId(), id));
+    seedActiveAssignment(
+        tenantId, promoteRole.getId(), seedUser(tenantId, "mixed-b8-promote-holder").getId(),
+        admin1.getId());
+    String promoteVersion = RolePermissionSetVersion.of(promoteRole.getId(), oneShort);
+
     RoleChangeActor adminActor = new RoleChangeActor(admin1.getId(), tenantId);
     RoleChangeActor nonAdminActor = new RoleChangeActor(nonAdminUser.getId(), tenantId);
 
-    int threadCount = 11;
+    int threadCount = 13;
     CyclicBarrier barrier = new CyclicBarrier(threadCount);
     ExecutorService executor = Executors.newFixedThreadPool(threadCount);
     List<Future<String>> futures = new ArrayList<>();
@@ -626,9 +656,17 @@ class LastAdminLockoutIT {
     futures.add(submitRevoke(executor, barrier, adminActor, admin3.getId(), benignRole.getId(),
         "REVOKE_BENIGN_SUCCESS"));
 
+    // 12-13 (US-019 T-019): a B8 demotion (set lock, then role row) and a B8 promotion (role row,
+    // then set lock), racing every set-lock thread above. Nothing is caught: success is the only
+    // legitimate outcome, so a 412, a 403, a 409 or a 1213 fails the run.
+    futures.add(submitReplace(executor, barrier, adminActor, demoteRole.getId(), demotedSet,
+        demoteVersion, "B8_DEMOTE_SUCCESS"));
+    futures.add(submitReplace(executor, barrier, adminActor, promoteRole.getId(),
+        Set.copyOf(catalogue), promoteVersion, "B8_PROMOTE_SUCCESS"));
+
     executor.shutdown();
-    boolean terminated = executor.awaitTermination(15, TimeUnit.SECONDS);
-    assertThat(terminated).as("all 11 threads must complete within the timeout").isTrue();
+    boolean terminated = executor.awaitTermination(30, TimeUnit.SECONDS);
+    assertThat(terminated).as("all 13 threads must complete within the timeout").isTrue();
 
     Map<String, Integer> counts = new HashMap<>();
     for (Future<String> future : futures) {
@@ -659,6 +697,12 @@ class LastAdminLockoutIT {
     assertThat(counts.getOrDefault("REVOKE_BENIGN_SUCCESS", 0))
         .as("the benign revoke against a concurrently-touched privileged row must succeed: "
             + counts).isEqualTo(1);
+    assertThat(counts.getOrDefault("B8_DEMOTE_SUCCESS", 0))
+        .as("the B8 demotion must succeed: " + counts).isEqualTo(1);
+    assertThat(counts.getOrDefault("B8_PROMOTE_SUCCESS", 0))
+        .as("the B8 promotion must succeed: " + counts).isEqualTo(1);
+    assertThat(rolePermissionIds(demoteRole.getId())).isEqualTo(demotedSet);
+    assertThat(rolePermissionIds(promoteRole.getId())).isEqualTo(Set.copyOf(catalogue));
     assertThat(counts.values().stream().mapToInt(Integer::intValue).sum())
         .as("every thread must resolve to one of the expected outcomes for its role: " + counts)
         .isEqualTo(threadCount);
@@ -667,6 +711,64 @@ class LastAdminLockoutIT {
             + " two remaining active admins after the race (admin2/admin3 both legitimately"
             + " revoked; the restored assign(TENANT_ADMIN) thread adds one -- see Javadoc, D7)")
         .isEqualTo(2);
+  }
+
+  // ── RC-57.4 (a) (US-019 T-019, RES-28, design §10.3 step 10) ─────────────────────────────
+
+  /**
+   * One administrator, whose only administrator status is two custom admin-defining roles R and
+   * R2, sends two concurrent B8 demotions: PUT R - x and PUT R2 - y, each authorised at step 6
+   * through the other role. Ordering is forced: a gate holds the caller's two {@code user_roles}
+   * rows {@code FOR UPDATE} (the set lock's rows) until both PUTs are queued on them, so both have
+   * passed their snapshot authorization. The set lock then serialises them and the second decides
+   * step 10 from the current read: the other role is no longer admin-defining, so 403. Exactly one
+   * succeeds and the tenant never reaches zero administrators, in every iteration.
+   */
+  @Test
+  void should_letExactlyOneDemotionSucceed_when_oneCallerDemotesBothOfTheirAdminRolesConcurrently()
+      throws Exception {
+    List<UUID> catalogue = List.copyOf(permissionCatalogueRepository.findCatalogueIds());
+    for (int i = 0; i < 10; i++) {
+      UUID tenantId = uuidGenerator.newId();
+      User caller = seedUser(tenantId, "rc574a-caller");
+      Role first = seedRole(tenantId, "RC574A-R", "rc574a");
+      Role second = seedRole(tenantId, "RC574A-R2", "rc574a");
+      grantWholeCatalogue(first.getId());
+      grantWholeCatalogue(second.getId());
+      seedActiveAssignment(tenantId, first.getId(), caller.getId(), caller.getId());
+      seedActiveAssignment(tenantId, second.getId(), caller.getId(), caller.getId());
+      RoleChangeActor actor = new RoleChangeActor(caller.getId(), tenantId);
+      String fullVersionFirst = RolePermissionSetVersion.of(first.getId(), catalogue);
+      String fullVersionSecond = RolePermissionSetVersion.of(second.getId(), catalogue);
+      Set<UUID> withoutFirstId = new HashSet<>(catalogue.subList(1, catalogue.size()));
+
+      ExecutorService executor = Executors.newFixedThreadPool(2);
+      Future<String> demoteFirst;
+      Future<String> demoteSecond;
+      try (Connection gate = lockAssignmentRows(tenantId, first.getId(), second.getId())) {
+        demoteFirst =
+            executor.submit(
+                () -> replaceOutcome(actor, first.getId(), withoutFirstId, fullVersionFirst));
+        demoteSecond =
+            executor.submit(
+                () -> replaceOutcome(actor, second.getId(), withoutFirstId, fullVersionSecond));
+        awaitLockWaiters(2);
+        gate.commit();
+      }
+      executor.shutdown();
+      assertThat(executor.awaitTermination(30, TimeUnit.SECONDS)).isTrue();
+
+      assertThat(List.of(demoteFirst.get(), demoteSecond.get()))
+          .as("iteration %d: exactly one demotion succeeds", i)
+          .containsExactlyInAnyOrder("OK", "DENIED_" + DenialReason.GRANT_EXCEEDS_CALLER);
+      long adminDefiningLeft =
+          List.of(first, second).stream()
+              .filter(role -> rolePermissionIds(role.getId()).containsAll(catalogue))
+              .count();
+      assertThat(adminDefiningLeft)
+          .as("iteration %d: the caller is still an administrator through one role", i)
+          .isEqualTo(1);
+    }
   }
 
   // ── Scenario 4: second, non-bootstrap tenant (R-9 regression) ──────────────────────────
@@ -1266,6 +1368,96 @@ class LastAdminLockoutIT {
                 return conflictOutcome;
               }
             });
+  }
+
+  /** Harness C: submits one B8 replace thread, awaiting {@code barrier} first; nothing caught. */
+  private Future<String> submitReplace(
+      ExecutorService executor, CyclicBarrier barrier, RoleChangeActor actor, UUID roleId,
+      Set<UUID> target, String ifMatch, String successOutcome) {
+    return executor.submit(
+        (Callable<String>)
+            () -> {
+              barrier.await(5, TimeUnit.SECONDS);
+              roleManagementService.replaceRolePermissions(
+                  actor, roleId, target, ifMatch, requestContext());
+              return successOutcome;
+            });
+  }
+
+  /** RC-57.4 (a): "OK", or the 403's reason; anything else propagates and fails the test. */
+  private String replaceOutcome(
+      RoleChangeActor actor, UUID roleId, Set<UUID> target, String ifMatch) {
+    try {
+      roleManagementService.replaceRolePermissions(
+          actor, roleId, target, ifMatch, requestContext());
+      return "OK";
+    } catch (InsufficientPermissionException e) {
+      return "DENIED_" + e.getReason();
+    }
+  }
+
+  /**
+   * A gate transaction holding the active {@code user_roles} rows of {@code roleIds} {@code FOR
+   * UPDATE} through the index the set lock uses, so a set-lock verb queues on it.
+   */
+  private Connection lockAssignmentRows(UUID tenantId, UUID... roleIds) throws SQLException {
+    Connection gate =
+        DriverManager.getConnection(
+            mysqlContainer.getJdbcUrl(), mysqlContainer.getUsername(), mysqlContainer.getPassword());
+    gate.setAutoCommit(false);
+    String placeholders = String.join(", ", java.util.Collections.nCopies(roleIds.length, "?"));
+    try (java.sql.PreparedStatement lock =
+        gate.prepareStatement(
+            "SELECT id FROM user_roles FORCE INDEX (fk_user_roles_role_tenant) WHERE role_id IN ("
+                + placeholders
+                + ") AND tenant_id = ? AND revoked_at IS NULL FOR UPDATE")) {
+      for (int i = 0; i < roleIds.length; i++) {
+        lock.setBytes(i + 1, toBytes(roleIds[i]));
+      }
+      lock.setBytes(roleIds.length + 1, toBytes(tenantId));
+      try (ResultSet rs = lock.executeQuery()) {
+        assertThat(rs.next()).isTrue();
+      }
+    }
+    return gate;
+  }
+
+  /** Waits (bounded) until at least {@code transactions} distinct transactions wait on a lock. */
+  private void awaitLockWaiters(int transactions) throws SQLException, InterruptedException {
+    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15);
+    try (Connection observer =
+            DriverManager.getConnection(
+                mysqlContainer.getJdbcUrl(), "root", mysqlContainer.getPassword());
+        Statement statement = observer.createStatement()) {
+      while (System.nanoTime() < deadline) {
+        try (ResultSet rs =
+            statement.executeQuery(
+                "SELECT COUNT(DISTINCT REQUESTING_ENGINE_TRANSACTION_ID)"
+                    + " FROM performance_schema.data_lock_waits")) {
+          if (rs.next() && rs.getInt(1) >= transactions) {
+            return;
+          }
+        }
+        Thread.sleep(5);
+      }
+    }
+    throw new AssertionError("fewer than " + transactions + " transactions queued on a lock");
+  }
+
+  private Set<UUID> rolePermissionIds(UUID roleId) {
+    return new HashSet<>(
+        jdbc
+            .queryForList(
+                "SELECT permission_id FROM role_permissions WHERE role_id = ?",
+                byte[].class,
+                (Object) toBytes(roleId))
+            .stream()
+            .map(
+                bytes -> {
+                  ByteBuffer buf = ByteBuffer.wrap(bytes);
+                  return new UUID(buf.getLong(), buf.getLong());
+                })
+            .toList());
   }
 
   private RequestContext requestContext() {

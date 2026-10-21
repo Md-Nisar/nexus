@@ -13,5 +13,11 @@ import java.util.UUID;
  * check to the tenant's <em>caller-qualifying</em> role population (literal {@code TENANT_ADMIN}
  * or a role carrying ALL THREE dangerous permissions) rather than the broader ANY-admin-equivalent
  * lock-set population — see {@code RoleAssignmentService#wouldLeaveTenantWithoutCallerQualifyingHolder}.
+ *
+ * <p><b>{@code assignedBy} added by US-019 T-019</b> (design §10.3 step 11): a promoting
+ * permission-set replace judges the provenance rule ({@code RBAC_010}) from the rows the set lock
+ * holds, so the locked rows must carry who assigned each holder. It is the {@code NOT NULL} {@code
+ * user_roles.assigned_by}; for a break-glass grant it equals {@code userId}.
  */
-public record ActiveAssignmentHolder(UUID assignmentId, UUID userId, UUID roleId) {}
+public record ActiveAssignmentHolder(
+    UUID assignmentId, UUID userId, UUID roleId, UUID assignedBy) {}

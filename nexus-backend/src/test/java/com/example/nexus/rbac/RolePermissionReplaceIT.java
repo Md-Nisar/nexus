@@ -2,12 +2,17 @@ package com.example.nexus.rbac;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.example.nexus.TestcontainersConfiguration;
 import com.example.nexus.identity.application.port.out.JwtPort;
 import com.example.nexus.identity.domain.EmailCipher;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
+import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.application.port.out.PermissionEpochPort;
 import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
@@ -17,6 +22,8 @@ import com.example.nexus.rbac.domain.UserRole;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -29,6 +36,7 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -47,7 +55,7 @@ import org.springframework.web.client.DefaultResponseErrorHandler;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * US-019 T-018 (B8, design §10.3 role-row path, §10.5, §10.8): {@code PUT
+ * US-019 T-018 and T-019 (B8, design §10.3 role-row and set-lock paths, §10.5, §10.8): {@code PUT
  * /api/v1/roles/{roleId}/permissions} end to end, through the real filter chain with minted JWTs
  * against MySQL and Redis. Every test uses a fresh tenant, so audit-row counts are per tenant.
  *
@@ -67,6 +75,7 @@ class RolePermissionReplaceIT {
   private static final UUID USER_WRITE = RbacSeededPermissionIds.USER_WRITE;
   private static final UUID AUDIT_READ = RbacSeededPermissionIds.AUDIT_READ;
   private static final UUID TENANT_WRITE = RbacSeededPermissionIds.TENANT_WRITE;
+  private static final UUID USER_DIRECTORY_READ = RbacSeededPermissionIds.USER_DIRECTORY_READ;
   private static final Set<String> STANDARD_PROBLEM_FIELDS =
       Set.of("type", "title", "status", "detail", "instance", "code", "traceId");
 
@@ -81,6 +90,7 @@ class RolePermissionReplaceIT {
   @Autowired private JwtPort jwtPort;
   @Autowired private PermissionEpochPort epochPort;
   @Autowired private JdbcTemplate jdbc;
+  @Autowired private MeterRegistry meterRegistry;
 
   private RestTemplate restTemplate;
   private UUID tenantId;
@@ -362,21 +372,111 @@ class RolePermissionReplaceIT {
     assertThat(put.getBody()).containsEntry("code", "RBAC_003");
   }
 
-  /** Interim (T-018 until T-019): a change that would make R admin-defining is refused, unlocked. */
+  // ── Set-lock path (T-019, design §10.3 steps 8, 10, 11 and 14) ──────────────────────
+
+  /**
+   * A demotion by an administrator through another role succeeds, bumps the holders' epochs once
+   * after commit, and emits the ceased WARN and its counter (RC-63(f)).
+   */
   @Test
-  void should_return409InterimGuard_when_theReplaceWouldMakeTheRoleAdminDefining() {
+  void should_demoteAndBumpHoldersAndSignalCeased_when_anAdministratorElsewhereDemotesARole() {
     List<UUID> catalogue = catalogueIds();
     String token = editorToken(catalogue.toArray(UUID[]::new));
-    List<UUID> allButOne = catalogue.subList(1, catalogue.size());
-    Role target = seedRole("promote", allButOne.toArray(UUID[]::new));
+    Role target = seedRole("demote", catalogue.toArray(UUID[]::new));
+    User holder = seedUser("demote-holder");
+    assign(holder, target);
+    epochPort.bump(tenantId, List.of(holder.getId()));
+    OptionalLong epochBefore = epochPort.current(tenantId, holder.getId());
+    List<UUID> demoted = catalogue.stream().filter(id -> !id.equals(AUDIT_READ)).toList();
+    double ceasedBefore = ceasedCount();
+    ListAppender<ILoggingEvent> logs = startLogCapture();
+    ResponseEntity<Map> put;
+    try {
+      put =
+          putPermissions(
+              token, target.getId(), demoted, versionOf(target, catalogue.toArray(UUID[]::new)));
+    } finally {
+      stopLogCapture(logs);
+    }
+
+    assertThat(put.getStatusCode()).isEqualTo(HttpStatus.OK);
+    assertThat(rolePermissionIds(target.getId())).containsExactlyInAnyOrderElementsOf(demoted);
+    assertThat(epochBefore).isPresent();
+    assertThat(epochPort.current(tenantId, holder.getId()))
+        .as("the holder's epoch was bumped after commit")
+        .isNotEqualTo(epochBefore);
+    assertThat(ceasedCount() - ceasedBefore).isEqualTo(1.0);
+    ILoggingEvent ceased =
+        logs.list.stream()
+            .filter(e -> "RBAC_ROLE_CEASED_ADMIN_DEFINING".equals(keyValues(e).get("event")))
+            .filter(e -> target.getId().equals(keyValues(e).get("roleId")))
+            .findFirst()
+            .orElseThrow();
+    assertThat(ceased.getLevel()).isEqualTo(Level.WARN);
+    assertThat(keyValues(ceased))
+        .containsEntry("tenantId", tenantId)
+        .containsEntry("holderCount", 1);
+  }
+
+  /** Step 11 (RES-26): a holder assigned by a non-administrator blocks the promotion with 409. */
+  @Test
+  void should_return409Rbac010AndChangeNothing_when_promotingARoleWithANonAdministratorAssignedHolder() {
+    List<UUID> catalogue = catalogueIds();
+    String token = editorToken(catalogue.toArray(UUID[]::new));
+    UUID[] allButOne = catalogue.subList(1, catalogue.size()).toArray(UUID[]::new);
+    Role target = seedRole("promote-provenance", allButOne);
+    User nonAdministrator = seedUser("promote-assigner");
+    assign(nonAdministrator, seedRole("assigner-role", ROLE_READ));
+    User holder = seedUser("promote-holder");
+    assignBy(holder, target, nonAdministrator);
+
+    ResponseEntity<Map> put =
+        putPermissions(token, target.getId(), catalogue, versionOf(target, allButOne));
+
+    assertThat(put.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+    assertThat(put.getBody()).containsEntry("code", "RBAC_010");
+    assertThat(rolePermissionIds(target.getId())).containsExactlyInAnyOrder(allButOne);
+    assertThat(rolePermissionAuditRows()).isZero();
+  }
+
+  /** A promotion whose holders were all assigned by an administrator applies on the set lock. */
+  @Test
+  void should_promoteTheRole_when_everyHolderWasAssignedByAnAdministrator() {
+    List<UUID> catalogue = catalogueIds();
+    User editor = seedUser("promote-admin");
+    assign(editor, seedRole("promote-admin-role", catalogue.toArray(UUID[]::new)));
+    String token = jwtPort.issue(editor).token();
+    UUID[] allButOne = catalogue.subList(1, catalogue.size()).toArray(UUID[]::new);
+    Role target = seedRole("promote-ok", allButOne);
+    assignBy(seedUser("promote-ok-holder"), target, editor);
+
+    ResponseEntity<Map> put =
+        putPermissions(token, target.getId(), catalogue, versionOf(target, allButOne));
+
+    assertThat(put.getStatusCode()).isEqualTo(HttpStatus.OK);
+    assertThat(rolePermissionIds(target.getId())).containsExactlyInAnyOrderElementsOf(catalogue);
+  }
+
+  /**
+   * §4.8 on B8 (RC-60.3, RC-66.1): a holder of role:write and user:directory:read who is not an
+   * administrator cannot add user:directory:read to a role.
+   */
+  @Test
+  void should_return403AdministratorRequired_when_aNonAdministratorAddsTheDirectoryPermission() {
+    String token = editorToken(ROLE_READ, ROLE_WRITE, USER_READ, USER_DIRECTORY_READ);
+    Role target = seedRole("pii", USER_READ);
 
     ResponseEntity<Map> put =
         putPermissions(
-            token, target.getId(), catalogue, versionOf(target, allButOne.toArray(UUID[]::new)));
+            token, target.getId(), List.of(USER_READ, USER_DIRECTORY_READ),
+            versionOf(target, USER_READ));
 
-    assertThat(put.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
-    assertThat(put.getBody()).containsEntry("code", "RBAC_REPLACE_SET_LOCK_PATH_PENDING");
-    assertThat(rolePermissionIds(target.getId())).containsExactlyInAnyOrderElementsOf(allButOne);
+    assertThat(put.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(put.getBody())
+        .containsEntry("code", "RBAC_001")
+        .containsEntry("reason", "ADMINISTRATOR_REQUIRED");
+    assertThat(rolePermissionIds(target.getId())).containsExactly(USER_READ);
+    assertThat(rolePermissionAuditRows()).isZero();
   }
 
   // ── Atomicity (US-018 TS-5 trigger) ──────────────────────────────────────────────────
@@ -431,8 +531,38 @@ class RolePermissionReplaceIT {
   }
 
   private void assign(User user, Role role) {
+    assignBy(user, role, user);
+  }
+
+  private void assignBy(User user, Role role, User assigner) {
     userRoleRepository.save(
-        new UserRole(uuidGenerator.newId(), user.getId(), role.getId(), tenantId, user.getId()));
+        new UserRole(
+            uuidGenerator.newId(), user.getId(), role.getId(), tenantId, assigner.getId()));
+  }
+
+  private double ceasedCount() {
+    Counter counter = meterRegistry.find("nexus.rbac.role_ceased_admin_defining").counter();
+    return counter == null ? 0.0 : counter.count();
+  }
+
+  private static ListAppender<ILoggingEvent> startLogCapture() {
+    ListAppender<ILoggingEvent> appender = new ListAppender<>();
+    appender.start();
+    ((Logger) LoggerFactory.getLogger(RoleManagementService.class)).addAppender(appender);
+    return appender;
+  }
+
+  private static void stopLogCapture(ListAppender<ILoggingEvent> appender) {
+    ((Logger) LoggerFactory.getLogger(RoleManagementService.class)).detachAppender(appender);
+    appender.stop();
+  }
+
+  private static Map<String, Object> keyValues(ILoggingEvent event) {
+    Map<String, Object> values = new java.util.HashMap<>();
+    if (event.getKeyValuePairs() != null) {
+      event.getKeyValuePairs().forEach(kv -> values.put(kv.key, kv.value));
+    }
+    return values;
   }
 
   private String versionOf(Role role, UUID... permissionIds) {

@@ -19,7 +19,6 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
-import com.example.nexus.common.domain.ConflictException;
 import com.example.nexus.common.domain.PreconditionFailedException;
 import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.domain.ResourceNotFoundException;
@@ -83,6 +82,9 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 @ExtendWith(MockitoExtension.class)
 @Tag("UnitTest")
 class RoleManagementServiceTest {
+
+  // The assigner of a locked holder row; irrelevant to every test here except where named.
+  private static final UUID ANY_ASSIGNER = UUID.randomUUID();
 
   private static final long MAX_ROLES_PER_TENANT = 500L;
   private static final String ROLE_WRITE = "role:write";
@@ -2040,7 +2042,8 @@ class RoleManagementServiceTest {
   // ---------------------------------------------------------------------------------------
 
   private ActiveAssignmentHolder holder(UUID holderRoleId) {
-    return new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), holderRoleId);
+    return new ActiveAssignmentHolder(
+            UUID.randomUUID(), UUID.randomUUID(), holderRoleId, ANY_ASSIGNER);
   }
 
   /** A custom, non-admin-defining role the caller may delete: it carries P1 and the caller holds P1. */
@@ -2932,42 +2935,301 @@ class RoleManagementServiceTest {
         .isEqualTo(1L);
   }
 
+  // ---------------------------------------------------------------------------------------
+  // replaceRolePermissions() on the set-lock path -- US-019 T-019 (design §10.3 steps 8, 10, 11
+  // and 14, §10.4; RC-57.1, RC-56, RC-63(f)). Demotion: set lock, then role row. Promotion: role
+  // row, then set lock. Both end with role_permissions FOR SHARE: R's, then the locked roles'.
+  // ---------------------------------------------------------------------------------------
+
+  private static final Set<UUID> ONE_SHORT = Set.of(P1, P2, P3, ROLE_READ_ID);
+
+  private static List<RolePermissionRef> refs(UUID role, Set<UUID> permissionIds) {
+    return permissionIds.stream().map(id -> new RolePermissionRef(role, id)).toList();
+  }
+
+  private static List<RolePermissionRef> concat(
+      List<RolePermissionRef> first, List<RolePermissionRef> second) {
+    List<RolePermissionRef> all = new ArrayList<>(first);
+    all.addAll(second);
+    return all;
+  }
+
+  private ActiveAssignmentHolder lockedRow(UUID userId, UUID holderRoleId, UUID assignedBy) {
+    return new ActiveAssignmentHolder(UUID.randomUUID(), userId, holderRoleId, assignedBy);
+  }
+
   /**
-   * Interim (T-018 until T-019): a change whose before or after state is admin-defining needs the
-   * set-lock path, so it is refused after authorization and before any lock.
+   * R carries {@code rSnapshot}; the snapshot M10' says {@code otherAdminRole} (and R, if it is
+   * complete) is admin-defining; the caller holds {@code otherAdminRole} with the whole catalogue
+   * (an administrator through another role, M13). Returns the ascending lock set.
+   */
+  private List<UUID> stubSetLockSnapshot(Set<UUID> rSnapshot, UUID otherAdminRole) {
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(REPLACE_CATALOGUE);
+    stubRolePermissions(rSnapshot);
+    stubCallerHoldsRefs(
+        refs(otherAdminRole, REPLACE_CATALOGUE).toArray(RolePermissionRef[]::new));
+    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId))
+        .thenReturn(concat(refs(otherAdminRole, REPLACE_CATALOGUE), refs(roleId, rSnapshot)));
+    return RoleAssignmentService.buildAscendingLockSet(Set.of(otherAdminRole), roleId);
+  }
+
+  /** Steps 8 to 10 under the set lock: the locked rows, R's row, and both current reads. */
+  private void stubSetLockState(
+      List<UUID> lockSet,
+      List<ActiveAssignmentHolder> lockedRows,
+      Set<UUID> rCurrent,
+      UUID otherAdminRole,
+      Set<UUID> otherCurrent) {
+    when(userRoleAssignmentPort.lockActiveAssignmentHolders(tenantId, lockSet))
+        .thenReturn(lockedRows);
+    stubLockedState(rCurrent);
+    when(userRoleAssignmentPort.lockRolePermissionsForRoles(tenantId, lockSet))
+        .thenReturn(concat(refs(roleId, rCurrent), refs(otherAdminRole, otherCurrent)));
+  }
+
+  @Test
+  void should_takeTheSetLockThenTheRoleRowThenBothCurrentReads_when_demotingAnAdminDefiningRole() {
+    UUID other = UUID.randomUUID();
+    List<UUID> lockSet = stubSetLockSnapshot(REPLACE_CATALOGUE, other);
+    stubSetLockState(
+        lockSet, List.of(lockedRow(actorId, other, actorId)), REPLACE_CATALOGUE, other,
+        REPLACE_CATALOGUE);
+    when(roleManagementPort.detachPermissions(roleId, Set.of(P1))).thenReturn(1);
+
+    RolePermissionSet result = replace(Set.of(P2, P3, ROLE_READ_ID, ROLE_WRITE_ID),
+        versionOf(REPLACE_CATALOGUE));
+
+    assertThat(result.version()).isEqualTo(versionOf(Set.of(P2, P3, ROLE_READ_ID, ROLE_WRITE_ID)));
+    InOrder order = inOrder(userRoleAssignmentPort, roleManagementPort);
+    order.verify(userRoleAssignmentPort).findHeldRolePermissionIdsForAuthorization(actorId, tenantId);
+    order.verify(userRoleAssignmentPort).lockActiveAssignmentHolders(tenantId, lockSet);
+    order.verify(roleManagementPort).lockRoleRow(roleId, tenantId);
+    order.verify(roleManagementPort).lockPermissionIdsForRole(roleId);
+    order.verify(userRoleAssignmentPort).lockRolePermissionsForRoles(tenantId, lockSet);
+    order.verify(roleManagementPort).detachPermissions(roleId, Set.of(P1));
+    assertThat(replaceCount("replaced", "set_lock")).isEqualTo(1.0);
+  }
+
+  /**
+   * RC-57.1, RES-28: the caller's other role was admin-defining in the snapshot (step 6 passed)
+   * but a concurrent demotion committed before the set lock was granted. The current read under
+   * the lock decides: the caller is no longer an administrator through another role, so 403.
    */
   @Test
-  void should_refuseBeforeAnyLock_when_theReplaceWouldMakeTheRoleAdminDefining() {
-    stubReplace(Set.of(P1, P2, P3, ROLE_READ_ID), P1, P2, P3);
+  void should_throw403AndWriteNothing_when_theCallersOtherRoleIsNoLongerAdminDefiningUnderTheLock() {
+    UUID other = UUID.randomUUID();
+    List<UUID> lockSet = stubSetLockSnapshot(REPLACE_CATALOGUE, other);
+    stubSetLockState(
+        lockSet, List.of(lockedRow(actorId, other, actorId)), REPLACE_CATALOGUE, other,
+        Set.of(P2, P3, ROLE_READ_ID, ROLE_WRITE_ID));
 
     assertThatThrownBy(
-            () -> replace(REPLACE_CATALOGUE, versionOf(Set.of(P1, P2, P3, ROLE_READ_ID))))
-        .isInstanceOf(ConflictException.class)
-        .hasFieldOrPropertyWithValue(
-            "code", RoleManagementService.INTERIM_SET_LOCK_PATH_GUARD_CODE);
-    verifyNoLockTaken();
+            () -> replace(Set.of(P2, P3, ROLE_READ_ID, ROLE_WRITE_ID), versionOf(REPLACE_CATALOGUE)))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .extracting(e -> ((InsufficientPermissionException) e).getReason())
+        .isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER);
+    verifyNoWrite();
+    assertThat(replaceCount("denied", "set_lock")).isEqualTo(1.0);
+  }
+
+  /** The administrator answer comes from the locked rows: a caller revoked meanwhile is denied. */
+  @Test
+  void should_throw403_when_theCallerHoldsNoLockedRowOfAnotherAdminDefiningRole() {
+    UUID other = UUID.randomUUID();
+    List<UUID> lockSet = stubSetLockSnapshot(REPLACE_CATALOGUE, other);
+    stubSetLockState(
+        lockSet, List.of(lockedRow(actorId, roleId, actorId)), REPLACE_CATALOGUE, other,
+        REPLACE_CATALOGUE);
+
+    assertThatThrownBy(
+            () -> replace(Set.of(P2, P3, ROLE_READ_ID, ROLE_WRITE_ID), versionOf(REPLACE_CATALOGUE)))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .extracting(e -> ((InsufficientPermissionException) e).getReason())
+        .isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER);
     verifyNoWrite();
   }
 
+  /** A 412 under the set lock still precedes step 10: nothing is classified on a changed set. */
   @Test
-  void should_refuseBeforeAnyLock_when_anAdministratorElsewhereDemotesAnAdminDefiningRole() {
-    UUID otherAdminRole = UUID.randomUUID();
-    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
-    when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(REPLACE_CATALOGUE);
-    stubRolePermissions(REPLACE_CATALOGUE);
-    stubCallerHoldsRefs(
-        REPLACE_CATALOGUE.stream()
-            .map(id -> new RolePermissionRef(otherAdminRole, id))
-            .toArray(RolePermissionRef[]::new));
+  void should_throw412BeforeClassifying_when_theLockedCurrentSetDiffersOnTheSetLockPath() {
+    UUID other = UUID.randomUUID();
+    List<UUID> lockSet = stubSetLockSnapshot(REPLACE_CATALOGUE, other);
+    when(userRoleAssignmentPort.lockActiveAssignmentHolders(tenantId, lockSet))
+        .thenReturn(List.of(lockedRow(actorId, other, actorId)));
+    stubLockedState(ONE_SHORT);
 
-    assertThatThrownBy(() -> replace(Set.of(P1), versionOf(REPLACE_CATALOGUE)))
-        .isInstanceOf(ConflictException.class)
-        .hasFieldOrPropertyWithValue(
-            "code", RoleManagementService.INTERIM_SET_LOCK_PATH_GUARD_CODE);
-    verifyNoLockTaken();
+    assertThatThrownBy(() -> replace(ONE_SHORT, versionOf(REPLACE_CATALOGUE)))
+        .isInstanceOf(PreconditionFailedException.class);
+    verify(userRoleAssignmentPort, never()).lockRolePermissionsForRoles(any(), any());
+    verifyNoWrite();
+    assertThat(replaceCount("precondition_failed", "set_lock")).isEqualTo(1.0);
   }
 
-  /** The guard never hides an authorised no-op on an admin-defining role: it takes no lock. */
+  @Test
+  void should_takeTheRoleRowThenTheSetLockThenBothCurrentReads_when_promotingARole() {
+    UUID other = UUID.randomUUID();
+    List<UUID> lockSet = stubSetLockSnapshot(ONE_SHORT, other);
+    stubSetLockState(
+        lockSet,
+        List.of(lockedRow(actorId, other, actorId), lockedRow(UUID.randomUUID(), roleId, actorId)),
+        ONE_SHORT, other, REPLACE_CATALOGUE);
+
+    replace(REPLACE_CATALOGUE, versionOf(ONE_SHORT));
+
+    InOrder order = inOrder(userRoleAssignmentPort, roleManagementPort);
+    order.verify(roleManagementPort).lockRoleRow(roleId, tenantId);
+    order.verify(userRoleAssignmentPort).lockActiveAssignmentHolders(tenantId, lockSet);
+    order.verify(roleManagementPort).lockPermissionIdsForRole(roleId);
+    order.verify(userRoleAssignmentPort).lockRolePermissionsForRoles(tenantId, lockSet);
+    order.verify(roleManagementPort).attachPermissions(roleId, Set.of(ROLE_WRITE_ID));
+    assertThat(replaceCount("replaced", "set_lock")).isEqualTo(1.0);
+  }
+
+  /**
+   * Step 11 (RES-26): a locked holder of R was assigned by a user who holds no locked row of a
+   * currently admin-defining role, so the promotion is 409 RBAC_010 and nothing is written.
+   */
+  @Test
+  void should_throwRbac010AndWriteNothing_when_promotingWithALockedHolderAssignedByANonAdministrator() {
+    UUID other = UUID.randomUUID();
+    UUID nonAdministrator = UUID.randomUUID();
+    List<UUID> lockSet = stubSetLockSnapshot(ONE_SHORT, other);
+    stubSetLockState(
+        lockSet,
+        List.of(
+            lockedRow(actorId, other, actorId),
+            lockedRow(UUID.randomUUID(), roleId, nonAdministrator)),
+        ONE_SHORT, other, REPLACE_CATALOGUE);
+
+    assertThatThrownBy(() -> replace(REPLACE_CATALOGUE, versionOf(ONE_SHORT)))
+        .isInstanceOf(AttachProvenanceConflictException.class)
+        .hasFieldOrPropertyWithValue("code", "RBAC_010");
+    verifyNoWrite();
+    assertThat(replaceCount("conflict", "set_lock")).isEqualTo(1.0);
+  }
+
+  /**
+   * Step 11 judges "is an administrator" against step 10's current set: the assigner holds a
+   * locked row of a role that was admin-defining in the snapshot but is not any more, so 409.
+   */
+  @Test
+  void should_throwRbac010_when_theAssignersRoleIsNoLongerAdminDefiningInTheCurrentRead() {
+    UUID other = UUID.randomUUID();
+    UUID assigner = UUID.randomUUID();
+    List<UUID> lockSet = stubSetLockSnapshot(ONE_SHORT, other);
+    stubSetLockState(
+        lockSet,
+        List.of(
+            lockedRow(actorId, other, actorId),
+            lockedRow(assigner, other, actorId),
+            lockedRow(UUID.randomUUID(), roleId, assigner)),
+        ONE_SHORT, other, ONE_SHORT);
+
+    assertThatThrownBy(() -> replace(REPLACE_CATALOGUE, versionOf(ONE_SHORT)))
+        .isInstanceOf(AttachProvenanceConflictException.class);
+    verifyNoWrite();
+  }
+
+  /** A break-glass holder (assigned by themself, an administrator) never trips RBAC_010. */
+  @Test
+  void should_promote_when_everyLockedHolderWasAssignedByACurrentAdministrator() {
+    UUID other = UUID.randomUUID();
+    UUID breakGlassAdmin = UUID.randomUUID();
+    List<UUID> lockSet = stubSetLockSnapshot(ONE_SHORT, other);
+    stubSetLockState(
+        lockSet,
+        List.of(
+            lockedRow(actorId, other, actorId),
+            lockedRow(breakGlassAdmin, other, breakGlassAdmin),
+            lockedRow(UUID.randomUUID(), roleId, breakGlassAdmin),
+            lockedRow(UUID.randomUUID(), roleId, actorId)),
+        ONE_SHORT, other, REPLACE_CATALOGUE);
+
+    RolePermissionSet result = replace(REPLACE_CATALOGUE, versionOf(ONE_SHORT));
+
+    assertThat(result.version()).isEqualTo(versionOf(REPLACE_CATALOGUE));
+    verify(roleManagementPort).attachPermissions(roleId, Set.of(ROLE_WRITE_ID));
+  }
+
+  /** RC-63(f): a committed demotion emits the ceased WARN (ids and a count) and its counter. */
+  @Test
+  void should_warnAndCountRoleCeasedAdminDefining_when_aDemotionCommits() {
+    UUID other = UUID.randomUUID();
+    List<UUID> lockSet = stubSetLockSnapshot(REPLACE_CATALOGUE, other);
+    stubSetLockState(
+        lockSet, List.of(lockedRow(actorId, other, actorId)), REPLACE_CATALOGUE, other,
+        REPLACE_CATALOGUE);
+    when(roleManagementPort.detachPermissions(roleId, Set.of(P1))).thenReturn(1);
+    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId))
+        .thenReturn(List.of(UUID.randomUUID(), UUID.randomUUID()));
+    ListAppender<ILoggingEvent> logs = startLogCapture();
+    try {
+      replace(Set.of(P2, P3, ROLE_READ_ID, ROLE_WRITE_ID), versionOf(REPLACE_CATALOGUE));
+    } finally {
+      stopLogCapture(logs);
+    }
+
+    ILoggingEvent ceased =
+        logs.list.stream()
+            .filter(e -> "RBAC_ROLE_CEASED_ADMIN_DEFINING".equals(keyValueMap(e).get("event")))
+            .findFirst()
+            .orElseThrow();
+    assertThat(ceased.getLevel()).isEqualTo(Level.WARN);
+    assertThat(keyValueMap(ceased))
+        .containsEntry("tenantId", tenantId)
+        .containsEntry("roleId", roleId)
+        .containsEntry("holderCount", 2);
+    assertThat(meterRegistry.get("nexus.rbac.role_ceased_admin_defining").counter().count())
+        .isEqualTo(1.0);
+    assertThat(meterRegistry.get("nexus.rbac.role_ceased_admin_defining").counter().getId()
+            .getTags())
+        .isEmpty();
+  }
+
+  /** The ceased signal still fires when the after-commit holder read fails, without a count. */
+  @Test
+  void should_stillWarnCeasedWithoutAHolderCount_when_theAfterCommitHolderReadFails() {
+    UUID other = UUID.randomUUID();
+    List<UUID> lockSet = stubSetLockSnapshot(REPLACE_CATALOGUE, other);
+    stubSetLockState(
+        lockSet, List.of(lockedRow(actorId, other, actorId)), REPLACE_CATALOGUE, other,
+        REPLACE_CATALOGUE);
+    when(roleManagementPort.detachPermissions(roleId, Set.of(P1))).thenReturn(1);
+    when(userRoleAssignmentPort.findActiveUserIdsForRole(roleId))
+        .thenThrow(new IllegalStateException("pool timeout"));
+    ListAppender<ILoggingEvent> logs = startLogCapture();
+    try {
+      replace(Set.of(P2, P3, ROLE_READ_ID, ROLE_WRITE_ID), versionOf(REPLACE_CATALOGUE));
+    } finally {
+      stopLogCapture(logs);
+    }
+
+    ILoggingEvent ceased =
+        logs.list.stream()
+            .filter(e -> "RBAC_ROLE_CEASED_ADMIN_DEFINING".equals(keyValueMap(e).get("event")))
+            .findFirst()
+            .orElseThrow();
+    assertThat(keyValueMap(ceased)).doesNotContainKey("holderCount");
+    assertThat(meterRegistry.get("nexus.rbac.role_ceased_admin_defining").counter().count())
+        .isEqualTo(1.0);
+  }
+
+  @Test
+  void should_notSignalCeasedAdminDefining_when_theReplacedRoleWasNotAdminDefining() {
+    stubReplace(Set.of(P1, P2), P1, P2);
+    stubLockedState(Set.of(P1, P2));
+    when(roleManagementPort.findPermissionsForRole(roleId)).thenReturn(viewsOf(P1, P2), viewsOf(P1));
+    when(roleManagementPort.detachPermissions(roleId, Set.of(P2))).thenReturn(1);
+
+    replace(Set.of(P1), versionOf(Set.of(P1, P2)));
+
+    assertThat(meterRegistry.find("nexus.rbac.role_ceased_admin_defining").counter()).isNull();
+    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
+    verify(userRoleAssignmentPort, never()).lockRolePermissionsForRoles(any(), any());
+  }
+
+  /** An authorised no-op on an admin-defining role takes no lock at all. */
   @Test
   void should_returnTheNoOp_when_theRoleIsAdminDefiningAndNothingChanges() {
     UUID otherAdminRole = UUID.randomUUID();

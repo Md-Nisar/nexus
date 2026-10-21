@@ -74,6 +74,9 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 @Tag("UnitTest")
 class BootstrapAdminServiceTest {
 
+  // The assigner of a locked holder row; irrelevant to every test here except where named.
+  private static final UUID ANY_ASSIGNER = UUID.randomUUID();
+
   private static final ChangeRef CHANGE_REF = new ChangeRef("OPS-42");
 
   // The fixture catalogue: three permission ids. A role carrying all three is admin-defining; a
@@ -194,7 +197,8 @@ class BootstrapAdminServiceTest {
   void should_refuseWithExit5_andWriteOneFailureRow_andAlert_when_lockedRowsHoldNamedTenantAdmin() {
     when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), anyList()))
         .thenReturn(
-            List.of(new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), tenantAdminRoleId)));
+            List.of(new ActiveAssignmentHolder(
+                    UUID.randomUUID(), UUID.randomUUID(), tenantAdminRoleId, ANY_ASSIGNER)));
 
     BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
 
@@ -211,7 +215,8 @@ class BootstrapAdminServiceTest {
     when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId)).thenReturn(permissions);
     when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), anyList()))
         .thenReturn(
-            List.of(new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), customRoleId)));
+            List.of(new ActiveAssignmentHolder(
+                    UUID.randomUUID(), UUID.randomUUID(), customRoleId, ANY_ASSIGNER)));
 
     BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
 
@@ -383,7 +388,8 @@ class BootstrapAdminServiceTest {
     when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId)).thenReturn(permissions);
     when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), anyList()))
         .thenReturn(
-            List.of(new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), partialRoleId)));
+            List.of(new ActiveAssignmentHolder(
+                    UUID.randomUUID(), UUID.randomUUID(), partialRoleId, ANY_ASSIGNER)));
 
     BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
 
@@ -536,7 +542,8 @@ class BootstrapAdminServiceTest {
   void should_writeExactlyOneFailureRowAndPageAfterCommit_andExit5_when_tenantHasAdmin() {
     when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), anyList()))
         .thenReturn(
-            List.of(new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), tenantAdminRoleId)));
+            List.of(new ActiveAssignmentHolder(
+                    UUID.randomUUID(), UUID.randomUUID(), tenantAdminRoleId, ANY_ASSIGNER)));
 
     BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
 
@@ -572,7 +579,8 @@ class BootstrapAdminServiceTest {
   void should_writeOnlyOneUnexpectedErrorRowAndPage_when_tenantHasAdminAndCommitFails() {
     when(userRoleAssignmentPort.lockActiveAssignmentHolders(eq(tenantId), anyList()))
         .thenReturn(
-            List.of(new ActiveAssignmentHolder(UUID.randomUUID(), UUID.randomUUID(), tenantAdminRoleId)));
+            List.of(new ActiveAssignmentHolder(
+                    UUID.randomUUID(), UUID.randomUUID(), tenantAdminRoleId, ANY_ASSIGNER)));
     doThrow(new TransactionSystemException("commit failed")).when(transactionManager).commit(any());
 
     BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
@@ -1039,7 +1047,7 @@ class BootstrapAdminServiceTest {
   }
 
   private ActiveAssignmentHolder holder(UUID userId, UUID roleId) {
-    return new ActiveAssignmentHolder(UUID.randomUUID(), userId, roleId);
+    return new ActiveAssignmentHolder(UUID.randomUUID(), userId, roleId, ANY_ASSIGNER);
   }
 
   private void lockedHolders(ActiveAssignmentHolder... holders) {

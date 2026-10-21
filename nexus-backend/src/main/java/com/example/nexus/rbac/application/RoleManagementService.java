@@ -3,7 +3,6 @@ package com.example.nexus.rbac.application;
 import static com.example.nexus.common.security.Permissions.ROLE_READ;
 import static com.example.nexus.common.security.Permissions.ROLE_WRITE;
 
-import com.example.nexus.common.domain.ConflictException;
 import com.example.nexus.common.domain.PreconditionFailedException;
 import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.domain.ResourceNotFoundException;
@@ -130,19 +129,17 @@ public class RoleManagementService {
   private static final String TAG_LOCK_PATH = "lockPath";
   private static final String LOCK_PATH_NONE = "none";
   private static final String LOCK_PATH_ROLE_ROW = "role_row";
+  private static final String LOCK_PATH_SET_LOCK = "set_lock";
   private static final String OUTCOME_REPLACED = "replaced";
   private static final String OUTCOME_NOOP = "noop";
   private static final String OUTCOME_PRECONDITION_FAILED = "precondition_failed";
+  private static final String OUTCOME_DENIED = "denied";
+  private static final String OUTCOME_CONFLICT = "conflict";
   private static final String OUTCOME_ERROR = "error";
+  private static final String COUNTER_ROLE_CEASED_ADMIN_DEFINING =
+      "nexus.rbac.role_ceased_admin_defining";
   // The set-lock hold timer of RoleAssignmentService; B8 adds operation="replace" (design §10.8).
   private static final String TIMER_LOCK_HOLD = "nexus.rbac.privileged_revoke_lock_hold";
-
-  /**
-   * US-019 T-018 interim guard, removed by T-019 (which ships in the same PR, A-7, O-3): a replace
-   * whose before or after state is admin-defining needs the set-lock path, which T-019 adds. Until
-   * then such a change is refused with this code, after authorization and before any lock.
-   */
-  static final String INTERIM_SET_LOCK_PATH_GUARD_CODE = "RBAC_REPLACE_SET_LOCK_PATH_PENDING";
 
   private final RoleManagementPort roleManagementPort;
   private final UserRoleAssignmentPort userRoleAssignmentPort;
@@ -464,7 +461,7 @@ public class RoleManagementService {
   /**
    * US-019 B8: atomically replaces the permission set of a custom role with {@code targetIds}, if
    * {@code ifMatchTag} (the one strong entity-tag the controller accepted) is the version of the
-   * set the server authorises against (design §10.3, role-row path). Steps:
+   * set the server authorises against (design §10.3, §10.4). Steps:
    *
    * <ol>
    *   <li>1-3, snapshot reads: tenant resolution (404), system-role immutability (409 {@code
@@ -477,22 +474,29 @@ public class RoleManagementService {
    *       on a demotion. Denials are 403 with WARN and no audit row (Decision 7).
    *   <li>7: {@code ifMatchTag} must equal {@code v0} (412, lock-free); an unchanged set is then
    *       the authorised no-op 200: no lock, no audit, no bump.
-   *   <li>8-9, <b>locks only after authorization</b> (T-D27): the role row {@code FOR UPDATE}
-   *       (404 if it is gone), then the current read of the role's {@code role_permissions}
-   *       {@code FOR SHARE}; its version {@code v1} must equal {@code v0}, never merely something
-   *       the client sent (RC-55.1, T-T22), or the PUT is 412. Equal versions mean the locked
-   *       state is the one steps 5-7 classified and authorised.
+   *   <li>8, <b>locks only after authorization</b> (T-D27), in the order R's current class fixes
+   *       (RC-46): an admin-defining R (a demotion) takes the set lock, then the role row {@code
+   *       FOR UPDATE}; any other R takes the role row, then the set lock iff the PUT promotes it.
+   *       A role row that is gone is 404.
+   *   <li>9: the current read of R's {@code role_permissions} {@code FOR SHARE}; its version
+   *       {@code v1} must equal {@code v0}, never merely something the client sent (RC-55.1,
+   *       T-T22), or the PUT is 412. Equal versions mean the locked state is the one steps 5-7
+   *       classified and authorised.
+   *   <li>10, set lock held (RC-57.1): which locked roles are admin-defining <b>now</b>, from a
+   *       {@code FOR SHARE} read of their {@code role_permissions}. A demotion needs a locked
+   *       {@code user_roles} row of the caller on another role that is admin-defining in this
+   *       read, else 403 {@code GRANT_EXCEEDS_CALLER}: one caller's two concurrent demotions can
+   *       never both pass (RES-28).
+   *   <li>11, promotion: 409 {@code RBAC_010} when a locked holder of R was assigned by a user who
+   *       holds no locked row of a role admin-defining in step 10's read (RES-26).
    *   <li>12-13: one bulk delete of the removes (its row count must equal their number), the
    *       inserts, and one inline Group A audit row per change with {@code operation=REPLACE} and
    *       one server-generated {@code replaceId}.
    *   <li>14-15, after commit: removes bump every holder's epoch once, otherwise adds evict the
-   *       holders' cache once; the attach signals for the added set; INFO {@code
+   *       holders' cache once; the attach signals for the added set; on a demotion, WARN {@code
+   *       RBAC_ROLE_CEASED_ADMIN_DEFINING} and its counter (RC-63(f)); INFO {@code
    *       RBAC_PERMISSION_SET_REPLACED}. Returns the new set and its version.
    * </ol>
-   *
-   * <p>Interim (T-018): a change whose before or after state is admin-defining is refused after
-   * step 7 by {@link #INTERIM_SET_LOCK_PATH_GUARD_CODE}; T-019 replaces the guard with the set-lock
-   * path.
    */
   @Transactional
   public RolePermissionSet replaceRolePermissions(
@@ -531,17 +535,31 @@ public class RoleManagementService {
       return new RolePermissionSet(
           role.id(), roleManagementPort.findPermissionsForRole(role.id()), snapshotVersion);
     }
-    refuseSetLockPathUntilSupported(actor, role, before, after);
 
+    // Past the no-op an admin-defining R always loses a permission (adds are empty: R already
+    // carries the whole catalogue), so "before" is exactly a demotion.
+    ReplacePlan plan =
+        new ReplacePlan(
+            target, adds, removes, snapshotVersion, before, !before && after, catalogueIds,
+            piiGrant);
+    String lockPath = plan.needsSetLock() ? LOCK_PATH_SET_LOCK : LOCK_PATH_ROLE_ROW;
+    SetLockRows setLockFirst = plan.demotion() ? acquireSetLock(actor, role, catalogueIds) : null;
     if (!roleManagementPort.lockRoleRow(role.id(), actor.tenantId())) {
       throw new ResourceNotFoundException("ROLE_NOT_FOUND", "No such role");
     }
     Timer.Sample lockHold = Timer.start(meterRegistry);
     try {
-      return replaceUnderRoleRowLock(
-          actor, role, target, adds, removes, snapshotVersion, piiGrant, lockHold, ctx);
+      SetLockRows setLock =
+          plan.promotion() ? acquireSetLock(actor, role, catalogueIds) : setLockFirst;
+      return replaceUnderLocks(actor, role, plan, setLock, lockPath, lockHold, ctx);
     } catch (PreconditionFailedException e) {
       stopLockHoldTimer(lockHold, OUTCOME_PRECONDITION_FAILED);
+      throw e;
+    } catch (InsufficientPermissionException e) {
+      stopLockHoldTimer(lockHold, OUTCOME_DENIED);
+      throw e;
+    } catch (AttachProvenanceConflictException e) {
+      stopLockHoldTimer(lockHold, OUTCOME_CONFLICT);
       throw e;
     } catch (RuntimeException e) {
       stopLockHoldTimer(lockHold, OUTCOME_ERROR);
@@ -549,21 +567,58 @@ public class RoleManagementService {
     }
   }
 
-  /** Steps 9 to 15 of {@link #replaceRolePermissions}, with the role row already X-locked. */
-  private RolePermissionSet replaceUnderRoleRowLock(
-      RoleChangeActor actor,
-      RoleView role,
+  /**
+   * What steps 1-7 decided, carried into the locked steps: the target and its difference from the
+   * snapshot, the snapshot version {@code v0}, the class change, the catalogue and the PII rule's
+   * outcome.
+   */
+  private record ReplacePlan(
       Set<UUID> target,
       Set<UUID> adds,
       Set<UUID> removes,
       String snapshotVersion,
-      PiiPermissionGrantRule.Outcome piiGrant,
+      boolean demotion,
+      boolean promotion,
+      Set<UUID> catalogueIds,
+      PiiPermissionGrantRule.Outcome piiGrant) {
+
+    boolean needsSetLock() {
+      return demotion || promotion;
+    }
+  }
+
+  /**
+   * Steps 9 to 15 of {@link #replaceRolePermissions}, with the role row X-locked and, when {@code
+   * setLock} is not {@code null}, the set lock held.
+   */
+  private RolePermissionSet replaceUnderLocks(
+      RoleChangeActor actor,
+      RoleView role,
+      ReplacePlan plan,
+      SetLockRows setLock,
+      String lockPath,
       Timer.Sample lockHold,
       RequestContext ctx) {
+    Set<UUID> adds = plan.adds();
+    Set<UUID> removes = plan.removes();
     Set<UUID> current = roleManagementPort.lockPermissionIdsForRole(role.id());
-    if (!RolePermissionSetVersion.of(role.id(), current).equals(snapshotVersion)) {
-      countReplace(OUTCOME_PRECONDITION_FAILED, LOCK_PATH_ROLE_ROW);
+    if (!RolePermissionSetVersion.of(role.id(), current).equals(plan.snapshotVersion())) {
+      countReplace(OUTCOME_PRECONDITION_FAILED, lockPath);
       throw new PreconditionFailedException();
+    }
+
+    if (setLock != null) {
+      Set<UUID> adminDefiningNow =
+          RbacAdministrators.adminDefiningRoleIds(
+              userRoleAssignmentPort.lockRolePermissionsForRoles(
+                  actor.tenantId(), setLock.roleIds()),
+              plan.catalogueIds());
+      if (plan.demotion()) {
+        requireAdministratorThroughAnotherLockedRole(actor, role, setLock, adminDefiningNow);
+      }
+      if (plan.promotion()) {
+        requireNoLockedHolderAssignedByNonAdministrator(actor, role, setLock, adminDefiningNow);
+      }
     }
 
     Map<UUID, String> removedNames = Map.of();
@@ -594,7 +649,7 @@ public class RoleManagementService {
     registerPostCommitSideEffects(
         () -> {
           stopLockHoldTimer(lockHold, OUTCOME_REPLACED);
-          countReplace(OUTCOME_REPLACED, LOCK_PATH_ROLE_ROW);
+          countReplace(OUTCOME_REPLACED, lockPath);
           log.atInfo()
               .addKeyValue(LOG_KEY_EVENT, "RBAC_PERMISSION_SET_REPLACED")
               .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
@@ -602,17 +657,114 @@ public class RoleManagementService {
               .addKeyValue("replaceId", replaceId)
               .addKeyValue("addedCount", adds.size())
               .addKeyValue("removedCount", removes.size())
-              .addKeyValue("lockPath", LOCK_PATH_ROLE_ROW)
+              .addKeyValue("lockPath", lockPath)
               .addKeyValue("replacedBy", actor.userId())
               .log("Role permission set replaced");
-          if (piiGrant == PiiPermissionGrantRule.Outcome.DELEGATED) {
+          if (plan.piiGrant() == PiiPermissionGrantRule.Outcome.DELEGATED) {
             piiGrantRule.recordDelegated(actor.tenantId(), actor.userId(), role.id(), null);
           }
-          applyReplaceFreshness(actor, role, adds, removes);
+          Optional<Integer> holderCount = applyReplaceFreshness(actor, role, adds, removes);
+          if (plan.demotion()) {
+            signalRoleCeasedAdminDefining(actor, role, holderCount);
+          }
         });
 
     return new RolePermissionSet(
-        role.id(), permissions, RolePermissionSetVersion.of(role.id(), target));
+        role.id(), permissions, RolePermissionSetVersion.of(role.id(), plan.target()));
+  }
+
+  /**
+   * Step 10 on a demotion (RC-25.1, RC-57.1): the caller must hold a locked {@code user_roles} row
+   * of a role other than R that is admin-defining in the current read. The snapshot said so at
+   * step 6, but a concurrent demotion or revoke that committed while this request waited on the
+   * set lock may have changed it; deciding from locked rows and the current read is what keeps one
+   * caller's two demotions from removing the tenant's last administrator. 403 {@code
+   * GRANT_EXCEEDS_CALLER}, WARN {@code RBAC_ROLE_SUBSET_DENIED} (ids only) and no audit row, as
+   * step 6's denial.
+   */
+  private void requireAdministratorThroughAnotherLockedRole(
+      RoleChangeActor actor, RoleView role, SetLockRows setLock, Set<UUID> adminDefiningNow) {
+    boolean administratorElsewhere =
+        setLock.holders().stream()
+            .anyMatch(
+                holder ->
+                    holder.userId().equals(actor.userId())
+                        && !holder.roleId().equals(role.id())
+                        && adminDefiningNow.contains(holder.roleId()));
+    if (administratorElsewhere) {
+      return;
+    }
+    log.atWarn()
+        .addKeyValue(LOG_KEY_EVENT, "RBAC_ROLE_SUBSET_DENIED")
+        .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+        .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+        .addKeyValue(LOG_KEY_ROLE_ID, role.id())
+        .addKeyValue("operation", OPERATION_REPLACE)
+        .addKeyValue("stage", "locked")
+        .log("Blocked a demotion: under the set lock the caller is no longer an administrator"
+            + " through another role");
+    countReplace(OUTCOME_DENIED, LOCK_PATH_SET_LOCK);
+    throw new InsufficientPermissionException(ROLE_WRITE, DenialReason.GRANT_EXCEEDS_CALLER);
+  }
+
+  /**
+   * Step 11 on a promotion (RES-26, as attach's narrow provenance rule, row 14): 409 {@code
+   * RBAC_010} when an active holder of R was assigned by a user who is not currently an
+   * administrator. Both sides come from the set lock's rows (R is in the lock set, so its holders
+   * are locked and an assign cannot slip in), and "is an administrator" means holding a locked row
+   * of a role admin-defining in step 10's current read. WARN {@code RBAC_ATTACH_PROVENANCE_REFUSED}
+   * (ids and a count), {@code permission_denied{reason=ATTACH_PROVENANCE}}, no audit row.
+   */
+  private void requireNoLockedHolderAssignedByNonAdministrator(
+      RoleChangeActor actor, RoleView role, SetLockRows setLock, Set<UUID> adminDefiningNow) {
+    Set<UUID> administrators = new HashSet<>();
+    setLock.holders().stream()
+        .filter(holder -> adminDefiningNow.contains(holder.roleId()))
+        .forEach(holder -> administrators.add(holder.userId()));
+    long nonAdminAssignedCount =
+        setLock.holders().stream()
+            .filter(holder -> holder.roleId().equals(role.id()))
+            .filter(holder -> !administrators.contains(holder.assignedBy()))
+            .count();
+    if (nonAdminAssignedCount == 0) {
+      return;
+    }
+    log.atWarn()
+        .addKeyValue(LOG_KEY_EVENT, "RBAC_ATTACH_PROVENANCE_REFUSED")
+        .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+        .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+        .addKeyValue(LOG_KEY_ROLE_ID, role.id())
+        .addKeyValue("operation", OPERATION_REPLACE)
+        .addKeyValue("nonAdminAssignedCount", nonAdminAssignedCount)
+        .log("Refused a permission-set replace that would make a role admin-defining while some of"
+            + " its holders were assigned by a non-administrator");
+    Counter.builder(COUNTER_PERMISSION_DENIED)
+        .tag("permission", ROLE_WRITE)
+        .tag("reason", REASON_ATTACH_PROVENANCE)
+        .register(meterRegistry)
+        .increment();
+    countReplace(OUTCOME_CONFLICT, LOCK_PATH_SET_LOCK);
+    throw new AttachProvenanceConflictException();
+  }
+
+  /**
+   * RC-63(f), after a demotion commits: WARN {@code RBAC_ROLE_CEASED_ADMIN_DEFINING} (ids and the
+   * holder count from the after-commit holder read, omitted if that read failed) and the untagged
+   * counter {@code nexus.rbac.role_ceased_admin_defining} (a ticket). Its holders are no longer
+   * administrators through R.
+   */
+  private void signalRoleCeasedAdminDefining(
+      RoleChangeActor actor, RoleView role, Optional<Integer> holderCount) {
+    var warn =
+        log.atWarn()
+            .addKeyValue(LOG_KEY_EVENT, "RBAC_ROLE_CEASED_ADMIN_DEFINING")
+            .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+            .addKeyValue(LOG_KEY_ROLE_ID, role.id());
+    if (holderCount.isPresent()) {
+      warn = warn.addKeyValue("holderCount", holderCount.get());
+    }
+    warn.log("Role ceased to be admin-defining");
+    Counter.builder(COUNTER_ROLE_CEASED_ADMIN_DEFINING).register(meterRegistry).increment();
   }
 
   /**
@@ -704,48 +856,29 @@ public class RoleManagementService {
     throw new InsufficientPermissionException(permission, DenialReason.PERMISSION_ABSENT);
   }
 
-  /** The interim T-018 guard (see {@link #INTERIM_SET_LOCK_PATH_GUARD_CODE}). */
-  private void refuseSetLockPathUntilSupported(
-      RoleChangeActor actor,
-      RoleView role,
-      boolean adminDefiningBefore,
-      boolean adminDefiningAfter) {
-    if (!adminDefiningBefore && !adminDefiningAfter) {
-      return;
-    }
-    log.atWarn()
-        .addKeyValue(LOG_KEY_EVENT, "RBAC_REPLACE_ADMIN_DEFINING_REFUSED")
-        .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
-        .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
-        .addKeyValue(LOG_KEY_ROLE_ID, role.id())
-        .log("Refused a permission-set replace that needs the set-lock path");
-    throw new ConflictException(
-        INTERIM_SET_LOCK_PATH_GUARD_CODE,
-        "Replacing the permissions of an administrator role is not available yet.");
-  }
-
   /**
    * Step 14 of {@link #replaceRolePermissions}, after commit, from one holder read in its own
    * transaction. Removes revoke, so the holders' epochs are bumped once (which also leaves their
    * old-epoch cache entries unreachable) and a failed read is retried and queued as detach's is;
    * adds alone evict the holders' cache once. The attach signals are derived once for the added
-   * set.
+   * set. Returns the number of holders read, empty if the read failed.
    */
-  private void applyReplaceFreshness(
+  private Optional<Integer> applyReplaceFreshness(
       RoleChangeActor actor, RoleView role, Set<UUID> adds, Set<UUID> removes) {
     boolean revokes = !removes.isEmpty();
     if (adds.isEmpty()) {
-      readAfterCommit(
+      Optional<List<UUID>> holders =
+          readAfterCommit(
               actor.tenantId(),
               role.id(),
               OPERATION_REPLACE,
               true,
-              () -> userRoleAssignmentPort.findActiveUserIdsForRole(role.id()))
-          .ifPresent(
-              holders ->
-                  permissionFreshnessService.invalidateHolders(
-                      actor.tenantId(), holders, OPERATION_REPLACE));
-      return;
+              () -> userRoleAssignmentPort.findActiveUserIdsForRole(role.id()));
+      holders.ifPresent(
+          read ->
+              permissionFreshnessService.invalidateHolders(
+                  actor.tenantId(), read, OPERATION_REPLACE));
+      return holders.map(List::size);
     }
     Optional<AttachSnapshot> snapshot =
         readAfterCommit(
@@ -765,6 +898,7 @@ public class RoleManagementService {
             permissionCachePort.evict(actor.tenantId(), holders);
           }
         });
+    return snapshot.map(read -> read.holders().size());
   }
 
   private static RoleAuditEvent replaceAuditEvent(
@@ -919,7 +1053,7 @@ public class RoleManagementService {
     requireMutableRole(role);
 
     if (subset.adminDefining()) {
-      acquireSetLockBeforeRoleRow(actor, role, subset.catalogueIds());
+      acquireSetLock(actor, role, subset.catalogueIds());
     }
 
     if (roleManagementPort.softDeleteRole(role.id(), actor.tenantId(), Instant.now()) == 0) {
@@ -955,21 +1089,27 @@ public class RoleManagementService {
   }
 
   /**
-   * The set lock for DELETE of an admin-defining role (RC-46 option (a)): M10' for the tenant's
-   * roles, the admin-defining ones among them, then ONE statement locking every active assignment
-   * of those roles plus this role, in the ascending order {@link RoleAssignmentService} uses. It
-   * runs before the role row is touched, the order assign takes on an admin-defining target. The
-   * rows it returns are not used: the holder check re-reads the role's own rows after the {@code
-   * UPDATE}.
+   * The tenant's set lock (RC-46): M10' for the tenant's roles, the admin-defining ones among them,
+   * then ONE statement locking every active assignment of those roles plus this role, in the
+   * ascending order {@link RoleAssignmentService} uses. The caller fixes where it falls relative to
+   * the role row: before it for an admin-defining role (DELETE, a demoting replace, the order
+   * assign takes on an admin-defining target), after it for a promoting replace. Returns the lock
+   * set's role ids and the locked rows, current and X-locked, from which a replace decides its
+   * steps 10 and 11; DELETE does not use them (its holder check re-reads the role's own rows after
+   * the {@code UPDATE}).
    */
-  private void acquireSetLockBeforeRoleRow(
-      RoleChangeActor actor, RoleView role, Set<UUID> catalogueIds) {
+  private SetLockRows acquireSetLock(RoleChangeActor actor, RoleView role, Set<UUID> catalogueIds) {
     Set<UUID> adminDefiningRoleIds =
         RoleAssignmentService.resolveAdminDefiningRoleIds(
             userRoleAssignmentPort, actor.tenantId(), catalogueIds);
-    userRoleAssignmentPort.lockActiveAssignmentHolders(
-        actor.tenantId(), RoleAssignmentService.buildAscendingLockSet(adminDefiningRoleIds, role.id()));
+    List<UUID> lockSet =
+        RoleAssignmentService.buildAscendingLockSet(adminDefiningRoleIds, role.id());
+    return new SetLockRows(
+        lockSet, userRoleAssignmentPort.lockActiveAssignmentHolders(actor.tenantId(), lockSet));
   }
+
+  /** What the set lock locked: the lock set's role ids and their active assignment rows. */
+  private record SetLockRows(List<UUID> roleIds, List<ActiveAssignmentHolder> holders) {}
 
   /** AC6. Global catalogue, no tenant scoping — {@code permissions} has no {@code tenant_id} column. */
   @Transactional(readOnly = true)
