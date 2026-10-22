@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 /**
  * Fails when any scanned file contains a persona email address or its blind index (US-019 T-027,
- * RC-63(h)). Zip archives (Playwright traces) and the base64 zip embedded in the HTML report are
- * opened and scanned too.
+ * RC-63(h)), in raw, URL-encoded (`%40`), JSON-escaped (`\u0040`) or HTML-entity form, or a
+ * generated `e2e-<timestamp>@example.com` registrant address. Zip archives (Playwright traces)
+ * and every base64 zip embedded in the HTML report are opened and scanned too.
+ *
+ * Screenshots cannot be text-scanned (the shell header shows the signed-in address), so any
+ * PNG/JPEG file in the scanned set fails the scan: CI runs with `screenshot: 'off'`.
  *
  * Usage: node scan-pii.mjs --hmac-key-from <application-dev.yml> <file-or-dir>...
  *        node scan-pii.mjs --hmac-key <key> <file-or-dir>...
@@ -53,8 +57,14 @@ function* contents(label, buffer) {
   if (buffer.subarray(0, 2).toString('latin1') === 'PK') {
     for (const entry of zipEntries(buffer)) yield* contents(`${label}!${entry.name}`, entry.data);
   }
-  const embedded = /data:application\/zip;base64,([A-Za-z0-9+/=]+)/.exec(buffer.toString('latin1'));
-  if (embedded) yield* contents(`${label}!report`, Buffer.from(embedded[1], 'base64'));
+  const embedded = buffer
+    .toString('latin1')
+    .matchAll(/data:application\/zip;base64,([A-Za-z0-9+/=]+)/g);
+  let index = 0;
+  for (const match of embedded) {
+    yield* contents(`${label}!report${index}`, Buffer.from(match[1], 'base64'));
+    index += 1;
+  }
 }
 
 function* files(path) {
@@ -65,14 +75,19 @@ function* files(path) {
   }
 }
 
+const IMAGE = /\.(png|jpe?g)$/i;
+
 export function scan(paths, needles) {
   const hits = [];
   for (const path of paths) {
     for (const file of files(path)) {
+      if (IMAGE.test(file)) hits.push(`screenshot found in ${file}`);
       for (const { label, text } of contents(file, readFileSync(file))) {
         const lower = text.toLowerCase();
-        for (const { kind, value } of needles) {
-          if (lower.includes(value)) hits.push(`${kind} found in ${label}`);
+        for (const { kind, value, pattern } of needles) {
+          if (value ? lower.includes(value) : pattern.test(text)) {
+            hits.push(`${kind} found in ${label}`);
+          }
         }
       }
     }
@@ -80,11 +95,30 @@ export function scan(paths, needles) {
   return hits;
 }
 
+/** The `@` as it appears raw, URL-encoded (also double-encoded), JSON-escaped or as an entity. */
+const AT_FORMS = ['@', '%40', '%2540', '\\u0040', '&#64;', '&#x40;', '&commat;'];
+
+/** Registrants created by the registration spec: `e2e-<Date.now()>@example.com`. */
+const REGISTRANT = {
+  kind: 'generated registrant address',
+  pattern: new RegExp(`e2e-\\d+(?:${AT_FORMS.map(escapeRegExp).join('|')})example\\.com`, 'i'),
+};
+
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export function needlesFor(emails, key) {
-  return emails.flatMap((email) => [
-    { kind: 'email address', value: email.toLowerCase() },
-    { kind: 'email blind index', value: blindIndex(email, key) },
-  ]);
+  return [
+    ...emails.flatMap((email) => {
+      const [local, domain] = email.toLowerCase().split('@');
+      return [
+        ...AT_FORMS.map((at) => ({ kind: 'email address', value: `${local}${at}${domain}` })),
+        { kind: 'email blind index', value: blindIndex(email, key) },
+      ];
+    }),
+    REGISTRANT,
+  ];
 }
 
 async function main(argv) {

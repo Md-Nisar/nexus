@@ -77,3 +77,50 @@ test('an address inside a zip entry fails', () => {
   const dir = write('trace.zip', archive);
   assert.ok(scan([dir], needles).some((hit) => hit.endsWith('trace.zip!trace.network')));
 });
+
+test('a URL-encoded, JSON-escaped or entity-encoded address fails', () => {
+  for (const form of [
+    'person%40example.test',
+    'PERSON%40EXAMPLE.TEST',
+    'person%2540example.test',
+    'person\\u0040example.test',
+    'person&#64;example.test',
+    'person&#x40;example.test',
+    'person&commat;example.test',
+  ]) {
+    const dir = write('access.log', `GET /v1/users?email=${form} 200\n`);
+    assert.equal(scan([dir], needles).length, 1, form);
+  }
+});
+
+test('a generated registrant address fails in raw and encoded form', () => {
+  for (const form of ['e2e-1730000000000@example.com', 'e2e-1730000000000%40example.com']) {
+    const dir = write('trace.network', `{"email":"${form}"}`);
+    assert.ok(scan([dir], needles).some((hit) => hit.startsWith('generated registrant')), form);
+  }
+});
+
+test('an e2e- prefix without a timestamp is not a registrant', () => {
+  assert.deepEqual(scan([write('a.log', 'e2e-suite@example.com')], needles), []);
+});
+
+test('every embedded report zip is scanned, not only the first', () => {
+  const clean = stored('ok.txt', Buffer.from('nothing here')).toString('base64');
+  const dirty = stored('trace.network', Buffer.from('person@example.test')).toString('base64');
+  const html = `<script>data:application/zip;base64,${clean}</script>
+<script>data:application/zip;base64,${dirty}</script>`;
+  const dir = write('index.html', html);
+  assert.ok(scan([dir], needles).some((hit) => hit.endsWith('index.html!report1!trace.network')));
+});
+
+test('a clean embedded report passes', () => {
+  const clean = stored('ok.txt', Buffer.from('nothing here')).toString('base64');
+  assert.deepEqual(scan([write('index.html', `data:application/zip;base64,${clean}`)], needles), []);
+});
+
+test('a screenshot in the scanned set fails', () => {
+  for (const name of ['test-failed-1.png', 'frame.JPEG']) {
+    const dir = write(name, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    assert.deepEqual(scan([dir], needles), [`screenshot found in ${join(dir, name)}`]);
+  }
+});

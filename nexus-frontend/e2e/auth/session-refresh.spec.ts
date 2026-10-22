@@ -18,6 +18,11 @@ import { requireBackend } from '../fixtures/backend';
 const EMAIL = process.env['E2E_TEST_USER_EMAIL'] ?? 'test@example.com';
 const PASSWORD = process.env['E2E_TEST_USER_PASSWORD'] ?? 'TestPass99!';
 
+// These specs sign in as the seeded admin persona (the only account that exists), so a retry
+// trace would carry the persona address and fail the PII scan. No trace is recorded instead of
+// allow-listing the persona in the scan.
+test.use({ trace: 'off' });
+
 test.describe('US-004 — silent session renewal', () => {
   test.beforeEach(async () => {
     await requireBackend();

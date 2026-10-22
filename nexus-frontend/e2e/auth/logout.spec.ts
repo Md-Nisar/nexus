@@ -30,6 +30,11 @@ async function login(page: import('@playwright/test').Page): Promise<void> {
   await page.waitForURL(/\/dashboard/, { timeout: 10_000 });
 }
 
+// These specs sign in as the seeded admin persona (the only account that exists), so a retry
+// trace would carry the persona address and fail the PII scan. No trace is recorded instead of
+// allow-listing the persona in the scan.
+test.use({ trace: 'off' });
+
 test.describe('US-005 — logout with refresh token revocation', () => {
   test.beforeEach(async () => {
     await requireBackend();
