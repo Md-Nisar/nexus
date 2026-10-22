@@ -8,6 +8,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import ch.qos.logback.classic.Level;
@@ -17,6 +18,7 @@ import ch.qos.logback.core.read.ListAppender;
 import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.identity.application.port.out.DirectoryReadAuditPort;
 import com.example.nexus.identity.application.port.out.UserDirectoryQueryPort;
+import com.example.nexus.identity.domain.DirectoryBatch;
 import com.example.nexus.identity.domain.DirectoryPage;
 import com.example.nexus.identity.domain.DirectoryUserView;
 import com.example.nexus.identity.domain.UserStatus;
@@ -147,8 +149,7 @@ class UserDirectoryServiceTest {
   @Test
   void should_returnOnlyTheTenantScopedRowsWithoutWarn_when_everyIdIsInTheCallersTenant() {
     List<UUID> ids = List.of(USER_1, USER_2);
-    when(port.findByTenantAndIds(TENANT, ids)).thenReturn(List.of(view(USER_1), view(USER_2)));
-    when(port.countByIdIn(ids)).thenReturn(2L);
+    when(port.findBatchByTenant(TENANT, ids)).thenReturn(batchOf(List.of(view(USER_1), view(USER_2)), 2L));
 
     assertThat(service.batch(TENANT, ACTOR, ids)).containsExactly(view(USER_1), view(USER_2));
     assertThat(warnings()).isEmpty();
@@ -156,21 +157,20 @@ class UserDirectoryServiceTest {
   }
 
   @Test
-  void should_runTheParityCountOnEveryBatch_when_nothingIsOmitted() {
-    List<UUID> ids = List.of(USER_1);
-    when(port.findByTenantAndIds(TENANT, ids)).thenReturn(List.of(view(USER_1)));
-    when(port.countByIdIn(ids)).thenReturn(1L);
+  void should_readFoundRowsAndForeignCountInOneCall_when_batching() {
+    List<UUID> ids = List.of(USER_1, FOREIGN);
+    when(port.findBatchByTenant(TENANT, ids)).thenReturn(batchOf(List.of(view(USER_1)), 2L));
 
     service.batch(TENANT, ACTOR, ids);
 
-    verify(port).countByIdIn(ids);
+    verify(port).findBatchByTenant(TENANT, ids);
+    verifyNoMoreInteractions(port);
   }
 
   @Test
   void should_returnTheUnchangedTenantScopedRowsAndWarnWithOmittedCount_when_idsAreForeign() {
     List<UUID> ids = List.of(USER_1, FOREIGN, USER_2);
-    when(port.findByTenantAndIds(TENANT, ids)).thenReturn(List.of(view(USER_1)));
-    when(port.countByIdIn(ids)).thenReturn(3L);
+    when(port.findBatchByTenant(TENANT, ids)).thenReturn(batchOf(List.of(view(USER_1)), 3L));
 
     assertThat(service.batch(TENANT, ACTOR, ids))
         .as("the unscoped count never feeds the response (RC-61.2)")
@@ -189,10 +189,20 @@ class UserDirectoryServiceTest {
   }
 
   @Test
+  void should_notWarnOrGoNegative_when_theCountIsBelowTheFoundRows() {
+    List<UUID> ids = List.of(USER_1, USER_2);
+    when(port.findBatchByTenant(TENANT, ids))
+        .thenReturn(batchOf(List.of(view(USER_1), view(USER_2)), 1L));
+
+    assertThat(service.batch(TENANT, ACTOR, ids)).containsExactly(view(USER_1), view(USER_2));
+    assertThat(warnings()).isEmpty();
+    assertThat(crossTenantMisses()).isZero();
+  }
+
+  @Test
   void should_notWarn_when_omittedIdsDoNotExistAnywhere() {
     List<UUID> ids = List.of(USER_1, FOREIGN);
-    when(port.findByTenantAndIds(TENANT, ids)).thenReturn(List.of(view(USER_1)));
-    when(port.countByIdIn(ids)).thenReturn(1L);
+    when(port.findBatchByTenant(TENANT, ids)).thenReturn(batchOf(List.of(view(USER_1)), 1L));
 
     assertThat(service.batch(TENANT, ACTOR, ids)).containsExactly(view(USER_1));
     assertThat(warnings()).isEmpty();
@@ -236,8 +246,7 @@ class UserDirectoryServiceTest {
   @Test
   void should_auditABatchWithoutTheIdList_when_batching() {
     List<UUID> ids = List.of(USER_1, FOREIGN);
-    when(port.findByTenantAndIds(TENANT, ids)).thenReturn(List.of(view(USER_1)));
-    when(port.countByIdIn(ids)).thenReturn(1L);
+    when(port.findBatchByTenant(TENANT, ids)).thenReturn(batchOf(List.of(view(USER_1)), 1L));
 
     service.batch(TENANT, ACTOR, ids);
 
@@ -302,8 +311,7 @@ class UserDirectoryServiceTest {
   @Test
   void should_logOneInfoWithCountsAndNoPii_when_aBatchIsRead() {
     List<UUID> ids = List.of(USER_1, FOREIGN);
-    when(port.findByTenantAndIds(TENANT, ids)).thenReturn(List.of(view(USER_1)));
-    when(port.countByIdIn(ids)).thenReturn(1L);
+    when(port.findBatchByTenant(TENANT, ids)).thenReturn(batchOf(List.of(view(USER_1)), 1L));
 
     service.batch(TENANT, ACTOR, ids);
 
@@ -336,6 +344,10 @@ class UserDirectoryServiceTest {
     ArgumentCaptor<Map<String, Object>> captor = ArgumentCaptor.forClass(Map.class);
     verify(auditPort).recordDirectoryRead(eq(TENANT), eq(ACTOR), captor.capture());
     return captor.getValue();
+  }
+
+  private static DirectoryBatch batchOf(List<DirectoryUserView> found, long existingAnywhere) {
+    return new DirectoryBatch(found, existingAnywhere);
   }
 
   private static DirectoryUserView view(UUID id) {

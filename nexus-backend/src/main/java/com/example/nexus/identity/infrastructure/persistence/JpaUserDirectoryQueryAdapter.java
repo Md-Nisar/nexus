@@ -1,6 +1,7 @@
 package com.example.nexus.identity.infrastructure.persistence;
 
 import com.example.nexus.identity.application.port.out.UserDirectoryQueryPort;
+import com.example.nexus.identity.domain.DirectoryBatch;
 import com.example.nexus.identity.domain.DirectoryPage;
 import com.example.nexus.identity.domain.DirectoryUserView;
 import com.example.nexus.identity.domain.User;
@@ -54,10 +55,12 @@ public class JpaUserDirectoryQueryAdapter implements UserDirectoryQueryPort {
   }
 
   @Override
-  public List<DirectoryUserView> findByTenantAndIds(UUID tenantId, Collection<UUID> ids) {
-    return userRepository.findByTenantIdAndIdIn(tenantId, ids, BY_ID).stream()
-        .map(JpaUserDirectoryQueryAdapter::toView)
-        .toList();
+  public DirectoryBatch findBatchByTenant(UUID tenantId, Collection<UUID> ids) {
+    List<DirectoryUserView> found =
+        userRepository.findByTenantIdAndIdIn(tenantId, ids, BY_ID).stream()
+            .map(JpaUserDirectoryQueryAdapter::toView)
+            .toList();
+    return new DirectoryBatch(found, userRepository.countByIdIn(ids));
   }
 
   @Override
@@ -75,11 +78,6 @@ public class JpaUserDirectoryQueryAdapter implements UserDirectoryQueryPort {
   @Override
   public boolean existsById(UUID userId) {
     return userRepository.existsById(userId);
-  }
-
-  @Override
-  public long countByIdIn(Collection<UUID> ids) {
-    return userRepository.countByIdIn(ids);
   }
 
   private static DirectoryUserView toView(User user) {

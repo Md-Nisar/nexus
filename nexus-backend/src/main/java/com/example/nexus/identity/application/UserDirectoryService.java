@@ -3,6 +3,7 @@ package com.example.nexus.identity.application;
 import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.identity.application.port.out.DirectoryReadAuditPort;
 import com.example.nexus.identity.application.port.out.UserDirectoryQueryPort;
+import com.example.nexus.identity.domain.DirectoryBatch;
 import com.example.nexus.identity.domain.DirectoryPage;
 import com.example.nexus.identity.domain.DirectoryUserView;
 import com.example.nexus.identity.domain.UserStatus;
@@ -23,8 +24,9 @@ import org.springframework.stereotype.Service;
  * <p><b>Cross-tenant parity (NF-S2).</b> A by-id miss always runs {@code existsById}, so a missing
  * id and another tenant's id run the same two statements and give the same 404 {@code
  * USER_NOT_FOUND}; the foreign case adds the WARN {@code IDENTITY_DIRECTORY_CROSS_TENANT_TARGET}
- * (no target id) and the {@code cross_tenant_miss} counter. Every batch runs the unscoped {@code
- * countByIdIn} (RC-61.2); its result only decides that WARN and never changes the response.
+ * (no target id) and the {@code cross_tenant_miss} counter. Every batch also reads the unscoped
+ * count in the same transaction as the rows (RC-61.2); its result only decides that WARN and never
+ * changes the response.
  *
  * <p><b>Lookup (design §4.4).</b> The email is hashed only by {@link
  * EmailBlindIndexService#blindIndex} (ADR-0006) and never logged. The per-actor throttle and
@@ -88,8 +90,9 @@ public class UserDirectoryService {
    * of other tenants are silently omitted.
    */
   public List<DirectoryUserView> batch(UUID tenantId, UUID actorUserId, List<UUID> ids) {
-    List<DirectoryUserView> found = queryPort.findByTenantAndIds(tenantId, ids);
-    long omittedForeign = queryPort.countByIdIn(ids) - found.size();
+    DirectoryBatch batch = queryPort.findBatchByTenant(tenantId, ids);
+    List<DirectoryUserView> found = batch.found();
+    long omittedForeign = batch.omittedForeign();
     if (omittedForeign > 0) {
       log.atWarn()
           .addKeyValue("event", EVENT_CROSS_TENANT_TARGET)
