@@ -61,8 +61,36 @@ module.exports = defineConfig([
           message: "HTML sinks are forbidden (RC-62.1). Bind text, or add a typed component.",
         },
         {
-          selector: "CallExpression[callee.object.name='document'][callee.property.name=/^write(ln)?$/]",
+          selector: "MemberExpression[computed=true][property.type='TemplateLiteral'][property.quasis.0.value.cooked=/^(innerHTML|outerHTML|insertAdjacentHTML|createContextualFragment)$/i]",
+          message: "HTML sinks are forbidden (RC-62.1). Bind text, or add a typed component.",
+        },
+        {
+          selector: "Property[key.value=/^(innerHTML|outerHTML)$/i]",
+          message: "HTML sinks are forbidden (RC-62.1). Bind text, or add a typed component.",
+        },
+        {
+          selector: "Property[computed=true][key.type='TemplateLiteral'][key.quasis.0.value.cooked=/^(innerHTML|outerHTML)$/i]",
+          message: "HTML sinks are forbidden (RC-62.1). Bind text, or add a typed component.",
+        },
+        {
+          selector: "MemberExpression[object.name='document'][property.name=/^write(ln)?$/]",
+          message: "document.write is forbidden (RC-62.1), including aliases.",
+        },
+        {
+          selector: "MemberExpression[computed=true][object.name='document'][property.value=/^write(ln)?$/]",
           message: "document.write is forbidden (RC-62.1).",
+        },
+        {
+          selector: "MemberExpression[object.property.name='document'][property.name=/^write(ln)?$/]",
+          message: "document.write is forbidden (RC-62.1).",
+        },
+        {
+          selector: "MemberExpression[property.name='eval']",
+          message: "eval is forbidden (RC-62.1), including window.eval.",
+        },
+        {
+          selector: "VariableDeclarator[init.name='document']",
+          message: "Do not alias document (RC-62.1); alias bypasses the document.write ban.",
         },
         {
           selector: "Identifier[name=/^bypassSecurityTrust/]",
@@ -73,6 +101,8 @@ module.exports = defineConfig([
           message: "bypassSecurityTrust* is forbidden (RC-62.1).",
         },
       ],
+      "no-eval": "error",
+      "no-new-func": "error",
       "no-restricted-imports": [
         "error",
         {
@@ -87,13 +117,7 @@ module.exports = defineConfig([
     },
   },
   {
-    // Material usage that predates the boundary rule; migrate to shared/ui wrappers, then delete.
-    files: [
-      "src/app/shared/ui/**/*.ts",
-      "src/app/features/auth/registration-form/registration-form.component.ts",
-      "src/app/features/auth/verification-landing/verification-landing.component.ts",
-      "src/app/features/design-system/design-system-preview.component.ts",
-    ],
+    files: ["src/app/shared/ui/**/*.ts"],
     rules: {
       "no-restricted-imports": "off",
     },

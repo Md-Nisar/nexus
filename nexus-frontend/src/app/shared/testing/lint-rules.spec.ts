@@ -85,8 +85,37 @@ export class LintFixture { html = ''; }
   return s['bypassSecurityTrustHtml']('x');
 }`,
     ],
+    [
+      'template-literal bracket innerHTML',
+      "export function f(el: HTMLElement): void { el[`innerHTML`] = 'x'; }",
+    ],
+    [
+      'template-literal bracket insertAdjacentHTML',
+      "export function f(el: HTMLElement): void { el[`insertAdjacentHTML`]('beforeend', 'x'); }",
+    ],
+    ['string-literal innerHTML key', `export const o = { 'innerHTML': 'x' };`],
+    ['computed string-literal outerHTML key', `export const o = { ['outerHTML']: 'x' };`],
+    ['aliased document.write', `export function f(): void { const w = document.write; w('x'); }`],
+    ['document.writeln reference', `export const w = document.writeln;`],
+    ['bracket document.write', `export function f(): void { document['write']('x'); }`],
+    ['window.document.write', `export function f(): void { window.document.write('x'); }`],
+    ['aliased document object', `export function f(): void { const d = document; d.write('x'); }`],
+    [
+      'destructured document.write',
+      `export function f(): void { const { write } = document; write('x'); }`,
+    ],
   ])('rejects %s', async (_name, source) => {
     expect(await ruleIds(FEATURE, `${source}\n`)).toContain('no-restricted-syntax');
+  });
+
+  it.each([
+    ['eval', `export const r = eval('1');`, 'no-eval'],
+    ['window.eval', `export const r = window.eval('1');`, 'no-restricted-syntax'],
+    ['indirect eval', `export const r = (0, eval)('1');`, 'no-eval'],
+    ['new Function', `export const f = new Function('return 1');`, 'no-new-func'],
+    ['Function()', `export const f = Function('return 1');`, 'no-new-func'],
+  ])('rejects %s', async (_name, source, rule) => {
+    expect(await ruleIds(FEATURE, `${source}\n`)).toContain(rule);
   });
 
   it('rejects Material imports from a feature', async () => {
