@@ -114,8 +114,8 @@ describe('NxMenu', () => {
   });
 
   it('has no axe violations closed or open', async () => {
-    await expectNoAxeViolations(fixture.nativeElement);
+    await expect(expectNoAxeViolations(fixture.nativeElement)).resolves.toBeUndefined();
     await open();
-    await expectNoAxeViolations(overlay);
+    await expect(expectNoAxeViolations(overlay)).resolves.toBeUndefined();
   });
 });

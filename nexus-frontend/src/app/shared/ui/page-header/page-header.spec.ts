@@ -52,6 +52,6 @@ describe('NxPageHeader', () => {
 
   it('has no axe violations', async () => {
     const fixture = await setup();
-    await expectNoAxeViolations(fixture.nativeElement);
+    await expect(expectNoAxeViolations(fixture.nativeElement)).resolves.toBeUndefined();
   });
 });

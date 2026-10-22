@@ -53,6 +53,6 @@ describe('NxBreadcrumb', () => {
   });
 
   it('has no axe violations', async () => {
-    await expectNoAxeViolations(el());
+    await expect(expectNoAxeViolations(el())).resolves.toBeUndefined();
   });
 });

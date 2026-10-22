@@ -47,9 +47,9 @@ describe('NxChip', () => {
   });
 
   it('has no axe violations, removable or not', async () => {
-    await expectNoAxeViolations(fixture.nativeElement);
+    await expect(expectNoAxeViolations(fixture.nativeElement)).resolves.toBeUndefined();
     fixture.componentRef.setInput('removable', true);
     await fixture.whenStable();
-    await expectNoAxeViolations(fixture.nativeElement);
+    await expect(expectNoAxeViolations(fixture.nativeElement)).resolves.toBeUndefined();
   });
 });

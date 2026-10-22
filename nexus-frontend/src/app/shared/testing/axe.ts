@@ -1,7 +1,7 @@
 import axe from 'axe-core';
 
 const WCAG_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'] as const;
-const BLOCKING_IMPACTS: readonly (string | null | undefined)[] = ['critical', 'serious'];
+const BLOCKING_IMPACTS: ReadonlySet<string | null | undefined> = new Set(['critical', 'serious']);
 
 /**
  * Fails when axe finds critical or serious WCAG 2.0/2.1/2.2 A/AA violations in `root`.
@@ -14,7 +14,7 @@ export async function expectNoAxeViolations(root: HTMLElement): Promise<void> {
     runOnly: { type: 'tag', values: [...WCAG_TAGS] },
     rules: { 'color-contrast': { enabled: false } },
   });
-  const blocking = results.violations.filter((v) => BLOCKING_IMPACTS.includes(v.impact));
+  const blocking = results.violations.filter((v) => BLOCKING_IMPACTS.has(v.impact));
   if (blocking.length > 0) {
     const summary = blocking
       .map((v) => `${v.id} (${v.impact}): ${v.help} [${v.nodes.length} node(s)]`)

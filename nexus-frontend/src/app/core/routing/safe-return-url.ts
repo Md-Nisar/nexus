@@ -23,7 +23,7 @@ const ENCODED_PATH_HAZARD = /%(?:2f|5c|0[0-9a-f]|1[0-9a-f]|7f)/i;
  */
 export function safeReturnUrl(raw: string | null): string {
   if (raw === null || raw.length === 0) return FALLBACK;
-  if (raw[0] !== '/' || raw[1] === '/' || raw[1] === '\\') return FALLBACK;
+  if (!raw.startsWith('/') || raw[1] === '/' || raw[1] === '\\') return FALLBACK;
   if (raw.includes('\\') || CONTROL_CHARACTERS.test(raw)) return FALLBACK;
 
   const pathEnd = raw.search(/[?#]/);

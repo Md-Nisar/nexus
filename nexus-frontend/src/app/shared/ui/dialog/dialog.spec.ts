@@ -222,6 +222,6 @@ describe('NxDialog.confirmTyped', () => {
   });
 
   it('has no axe violations', async () => {
-    await expectNoAxeViolations(overlay);
+    await expect(expectNoAxeViolations(overlay)).resolves.toBeUndefined();
   });
 });

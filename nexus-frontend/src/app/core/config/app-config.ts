@@ -85,7 +85,7 @@ export interface SupportContact {
 }
 
 // eslint-disable-next-line no-control-regex
-const SAFE_HREF = /^(?:mailto:|https:\/\/)[^\s\u0000-\u001f\u007f]+$/i;
+const SAFE_HREF = /^(?:mailto:|https:\/\/)[^\s\u0000-\u0008\u000e-\u001f\u007f]+$/i;
 
 /**
  * Validates a configured support contact.

@@ -81,6 +81,6 @@ describe('NxTabs', () => {
     await harness.navigateByUrl('/profile');
     fixture.detectChanges();
     await fixture.whenStable();
-    await expectNoAxeViolations(el);
+    await expect(expectNoAxeViolations(el)).resolves.toBeUndefined();
   });
 });

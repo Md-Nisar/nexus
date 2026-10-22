@@ -356,7 +356,7 @@ describe('apiErrorInterceptor', () => {
       vi.advanceTimersByTime(120_000);
 
       controller.expectNone('/api/v1/users/u-1/roles');
-      controller.verify();
+      expect(() => controller.verify()).not.toThrow();
     });
 
     it('should surface the recorded 409 RBAC_012 as a plain AppError, with no navigation', () => {
@@ -377,7 +377,7 @@ describe('apiErrorInterceptor', () => {
       vi.advanceTimersByTime(120_000);
 
       controller.expectNone('/api/v1/users/u-1/roles');
-      controller.verify();
+      expect(() => controller.verify()).not.toThrow();
     });
 
     it.each([

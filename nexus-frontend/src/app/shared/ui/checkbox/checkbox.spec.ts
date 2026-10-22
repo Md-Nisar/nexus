@@ -117,13 +117,13 @@ describe('NxCheckbox', () => {
   });
 
   it('has no axe violations in each state', async () => {
-    await expectNoAxeViolations(fixture.nativeElement);
+    await expect(expectNoAxeViolations(fixture.nativeElement)).resolves.toBeUndefined();
     fixture.componentRef.setInput('indeterminate', true);
     await fixture.whenStable();
-    await expectNoAxeViolations(fixture.nativeElement);
+    await expect(expectNoAxeViolations(fixture.nativeElement)).resolves.toBeUndefined();
     fixture.componentRef.setInput('disabled', true);
     fixture.componentRef.setInput('disabledReason', 'Locked');
     await fixture.whenStable();
-    await expectNoAxeViolations(fixture.nativeElement);
+    await expect(expectNoAxeViolations(fixture.nativeElement)).resolves.toBeUndefined();
   });
 });

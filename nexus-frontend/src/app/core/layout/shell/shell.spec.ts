@@ -76,7 +76,7 @@ describe('Shell', () => {
     const { http } = setup();
     await render();
     http.expectOne(`${API}/v1/users/me`).flush({});
-    http.verify();
+    expect(() => http.verify()).not.toThrow();
   });
 
   it('renders exactly one header, nav and main landmark', async () => {
@@ -163,7 +163,7 @@ describe('Shell', () => {
     const { http } = setup();
     const { root } = await render();
     http.expectOne(`${API}/v1/users/me`).flush({});
-    await expectNoAxeViolations(root);
+    await expect(expectNoAxeViolations(root)).resolves.toBeUndefined();
   });
 
   describe('logout', () => {

@@ -80,6 +80,6 @@ describe('NxSkeleton', () => {
 
   it('has no axe violations', async () => {
     await setup();
-    await expectNoAxeViolations(el());
+    await expect(expectNoAxeViolations(el())).resolves.toBeUndefined();
   });
 });

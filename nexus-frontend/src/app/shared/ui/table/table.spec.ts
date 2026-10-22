@@ -187,6 +187,6 @@ describe('NxTable A4 additions', () => {
 
   it('has no axe violations with a caption and custom cells', async () => {
     const fixture = await setup();
-    await expectNoAxeViolations(fixture.nativeElement);
+    await expect(expectNoAxeViolations(fixture.nativeElement)).resolves.toBeUndefined();
   });
 });

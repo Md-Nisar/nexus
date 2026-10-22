@@ -160,6 +160,6 @@ describe('NxSearchField', () => {
     vi.useRealTimers();
     type('x');
     fixture.detectChanges();
-    await expectNoAxeViolations(fixture.nativeElement);
+    await expect(expectNoAxeViolations(fixture.nativeElement)).resolves.toBeUndefined();
   });
 });
