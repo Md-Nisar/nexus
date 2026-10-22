@@ -12,6 +12,10 @@ import java.util.Set;
  * — it is the per-user password-reset invalidation counter ({@link User#getTokenVersion()}),
  * bumped only when that specific user resets their password.
  *
+ * <p>{@code permEpoch} ({@code perm_epoch} claim, v3) is the per-user permission epoch read at
+ * mint time (US-018 A9, design §9.2). A request is rejected when it is lower than the user's
+ * current epoch. A v2 token carries no such claim and is rejected (schema version policy, M7b).
+ *
  * <p>Contains no PII — {@code sub} is a UUID, {@code email} is intentionally absent.
  */
 public record JwtClaims(
@@ -24,18 +28,19 @@ public record JwtClaims(
     long exp,
     String jti,
     int tokenVersion,
-    int schemaVersion) {
+    int schemaVersion,
+    long permEpoch) {
 
   /** Current frozen-contract schema version — bump whenever a claim is added or removed. */
-  public static final int CURRENT_VERSION = 2;
+  public static final int CURRENT_VERSION = 3;
 
   /**
    * Schema versions {@code verify()} accepts (US-018 Decision 18, ADR-0022 D7). Widened one
    * release ahead of minting, then contracted, so a rolling deploy never 401s a token minted by
-   * the other version. M6 accepts {2, 3} and still mints {@link #CURRENT_VERSION}; v3 is frozen as
-   * v2 plus {@code perm_epoch}, and any other claim change is v4.
+   * the other version. M7b contracted the set to {3}; v3 is frozen as v2 plus {@code perm_epoch},
+   * and any other claim change is v4.
    */
-  public static final Set<Integer> ACCEPTED_VERSIONS = Set.of(2, 3);
+  public static final Set<Integer> ACCEPTED_VERSIONS = Set.of(3);
 
   /** Defensive copies prevent callers from mutating the roles/permissions lists after construction. */
   public JwtClaims {

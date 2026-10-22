@@ -9,6 +9,10 @@ import com.example.nexus.identity.application.service.LogoutUseCase;
 import com.example.nexus.identity.application.service.RefreshTokenUseCase;
 import com.example.nexus.identity.domain.AuthConstants;
 import com.example.nexus.identity.domain.LoginResult;
+import com.example.nexus.identity.interfaces.rest.dto.LoginRequest;
+import com.example.nexus.identity.interfaces.rest.dto.LoginResponse;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.util.UUID;
@@ -26,8 +30,6 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
-import com.example.nexus.identity.interfaces.rest.dto.LoginRequest;
-import com.example.nexus.identity.interfaces.rest.dto.LoginResponse;
 
 /**
  * Handles login, token refresh, and logout for the identity bounded context (US-003).
@@ -105,6 +107,14 @@ public class LoginController {
    * @return 200 OK with {@link LoginResponse} and a fresh refresh token in a secure cookie
    * @throws AuthenticationException if the token is invalid, revoked, or expired (AUTH_004)
    */
+  @Operation(summary = "Rotate the refresh token and issue a new access token")
+  @ApiResponse(responseCode = "200", description = "New access token and refresh cookie")
+  @ApiResponse(
+      responseCode = "401",
+      description = "Refresh token invalid, revoked or expired (AUTH_004)")
+  @ApiResponse(
+      responseCode = "429",
+      description = "Refresh throttled per family or per IP (RATE_001); Retry-After is 1 to 60 s")
   @PostMapping("/refresh")
   @PublicEndpoint
   ResponseEntity<LoginResponse> refresh(

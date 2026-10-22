@@ -3,10 +3,14 @@ package com.example.nexus.rbac.application.port.out;
 import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.ActiveAssignmentRef;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
+import com.example.nexus.rbac.domain.HolderProvenance;
+import com.example.nexus.rbac.domain.PageResult;
+import com.example.nexus.rbac.domain.PermissionHolder;
 import com.example.nexus.rbac.domain.Role;
-import com.example.nexus.rbac.domain.RolePermissionName;
+import com.example.nexus.rbac.domain.RoleHolder;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -37,28 +41,17 @@ public interface UserRoleAssignmentPort {
   boolean hasActiveAssignment(UUID userId, UUID roleId);
 
   /**
-   * M5 — same question, tenant-scoped, used for the AC8 live-admin check on the caller. MUST be
-   * implemented as a fresh, locking ({@code PESSIMISTIC_READ}) DB read in the adapter — never
-   * derived from a JWT claim (a JWT's {@code roles[]} can be up to ~15 min stale), and never a
-   * plain non-locking read, because a non-locking read is a REPEATABLE-READ snapshot that can miss
-   * a concurrent revocation. Returns {@code true} iff the query returns at least one row.
-   */
-  boolean hasActiveAdminAssignment(UUID userId, UUID roleId, UUID tenantId);
-
-  /**
-   * M10 (US-017 D3) — every (roleId, permissionName) pair for the roles of ONE tenant. Bounded at
-   * nexus.rbac.max-roles-per-tenant (default 500) x |permissions| = 7.
+   * M10' (US-018 T-016, replaces M10) — every {@code (roleId, permissionId)} pair for the roles of
+   * ONE tenant. Bounded at nexus.rbac.max-roles-per-tenant (default 500) x |permissions|.
    *
-   * <p>Deliberately returns NAMES paired with role ids, not a verdict and not a filtered set: the
-   * ANY/ALL policy lives in rbac.domain.RbacAdminEquivalence and MUST NOT cross this port in either
-   * direction — not hardcoded in the adapter and NOT passed in as a Set<String> parameter either
-   * (ADR-0017 D2, upheld by ADR-0018 D3). A future "pushForFilter(Set<String> dangerousNames)"
-   * variant would violate that rule and requires an ADR that argues against it explicitly.
+   * <p>Ids only, never names and never a verdict: "which roles are admin-defining" is decided in
+   * {@code rbac.domain.RbacAdministrators} over this result and {@link #findCatalogueIds()}, and no
+   * policy list crosses this port in either direction (ADR-0017 D2, ADR-0018 D3).
    *
-   * <p>MUST be a plain, NON-LOCKING read and MUST NEVER be annotated @Lock: it touches
-   * `permissions`, on which nexus_app holds SELECT only (MC-A).
+   * <p>MUST be a plain, NON-LOCKING read and MUST NEVER be annotated @Lock (MC-A). The tenant's
+   * set lock ({@link #lockActiveAssignmentHolders}) is built from it.
    */
-  List<RolePermissionName> findPermissionNamesForTenantRoles(UUID tenantId);
+  List<RolePermissionRef> findRolePermissionIdsForTenantRoles(UUID tenantId);
 
   /**
    * M11 (US-017 D6) — locks (PESSIMISTIC_WRITE) and returns the (assignmentId, userId) pair for
@@ -78,61 +71,31 @@ public interface UserRoleAssignmentPort {
    * database's and give false assurance about the one property D6 rests on.
    *
    * <p>The Java sort is belt-and-braces: the real guarantee is the PLAN. An ascending range scan on
-   * fk_user_roles_role acquires in index order regardless of IN-list order, so <b>plan stability
+   * fk_user_roles_role_tenant (role_id, tenant_id) acquires in index order regardless of IN-list order, so <b>plan stability
    * across IN-list cardinalities is part of the claim</b>, not a fixture detail — MC-C asserts
-   * key = fk_user_roles_role for IN-lists of size 1, 2 and >= 20. A full-scan fallback would
+   * key = fk_user_roles_role_tenant for IN-lists of size 1, 2 and >= 20. A full-scan fallback would
    * acquire in primary-key order and break the argument.
    *
-   * <p>The adapter MUST drive off {@code role_id} (fk_user_roles_role) as an IN-list range, never
+   * <p>The adapter MUST drive off {@code role_id} (fk_user_roles_role_tenant) as an IN-list range, never
    * {@code tenant_id}, and MUST NOT join {@code Role} — joining would widen the lock beyond
    * user_roles. Tenant containment is therefore carried by two things together: the role-id set is
    * tenant-derived by the caller, and {@code tenant_id} remains a residual predicate (T-S1).
    *
    * <p>Returns ids only, never entities — the caller must not be able to load-mutate-save a UserRole.
    * Must be called inside an active transaction.
+   *
+   * <p>US-018 (ADR-0021 D2): on a request that takes this lock, the caller's administrator status
+   * is computed from THESE rows (current and X-locked: the caller is an active holder of an
+   * admin-defining role in the result), never from the snapshot read {@link
+   * #findHeldRolePermissionIdsForAuthorization}.
    */
   List<ActiveAssignmentHolder> lockActiveAssignmentHolders(UUID tenantId, List<UUID> roleIds);
-
-  /**
-   * M5b (US-017 D8) — generalises M5 from one roleId to a set. Same non-negotiable contract: a
-   * FRESH, LOCKING (PESSIMISTIC_READ / FOR SHARE) read, never a JWT claim (T-E7), never a plain
-   * non-locking read. MUST keep FORCE INDEX (fk_user_roles_role) so that every index record it
-   * requests is inside M11's X region (ADR-0018 D4's containment proof; MC-C).
-   *
-   * <p>An EMPTY {@code roleIds} means the caller has no way to qualify: the caller MUST fail closed
-   * and MUST NOT call this method at all (R-10 / T-E18 precedent).
-   *
-   * <p>Carried verbatim from M5 (US-017 editorial correction): the adapter MUST inspect only
-   * {@code .isEmpty()} / {@code .size()} on the returned rows and MUST NEVER mutate them. Returning
-   * managed entities from a locking read is a load-mutate-save hazard; the boolean is the contract,
-   * the entities are an implementation artefact.
-   */
-  boolean hasActiveAssignmentOfAnyRole(UUID userId, List<UUID> roleIds, UUID tenantId);
-
-  /**
-   * M12 (US-017 D24) — every (roleId, permissionName) pair for the roles of the CALLER'S OWN active
-   * assignments in one tenant. Sibling of M7, keyed by USER rather than by role.
-   *
-   * <p>Exists solely to give the bypass canary (D14/§9.3) a derivation that shares NO INPUT with the
-   * gate. It MUST be driven off fk_user_roles_user — a different index, a different statement and a
-   * different scoping from M10, which is tenant-scoped and driven off r.tenantId. An over-broad M10
-   * therefore cannot silence the canary that exists to notice it (threat model T-E29).
-   *
-   * <p>MUST be a plain, NON-LOCKING read, and MUST NEVER be used for an authorization decision — the
-   * gate's only determination is M5b, a fresh locking read (T-E7). MC-G asserts this negative on both
-   * verbs.
-   *
-   * <p>Like M10, returns NAMES paired with role ids: the ANY/ALL policy lives in
-   * rbac.domain.RbacAdminEquivalence and MUST NOT cross this port in either direction (ADR-0017 D2 /
-   * ADR-0018 D3, upheld — this method is the reason D3 did not have to be reopened to satisfy RC-17).
-   */
-  List<RolePermissionName> findPermissionNamesForActiveAssignmentsOfUser(UUID userId, UUID tenantId);
 
   /**
    * M13 (US-018, 03-design.md §4.3) — every {@code (roleId, permissionId)} pair the user holds
    * through an ACTIVE assignment in {@code tenantId}. This is <b>the</b> read for grant-subset
    * authorization decisions (ADR-0021 D2): the caller derives the union of held permission ids
-   * from it. Never substitute M12 or a JWT claim for it.
+   * from it. Never substitute a JWT claim or any other read for it.
    *
    * <p>Joins {@code roles} with {@code r.tenantId = ur.tenantId} (T-S1), so a {@code user_roles}
    * row that points at another tenant's role never widens the result. Driven off {@code
@@ -170,6 +133,53 @@ public interface UserRoleAssignmentPort {
   Set<UUID> findCatalogueIds();
 
   /**
+   * M16 (US-018 T-018, RC-28.1, RC-50(b)) — the ids of the roles, among the user's ACTIVE
+   * assignments in {@code tenantId}, that carry every permission of the catalogue.
+   *
+   * <p>The independent runtime check behind {@code RBAC_SELF_ASSIGN_ADMIN_DISAGREEMENT}: one
+   * statement, per role ({@code GROUP BY role HAVING COUNT(DISTINCT permission) = catalogue
+   * count}, never a union count), with its own tenant and active-assignment predicates and the
+   * catalogue count computed in the database. It shares no input with {@link
+   * #findHeldRolePermissionIdsForAuthorization} (M13).
+   *
+   * <p>MUST be a plain, NON-LOCKING read, MUST NEVER be annotated @Lock (MC-A), and MUST NEVER be
+   * used for an authorization decision: it is read before the INSERT of a successful self-target
+   * assignment, only to be compared with A4's verdict.
+   */
+  List<UUID> findHeldAdminDefiningRoleIds(UUID userId, UUID tenantId);
+
+  /**
+   * US-018 T-017 (rows 13 and 14) — every ACTIVE holder of {@code roleId} in {@code tenantId}
+   * together with the user who assigned them. Plain, NON-LOCKING.
+   */
+  List<HolderProvenance> findActiveHoldersForRole(UUID roleId, UUID tenantId);
+
+  /**
+   * US-018 T-017 (rows 13 and 14) — the distinct users holding an ACTIVE assignment of any role in
+   * {@code roleIds} within {@code tenantId}; with the admin-defining role ids, the tenant's
+   * administrator user set. An empty {@code roleIds} returns an empty set without a read. Plain,
+   * NON-LOCKING.
+   */
+  Set<UUID> findActiveHolderUserIdsForRoles(UUID tenantId, Collection<UUID> roleIds);
+
+  /**
+   * C3 (US-018 T-029) — one page of the ACTIVE holders of {@code roleId} in {@code tenantId}, {@code
+   * ORDER BY assignedAt, id}: a tenant-scoped, paged variant of {@link #findActiveUserIdsForRole}
+   * that also carries the assignment id, timestamp and assigner. The role must already have been
+   * resolved in the tenant by the caller. Excludes revoked rows and deleted roles. Plain,
+   * NON-LOCKING; ids only.
+   */
+  PageResult<RoleHolder> findActiveRoleHolders(UUID roleId, UUID tenantId, int page, int size);
+
+  /**
+   * C3 (US-018 T-029) — one page, ordered by user id, of the DISTINCT users of {@code tenantId} who
+   * hold {@code permissionId} through an active assignment of a live role, each with the roles that
+   * grant it. A user holding it through several roles appears once. Plain, NON-LOCKING; ids only.
+   */
+  PageResult<PermissionHolder> findPermissionHolders(
+      UUID permissionId, UUID tenantId, int page, int size);
+
+  /**
    * M3 — the active assignment to revoke; empty covers both "never assigned" and "already revoked"
    * (never a silent 204 — always a 404).
    *
@@ -187,35 +197,23 @@ public interface UserRoleAssignmentPort {
    */
   Optional<ActiveRoleAssignment> findActiveAssignmentView(UUID userId, UUID roleId, UUID tenantId);
 
-  /** M4 — all active assignments for a user in a tenant, single projection join (no N+1). */
-  List<ActiveRoleAssignment> findActiveAssignmentViews(UUID userId, UUID tenantId);
+  /**
+   * M4 — one page of the active assignments for a user in a tenant, single projection join (no N+1),
+   * {@code ORDER BY assignedAt, id} (a total order; US-018 C2). Excludes assignments of deleted
+   * roles. Non-locking.
+   */
+  PageResult<ActiveRoleAssignment> findActiveAssignmentViews(
+      UUID userId, UUID tenantId, int page, int size);
 
   /**
-   * Inserts a new active assignment and returns its id. Implementations translate the {@code
-   * uq_user_role_active} violation into {@code DuplicateRoleAssignmentException} ({@code
-   * RBAC_004}) so a concurrent duplicate request yields 409, not 500.
+   * Inserts a new active assignment and returns its id. The insert is conditional on the role being
+   * live and in {@code tenantId} (US-018 C1, RC-36.1): when it inserts nothing, implementations
+   * throw a {@code ResourceNotFoundException} with code {@code ROLE_NOT_FOUND}, so an assign that
+   * races a delete of the role can never attach a holder to a deleted role. Implementations also
+   * translate the {@code uq_user_role_active} violation into {@code DuplicateRoleAssignmentException}
+   * ({@code RBAC_004}) so a concurrent duplicate request yields 409, not 500.
    */
   UUID assign(UUID userId, UUID roleId, UUID tenantId, UUID assignedBy);
-
-  /**
-   * M7 — the names of every permission attached to {@code roleId}. Bounded at
-   * |permissions| = 7 by the fixed catalogue (V5__rbac_schema.sql:107-114).
-   *
-   * <p><b>PRECONDITION (T-I13 / RC-12.4): {@code roleId} MUST already have been tenant-verified
-   * by the caller. This method performs NO tenant check</b> — unlike most methods on this port it
-   * takes a bare role id. {@code RoleAssignmentService} satisfies this by calling
-   * {@code resolveRoleInTenant} two statements earlier; any new caller must do the same.
-   *
-   * <p>Deliberately returns NAMES, not a boolean and not a PermissionView projection: the
-   * "which permissions are dangerous" policy lives in rbac.domain.RbacDangerousPermissions and
-   * MUST NOT cross this port in either direction — not hardcoded in the adapter (R-9 discipline)
-   * and not passed in as a parameter either.
-   *
-   * <p>MUST be a plain, NON-LOCKING read and MUST NEVER be annotated {@code @Lock}: it touches
-   * {@code permissions}, on which {@code nexus_app} holds {@code SELECT} only, so a locking read
-   * would be rejected in production and would pass every Testcontainers IT (03-design.md D5).
-   */
-  List<String> findPermissionNamesForRole(UUID roleId);
 
   /**
    * M8 — resolves this tenant's role id by {@code (tenantId, name)}. Same contract as
@@ -232,10 +230,10 @@ public interface UserRoleAssignmentPort {
    * ({@code roles.tenant_id}), so an additional parameter would be redundant plumbing for this
    * lookup's one caller.
    *
-   * <p>Needed for the D16 remediation runbook path (03b-threat-model.md RC-6); as of US-016
-   * (D13), also called at runtime by {@code RoleManagementService.attachPermission} on the
-   * dangerous-permission-grant path. Read-only, no locking: not a hot path contended with the
-   * M1/M5 locking reads above.
+   * <p>Needed for the D16 remediation runbook path (03b-threat-model.md RC-6), and called after
+   * commit by {@code RoleManagementService.detachPermission} and the role-level replay of a failed
+   * detach holder read. Read-only, no locking: not a hot path contended with the M11 locking
+   * read above.
    */
   List<UUID> findActiveUserIdsForRole(UUID roleId);
 

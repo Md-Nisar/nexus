@@ -4,9 +4,14 @@ import com.example.nexus.common.web.CorrelationIdFilter;
 import com.example.nexus.identity.application.port.out.JwtPort;
 import com.example.nexus.identity.infrastructure.web.JwtAuthenticationFilter;
 import com.example.nexus.identity.infrastructure.web.LoginRateLimitFilter;
+import com.example.nexus.identity.infrastructure.web.PublicEndpointRequestMatcher;
+import com.example.nexus.identity.infrastructure.web.ScrapeTokenFilter;
+import com.example.nexus.rbac.application.PermissionFreshnessService;
 import java.util.List;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.boot.security.autoconfigure.actuate.web.servlet.EndpointRequest;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -33,18 +38,29 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
  *   <li>Spring Security built-ins (csrf=disabled, session=STATELESS, default-deny).
  * </ol>
  *
+ * <p><b>Anonymous access</b> is granted to two sets only: the {@code @PublicEndpoint} handlers,
+ * matched on HTTP method and pattern by {@link PublicEndpointRequestMatcher} (the one source of
+ * "public", US-018 RC-24, RC-44), and the non-MVC infrastructure paths (actuator health and info,
+ * API docs), which that matcher cannot see. Everything else requires authentication. Every
+ * context that loads this configuration must therefore also load the matcher.
+ *
  * <p>Both custom filters are registered as {@code @Bean}s with
  * {@link FilterRegistrationBean#setEnabled(boolean) setEnabled(false)} to prevent Spring Boot
  * from also registering them as standalone servlet filters outside the security chain.
  */
+@ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @Configuration
 @EnableWebSecurity
 public class SecurityConfig {
 
   private final String frontendBaseUrl;
+  private final String scrapeToken;
 
-  public SecurityConfig(@Value("${nexus.frontend.base-url}") String frontendBaseUrl) {
+  public SecurityConfig(
+      @Value("${nexus.frontend.base-url}") String frontendBaseUrl,
+      @Value("${nexus.management.scrape-token:}") String scrapeToken) {
     this.frontendBaseUrl = frontendBaseUrl;
+    this.scrapeToken = scrapeToken;
   }
 
   /**
@@ -54,13 +70,15 @@ public class SecurityConfig {
    * @param http              Spring Security's {@link HttpSecurity} for configuration
    * @param jwtFilter         validates the {@code Authorization: Bearer} header
    * @param rateLimitFilter   enforces rate limits on login and refresh endpoints
+   * @param publicEndpoints   matches requests addressed to {@code @PublicEndpoint} handlers
    * @return the configured {@link SecurityFilterChain}
    */
   @Bean
   SecurityFilterChain apiSecurity(
       HttpSecurity http,
       JwtAuthenticationFilter jwtFilter,
-      LoginRateLimitFilter rateLimitFilter) {
+      LoginRateLimitFilter rateLimitFilter,
+      PublicEndpointRequestMatcher publicEndpoints) {
     http
         .cors(cors -> cors.configurationSource(corsConfigurationSource()))
         // Stateless token-based API with no session cookie — CSRF does not apply
@@ -73,15 +91,21 @@ public class SecurityConfig {
                 .maxAgeInSeconds(31_536_000)))
         .addFilterBefore(jwtFilter, UsernamePasswordAuthenticationFilter.class)
         .addFilterBefore(rateLimitFilter, JwtAuthenticationFilter.class)
+        .addFilterBefore(
+            new ScrapeTokenFilter(EndpointRequest.to("prometheus", "metrics"), scrapeToken),
+            JwtAuthenticationFilter.class)
         .authorizeHttpRequests(auth -> auth
+            // Runs again after the JWT filter on purpose: caching the answer on the request could
+            // outlive a forward or error dispatch to another path, and this matcher must fail closed.
+            .requestMatchers(publicEndpoints::matches).permitAll()
             .requestMatchers(
                 "/actuator/health/**", "/actuator/info",
-                "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html",
-                "/api/v1/auth/register", "/api/v1/auth/verify-email",
-                "/api/v1/auth/resend-verification",
-                "/api/v1/auth/login", "/api/v1/auth/refresh", "/api/v1/auth/logout",
-                "/api/v1/auth/password/forgot", "/api/v1/auth/password/reset",
-                "/.well-known/jwks.json").permitAll()
+                "/v3/api-docs/**", "/swagger-ui/**", "/swagger-ui.html").permitAll()
+            // Platform telemetry is for the operator's scrape token only (L-3, RR-M2): no tenant
+            // role, not even TENANT_ADMIN, may read it. ScrapeTokenFilter authenticates the
+            // request; the endpoint-aware matcher follows the actuator's own path mapping.
+            .requestMatchers(EndpointRequest.to("prometheus", "metrics"))
+                .hasAuthority(ScrapeTokenFilter.AUTHORITY)
             .anyRequest().authenticated())
         .exceptionHandling(e -> e
             .authenticationEntryPoint(jwtAuthenticationEntryPoint())
@@ -128,11 +152,17 @@ public class SecurityConfig {
    * Instantiates the JWT authentication filter with the authentication entry point.
    *
    * @param jwtPort the JWT validation port
+   * @param publicEndpoints matches requests the filter must never reject (RC-24)
+   * @param permissionFreshness the per-request permission-epoch check (US-018 A9)
    * @return a configured {@link JwtAuthenticationFilter}
    */
   @Bean
-  JwtAuthenticationFilter jwtAuthenticationFilter(JwtPort jwtPort) {
-    return new JwtAuthenticationFilter(jwtPort, jwtAuthenticationEntryPoint());
+  JwtAuthenticationFilter jwtAuthenticationFilter(
+      JwtPort jwtPort,
+      PublicEndpointRequestMatcher publicEndpoints,
+      PermissionFreshnessService permissionFreshness) {
+    return new JwtAuthenticationFilter(
+        jwtPort, jwtAuthenticationEntryPoint(), publicEndpoints, permissionFreshness);
   }
 
   /**
@@ -175,7 +205,7 @@ public class SecurityConfig {
   CorsConfigurationSource corsConfigurationSource() {
     CorsConfiguration cfg = new CorsConfiguration();
     cfg.setAllowedOrigins(List.of(frontendBaseUrl));
-    cfg.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+    cfg.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
     cfg.setAllowedHeaders(List.of("Content-Type", "Authorization", "X-Correlation-Id"));
     // Expose only headers the browser JS legitimately reads. Set-Cookie is intentionally NOT
     // exposed: the refresh cookie is HttpOnly (never script-readable) and the browser applies it

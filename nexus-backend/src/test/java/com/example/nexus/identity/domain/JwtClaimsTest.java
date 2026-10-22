@@ -31,7 +31,8 @@ class JwtClaimsTest {
         1900L,
         "jti-uuid",
         0,
-        JwtClaims.CURRENT_VERSION);
+        JwtClaims.CURRENT_VERSION,
+        1_796_000_000_000L);
 
     assertThat(claims.sub()).isEqualTo("user-uuid");
     assertThat(claims.tenantId()).isEqualTo("tenant-uuid");
@@ -42,7 +43,8 @@ class JwtClaimsTest {
     assertThat(claims.exp()).isEqualTo(1900L);
     assertThat(claims.jti()).isEqualTo("jti-uuid");
     assertThat(claims.tokenVersion()).isZero();
-    assertThat(claims.schemaVersion()).isEqualTo(2);
+    assertThat(claims.schemaVersion()).isEqualTo(3);
+    assertThat(claims.permEpoch()).isEqualTo(1_796_000_000_000L);
   }
 
   @Test
@@ -60,7 +62,8 @@ class JwtClaimsTest {
         1900L,
         "jti-uuid",
         0,
-        JwtClaims.CURRENT_VERSION);
+        JwtClaims.CURRENT_VERSION,
+        0L);
     mutableRoles.add("INJECTED");
     mutablePermissions.add("INJECTED");
 
@@ -68,17 +71,10 @@ class JwtClaimsTest {
     assertThat(claims.permissions()).containsExactly("user:read");
   }
 
-  /** Decision 18 / ADR-0022 D7: M6 accepts {2, 3} one release ahead of M7 minting v3. */
+  /** US-018 M7b (design §9.6): only the current schema version is accepted. */
   @Test
-  void should_containExactlyVersions2And3_when_acceptedVersionsRead() {
-    assertThat(JwtClaims.ACCEPTED_VERSIONS).containsExactlyInAnyOrder(2, 3);
-  }
-
-  /** M6 widens the accepted set only; it still mints v2 and must accept what it mints. */
-  @Test
-  void should_keepCurrentVersion2AndIncludeItInAcceptedVersions_when_m6Ships() {
-    assertThat(JwtClaims.ACCEPTED_VERSIONS)
-        .contains(JwtClaims.CURRENT_VERSION)
-        .satisfies(versions -> assertThat(JwtClaims.CURRENT_VERSION).isEqualTo(2));
+  void should_containExactlyVersion3_when_acceptedVersionsRead() {
+    assertThat(JwtClaims.CURRENT_VERSION).isEqualTo(3);
+    assertThat(JwtClaims.ACCEPTED_VERSIONS).containsExactly(3);
   }
 }

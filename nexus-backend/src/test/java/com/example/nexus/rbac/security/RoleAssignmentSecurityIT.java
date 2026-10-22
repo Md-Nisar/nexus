@@ -131,7 +131,7 @@ class RoleAssignmentSecurityIT {
   // ═══════════════════════════════════════════════════════════════════
 
   @Test
-  void should_return403WithCrossTenantTarget_when_postingRoleAssignmentForUserInDifferentTenant() {
+  void should_return404WithUserNotFound_when_postingRoleAssignmentForUserInDifferentTenant() {
     UUID tenantA = uuidGenerator.newId();
     UUID tenantB = uuidGenerator.newId();
     User caller = seedUserWithRole(tenantA, "post-xt-caller", "ASSIGNER", USER_ROLE_ASSIGN_PERMISSION_ID);
@@ -142,21 +142,21 @@ class RoleAssignmentSecurityIT {
 
     ResponseEntity<Map> resp = postAssign(token, targetInTenantB.getId(), someRoleId);
 
-    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-    assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(resp.getBody()).containsEntry("code", "USER_NOT_FOUND");
     assertDenialReasonIncrementedByOne("user:role:assign", "CROSS_TENANT_TARGET", before);
   }
 
   /**
    * <b>The single most important assertion in this entire test class.</b> A design defect found
    * in threat-model review (T-E8) would have let this endpoint silently return {@code 200
-   * {"data": []}} for a cross-tenant probe instead of {@code 403} — destroying the only signal
+   * {"data": []}} for a cross-tenant probe instead of {@code 404} (US-018 B1) — destroying the only signal
    * (the WARN log + {@code nexus.rbac.permission_denied{reason="CROSS_TENANT_TARGET"}} counter)
-   * that makes cross-tenant probing on {@code GET} detectable. This must be {@code 403}, never
+   * that makes cross-tenant probing on {@code GET} detectable. This must be {@code 404}, never
    * {@code 200} with an empty (or any) {@code data} array.
    */
   @Test
-  void should_return403WithCrossTenantTarget_notEmptyList_when_gettingRolesForUserInDifferentTenant() {
+  void should_return404WithUserNotFound_notEmptyList_when_gettingRolesForUserInDifferentTenant() {
     UUID tenantA = uuidGenerator.newId();
     UUID tenantB = uuidGenerator.newId();
     User caller = seedUserWithRole(tenantA, "get-xt-caller", "READER", USER_READ_PERMISSION_ID);
@@ -167,16 +167,16 @@ class RoleAssignmentSecurityIT {
     ResponseEntity<Map> resp = getRoles(token, targetInTenantB.getId());
 
     assertThat(resp.getStatusCode())
-        .as("cross-tenant GET must be 403 CROSS_TENANT_TARGET -- explicitly NOT 200 with an"
+        .as("cross-tenant GET must be the genuine-not-found 404 -- explicitly NOT 200 with an"
             + " empty (or any) data array (T-E8)")
-        .isEqualTo(HttpStatus.FORBIDDEN);
+        .isEqualTo(HttpStatus.NOT_FOUND);
     assertThat(resp.getStatusCode()).isNotEqualTo(HttpStatus.OK);
-    assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
+    assertThat(resp.getBody()).containsEntry("code", "USER_NOT_FOUND");
     assertDenialReasonIncrementedByOne("user:read", "CROSS_TENANT_TARGET", before);
   }
 
   @Test
-  void should_return403WithCrossTenantTarget_when_deletingRoleAssignmentForUserInDifferentTenant() {
+  void should_return404WithUserNotFound_when_deletingRoleAssignmentForUserInDifferentTenant() {
     UUID tenantA = uuidGenerator.newId();
     UUID tenantB = uuidGenerator.newId();
     User caller = seedUserWithRole(tenantA, "delete-xt-caller", "ASSIGNER", USER_ROLE_ASSIGN_PERMISSION_ID);
@@ -187,8 +187,8 @@ class RoleAssignmentSecurityIT {
 
     ResponseEntity<Map> resp = deleteRole(token, targetInTenantB.getId(), someRoleId);
 
-    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
-    assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(resp.getBody()).containsEntry("code", "USER_NOT_FOUND");
     assertDenialReasonIncrementedByOne("user:role:assign", "CROSS_TENANT_TARGET", before);
   }
 
@@ -239,36 +239,44 @@ class RoleAssignmentSecurityIT {
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  // T-E7: AC8 self-escalation (the design's Critical-risk control)
+  // T-E7: self-escalation (the design's Critical-risk control). US-018 M3 (T-016): the name-or-ANY
+  // gate is gone; these cases are A2 / revoke-subset cases against the same threats, and the
+  // stale-JWT / out-of-band-revocation proof (T-E7) is KEPT, on the set-lock path.
   // ═══════════════════════════════════════════════════════════════════
 
+  /**
+   * Was {@code ..._attemptsToGrantTenantAdmin} with reason NOT_TENANT_ADMIN. The control that now
+   * enforces the assertion is A2 (ADR-0021 D2): {@code TENANT_ADMIN} carries the whole catalogue,
+   * so a caller holding only {@code user:role:assign} cannot grant it, and the denial is
+   * GRANT_EXCEEDS_CALLER. The 403 outcome and its RBAC_001 body are unchanged.
+   */
   @Test
-  void should_return403WithNotTenantAdmin_when_nonAdminHoldingUserRoleAssignAttemptsToGrantTenantAdmin() {
+  void should_return403WithGrantExceedsCaller_when_nonAdminHoldingUserRoleAssignAttemptsToGrantTenantAdmin() {
     UUID tenantC = uuidGenerator.newId();
     // Holds the endpoint permission (user:role:assign since US-018 A1) via a role NOT named
     // TENANT_ADMIN, seeded directly per 04-tasks.md T-019's own instruction.
     User nonAdminWriter =
         seedUserWithRole(tenantC, "self-esc-caller", "ROLE_ASSIGNER", USER_ROLE_ASSIGN_PERMISSION_ID);
     Role tenantAdminRole = seedRole(tenantC, "TENANT_ADMIN", "self-esc");
+    grantWholeCatalogue(tenantAdminRole.getId());
     User target = seedUser(tenantC, "self-esc-target");
     String token = mintToken(nonAdminWriter);
-    double before = permissionDeniedCount("user:role:assign", "NOT_TENANT_ADMIN");
+    double before = permissionDeniedCount("user:role:assign", "GRANT_EXCEEDS_CALLER");
 
     ResponseEntity<Map> resp = postAssign(token, target.getId(), tenantAdminRole.getId());
 
     assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
     assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
-    assertDenialReasonIncrementedByOne("user:role:assign", "NOT_TENANT_ADMIN", before);
+    assertDenialReasonIncrementedByOne("user:role:assign", "GRANT_EXCEEDS_CALLER", before);
   }
 
   /**
-   * US-017 D5/D8: {@code revoke()} shares the identical widened caller gate {@code assign()} is
-   * proven against above, but until now that sharing was only proven by {@code
-   * RoleAssignmentServiceTest} (mocked) -- no HTTP-level test exercised the DELETE verb's
-   * NOT_TENANT_ADMIN branch at all (the existing DELETE-verb coverage in this class only proves
-   * PERMISSION_ABSENT and a benign-role success path). The target here genuinely holds the active
-   * TENANT_ADMIN assignment being revoked, so a wrongly-permissive gate would actually strip the
-   * tenant's last administrator rather than merely failing an assertion.
+   * T-E17 / T-E34 over HTTP: {@code revoke()} of an administrator role by a non-administrator is
+   * 403 NOT_TENANT_ADMIN (the administrator requirement of revoke-subset, decided from the set
+   * lock's own rows). The target here genuinely holds the active administrator assignment being
+   * revoked, so a wrongly-permissive rule would actually strip the tenant's last administrator
+   * rather than merely failing an assertion. Fixture change from the former test: {@code
+   * TENANT_ADMIN} carries the whole catalogue, as the real one does.
    */
   @Test
   void should_return403WithNotTenantAdmin_when_nonAdminHoldingUserRoleAssignAttemptsToRevokeAnActiveTenantAdmin() {
@@ -276,6 +284,7 @@ class RoleAssignmentSecurityIT {
     User nonAdminWriter =
         seedUserWithRole(tenantF, "revoke-esc-caller", "ROLE_ASSIGNER", USER_ROLE_ASSIGN_PERMISSION_ID);
     Role tenantAdminRole = seedRole(tenantF, "TENANT_ADMIN", "revoke-esc");
+    grantWholeCatalogue(tenantAdminRole.getId());
     User admin = seedUser(tenantF, "revoke-esc-target");
     seedActiveAssignment(tenantF, tenantAdminRole.getId(), admin.getId(), admin.getId());
     String token = mintToken(nonAdminWriter);
@@ -284,31 +293,29 @@ class RoleAssignmentSecurityIT {
     ResponseEntity<Map> resp = deleteRole(token, admin.getId(), tenantAdminRole.getId());
 
     assertThat(resp.getStatusCode())
-        .as("the widened caller gate must deny this at the controller boundary (403), never fall"
-            + " through to a 409 lockout or a silent 204 that would strip the tenant's last admin")
+        .as("the administrator requirement must deny this at the controller boundary (403), never"
+            + " fall through to a 409 lockout or a silent 204 that would strip the tenant's last"
+            + " admin")
         .isEqualTo(HttpStatus.FORBIDDEN);
     assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
     assertDenialReasonIncrementedByOne("user:role:assign", "NOT_TENANT_ADMIN", before);
   }
 
   /**
-   * The positive half of the pair above: an actual active {@code TENANT_ADMIN} caller revoking a
-   * dangerous (but not literally-named-admin) custom role from a DIFFERENT user must succeed --
-   * without this, the 403 test above could pass for the wrong reason (e.g. a gate that denies
-   * every privileged revoke unconditionally).
+   * The positive half of the pair above: an actual administrator caller revoking a role that
+   * carries {@code role:write} from a DIFFERENT user must succeed -- without this, the 403 test
+   * above could pass for the wrong reason (e.g. a rule that denies every revoke unconditionally).
    */
   @Test
-  void should_return204_when_activeTenantAdminRevokesADangerousCustomRoleFromAnotherUser() {
+  void should_return204_when_activeTenantAdminRevokesARoleWriteRoleFromAnotherUser() {
     UUID tenantG = uuidGenerator.newId();
     Role tenantAdminRole = seedRole(tenantG, "TENANT_ADMIN", "revoke-pos");
-    grantPermission(tenantAdminRole.getId(), USER_WRITE_PERMISSION_ID);
-    grantPermission(tenantAdminRole.getId(), USER_ROLE_ASSIGN_PERMISSION_ID);
-    // US-018 07-security-review.md M-1: revoke-subset -- the admin must hold every permission of
-    // the role it revokes (role:write below).
-    grantPermission(tenantAdminRole.getId(), ROLE_WRITE_PERMISSION_ID);
+    // Revoke-subset: the admin must hold every permission of the role it revokes (role:write
+    // below) and the endpoint permission; the whole catalogue covers both.
+    grantWholeCatalogue(tenantAdminRole.getId());
     User admin = seedUser(tenantG, "revoke-pos-admin");
     seedActiveAssignment(tenantG, tenantAdminRole.getId(), admin.getId(), admin.getId());
-    Role dangerousRole = seedRole(tenantG, "CUSTOM-DANGEROUS", "revoke-pos");
+    Role dangerousRole = seedRole(tenantG, "CUSTOM-ROLE-WRITE", "revoke-pos");
     grantPermission(dangerousRole.getId(), ROLE_WRITE_PERMISSION_ID);
     User target = seedUser(tenantG, "revoke-pos-target");
     seedActiveAssignment(tenantG, dangerousRole.getId(), target.getId(), admin.getId());
@@ -317,35 +324,36 @@ class RoleAssignmentSecurityIT {
     ResponseEntity<Map> resp = deleteRole(token, target.getId(), dangerousRole.getId());
 
     assertThat(resp.getStatusCode())
-        .as("a genuine active TENANT_ADMIN must still be able to revoke a dangerous custom role"
-            + " from someone else -- the widened gate must not be a de facto ban")
+        .as("a genuine administrator must still be able to revoke a role from someone else -- the"
+            + " revoke-subset rule must not be a de facto ban")
         .isEqualTo(HttpStatus.NO_CONTENT);
   }
 
   /**
    * <b>The stale-JWT test -- the only test in this story that catches a claim-based (as opposed
-   * to live-DB-read) implementation of AC8.</b> Mints a valid JWT for a user who, at mint time,
-   * holds an active {@code TENANT_ADMIN} assignment (so the JWT's own {@code permissions[]} claim
-   * legitimately includes {@code user:write}, and would -- under a claims-based implementation --
-   * still "look" like an admin). The assignment is then revoked directly via the repository,
-   * bypassing the API/service entirely, simulating an out-of-band revocation (e.g. an incident
-   * responder de-privileging a rogue admin). The SAME still-valid, unexpired JWT is then used to
-   * attempt granting {@code TENANT_ADMIN} to a third user. {@link
-   * com.example.nexus.rbac.application.RoleAssignmentService#assign} MUST reject this via its
-   * live (M5, locking) DB read -- if it instead trusted {@code authentication.getAuthorities()} or
-   * any JWT claim, this specific request would incorrectly succeed.
+   * to live-DB-read) implementation of the assignment rules. KEPT by US-018 M3 and moved onto the
+   * set-lock path (the target is {@code TENANT_ADMIN}, which carries the whole catalogue, so
+   * assign() classifies it as admin-defining and takes the set lock before it decides).</b> Mints
+   * a valid JWT for a user who, at mint time, holds an active administrator assignment (so the
+   * JWT's own {@code permissions[]} legitimately includes {@code user:role:assign}, and would,
+   * under a claims-based implementation, still "look" like an administrator). The assignment is
+   * then revoked directly via the repository, bypassing the API/service entirely, simulating an
+   * out-of-band revocation. The SAME still-valid, unexpired JWT is then used to attempt granting
+   * {@code TENANT_ADMIN} to a third user. {@link
+   * com.example.nexus.rbac.application.RoleAssignmentService#assign} MUST reject this from its
+   * live reads -- if it trusted {@code authentication.getAuthorities()} or any JWT claim, this
+   * request would incorrectly succeed. The reason is now PERMISSION_ABSENT (the live holdings no
+   * longer contain {@code user:role:assign}); the 403 outcome is unchanged.
    */
   @Test
-  void should_return403WithNotTenantAdmin_when_staleJwtStillClaimsAdminAfterOutOfBandRevocation() {
+  void should_return403_when_staleJwtStillClaimsAdminAfterOutOfBandRevocation() {
     UUID tenantD = uuidGenerator.newId();
     Role adminRole = seedRole(tenantD, "TENANT_ADMIN", "stale-jwt");
-    grantPermission(adminRole.getId(), USER_WRITE_PERMISSION_ID);
-    grantPermission(adminRole.getId(), USER_ROLE_ASSIGN_PERMISSION_ID);
+    grantWholeCatalogue(adminRole.getId());
     User admin = seedUser(tenantD, "stale-jwt-admin");
     UserRole assignment = seedActiveAssignment(tenantD, adminRole.getId(), admin.getId(), admin.getId());
 
-    // Minted WHILE admin genuinely holds an active TENANT_ADMIN assignment -- permissions[]
-    // legitimately contains user:write at this instant.
+    // Minted WHILE admin genuinely holds an active administrator assignment.
     String staleToken = mintToken(admin);
 
     // Out-of-band revocation: directly via the repository (M6), bypassing the controller/service
@@ -354,186 +362,119 @@ class RoleAssignmentSecurityIT {
     // active JPA transaction -- this test method itself isn't @Transactional (deliberately: the
     // whole point is an out-of-band revocation outside any request-scoped transaction), so one
     // must be opened manually purely to satisfy that requirement.
-    int[] affectedHolder = new int[1];
-    new org.springframework.transaction.support.TransactionTemplate(transactionManager)
-        .executeWithoutResult(
-            status ->
-                affectedHolder[0] =
-                    userRoleRepository.revokeById(assignment.getId(), java.time.Instant.now()));
-    int affected = affectedHolder[0];
-    assertThat(affected).as("the out-of-band revoke itself must succeed").isEqualTo(1);
+    revokeOutOfBand(assignment.getId());
 
     User target = seedUser(tenantD, "stale-jwt-target");
-    double before = permissionDeniedCount("user:role:assign", "NOT_TENANT_ADMIN");
+    double before = permissionDeniedCount("user:role:assign", "PERMISSION_ABSENT");
 
     // Same token, still cryptographically valid and unexpired.
     ResponseEntity<Map> resp = postAssign(staleToken, target.getId(), adminRole.getId());
 
     assertThat(resp.getStatusCode())
-        .as("a JWT minted while the caller was an active TENANT_ADMIN must NOT still be honored"
-            + " as admin once that assignment is revoked out-of-band -- AC8's guard must be a"
-            + " live DB read, never trust the JWT's own claims (T-E7)")
+        .as("a JWT minted while the caller was an administrator must NOT still be honored once"
+            + " that assignment is revoked out-of-band -- the rules must be live DB reads, never"
+            + " trust the JWT's own claims (T-E7)")
         .isEqualTo(HttpStatus.FORBIDDEN);
     assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
-    assertDenialReasonIncrementedByOne("user:role:assign", "NOT_TENANT_ADMIN", before);
+    assertDenialReasonIncrementedByOne("user:role:assign", "PERMISSION_ABSENT", before);
+    assertThat(activeAssignmentCount(target.getId(), adminRole.getId()))
+        .as("the stale token must not have minted an administrator")
+        .isZero();
   }
 
   /**
-   * US-016 T-017 (03-design.md §11.3, T-S7): the same proof as {@link
-   * #should_return403WithNotTenantAdmin_when_staleJwtStillClaimsAdminAfterOutOfBandRevocation()}
-   * above, but for the <b>privilege-based</b> branch of the gate rather than the name-match
-   * branch -- the target role here is never named {@code TENANT_ADMIN}; it is privileged solely
-   * because it carries a {@code RbacDangerousPermissions} member ({@code role:write}). This
-   * proves {@link com.example.nexus.rbac.application.RoleAssignmentService#assign}'s
-   * privilege-based path ALSO performs a live (M5, locking) DB read and never trusts the JWT's
-   * own {@code permissions[]} claim, even though the caller's stale token was minted while they
-   * genuinely held an active {@code TENANT_ADMIN} assignment.
+   * The same proof for a SELF-assignment with a stale token: A4 and the independent check are
+   * never reached (the live-holdings check denies first), and the stale caller does not become an
+   * administrator again. The caller's administrator role is NOT named TENANT_ADMIN: names do not
+   * matter (replaces the former "all three dangerous permissions" caller-qualifying variant).
    */
   @Test
-  void should_return403WithNotTenantAdmin_when_staleJwtStillClaimsAdminAfterOutOfBandRevocation_forDangerousCustomRoleAssign() {
-    UUID tenantD2 = uuidGenerator.newId();
-    Role adminRole = seedRole(tenantD2, "TENANT_ADMIN", "stale-jwt-priv");
-    grantPermission(adminRole.getId(), USER_WRITE_PERMISSION_ID);
-    grantPermission(adminRole.getId(), USER_ROLE_ASSIGN_PERMISSION_ID);
-    User admin = seedUser(tenantD2, "stale-jwt-priv-admin");
-    UserRole assignment = seedActiveAssignment(tenantD2, adminRole.getId(), admin.getId(), admin.getId());
-
-    // Minted WHILE admin genuinely holds an active TENANT_ADMIN assignment -- same as the
-    // name-match test above.
-    String staleToken = mintToken(admin);
-
-    // Out-of-band revocation, identical mechanism to the name-match test above.
-    int[] affectedHolder = new int[1];
-    new org.springframework.transaction.support.TransactionTemplate(transactionManager)
-        .executeWithoutResult(
-            status ->
-                affectedHolder[0] =
-                    userRoleRepository.revokeById(assignment.getId(), java.time.Instant.now()));
-    int affected = affectedHolder[0];
-    assertThat(affected).as("the out-of-band revoke itself must succeed").isEqualTo(1);
-
-    // The target role: privileged via the DANGEROUS-PERMISSION branch, deliberately NOT named
-    // TENANT_ADMIN, so a name-match short-circuit could never account for this denial.
-    Role dangerousRole = seedRole(tenantD2, "CUSTOM-DANGEROUS", "stale-jwt-priv");
-    grantPermission(dangerousRole.getId(), ROLE_WRITE_PERMISSION_ID);
-    User target = seedUser(tenantD2, "stale-jwt-priv-target");
-    double before = permissionDeniedCount("user:role:assign", "NOT_TENANT_ADMIN");
-
-    // Same still-valid, unexpired token as the name-match test's technique.
-    ResponseEntity<Map> resp = postAssign(staleToken, target.getId(), dangerousRole.getId());
-
-    assertThat(resp.getStatusCode())
-        .as("a JWT minted while the caller was an active TENANT_ADMIN must NOT still be honored"
-            + " as admin, on the PRIVILEGE-BASED branch of the gate either, once that assignment"
-            + " is revoked out-of-band -- the guard must be a live DB read, never trust the JWT's"
-            + " own claims (T-S7)")
-        .isEqualTo(HttpStatus.FORBIDDEN);
-    assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
-    assertDenialReasonIncrementedByOne("user:role:assign", "NOT_TENANT_ADMIN", before);
-  }
-
-  /**
-   * US-017 T-007(c) (T-S8, 03-design.md §9.6): the same freshness proof as the two stale-JWT
-   * tests above, but for the OTHER caller-gate branch M5b adds — a caller who qualifies via
-   * holding a role carrying ALL THREE dangerous permissions ({@code role:write}, {@code
-   * user:write}, {@code tenant:write}) rather than the literal {@code TENANT_ADMIN} name.
-   * Revoking the literal role only (the two tests above) would leave this predicate genuinely
-   * untested (design §9.6/T-S8's own note): {@code
-   * RoleAssignmentService#requireCallerHoldsAdminEquivalentRole}'s SECOND branch ({@code
-   * callerHoldsFullyAdminEquivalent}) has never been exercised end-to-end against a stale token
-   * until this test.
-   */
-  @Test
-  void should_return403WithNotTenantAdmin_when_staleJwtStillClaimsAdminAfterOutOfBandRevocation_forCallerQualifyingViaAllThreeDangerousPermissions() {
+  void should_return403_when_staleJwtOfACustomAdminDefiningRoleHolderSelfAssignsAfterOutOfBandRevocation() {
     UUID tenantD3 = uuidGenerator.newId();
-    // Deliberately NOT named TENANT_ADMIN -- qualifies the caller ONLY via the ALL-three
-    // dangerous-permission branch of M5b (RbacAdminEquivalence#isFullyAdminEquivalent).
-    Role allThreeRole = seedRole(tenantD3, "ALL-THREE-CUSTOM", "stale-jwt-all3");
-    grantPermission(allThreeRole.getId(), USER_WRITE_PERMISSION_ID);
-    grantPermission(allThreeRole.getId(), USER_ROLE_ASSIGN_PERMISSION_ID);
-    grantPermission(allThreeRole.getId(), ROLE_WRITE_PERMISSION_ID);
-    grantPermission(allThreeRole.getId(), TENANT_WRITE_PERMISSION_ID);
-    User caller = seedUser(tenantD3, "stale-jwt-all3-caller");
+    // Deliberately NOT named TENANT_ADMIN: a custom role carrying the whole catalogue.
+    Role customAdminRole = seedRole(tenantD3, "CUSTOM-ADMIN-DEFINING", "stale-jwt-custom");
+    grantWholeCatalogue(customAdminRole.getId());
+    User caller = seedUser(tenantD3, "stale-jwt-custom-caller");
     UserRole assignment =
-        seedActiveAssignment(tenantD3, allThreeRole.getId(), caller.getId(), caller.getId());
-
-    // Minted WHILE caller genuinely holds the ALL-three role -- permissions[] legitimately
-    // contains user:write (among the other two) at this instant.
+        seedActiveAssignment(tenantD3, customAdminRole.getId(), caller.getId(), caller.getId());
     String staleToken = mintToken(caller);
 
-    // Out-of-band revocation, identical mechanism to the tests above.
-    int[] affectedHolder = new int[1];
-    new org.springframework.transaction.support.TransactionTemplate(transactionManager)
-        .executeWithoutResult(
-            status ->
-                affectedHolder[0] =
-                    userRoleRepository.revokeById(assignment.getId(), java.time.Instant.now()));
-    int affected = affectedHolder[0];
-    assertThat(affected).as("the out-of-band revoke itself must succeed").isEqualTo(1);
+    revokeOutOfBand(assignment.getId());
 
-    // Target the literal TENANT_ADMIN role -- the single most sensitive operation this branch
-    // could otherwise mint.
-    Role adminRole = seedRole(tenantD3, "TENANT_ADMIN", "stale-jwt-all3");
-    User target = seedUser(tenantD3, "stale-jwt-all3-target");
+    Role adminRole = seedRole(tenantD3, "TENANT_ADMIN", "stale-jwt-custom");
+    grantWholeCatalogue(adminRole.getId());
+    double before = permissionDeniedCount("user:role:assign", "PERMISSION_ABSENT");
+
+    ResponseEntity<Map> resp = postAssign(staleToken, caller.getId(), adminRole.getId());
+
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
+    assertDenialReasonIncrementedByOne("user:role:assign", "PERMISSION_ABSENT", before);
+    assertThat(activeAssignmentCount(caller.getId(), adminRole.getId())).isZero();
+  }
+
+  /** The stale-token proof for revoke(): an ex-administrator cannot strip the real one. */
+  @Test
+  void should_return403_when_staleJwtOfAnExAdministratorRevokesTheCurrentAdministratorAfterOutOfBandRevocation() {
+    UUID tenantD4 = uuidGenerator.newId();
+    Role adminRole = seedRole(tenantD4, "TENANT_ADMIN", "stale-jwt-revoke");
+    grantWholeCatalogue(adminRole.getId());
+    User exAdmin = seedUser(tenantD4, "stale-jwt-revoke-exadmin");
+    UserRole exAssignment =
+        seedActiveAssignment(tenantD4, adminRole.getId(), exAdmin.getId(), exAdmin.getId());
+    User currentAdmin = seedUser(tenantD4, "stale-jwt-revoke-current");
+    seedActiveAssignment(tenantD4, adminRole.getId(), currentAdmin.getId(), currentAdmin.getId());
+    String staleToken = mintToken(exAdmin);
+
+    revokeOutOfBand(exAssignment.getId());
     double before = permissionDeniedCount("user:role:assign", "NOT_TENANT_ADMIN");
 
-    // Same still-valid, unexpired token as the other stale-JWT tests' technique.
-    ResponseEntity<Map> resp = postAssign(staleToken, target.getId(), adminRole.getId());
+    ResponseEntity<Map> resp = deleteRole(staleToken, currentAdmin.getId(), adminRole.getId());
 
-    assertThat(resp.getStatusCode())
-        .as("a JWT minted while the caller genuinely qualified via ALL THREE dangerous"
-            + " permissions must NOT still be honored once that assignment is revoked"
-            + " out-of-band -- M5b's ALL-three branch must ALSO be a live DB read, never trust"
-            + " the JWT's own claims (T-S8)")
-        .isEqualTo(HttpStatus.FORBIDDEN);
-    assertThat(resp.getBody()).containsEntry("code", "RBAC_001");
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
     assertDenialReasonIncrementedByOne("user:role:assign", "NOT_TENANT_ADMIN", before);
+    assertThat(activeAssignmentCount(currentAdmin.getId(), adminRole.getId()))
+        .as("the current administrator must still hold the role")
+        .isEqualTo(1);
   }
 
   // ═══════════════════════════════════════════════════════════════════
-  // US-017 T-007(d) (§9.3's mandatory acceptance test, explicitly NOT optional): the re-derived
-  // canary must NOT trip as false for a legitimate privileged self-assignment
+  // US-018 T-018 (row 7, row 9): a legitimate administrator self-assignment neither trips the
+  // independent check nor registers any retired meter
   // ═══════════════════════════════════════════════════════════════════
 
   /**
-   * US-017 D24/RC-17, §9.3 (04-tasks.md T-007(d)): a fully admin-equivalent, non-{@code
-   * TENANT_ADMIN}-named caller self-assigns the literal {@code TENANT_ADMIN} role. This is
-   * exactly the legitimate operation the re-derived canary ({@code
-   * RoleAssignmentService#callerHoldsActiveAdminEquivalentRole}, M12-sourced) exists to NOT page
-   * on: asserts {@code nexus.rbac.self_role_assignment{tenantId, privileged="true",
-   * callerIsAdmin="true"}} increments by exactly one, and that the page-severity {@code
-   * callerIsAdmin="false"} series for this SAME tenant does not move at all.
+   * Replaces the US-017 T-007(d) acceptance test of the re-derived canary. An administrator whose
+   * role is NOT named {@code TENANT_ADMIN} (it carries the whole catalogue) self-assigns {@code
+   * TENANT_ADMIN}: this must succeed, count {@code
+   * nexus.rbac.admin_role_assigned{selfTarget=true}} once, and leave {@code
+   * nexus.rbac.self_assign_admin_disagreement} (the paging series) untouched.
    */
   @Test
-  void should_notTripCanaryAsFalse_when_fullyAdminEquivalentNonNamedCallerSelfAssignsTenantAdmin() {
+  void should_notTripTheIndependentCheck_when_anAdministratorWithACustomRoleSelfAssignsTenantAdmin() {
     UUID tenantK = uuidGenerator.newId();
-    Role allThreeRole = seedRole(tenantK, "CANARY-ALL-THREE", "canary");
-    // US-018 A4: only an administrator may self-assign, so the (still non-TENANT_ADMIN-named)
-    // caller role carries the whole catalogue, which includes all three dangerous permissions
-    // and user:role:assign.
-    grantWholeCatalogue(allThreeRole.getId());
+    Role customAdminRole = seedRole(tenantK, "CANARY-CUSTOM-ADMIN", "canary");
+    grantWholeCatalogue(customAdminRole.getId());
     User caller = seedUser(tenantK, "canary-caller");
-    seedActiveAssignment(tenantK, allThreeRole.getId(), caller.getId(), caller.getId());
+    seedActiveAssignment(tenantK, customAdminRole.getId(), caller.getId(), caller.getId());
     String token = mintToken(caller);
 
     Role adminRole = seedRole(tenantK, "TENANT_ADMIN", "canary");
-    double trueBefore = selfRoleAssignmentCount(tenantK, "true", "true");
-    double falseBefore = selfRoleAssignmentCount(tenantK, "true", "false");
+    grantWholeCatalogue(adminRole.getId());
+    double assignedBefore = counterValue("nexus.rbac.admin_role_assigned", "selfTarget", "true");
+    double disagreementBefore = counterValue("nexus.rbac.self_assign_admin_disagreement", null, null);
 
     ResponseEntity<Map> resp = postAssign(token, caller.getId(), adminRole.getId());
 
     assertThat(resp.getStatusCode())
-        .as("the caller genuinely qualifies via ALL THREE dangerous permissions, so this"
-            + " self-assignment must succeed")
+        .as("the caller is an administrator by holding a role that carries the whole catalogue,"
+            + " so this self-assignment must succeed")
         .isEqualTo(HttpStatus.CREATED);
-    assertThat(selfRoleAssignmentCount(tenantK, "true", "true") - trueBefore)
-        .as("the canary must correctly report callerIsAdmin=true for this legitimate"
-            + " self-assignment (§9.3's mandatory acceptance test)")
+    assertThat(counterValue("nexus.rbac.admin_role_assigned", "selfTarget", "true") - assignedBefore)
         .isEqualTo(1.0);
-    assertThat(selfRoleAssignmentCount(tenantK, "true", "false") - falseBefore)
-        .as("the page-severity callerIsAdmin=\"false\" series must NOT trip for this tenant --"
-            + " that is the false positive the re-derivation exists to prevent")
-        .isEqualTo(0.0);
+    assertThat(counterValue("nexus.rbac.self_assign_admin_disagreement", null, null))
+        .as("the independent per-role check must agree with A4 on a real administrator (RC-28.1)")
+        .isEqualTo(disagreementBefore);
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -803,7 +744,12 @@ class RoleAssignmentSecurityIT {
   @SuppressWarnings("unchecked")
   void should_includeAssignedBy_when_callerIsActiveTenantAdmin() {
     UUID tenantI = uuidGenerator.newId();
-    User admin = seedUserWithRole(tenantI, "assignedby-admin-caller", "TENANT_ADMIN", USER_READ_PERMISSION_ID);
+    // Row 16: the caller is an administrator by holding a role that carries the whole catalogue
+    // (which includes user:read), whatever the role is named.
+    User admin = seedUser(tenantI, "assignedby-admin-caller");
+    Role adminRole = seedRole(tenantI, "TENANT_ADMIN", "assignedby-admin-caller");
+    grantWholeCatalogue(adminRole.getId());
+    seedActiveAssignment(tenantI, adminRole.getId(), admin.getId(), admin.getId());
     User target = seedUser(tenantI, "assignedby-admin-target");
     Role role = seedRole(tenantI, "ORDINARY", "assignedby-admin");
     User grantor = seedUser(tenantI, "assignedby-admin-grantor");
@@ -815,7 +761,7 @@ class RoleAssignmentSecurityIT {
     assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
     List<Map<String, Object>> data = (List<Map<String, Object>>) resp.getBody().get("data");
     assertThat(data)
-        .as("caller holding an active TENANT_ADMIN assignment must see assignedBy (O-10)")
+        .as("a caller who is an administrator (admin-defining role) must see assignedBy (O-10)")
         .anySatisfy(row -> assertThat(row).containsEntry("assignedBy", grantor.getId().toString()));
   }
 
@@ -840,9 +786,41 @@ class RoleAssignmentSecurityIT {
     // row.get(...) returns null either way, matching UserRoleControllerTest's own
     // jsonPath(...).doesNotExist() assertion, which likewise accepts null-or-absent.
     assertThat(data)
-        .as("a caller with no active TENANT_ADMIN assignment must never see a real assignedBy"
+        .as("a caller who is not an administrator must never see a real assignedBy"
             + " value (T-I5: admin-roster enumeration)")
         .allSatisfy(row -> assertThat(row.get("assignedBy")).isNull());
+  }
+
+  /** Row 16: a union-holder (the whole catalogue only across two roles) is not an administrator. */
+  @Test
+  @SuppressWarnings("unchecked")
+  void should_omitAssignedBy_when_callerHoldsTheWholeCatalogueOnlyAcrossTwoRoles() {
+    UUID tenantU = uuidGenerator.newId();
+    User unionHolder = seedUser(tenantU, "assignedby-union-caller");
+    Role halfA = seedRole(tenantU, "HALF-A", "assignedby-union");
+    Role halfB = seedRole(tenantU, "HALF-B", "assignedby-union");
+    jdbc.update(
+        "INSERT INTO role_permissions (role_id, permission_id) SELECT ?, id FROM permissions"
+            + " WHERE id = ?",
+        toBytes(halfA.getId()),
+        toBytes(USER_READ_PERMISSION_ID));
+    jdbc.update(
+        "INSERT INTO role_permissions (role_id, permission_id) SELECT ?, id FROM permissions"
+            + " WHERE id <> ?",
+        toBytes(halfB.getId()),
+        toBytes(USER_READ_PERMISSION_ID));
+    seedActiveAssignment(tenantU, halfA.getId(), unionHolder.getId(), unionHolder.getId());
+    seedActiveAssignment(tenantU, halfB.getId(), unionHolder.getId(), unionHolder.getId());
+    User target = seedUser(tenantU, "assignedby-union-target");
+    Role role = seedRole(tenantU, "ORDINARY", "assignedby-union");
+    User grantor = seedUser(tenantU, "assignedby-union-grantor");
+    seedActiveAssignment(tenantU, role.getId(), target.getId(), grantor.getId());
+
+    ResponseEntity<Map> resp = getRoles(mintToken(unionHolder), target.getId());
+
+    assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
+    List<Map<String, Object>> data = (List<Map<String, Object>>) resp.getBody().get("data");
+    assertThat(data).allSatisfy(row -> assertThat(row.get("assignedBy")).isNull());
   }
 
   // ── Shared seeding helpers ───────────────────────────────────────────
@@ -988,20 +966,38 @@ class RoleAssignmentSecurityIT {
   }
 
   /**
-   * Reads the CURRENT value of {@code nexus.rbac.self_role_assignment{tenantId, privileged,
-   * callerIsAdmin}} — used by the T-007(d) canary acceptance test. Scoped by {@code tenantId} so
-   * this assertion is immune to any other tenant's self-assignments recorded elsewhere in this
-   * class's shared, cumulative {@link MeterRegistry}.
+   * Reads the CURRENT value of a counter that carries at most one tag (and none for {@code
+   * tagKey == null}); compared as a before/after delta for the same shared-registry reason as
+   * {@link #permissionDeniedCount}. The M3 meters carry no tenant tag (B3).
    */
-  private double selfRoleAssignmentCount(UUID tenantId, String privileged, String callerIsAdmin) {
-    Counter counter =
-        meterRegistry
-            .find("nexus.rbac.self_role_assignment")
-            .tag("tenantId", tenantId.toString())
-            .tag("privileged", privileged)
-            .tag("callerIsAdmin", callerIsAdmin)
-            .counter();
+  private double counterValue(String name, String tagKey, String tagValue) {
+    var search = meterRegistry.find(name);
+    if (tagKey != null) {
+      search = search.tag(tagKey, tagValue);
+    }
+    Counter counter = search.counter();
     return counter == null ? 0.0 : counter.count();
+  }
+
+  /** Out-of-band revocation, outside any request-scoped transaction (T-E7's technique). */
+  private void revokeOutOfBand(UUID assignmentId) {
+    int[] affectedHolder = new int[1];
+    new org.springframework.transaction.support.TransactionTemplate(transactionManager)
+        .executeWithoutResult(
+            status ->
+                affectedHolder[0] = userRoleRepository.revokeById(assignmentId, Instant.now()));
+    assertThat(affectedHolder[0]).as("the out-of-band revoke itself must succeed").isEqualTo(1);
+  }
+
+  private int activeAssignmentCount(UUID userId, UUID roleId) {
+    Integer count =
+        jdbc.queryForObject(
+            "SELECT COUNT(*) FROM user_roles WHERE user_id = ? AND role_id = ? AND revoked_at IS"
+                + " NULL",
+            Integer.class,
+            toBytes(userId),
+            toBytes(roleId));
+    return count == null ? 0 : count;
   }
 
   /**

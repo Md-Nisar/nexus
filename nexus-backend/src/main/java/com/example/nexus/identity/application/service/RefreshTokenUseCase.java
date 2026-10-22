@@ -1,9 +1,12 @@
 package com.example.nexus.identity.application.service;
 
 import com.example.nexus.common.domain.AuthenticationException;
+import com.example.nexus.common.domain.RefreshThrottledException;
 import com.example.nexus.identity.application.TokenGenerator;
 import com.example.nexus.identity.application.TokenHasher;
 import com.example.nexus.identity.application.port.out.JwtPort;
+import com.example.nexus.identity.application.port.out.RateLimitResult;
+import com.example.nexus.identity.application.port.out.RateLimitStore;
 import com.example.nexus.identity.application.port.out.RefreshTokenPort;
 import com.example.nexus.identity.application.port.out.UserRegistrationPort;
 import com.example.nexus.identity.domain.AccessTokenResult;
@@ -15,13 +18,21 @@ import com.example.nexus.identity.domain.RefreshToken;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UserStatus;
 import com.example.nexus.identity.domain.UuidGenerator;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.HexFormat;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -36,6 +47,17 @@ import org.springframework.transaction.annotation.Transactional;
  *   <li>Presenting a revoked token triggers full family revocation before throwing (theft
  *       detection, T-4.2). {@link SecureEventService#revokeFamily} commits independently of
  *       the outer transaction so revocation is durable even when the outer tx rolls back.
+ *       Reuse comes first (US-018 RC-51): the revocation always runs before any rate-limit
+ *       bucket is consulted, and {@code TOKEN_REFRESH_REUSE} is written whenever it revoked at
+ *       least one unrevoked token. A replay that revoked nothing is an ordinary failure. The
+ *       revoked count is used only for that decision and is never logged, returned or stored.
+ *   <li>Two buckets live here because only here are the token's family and the outcome known
+ *       (US-018 T-013): {@code REFRESH_FAMILY:{sha256(familyId)}} bounds each session (a rejection is counted as {@code nexus.auth.refresh_family_throttled}
+ *       and logged as at most one WARN per window, without the family id or IP), and
+ *       {@code REFRESH_IP_FAIL:{ip}} bounds failure outcomes per source and is consumed before
+ *       the {@code TOKEN_REFRESH_FAILURE} write, so unauthenticated audit volume stays bounded.
+ *       The failure bucket never blocks a valid token. The SHA-256 only keeps the (non-secret)
+ *       family id out of keys and logs; it is not a MAC.
  *   <li>Step 5 {@code save()} uses the {@code @Version} optimistic lock — a concurrent rotation
  *       attempt throws {@link OptimisticLockingFailureException}, which is caught and mapped to
  *       AUTH_004 rather than a 500 error.
@@ -51,6 +73,12 @@ public class RefreshTokenUseCase {
   private static final String AUTH_004 = "AUTH_004";
   private static final String MSG_INVALID = "Refresh token invalid";
   private static final String OUTCOME_FAILURE = "FAILURE";
+  private static final String FAMILY_KEY_PREFIX = "REFRESH_FAMILY:";
+  private static final String FAIL_KEY_PREFIX = "REFRESH_IP_FAIL:";
+  private static final String COUNTER_FAILURE_THROTTLED = "nexus.auth.refresh_failure_throttled";
+  private static final String COUNTER_FAMILY_THROTTLED = "nexus.auth.refresh_family_throttled";
+  private static final String EVENT_FAILURE_THROTTLED = "AUTH_REFRESH_FAILURE_THROTTLED";
+  private static final String EVENT_FAMILY_THROTTLED = "AUTH_REFRESH_FAMILY_THROTTLED";
 
   private final RefreshTokenPort refreshTokenPort;
   private final UserRegistrationPort userRegistrationPort;
@@ -60,6 +88,16 @@ public class RefreshTokenUseCase {
   private final TokenGenerator tokenGenerator;
   private final TokenHasher tokenHasher;
   private final Clock clock;
+  private final RateLimitStore rateLimitStore;
+  private final Counter failureThrottled;
+  private final Counter familyThrottled;
+  private final int familyMaxAttempts;
+  private final int failureMaxAttempts;
+  private final int windowSeconds;
+
+  // One WARN per window and bucket, so a flood of rejections cannot flood the log.
+  private final WarnWindow failureWarnWindow = new WarnWindow();
+  private final WarnWindow familyWarnWindow = new WarnWindow();
 
   /** Constructs the use-case with its required collaborators. */
   public RefreshTokenUseCase(
@@ -70,7 +108,12 @@ public class RefreshTokenUseCase {
       UuidGenerator uuidGenerator,
       TokenGenerator tokenGenerator,
       TokenHasher tokenHasher,
-      Clock clock) {
+      Clock clock,
+      RateLimitStore rateLimitStore,
+      MeterRegistry meterRegistry,
+      @Value("${nexus.security.rate-limit.refresh-family-max-attempts}") int familyMaxAttempts,
+      @Value("${nexus.security.rate-limit.refresh-fail-max-attempts}") int failureMaxAttempts,
+      @Value("${nexus.security.rate-limit.ip-window-seconds}") int windowSeconds) {
     this.refreshTokenPort = refreshTokenPort;
     this.userRegistrationPort = userRegistrationPort;
     this.jwtPort = jwtPort;
@@ -79,6 +122,12 @@ public class RefreshTokenUseCase {
     this.tokenGenerator = tokenGenerator;
     this.tokenHasher = tokenHasher;
     this.clock = clock;
+    this.rateLimitStore = rateLimitStore;
+    this.failureThrottled = Counter.builder(COUNTER_FAILURE_THROTTLED).register(meterRegistry);
+    this.familyThrottled = Counter.builder(COUNTER_FAMILY_THROTTLED).register(meterRegistry);
+    this.familyMaxAttempts = familyMaxAttempts;
+    this.failureMaxAttempts = failureMaxAttempts;
+    this.windowSeconds = windowSeconds;
   }
 
   /**
@@ -89,6 +138,8 @@ public class RefreshTokenUseCase {
    * @return new login result with a fresh access JWT and rotated refresh token
    * @throws AuthenticationException if the token is invalid, revoked, expired, or the account
    *                                  is no longer active (AUTH_004 for all cases)
+   * @throws RefreshThrottledException if the token's family bucket or the source IP's failure
+   *                                   bucket is exhausted (429 with {@code Retry-After})
    */
   public LoginResult execute(String tokenCookieValue, String clientIp) {
     Instant now = clock.instant();
@@ -99,32 +150,40 @@ public class RefreshTokenUseCase {
     try {
       hash = tokenHasher.hash(tokenCookieValue);
     } catch (IllegalArgumentException e) {
-      secureEventService.recordEvent(failureEvent((UUID) null, clientIp, AuthEventType.TOKEN_REFRESH_FAILURE));
-      throw new AuthenticationException(AUTH_004, MSG_INVALID);
+      throw failure(clientIp, () -> failureEvent((UUID) null, clientIp, AuthEventType.TOKEN_REFRESH_FAILURE));
     }
 
     // Step 2: Look up by hash — unknown token is a theft signal
     Optional<RefreshToken> tokenOpt = refreshTokenPort.findByTokenHash(hash);
     if (tokenOpt.isEmpty()) {
-      secureEventService.recordEvent(failureEvent((UUID) null, clientIp, AuthEventType.TOKEN_REFRESH_FAILURE));
-      throw new AuthenticationException(AUTH_004, MSG_INVALID);
+      throw failure(clientIp, () -> failureEvent((UUID) null, clientIp, AuthEventType.TOKEN_REFRESH_FAILURE));
     }
     RefreshToken token = tokenOpt.get();
 
-    // Step 3: Theft detection — revoke entire family BEFORE throwing (T-4.2)
+    // Step 3: Theft detection — revoke entire family BEFORE throwing (T-4.2). Reuse comes first
+    // (RC-51): no bucket is consulted before revokeFamily, so a throttled source cannot suppress
+    // the theft response or its evidence. The committed count decides reuse vs ordinary failure.
     if (token.getRevokedAt() != null) {
-      secureEventService.revokeFamily(token.getFamilyId(), now);
-      secureEventService.recordEvent(
-          new AuthEvent(uuidGenerator.newId(), AuthEventType.TOKEN_REFRESH_REUSE, OUTCOME_FAILURE)
-              .withUserId(token.getUserId())
-              .withIpAddress(clientIp));
-      throw new AuthenticationException(AUTH_004, MSG_INVALID);
+      int revoked = secureEventService.revokeFamily(token.getFamilyId(), now);
+      if (revoked >= 1) {
+        secureEventService.recordEvent(
+            new AuthEvent(uuidGenerator.newId(), AuthEventType.TOKEN_REFRESH_REUSE, OUTCOME_FAILURE)
+                .withUserId(token.getUserId())
+                .withIpAddress(clientIp));
+        throw new AuthenticationException(AUTH_004, MSG_INVALID);
+      }
+      // Family already revoked: nothing new to protect, so this is an ordinary failure (L-2).
+      throw failure(clientIp,
+          () -> failureEvent(token.getUserId(), clientIp, AuthEventType.TOKEN_REFRESH_FAILURE));
     }
+
+    // Step 3b: Per-family bucket — only a token found in the DB has a family (RC-32)
+    consumeFamilyBucket(token.getFamilyId());
 
     // Step 4: Expiry check
     if (token.getExpiresAt().isBefore(now)) {
-      secureEventService.recordEvent(failureEvent(token.getUserId(), clientIp, AuthEventType.TOKEN_REFRESH_FAILURE));
-      throw new AuthenticationException(AUTH_004, MSG_INVALID);
+      throw failure(clientIp,
+          () -> failureEvent(token.getUserId(), clientIp, AuthEventType.TOKEN_REFRESH_FAILURE));
     }
 
     // Step 5: Revoke old token (one-time use) under optimistic lock
@@ -133,8 +192,8 @@ public class RefreshTokenUseCase {
       refreshTokenPort.save(token);
     } catch (OptimisticLockingFailureException e) {
       // Concurrent rotation — another request already consumed this token
-      secureEventService.recordEvent(failureEvent(token.getUserId(), clientIp, AuthEventType.TOKEN_REFRESH_FAILURE));
-      throw new AuthenticationException(AUTH_004, MSG_INVALID);
+      throw failure(clientIp,
+          () -> failureEvent(token.getUserId(), clientIp, AuthEventType.TOKEN_REFRESH_FAILURE));
     }
 
     // Step 6: Re-fetch user
@@ -145,8 +204,8 @@ public class RefreshTokenUseCase {
     if (user.getStatus() != UserStatus.ACTIVE) {
       // Unlike the pre-load failure branches above, `user` is already loaded here, so the
       // tenant is resolvable — use the User-aware overload (T-08-06 per-flow tenant table).
-      secureEventService.recordEvent(failureEvent(user, clientIp, AuthEventType.TOKEN_REFRESH_FAILURE));
-      throw new AuthenticationException(AUTH_004, MSG_INVALID);
+      throw failure(clientIp,
+          () -> failureEvent(user, clientIp, AuthEventType.TOKEN_REFRESH_FAILURE));
     }
 
     // Step 8: Issue new access JWT
@@ -172,6 +231,73 @@ public class RefreshTokenUseCase {
     log.debug("TOKEN_REFRESH_SUCCESS userId={}", user.getId());
     return new LoginResult(accessResult.token(), accessResult.expiresInSeconds(),
         user.getId().toString(), newRaw);
+  }
+
+  /**
+   * Handles a failure outcome: consumes the per-IP failure bucket BEFORE the audit write (RC-43).
+   * When the bucket rejects, no audit row is written and the request gets 429 (thrown here);
+   * otherwise the {@code TOKEN_REFRESH_FAILURE} row is recorded and the uniform AUTH_004 is
+   * returned for the caller to throw.
+   */
+  private AuthenticationException failure(String clientIp, Supplier<AuthEvent> event) {
+    RateLimitResult result =
+        rateLimitStore.tryConsume(FAIL_KEY_PREFIX + clientIp, windowSeconds, failureMaxAttempts);
+    if (!result.allowed()) {
+      recordThrottled(failureThrottled, failureWarnWindow, EVENT_FAILURE_THROTTLED);
+      throw new RefreshThrottledException(result.retryAfterSeconds());
+    }
+    secureEventService.recordEvent(event.get());
+    return new AuthenticationException(AUTH_004, MSG_INVALID);
+  }
+
+  private void consumeFamilyBucket(UUID familyId) {
+    RateLimitResult result = rateLimitStore.tryConsume(
+        FAMILY_KEY_PREFIX + sha256Hex(familyId.toString()), windowSeconds, familyMaxAttempts);
+    if (!result.allowed()) {
+      // Abuse of one session must leave a signal: a counter and one WARN per window, with neither
+      // the family id nor the source IP.
+      recordThrottled(familyThrottled, familyWarnWindow, EVENT_FAMILY_THROTTLED);
+      throw new RefreshThrottledException(result.retryAfterSeconds());
+    }
+  }
+
+  /**
+   * Counts a rejection and emits at most one WARN per window. The WARN carries the number of
+   * rejections since the previous WARN, this one included, and never the source IP or family id.
+   */
+  private void recordThrottled(Counter counter, WarnWindow window, String event) {
+    counter.increment();
+    long rejected = window.rejectionsToReport(clock.instant(), windowSeconds);
+    if (rejected > 0) {
+      log.warn("{} rejectedCount={}", event, rejected);
+    }
+  }
+
+  /** Rate-limits a WARN to one per window and counts the rejections it stands for. */
+  private static final class WarnWindow {
+    private Instant lastWarnAt;
+    private long rejectedSinceLastWarn;
+
+    /** Returns the rejections to report now, or 0 when the window's WARN was already spent. */
+    synchronized long rejectionsToReport(Instant now, int windowSeconds) {
+      rejectedSinceLastWarn++;
+      if (lastWarnAt != null && now.isBefore(lastWarnAt.plusSeconds(windowSeconds))) {
+        return 0;
+      }
+      lastWarnAt = now;
+      long rejected = rejectedSinceLastWarn;
+      rejectedSinceLastWarn = 0;
+      return rejected;
+    }
+  }
+
+  private static String sha256Hex(String value) {
+    try {
+      return HexFormat.of().formatHex(
+          MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException("SHA-256 is required by the JDK specification", e);
+    }
   }
 
   private AuthEvent failureEvent(UUID userId, String clientIp, AuthEventType eventType) {

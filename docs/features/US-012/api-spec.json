@@ -41,6 +41,26 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "description": "0-based page number (US-018 C2). Default 0; negative or non-integer is 400 VALIDATION_FAILED.",
+            "schema": {
+              "type": "string",
+              "default": "0"
+            }
+          },
+          {
+            "name": "size",
+            "in": "query",
+            "required": false,
+            "description": "Page size (US-018 C2). Default 20, 1..100; out of range is 400 VALIDATION_FAILED, never clamped.",
+            "schema": {
+              "type": "string",
+              "default": "20"
+            }
           }
         ],
         "responses": {
@@ -55,7 +75,7 @@
             }
           },
           "400": {
-            "description": "Malformed path UUID",
+            "description": "Malformed path UUID, or page/size out of range or not an integer",
             "content": {
               "*/*": {
                 "schema": {
@@ -65,7 +85,7 @@
             }
           },
           "403": {
-            "description": "Missing permission or cross-tenant target",
+            "description": "Missing permission",
             "content": {
               "*/*": {
                 "schema": {
@@ -75,7 +95,7 @@
             }
           },
           "404": {
-            "description": "User not found",
+            "description": "User not found, or in another tenant (indistinguishable, US-018 B1)",
             "content": {
               "*/*": {
                 "schema": {
@@ -84,7 +104,8 @@
               }
             }
           }
-        }
+        },
+        "description": "Paginated (US-018 C2): response is { data, page: { size, number, totalElements, totalPages }, links: { next, prev } }, ordered by (assignedAt, id). Links are relative to /api/v1."
       },
       "post": {
         "tags": [
@@ -134,7 +155,7 @@
             }
           },
           "403": {
-            "description": "Missing permission, cross-tenant target, or caller is not an active TENANT_ADMIN",
+            "description": "Missing permission, or caller is not an active TENANT_ADMIN",
             "content": {
               "*/*": {
                 "schema": {
@@ -144,7 +165,7 @@
             }
           },
           "404": {
-            "description": "User or role not found",
+            "description": "User or role not found, or in another tenant (indistinguishable, US-018 B1)",
             "content": {
               "*/*": {
                 "schema": {
@@ -267,7 +288,7 @@
         },
         "responses": {
           "201": {
-            "description": "Registration accepted (new or duplicate \u2014 identical response)",
+            "description": "Registration accepted (new or duplicate — identical response)",
             "content": {
               "*/*": {
                 "schema": {
@@ -538,10 +559,10 @@
             "description": "Malformed path UUID"
           },
           "403": {
-            "description": "Missing permission or cross-tenant target"
+            "description": "Missing permission"
           },
           "404": {
-            "description": "User, role, or active assignment not found"
+            "description": "User, role, or active assignment not found, or user or role in another tenant (indistinguishable, US-018 B1)"
           },
           "409": {
             "description": "Would revoke the tenant's last active TENANT_ADMIN"

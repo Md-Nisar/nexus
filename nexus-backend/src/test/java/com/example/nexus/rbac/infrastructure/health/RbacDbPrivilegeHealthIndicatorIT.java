@@ -120,6 +120,68 @@ class RbacDbPrivilegeHealthIndicatorIT {
     }
   }
 
+  /** US-018 C1 (T-025): the exact column set of the roles grant is accepted. */
+  @Test
+  void should_report_up_when_roles_carries_exactly_the_c1_column_grant() throws SQLException {
+    createUserWithGrant("GRANT SELECT, INSERT ON nexus.roles TO '" + OVER_PRIVILEGED_USER + "'@'%'",
+        "GRANT UPDATE (name, description, deleted_at) ON nexus.roles TO '"
+            + OVER_PRIVILEGED_USER + "'@'%'");
+
+    var health =
+        new RbacDbPrivilegeHealthIndicator(
+                dataSourceFor(OVER_PRIVILEGED_USER, OVER_PRIVILEGED_PASSWORD))
+            .health();
+
+    assertThat(health.getStatus()).isEqualTo(Status.UP);
+  }
+
+  /** The column set is an allow-list: UPDATE on is_system_role is a direct AC7 bypass. */
+  @Test
+  void should_report_down_when_roles_has_a_column_grant_on_is_system_role() throws SQLException {
+    createUserWithGrant("GRANT UPDATE (is_system_role) ON nexus.roles TO '"
+        + OVER_PRIVILEGED_USER + "'@'%'");
+
+    var health =
+        new RbacDbPrivilegeHealthIndicator(
+                dataSourceFor(OVER_PRIVILEGED_USER, OVER_PRIVILEGED_PASSWORD))
+            .health();
+
+    assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+    assertThat(health.getDetails()).containsEntry("rolesHasColumnScopedUpdateGrant", true);
+  }
+
+  @Test
+  void should_report_down_when_roles_has_any_delete_grant() throws SQLException {
+    createUserWithGrant("GRANT SELECT, INSERT, DELETE ON nexus.roles TO '"
+        + OVER_PRIVILEGED_USER + "'@'%'");
+
+    var health =
+        new RbacDbPrivilegeHealthIndicator(
+                dataSourceFor(OVER_PRIVILEGED_USER, OVER_PRIVILEGED_PASSWORD))
+            .health();
+
+    assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+    assertThat(health.getDetails()).containsEntry("rolesHasTableDeleteGrant", true);
+  }
+
+  private void createUserWithGrant(String... grants) throws SQLException {
+    rootConnectionForCleanup =
+        DriverManager.getConnection(
+            mysqlContainer.getJdbcUrl(), "root", mysqlContainer.getPassword());
+    try (Statement statement = rootConnectionForCleanup.createStatement()) {
+      statement.execute(
+          "CREATE USER '"
+              + OVER_PRIVILEGED_USER
+              + "'@'%' IDENTIFIED BY '"
+              + OVER_PRIVILEGED_PASSWORD
+              + "'");
+      for (String grant : grants) {
+        statement.execute(grant);
+      }
+      statement.execute("FLUSH PRIVILEGES");
+    }
+  }
+
   private void createOverPrivilegedUser() throws SQLException {
     rootConnectionForCleanup =
         DriverManager.getConnection(

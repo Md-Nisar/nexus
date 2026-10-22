@@ -7,6 +7,86 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ## [Unreleased]
 
+### Added — US-018 Milestone 9 (Group C: C1, C2, C3, C5, C6; T-025 to T-030)
+
+**Backend**
+- `DELETE /api/v1/roles/{roleId}` (soft delete, 409 `RBAC_009` while the role has an active holder) and `PATCH /api/v1/roles/{roleId}` (name, description; audit `ROLE_DELETED`, `ROLE_UPDATED`), both bounded by the caller's authority (role-subset 403). Database: `V9` adds `roles.deleted_at`, `active_name` and `uq_roles_tenant_active_name` (**maintenance window**: rebuilds `roles`); column-scoped `GRANT UPDATE (name, description, deleted_at) ON nexus.roles` per environment (`runbook.md` 14). CORS allows PATCH.
+- **Behaviour change:** `GET /api/v1/roles`, `/api/v1/permissions` and `/api/v1/users/{userId}/roles` are paginated (`page`, `size`; default 20, max 100; out of range is 400) and answer `{ data, page, links }`. A tenant with more than 20 roles no longer gets them all in one response.
+- Access review for `audit:read` holders (ids only, tenant-scoped): `GET /roles/{roleId}/holders`, `/permissions/{permissionId}/holders`, `/users/{userId}/effective-permissions`. Discloses the administrator roster to every `audit:read` holder (RES-37); `assignedBy` is redacted for non-administrators.
+- Assign now inserts only against a live role. A soft-deleted role is invisible to every read; `rbacZeroActiveAdmins` reports `deletedRoleActiveAssignments`.
+
+**Frontend**
+- A 403 `RBAC_001` sends the user to `/access-denied` unless the request carries `SKIP_ACCESS_DENIED_REDIRECT`.
+
+**Tests and docs**
+- Unit gate: 2226 run, 0 failures; frontend 253 passed. Integration tests written, not run (no Docker). Docs: `09-technical.md` 16, `runbook.md` 14, `monitoring.md` 9, `17-threat-model-repass-M9.md`, US-012/US-015 API notes.
+
+### Changed — US-018 Milestone 8 (Group B hardening: B1, B2, B3, B5, B6, B7, B8; T-020 to T-024)
+
+**Backend**
+- **Behaviour change:** a user or role id from another tenant now returns 404 `USER_NOT_FOUND` / `ROLE_NOT_FOUND`, identical to a genuine not-found, on `/users/{id}/roles` (POST, GET, DELETE) and `/roles/{id}/permissions` (GET, POST, DELETE). It was 403 `RBAC_001` / `CROSS_TENANT_TARGET`. The service logs WARN `RBAC_CROSS_TENANT_TARGET` and increments the same `permission_denied{reason="CROSS_TENANT_TARGET"}` series; no `ROLE_ASSIGNMENT_DENIED` row is written for it.
+- Database: `V7` adds `uq_roles_id_tenant`, `V8` adds the composite FK `fk_user_roles_role_tenant` on `user_roles` (maintenance window; pre-flight query must return 0, see `runbook.md` 13). A mismatched `user_roles.tenant_id` can no longer be written.
+- Denial throttle: a throttled actor is blocked only on admin-defining (set-lock) targets and self-targets; other requests are evaluated normally. Denials by a throttled actor write no audit row, count `denial_throttled{operation}` and log one WARN `RBAC_DENIAL_THROTTLED` per window. With `nexus.security.rate-limit.store-type=redis` the throttle state is in Redis (`RedisRoleChangeThrottleAdapter`). New `nexus.rbac.throttle.require-shared-store` (default `false`) fails startup with the memory store.
+- `common.security.Permissions` is the one permission catalogue for `@RequiresPermission` and services. New B7 migration footer template and a scanner test for permission-adding migrations.
+- New benchmark-only switch `nexus.rbac.permission-cache.bypass` (default `false`, refused under `prod`). The B6 keep-or-remove measurement is deferred to the first deployment; the cache is kept until then.
+
+**Frontend**
+- `Permission` type and `PERMISSIONS` list; `appHasPermission` and the guard's `data.permission` are typed; the placeholder names `roles:read` and `users:delete` are fixed; `app.routes.spec.ts` checks every `permissionGuard` route. Runtime behaviour of the guard is unchanged.
+
+**Tests and docs**
+- Unit gate: 2042 run, 0 failures. Integration tests and k6 scripts written, not run (no Docker, no k6). Docs: `monitoring.md` 8, `runbook.md` 13, `09-technical.md` 15, `16-threat-model-repass-M8.md`, ADR-0022 addendum. **Human action:** add `nexus.rbac.throttle.require-shared-store: true` and production `store-type: redis` to `application-prod.yml`.
+
+### Changed — US-018 Milestone 3 (retire superseded authorization machinery: A5, D3; T-016 to T-019)
+
+**Backend**
+- "Administrator" now means one active role carrying every catalogue permission. The name-based dangerous-permission gates on assign, revoke, attach and detach are removed; A2/A3/A4, revoke-subset and role-subset replace them. Behaviour changes: a partial administrator can assign exactly the permissions they hold; a caller without `user:read` can no longer revoke `MEMBER`; a revoke or detach of an admin-defining role needs an administrator (a union of roles is not enough).
+- New 409 `RBAC_010`: an attach that would make a role admin-defining is refused while a holder was assigned by a non-administrator.
+- New signals: ERROR `RBAC_SELF_ASSIGN_ADMIN_DISAGREEMENT` (+ counter), WARN `RBAC_ATTACH_ESCALATES_NON_ADMIN_ASSIGNED_HOLDERS`, `RBAC_ROLE_BECAME_ADMIN_DEFINING`, `RBAC_ATTACH_PROVENANCE_REFUSED`, `RBAC_ROLE_SUBSET_DENIED`, `RBAC_ADMINISTRATOR_REQUIRED_DENIED`; `nexus.rbac.admin_role_assigned{selfTarget}`.
+- Removed meters: `self_role_assignment`, `privileged_role_change_blocked`, `privileged_role_change_allowed`, `admin_minted_by_non_named_admin`. `last_admin_lockout_blocked` lost its tag.
+- Zero-admin health indicator, `listActive` redaction and the break-glass precondition use the same definition. Deleted `RbacDangerousPermissions`, `RbacAdminEquivalence`, `RolePermissionName`.
+
+**Tests and docs**
+- Unit gate: 2005 run, 0 failures. Integration tests rewritten and compile-checked, not run (no Docker). Docs: `monitoring.md` 4a, `runbook.md` 12, `09-technical.md` 14, `15-threat-model-repass-M3.md`.
+
+### Added — US-018 Milestone 5 (break-glass first-administrator CLI: A7; T-007, T-008)
+
+**Backend**
+- New operator-run command that grants the tenant's system `TENANT_ADMIN` role to an existing ACTIVE user in a tenant with **no administrator**, replacing the manual production `INSERT` (US-012 runbook step 4). Run the service jar with profile `break-glass` and `--target-user-id=<uuid> --change-ref=<TICKET-123>`. No REST endpoint, no migration, no feature flag, no `nexus_app` grant change.
+- Exit codes: 0 granted; 1 unexpected error; 2 invalid argument; 3 target not found or not ACTIVE; 4 no system `TENANT_ADMIN` role; 5 tenant already has an administrator; 6 change reference already used on a SUCCESS grant in any tenant; 7 concurrent invocation (lock failure).
+- The change reference admits only `^[A-Z][A-Z0-9]{1,9}-[1-9][0-9]{0,7}$`; a reference used for a grant in any tenant is refused. Every invocation writes a `ROLE_BREAK_GLASS_GRANT` audit row (SUCCESS atomically with the grant; refusals independently, with no argument value) and emits the ERROR `RBAC_BREAK_GLASS_USED`, which is meant to page via a log-based alert.
+- The `break-glass` profile has no web server, Flyway off, a Hikari pool of 4 and a log-flush wait before exit (`NEXUS_RBAC_BREAK_GLASS_LOG_FLUSH_WAIT`, default 15 s). A guard fails startup if the profile is activated in a web context. `SecurityConfig` and `PublicEndpointRequestMatcher` are now `@ConditionalOnWebApplication(SERVLET)`; `DevDataInitializer` is excluded under `break-glass`. The serving app is otherwise unchanged.
+- **O-7 decided (2026-10-15):** for break-glass only, an administrator whose user is DISABLED does not count, so a tenant whose only administrators are DISABLED is recoverable with the CLI (exit 0). LOCKED, PENDING and ACTIVE administrators still count (exit 5). The holders' and the target's statuses are read with a `FOR SHARE` locking read inside the grant transaction, after the set lock. The last-admin guard, assign/revoke and the zero-admin health indicator are unchanged.
+- The target's ACTIVE check is repeated under that lock, so a user disabled while the CLI runs is refused (exit 3), never granted (security review L-2). A failed refusal page is logged as ERROR `RBAC_BREAK_GLASS_ALERT_FAILED` and no longer replaces the refusal's exit code with 1 (L-1).
+- **Not yet done (merge conditions):** Kubernetes audit-logging sign-off, page-capture drill, daily reconciliation alert, RES-6 retention sign-off, CI dependency-check.
+
+**Tests and docs**
+- `BreakGlassAdminIT` (32), `BreakGlassGrantLookupIT` (5), `BreakGlassProfileConfigTest` (3), `BreakGlassLookupContainmentRuleTest` (6) and further unit and ArchUnit tests; full `verify` 2057 unit and 500 integration tests, 0 failures (after the O-7, L-1 and L-2 change).
+- Docs: `docs/features/US-018/runbook.md` (11), `deployment.md` (11), `monitoring.md` (7), `rollback.md` (8), `09-technical.md` (13); ADR-0025 (Revision 5, still Proposed); `docs/features/US-012/runbook.md` step 4 points to the CLI.
+
+### Changed — US-018 Milestone 7b (drop v2 token acceptance; T-015)
+
+**Backend**
+- **Behaviour change:** access tokens with `schema_version` 2 are now rejected with 401 `AUTH_003` (`nexus.auth.token_rejected{reason=schema_version}`); only v3 is accepted. Deploy only after M7 has run on every instance for at least 900 s. Rollback is redeploying M7.
+
+### Added — US-018 Milestone 7 (permission token freshness: A9, A10; T-009 to T-014)
+
+**Backend**
+- A revoked or detached user's access token now gets 401 `AUTH_003` on its next request. Tokens carry `perm_epoch` (schema version 3); a per-user Redis epoch is bumped after the revoking transaction commits, and a detach bumps every active holder of the role. The permission cache is keyed by epoch.
+- Outage policy per instance: degraded-open after 3 failed reads in 10 s, then 503 `AUTH_005` (`Retry-After: 30`) after 15 minutes, recovering after 60 s. While degraded-open, an epoch the instance already saw still makes a token stale. Failed bumps and failed holder reads are replayed each second from bounded queues, with a per-tenant share.
+- A bump Redis refused or lost no longer leaves the old token valid on the issuing instance while reads still answer: the check and the mint use the locally known epoch (and an issue-time marker for users the instance never saw), and a failed bump evicts the cached permission sets so other instances cannot re-mint a detached permission. Tokens already issued stay valid on other instances for their TTL (RES-46). New metric `nexus.rbac.epoch.store_regressed`.
+- `POST /api/v1/auth/refresh` is limited per token family (30 per 60 s) and per IP (300 per 60 s, plus 30 per 60 s of failures) and answers 429 `RATE_001` with `Retry-After`. Documented in OpenAPI.
+- Startup fails unless the main and both dedicated epoch Redis connections authenticate; `application-prod.yml` sets `nexus.rbac.redis.require-auth: true`.
+- `server.forward-headers-strategy: none` is now explicit (the per-IP keys stay `getRemoteAddr()`). **Behaviour change:** `/actuator/metrics/**` and `/actuator/prometheus` now accept only the operator's `NEXUS_MANAGEMENT_SCRAPE_TOKEN` as a bearer token and are closed when it is unset (any authenticated user could read them before). **Set it before enabling Prometheus scraping.**
+- New configuration under `nexus.rbac.epoch.*` (see `docs/features/US-018/deployment.md` section 10). No migration.
+
+**Frontend**
+- The access token is attached only to the API base path or its sub-paths; `/apiary` and similar siblings no longer receive it.
+
+**Tests and docs**
+- k6 scenarios `epoch-check-latency`, `detach-refresh-storm` and `refresh-junk-flood`. The two write scenarios refuse non-local targets unless `ALLOW_WRITE_SCENARIO=true`, and use a per-run password.
+- Docs: `docs/features/US-018/09-technical.md` (section 12), `deployment.md` (10), `rollback.md` (7), `monitoring.md`, `runbook.md` (7 to 10); ADR-0022 (Revision 4, still Proposed).
+- Known gaps: the live `api-spec.json` was not regenerated (no Docker in the authoring environment); the k6 merge gates have not been run; `npm audit` reports Angular 22.0.x advisories that predate this change.
+
 ### Added — US-018 Milestone 2 (RBAC grant-subset core: A1 to A4)
 
 **Backend**

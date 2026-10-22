@@ -8,13 +8,14 @@ import {
   input,
 } from '@angular/core';
 import { AuthStore } from '../../core/auth/auth.store';
+import { Permission } from '../types/permission';
 
 /**
  * Structural directive that renders its host element only when the current user holds a
  * given RBAC permission.
  *
  * ```html
- * <button *appHasPermission="'users:delete'" (click)="delete()">Delete user</button>
+ * <button *appHasPermission="'user:write'" (click)="delete()">Delete user</button>
  * ```
  *
  * Reactive: the element appears or disappears automatically when
@@ -45,13 +46,13 @@ export class HasPermissionDirective {
   private readonly template = inject<TemplateRef<unknown>>(TemplateRef);
 
   /**
-   * The permission string required to render the host template.
+   * The catalogue permission required to render the host template.
    *
    * The input name must equal the selector for structural-directive microsyntax
    * (`*appHasPermission="…"`) to bind — this is not stylistic; `strictTemplates`
    * derives the input name from the selector.
    */
-  readonly appHasPermission = input.required<string>();
+  readonly appHasPermission = input.required<Permission>();
 
   /**
    * Whether the user currently holds the required permission.

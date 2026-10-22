@@ -8,6 +8,8 @@ import com.example.nexus.identity.domain.JwtClaims;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UserStatus;
 import com.example.nexus.identity.domain.UuidGenerator;
+import com.example.nexus.rbac.application.PermissionFreshnessService;
+import com.example.nexus.rbac.application.PermissionFreshnessService.MintEpoch;
 import com.example.nexus.rbac.application.RoleResolutionService;
 import com.example.nexus.rbac.domain.ResolvedPermissions;
 import io.jsonwebtoken.Claims;
@@ -47,7 +49,6 @@ public class JwtRs256Service implements JwtPort {
   private static final String CLAIM_SCHEMA_VERSION = "schema_version";
   private static final String CLAIM_TENANT_ID = "tenant_id";
   private static final String CLAIM_PERM_EPOCH = "perm_epoch";
-  private static final int SCHEMA_VERSION_WITH_PERM_EPOCH = 3;
 
   private final KeyPair keyPair;
   private final String kid;
@@ -55,6 +56,7 @@ public class JwtRs256Service implements JwtPort {
   private final Clock clock;
   private final long accessTokenTtlSeconds;
   private final RoleResolutionService roleResolutionService;
+  private final PermissionFreshnessService permissionFreshnessService;
   private final Map<RejectionReason, Counter> rejectionCounters;
 
   public JwtRs256Service(
@@ -63,6 +65,7 @@ public class JwtRs256Service implements JwtPort {
       Clock clock,
       @Value("${nexus.jwt.access-token-ttl-seconds}") long accessTokenTtlSeconds,
       RoleResolutionService roleResolutionService,
+      PermissionFreshnessService permissionFreshnessService,
       MeterRegistry meterRegistry) {
     this.keyPair = rsaKeyConfig.getKeyPair();
     this.kid = rsaKeyConfig.getKid();
@@ -70,6 +73,7 @@ public class JwtRs256Service implements JwtPort {
     this.clock = clock;
     this.accessTokenTtlSeconds = accessTokenTtlSeconds;
     this.roleResolutionService = roleResolutionService;
+    this.permissionFreshnessService = permissionFreshnessService;
     this.rejectionCounters = registerRejectionCounters(meterRegistry);
   }
 
@@ -92,8 +96,14 @@ public class JwtRs256Service implements JwtPort {
   /**
    * Issues a new RS256 JWT access token for the authenticated user.
    * The token includes {@code sub} (user ID), {@code tenant_id}, {@code email_verified},
-   * {@code roles}, {@code permissions}, {@code token_version}, {@code schema_version}, and
-   * standard claims ({@code iat}, {@code exp}, {@code jti}).
+   * {@code roles}, {@code permissions}, {@code token_version}, {@code schema_version}, {@code
+   * perm_epoch}, and standard claims ({@code iat}, {@code exp}, {@code jti}).
+   *
+   * <p><b>MC-7a:</b> the permission epoch is read <i>before</i> the permissions are resolved. A
+   * revocation landing between the two reads then yields "old epoch, new permissions", which the
+   * next request rejects once (safe); the reverse order would yield "new epoch, old permissions",
+   * which would be accepted (US-018 design §9.3). The permissions are resolved, and cached, under
+   * that same epoch (Decision 17), so a set cached before a detach is never read after its bump.
    *
    * <p>{@code roles}/{@code permissions} are resolved via {@link RoleResolutionService} using
    * {@code user.getTenantId()} exclusively — never a default/bootstrap tenant (US-010 AC9).
@@ -106,8 +116,12 @@ public class JwtRs256Service implements JwtPort {
   public AccessTokenResult issue(User user) {
     Instant now = clock.instant();
     String jti = uuidGenerator.newId().toString();
-    ResolvedPermissions resolved =
-        roleResolutionService.resolve(user.getId(), user.getTenantId());
+    MintEpoch mintEpoch = permissionFreshnessService.mintEpoch(user.getTenantId(), user.getId());
+    long permEpoch = mintEpoch.epoch();
+    // An epoch the store did not confirm names a cache key no bump deletes (L-3): skip the cache.
+    ResolvedPermissions resolved = mintEpoch.verified()
+        ? roleResolutionService.resolve(user.getId(), user.getTenantId(), permEpoch)
+        : roleResolutionService.resolveUncached(user.getId(), user.getTenantId());
 
     String jwt = Jwts.builder()
         .header()
@@ -124,6 +138,7 @@ public class JwtRs256Service implements JwtPort {
         .id(jti)
         .claim("token_version", user.getTokenVersion())
         .claim("schema_version", JwtClaims.CURRENT_VERSION)
+        .claim(CLAIM_PERM_EPOCH, permEpoch)
         .signWith(keyPair.getPrivate(), Jwts.SIG.RS256)
         .compact();
 
@@ -135,12 +150,12 @@ public class JwtRs256Service implements JwtPort {
    * Enforces algorithm RS256 (no alg=none or HS256 confusion — T-3.1, T-3.2), then validates the
    * claims (US-018 A11, ADR-0022 D7): {@code schema_version} in {@link
    * JwtClaims#ACCEPTED_VERSIONS}; iat, exp, jti, roles, permissions and token_version present;
-   * {@code sub} and {@code tenant_id} canonical UUIDs; and, for v3 only, {@code perm_epoch} a
-   * non-negative long (its value is not used yet).
+   * {@code sub} and {@code tenant_id} canonical UUIDs; and {@code perm_epoch} a non-negative
+   * long. A v2 token is rejected with reason {@code schema_version} (design §9.6, M7b).
    *
    * <p>Every rejection is the same 401 {@code AUTH_003}, counted as {@code
-   * nexus.auth.token_rejected{reason}} and logged at DEBUG only, so an M7 rolling deploy cannot
-   * flood the logs.
+   * nexus.auth.token_rejected{reason}} and logged at DEBUG only, so a burst of rejected tokens
+   * cannot flood the logs.
    *
    * @param rawJwt the signed JWT string
    * @return extracted and validated claims
@@ -206,11 +221,12 @@ public class JwtRs256Service implements JwtPort {
           || !isCanonicalUuid(tenantId)) {
         throw reject(RejectionReason.TENANT_ID);
       }
-      // v3 is frozen as v2 + perm_epoch (ADR-0022 D7). M6 validates its shape and ignores it.
-      if (schemaVersion == SCHEMA_VERSION_WITH_PERM_EPOCH
-          && !isNonNegativeLong(payload.get(CLAIM_PERM_EPOCH))) {
+      // v3 is frozen as v2 + perm_epoch (ADR-0022 D7).
+      Object rawPermEpoch = payload.get(CLAIM_PERM_EPOCH);
+      if (!isNonNegativeLong(rawPermEpoch)) {
         throw reject(RejectionReason.PERM_EPOCH);
       }
+      long permEpoch = ((Number) rawPermEpoch).longValue();
 
       return new JwtClaims(
           sub,
@@ -222,7 +238,8 @@ public class JwtRs256Service implements JwtPort {
           expDate.toInstant().getEpochSecond(),
           jti,
           tokenVersion,
-          schemaVersion);
+          schemaVersion,
+          permEpoch);
     } catch (ClassCastException | RequiredTypeException e) {
       // A required claim is present with the wrong JSON type.
       throw reject(RejectionReason.CLAIMS_MISSING);

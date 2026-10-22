@@ -5,9 +5,11 @@ import com.example.nexus.identity.application.service.SecureEventService;
 import com.example.nexus.identity.domain.AuthEvent;
 import com.example.nexus.identity.domain.AuthEventType;
 import com.example.nexus.identity.domain.UuidGenerator;
+import com.example.nexus.rbac.application.port.out.BreakGlassAuditEvent;
 import com.example.nexus.rbac.application.port.out.RbacAuditEvent;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.RoleAuditEvent;
+import com.example.nexus.rbac.application.port.out.RoleUpdateAuditEvent;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.util.LinkedHashMap;
@@ -25,12 +27,15 @@ import tools.jackson.databind.ObjectMapper;
  * <ul>
  *   <li><b>Group A (atomic)</b> — {@link #recordRoleAssigned}, {@link #recordRoleRevoked}, {@link
  *       #recordRoleCreated}, {@link #recordRolePermissionGranted}, {@link
- *       #recordRolePermissionRevoked} — delegates to {@link
+ *       #recordRolePermissionRevoked}, {@link #recordRoleDeleted}, {@link #recordRoleUpdated} — delegates to {@link
  *       SecureEventService#recordEventInCurrentTransaction(AuthEvent)} ({@code MANDATORY}: joins
  *       the caller's own mutation transaction) and propagates any failure, including a metadata
  *       JSON-serialization failure.
- *   <li><b>Group B (best-effort)</b> — {@link #recordRoleAssignmentDenied} — delegates to {@link
- *       SecureEventService#recordEvent(AuthEvent)} ({@code REQUIRES_NEW}) and never throws.
+ *   <li><b>Group B (best-effort)</b> — {@link #recordRoleAssignmentDenied} delegates to {@link
+ *       SecureEventService#recordEvent(AuthEvent)} ({@code REQUIRES_NEW}); {@link
+ *       #recordBreakGlassRefusal} delegates to {@link
+ *       SecureEventService#recordEventOrThrowInNewTransaction(AuthEvent)} ({@code REQUIRES_NEW},
+ *       never buffered) and catches the failure itself. Neither ever throws.
  * </ul>
  *
  * <p>Sits beside {@link AuthEventRetryBuffer} / {@link LoggingAuditAlertAdapter} /
@@ -60,6 +65,11 @@ import tools.jackson.databind.ObjectMapper;
 public class RbacAuthEventAdapter implements RbacAuditPort {
 
   private static final Logger log = LoggerFactory.getLogger(RbacAuthEventAdapter.class);
+
+  /** US-018 A7 (03-design.md §7.2): the fixed {@code actorType} of every break-glass row. */
+  private static final String BREAK_GLASS_ACTOR_TYPE = "BREAK_GLASS_CLI";
+  private static final String OPERATION_BREAK_GLASS_GRANT = "breakGlassGrant";
+  private static final String OPERATION_BREAK_GLASS_REFUSAL = "breakGlassRefusal";
 
   private final SecureEventService secureEventService;
   private final UuidGenerator uuidGenerator;
@@ -136,6 +146,55 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
   @Override
   public void recordRolePermissionGranted(RoleAuditEvent event) {
     recordAtomic(event, AuthEventType.ROLE_PERMISSION_GRANTED, "grantedBy", "grantPermission");
+  }
+
+  /** @see #recordRoleCreated(RoleAuditEvent) */
+  @Override
+  public void recordRoleDeleted(RoleAuditEvent event) {
+    recordAtomic(event, AuthEventType.ROLE_DELETED, "deletedBy", "deleteRole");
+  }
+
+  /**
+   * Records a role update (Group A — atomic). The metadata names the changed fields and the old and
+   * new role name; the description text is never written (T-T9/RC-3), and a null old/new name is
+   * omitted, as everywhere in this adapter.
+   */
+  @Override
+  public void recordRoleUpdated(RoleUpdateAuditEvent event) {
+    try {
+      Map<String, Object> metadata = new LinkedHashMap<>();
+      String traceId = event.requestContext() != null ? event.requestContext().traceId() : null;
+      if (traceId != null) {
+        metadata.put("traceId", traceId);
+      }
+      metadata.put("roleId", event.roleId().toString());
+      if (event.roleName() != null) {
+        metadata.put("roleName", event.roleName());
+      }
+      metadata.put("changedFields", event.changedFields());
+      if (event.oldName() != null) {
+        metadata.put("oldName", event.oldName());
+      }
+      if (event.newName() != null) {
+        metadata.put("newName", event.newName());
+      }
+      if (event.actorUserId() != null) {
+        metadata.put("updatedBy", event.actorUserId().toString());
+      }
+
+      AuthEvent authEvent =
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.ROLE_UPDATED, "SUCCESS")
+              .withTenantId(event.tenantId())
+              .withIpAddress(event.requestContext() != null ? event.requestContext().ipAddress() : null)
+              .withUserAgent(event.requestContext() != null ? event.requestContext().userAgent() : null)
+              .withMetadata(objectMapper.writeValueAsString(metadata));
+
+      secureEventService.recordEventInCurrentTransaction(authEvent);
+    } catch (RuntimeException e) {
+      logAtomicAuditWriteFailed(
+          event.tenantId(), event.actorUserId(), event.roleId(), "updateRole", e);
+      throw e;
+    }
   }
 
   /** @see #recordRoleCreated(RoleAuditEvent) */
@@ -267,21 +326,112 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
       secureEventService.recordEvent(authEvent);
     } catch (Exception e) {
       String traceId = event.requestContext() != null ? event.requestContext().traceId() : null;
-      log.atError()
-          .addKeyValue("event", "RBAC_AUDIT_WRITE_LOST")
-          .addKeyValue("tenantId", event.tenantId())
-          .addKeyValue("targetUserId", event.targetUserId())
-          .addKeyValue("roleId", event.roleId())
-          .addKeyValue("actorUserId", event.actorUserId())
-          .addKeyValue("traceId", traceId)
-          .log("RBAC audit write lost: operation=deny tenantId={} targetUserId={} roleId={}",
-              event.tenantId(), event.targetUserId(), event.roleId(), e);
-      Counter.builder("nexus.rbac.audit_write_failed")
-          .tag("operation", "deny")
-          .tag("mode", "best_effort")
-          .register(meterRegistry)
-          .increment();
+      logBestEffortAuditWriteLost(
+          "deny",
+          event.tenantId(),
+          event.targetUserId(),
+          event.roleId(),
+          event.actorUserId(),
+          traceId,
+          e);
     }
+  }
+
+  /**
+   * US-018 A7 (03-design.md §7.2): {@code ROLE_BREAK_GLASS_GRANT} SUCCESS (Group A — atomic).
+   * Joins the grant's transaction via {@link
+   * SecureEventService#recordEventInCurrentTransaction(AuthEvent)} and RETHROWS on failure, so a
+   * lost audit row rolls the grant back. {@code user_id} is the target (the subject).
+   */
+  @Override
+  public void recordBreakGlassGrant(BreakGlassAuditEvent event) {
+    try {
+      AuthEvent authEvent =
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.ROLE_BREAK_GLASS_GRANT, "SUCCESS")
+              .withUserId(event.targetUserId())
+              .withTenantId(event.tenantId())
+              .withMetadata(buildBreakGlassMetadataJson(event, null));
+
+      secureEventService.recordEventInCurrentTransaction(authEvent);
+    } catch (RuntimeException e) {
+      logAtomicAuditWriteFailed(event.tenantId(), null, null, OPERATION_BREAK_GLASS_GRANT, e);
+      throw e;
+    }
+  }
+
+  /**
+   * US-018 A7 (03-design.md §7.2): {@code ROLE_BREAK_GLASS_GRANT} FAILURE for a refusal (Group B
+   * — best-effort). Delegates to {@link
+   * SecureEventService#recordEventOrThrowInNewTransaction(AuthEvent)} ({@code REQUIRES_NEW},
+   * throwing), never to {@link SecureEventService#recordEvent(AuthEvent)}: that path's port
+   * enqueues a failed write to the retry buffer, which the short-lived break-glass process never
+   * drains, so the row would be lost with no signal. Here a failure (including a metadata
+   * serialization failure) logs {@code event=RBAC_AUDIT_WRITE_LOST}, increments {@code
+   * nexus.rbac.audit_write_failed{operation="breakGlassRefusal", mode="best_effort"}}, and is
+   * swallowed — this method never throws. {@code changeRef} is not logged on that line. {@code
+   * tenantId} may be {@code null} (unknown target).
+   */
+  @Override
+  public void recordBreakGlassRefusal(BreakGlassAuditEvent event, String reason) {
+    try {
+      AuthEvent authEvent =
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.ROLE_BREAK_GLASS_GRANT, "FAILURE")
+              .withUserId(event.targetUserId())
+              .withTenantId(event.tenantId())
+              .withMetadata(buildBreakGlassMetadataJson(event, reason));
+
+      secureEventService.recordEventOrThrowInNewTransaction(authEvent);
+    } catch (RuntimeException e) {
+      logBestEffortAuditWriteLost(
+          OPERATION_BREAK_GLASS_REFUSAL, event.tenantId(), event.targetUserId(), null, null, null, e);
+    }
+  }
+
+  /**
+   * Break-glass metadata: exactly {@code actorType}, {@code changeRef}, {@code reason}, in that
+   * order, with {@code null} values omitted (never a JSON {@code null}).
+   */
+  private String buildBreakGlassMetadataJson(BreakGlassAuditEvent event, String reason) {
+    Map<String, Object> metadata = new LinkedHashMap<>();
+    metadata.put("actorType", BREAK_GLASS_ACTOR_TYPE);
+    if (event.changeRef() != null) {
+      metadata.put("changeRef", event.changeRef());
+    }
+    if (reason != null) {
+      metadata.put("reason", reason);
+    }
+    return objectMapper.writeValueAsString(metadata);
+  }
+
+  /**
+   * The Group B (best-effort) failure marker, shared by {@link #recordDenied} and {@link
+   * #recordBreakGlassRefusal}: ERROR {@code event=RBAC_AUDIT_WRITE_LOST} with ids only, plus
+   * {@code nexus.rbac.audit_write_failed{operation, mode="best_effort"}}. The row is lost; the
+   * caller carries on.
+   */
+  private void logBestEffortAuditWriteLost(
+      String operation,
+      UUID tenantId,
+      UUID targetUserId,
+      UUID roleId,
+      UUID actorUserId,
+      String traceId,
+      Exception e) {
+    log.atError()
+        .addKeyValue("event", "RBAC_AUDIT_WRITE_LOST")
+        .addKeyValue("tenantId", tenantId)
+        .addKeyValue("targetUserId", targetUserId)
+        .addKeyValue("roleId", roleId)
+        .addKeyValue("actorUserId", actorUserId)
+        .addKeyValue("traceId", traceId)
+        .addKeyValue("operation", operation)
+        .log("RBAC audit write lost: operation={} tenantId={} targetUserId={} roleId={}",
+            operation, tenantId, targetUserId, roleId, e);
+    Counter.builder("nexus.rbac.audit_write_failed")
+        .tag("operation", operation)
+        .tag("mode", "best_effort")
+        .register(meterRegistry)
+        .increment();
   }
 
   /**

@@ -1,17 +1,24 @@
 package com.example.nexus.rbac.interfaces.rest;
 
+import static com.example.nexus.common.security.Permissions.ROLE_READ;
+import static com.example.nexus.common.security.Permissions.ROLE_WRITE;
+
 import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.security.RequiresPermission;
 import com.example.nexus.rbac.application.RoleManagementService;
+import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.RoleView;
 import com.example.nexus.rbac.interfaces.rest.dto.AttachPermissionRequest;
 import com.example.nexus.rbac.interfaces.rest.dto.CreateRoleRequest;
+import com.example.nexus.rbac.interfaces.rest.dto.PageLinks;
+import com.example.nexus.rbac.interfaces.rest.dto.PageMetadata;
 import com.example.nexus.rbac.interfaces.rest.dto.PermissionListResponse;
 import com.example.nexus.rbac.interfaces.rest.dto.PermissionResponse;
 import com.example.nexus.rbac.interfaces.rest.dto.RoleListResponse;
 import com.example.nexus.rbac.interfaces.rest.dto.RoleResponse;
+import com.example.nexus.rbac.interfaces.rest.dto.UpdateRoleRequest;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -25,10 +32,12 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -57,8 +66,6 @@ import org.springframework.web.bind.annotation.RestController;
 @Tag(name = "Role Management", description = "Tenant-scoped role and role-permission management")
 public class RoleController {
 
-  private static final String ROLE_WRITE = "role:write";
-  private static final String ROLE_READ = "role:read";
   private static final String PATH_PARAM_ROLE_ID = "roleId";
   private static final String PATH_PARAM_PERMISSION_ID = "permissionId";
 
@@ -95,20 +102,30 @@ public class RoleController {
   }
 
   /**
-   * Lists all roles in the caller's own tenant, ordered by name (AC2, AC8, D11).
+   * Lists one page of the roles in the caller's own tenant, ordered by {@code (name, id)} (AC2, AC8,
+   * D11; paginated by US-018 C2). {@code page} is 0-based (default 0), {@code size} defaults to 20
+   * and is at most 100; an out-of-range value is a 400, never clamped.
    *
-   * @return 200 with a {@code data} envelope
+   * @return 200 with {@code data}, {@code page} and {@code links}
    */
   @GetMapping
   @RequiresPermission(ROLE_READ)
-  @Operation(summary = "List all roles in the caller's tenant")
-  @ApiResponse(responseCode = "200", description = "Roles in the caller's tenant")
+  @Operation(summary = "List the roles in the caller's tenant, one page at a time")
+  @ApiResponse(responseCode = "200", description = "A page of roles in the caller's tenant")
+  @ApiResponse(responseCode = "400", description = "page or size out of range, or not an integer")
   @ApiResponse(responseCode = "403", description = "Missing role:read")
-  public RoleListResponse listRoles(Authentication authentication) {
+  public RoleListResponse listRoles(
+      @RequestParam(name = "page", required = false) String page,
+      @RequestParam(name = "size", required = false) String size,
+      Authentication authentication) {
     RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, ROLE_READ);
+    PageParams params = PageParams.parse(page, size);
 
-    var data = roleManagementService.listRoles(actor).stream().map(RoleController::toResponse).toList();
-    return new RoleListResponse(data);
+    PageResult<RoleView> result = roleManagementService.listRoles(actor, params.page(), params.size());
+    return new RoleListResponse(
+        result.items().stream().map(RoleController::toResponse).toList(),
+        PageMetadata.of(result),
+        PageLinks.of("/api/v1/roles", result));
   }
 
   /**
@@ -121,8 +138,8 @@ public class RoleController {
   @RequiresPermission(ROLE_READ)
   @Operation(summary = "List the permissions attached to a role in the caller's tenant")
   @ApiResponse(responseCode = "200", description = "Permissions attached to the role")
-  @ApiResponse(responseCode = "403", description = "Missing role:read or cross-tenant role")
-  @ApiResponse(responseCode = "404", description = "Role not found")
+  @ApiResponse(responseCode = "403", description = "Missing role:read")
+  @ApiResponse(responseCode = "404", description = "Role not found, or in another tenant (indistinguishable)")
   public PermissionListResponse listRolePermissions(
       @PathVariable String roleId, Authentication authentication) {
     RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, ROLE_READ);
@@ -136,8 +153,10 @@ public class RoleController {
   }
 
   /**
-   * Attaches a permission to a role in the caller's own tenant (AC4, AC7, AC8, AC11, AC12) — the
-   * story's security-critical path.
+   * Attaches a permission to a role in the caller's own tenant (AC4, AC7, AC8, AC12, A3) — the
+   * story's security-critical path. The caller may attach only a permission they hold; an attach
+   * that would make the role an administrator role is refused while a holder was assigned by a
+   * non-administrator.
    *
    * @return 201 with a {@code Location} header addressing the pairing and the attached permission
    */
@@ -149,9 +168,16 @@ public class RoleController {
   @ApiResponse(responseCode = "400", description = "Malformed path or body UUID")
   @ApiResponse(
       responseCode = "403",
-      description = "Missing role:write, cross-tenant role, or AC11 non-admin")
-  @ApiResponse(responseCode = "404", description = "Role or permission not found")
-  @ApiResponse(responseCode = "409", description = "System role, or already attached")
+      description =
+          "Missing role:write, or the caller does not hold the permission"
+              + " being attached")
+  @ApiResponse(responseCode = "404", description = "Role or permission not found, or role in another tenant (indistinguishable)")
+  @ApiResponse(
+      responseCode = "409",
+      description =
+          "System role, already attached (RBAC_005), or the attach would make the role an"
+              + " administrator role while a holder was assigned by a non-administrator"
+              + " (RBAC_010)")
   public ResponseEntity<PermissionResponse> attachPermission(
       @PathVariable String roleId,
       @Valid @RequestBody AttachPermissionRequest request,
@@ -172,8 +198,9 @@ public class RoleController {
   }
 
   /**
-   * Detaches a permission from a role in the caller's own tenant (AC5, AC7, AC8, AC12). No AC11
-   * gate — detaching reduces privilege.
+   * Detaches a permission from a role in the caller's own tenant (AC5, AC7, AC8, AC12). The caller
+   * must hold every permission of the role (role-subset), and, when the role is an administrator
+   * role, be an administrator through a different role.
    */
   @DeleteMapping("/{roleId}/permissions/{permissionId}")
   @ResponseStatus(HttpStatus.NO_CONTENT)
@@ -181,8 +208,14 @@ public class RoleController {
   @Operation(summary = "Detach a permission from a role in the caller's tenant")
   @ApiResponse(responseCode = "204", description = "Permission detached")
   @ApiResponse(responseCode = "400", description = "Malformed path UUID")
-  @ApiResponse(responseCode = "403", description = "Missing role:write or cross-tenant role")
-  @ApiResponse(responseCode = "404", description = "Role, permission, or pairing not found")
+  @ApiResponse(
+      responseCode = "403",
+      description =
+          "Missing role:write, or the caller does not hold every permission of"
+              + " the role (for an administrator role: or is not an administrator through"
+              + " another role)")
+  @ApiResponse(responseCode = "404", description =
+          "Role, permission, or pairing not found, or role in another tenant (indistinguishable)")
   @ApiResponse(responseCode = "409", description = "System role")
   public void detachPermission(
       @PathVariable String roleId,
@@ -196,6 +229,84 @@ public class RoleController {
 
     roleManagementService.detachPermission(
         actor, parsedRoleId, parsedPermissionId, RbacControllerSupport.requestContext(httpRequest));
+  }
+
+  /**
+   * Renames a custom role and/or changes its description (US-018 C1). Bounded by the caller's own
+   * authority exactly like a detach (role-subset), so a {@code role:write} holder cannot make an
+   * administrator role look harmless. There is no {@code If-Match}: an admin-only, low-contention
+   * resource, last write wins.
+   *
+   * @return 200 with the updated role
+   */
+  @PatchMapping("/{roleId}")
+  @RequiresPermission(ROLE_WRITE)
+  @Operation(summary = "Rename a custom role or change its description in the caller's tenant")
+  @ApiResponse(responseCode = "200", description = "Role updated")
+  @ApiResponse(
+      responseCode = "400",
+      description = "Validation failed (empty body, bad name or description) or malformed path UUID")
+  @ApiResponse(
+      responseCode = "403",
+      description =
+          "Missing role:write, or the caller does not hold every permission of the role (for an"
+              + " administrator role: or is not an administrator through another role)")
+  @ApiResponse(
+      responseCode = "404",
+      description = "Role not found, deleted, or in another tenant (indistinguishable)")
+  @ApiResponse(
+      responseCode = "409",
+      description =
+          "System role (RBAC_003), name already used by a live role (RBAC_006) or reserved"
+              + " (RBAC_007)")
+  public RoleResponse updateRole(
+      @PathVariable String roleId,
+      @Valid @RequestBody UpdateRoleRequest request,
+      Authentication authentication,
+      HttpServletRequest httpRequest) {
+    RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, ROLE_WRITE);
+    UUID parsedRoleId = RbacControllerSupport.parsePathUuid(roleId, PATH_PARAM_ROLE_ID);
+
+    RoleView role =
+        roleManagementService.updateRole(
+            actor,
+            parsedRoleId,
+            request.name(),
+            request.description(),
+            RbacControllerSupport.requestContext(httpRequest));
+    return toResponse(role);
+  }
+
+  /**
+   * Soft-deletes a custom role that has no active holder (US-018 C1). Bounded by the caller's own
+   * authority exactly like a detach: the caller must hold every permission of the role (and, for an
+   * administrator role, be an administrator through another role). The role stays in the audit
+   * trail; its name stays reserved until the V10 contract step.
+   */
+  @DeleteMapping("/{roleId}")
+  @ResponseStatus(HttpStatus.NO_CONTENT)
+  @RequiresPermission(ROLE_WRITE)
+  @Operation(summary = "Delete a custom role in the caller's tenant (soft delete)")
+  @ApiResponse(responseCode = "204", description = "Role deleted")
+  @ApiResponse(responseCode = "400", description = "Malformed path UUID")
+  @ApiResponse(
+      responseCode = "403",
+      description =
+          "Missing role:write, or the caller does not hold every permission of the role (for an"
+              + " administrator role: or is not an administrator through another role)")
+  @ApiResponse(
+      responseCode = "404",
+      description = "Role not found, already deleted, or in another tenant (indistinguishable)")
+  @ApiResponse(
+      responseCode = "409",
+      description = "System role (RBAC_003), or the role still has active holders (RBAC_009)")
+  public void softDeleteRole(
+      @PathVariable String roleId, Authentication authentication, HttpServletRequest httpRequest) {
+    RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, ROLE_WRITE);
+    UUID parsedRoleId = RbacControllerSupport.parsePathUuid(roleId, PATH_PARAM_ROLE_ID);
+
+    roleManagementService.softDeleteRole(
+        actor, parsedRoleId, RbacControllerSupport.requestContext(httpRequest));
   }
 
   private static RoleResponse toResponse(RoleView view) {

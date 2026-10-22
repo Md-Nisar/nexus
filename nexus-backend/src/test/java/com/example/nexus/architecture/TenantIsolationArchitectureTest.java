@@ -50,10 +50,14 @@ class TenantIsolationArchitectureTest {
             // Grandfathered at introduction — keyed by a globally unique id.
             "JpaUserRepository#resetFailedAttemptsDirect",
             "JpaRoleRepository#findRoleViewById",
-            "JpaRoleRepository#findPermissionNamesByRole",
             "JpaUserRoleRepository#countActiveByUserAndRole",
             "JpaUserRoleRepository#revokeById",
-            "JpaUserRoleRepository#findActiveUserIdsByRole");
+            "JpaUserRoleRepository#findActiveUserIdsByRole",
+            // US-018 T-008, RC-47: global by design (a change reference approves one break-glass
+            // grant anywhere, so the replay lookup must see every tenant); needs security-reviewer
+            // sign-off. Containment: ArchitectureRules.BREAK_GLASS_GRANT_LOOKUP_PORT_IS_CONTAINED and
+            // ...GLOBAL_BREAK_GLASS_REPLAY_QUERY_IS_CALLED_ONLY_BY_ITS_ADAPTER (security review L-3).
+            "JpaAuthEventRepository#existsSuccessfulBreakGlassGrantWithChangeRef");
 
     @ArchTest
     static final ArchRule tenant_scoped_repository_methods_must_filter_by_tenant =

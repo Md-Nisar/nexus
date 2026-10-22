@@ -124,6 +124,32 @@ class RateLimitRoleChangeThrottleAdapterTest {
   }
 
   @Test
+  void should_countSuppressedDenialsFromOne_when_recordSuppressedDenialCalledRepeatedly() {
+    assertThat(adapter.recordSuppressedDenial(TENANT_ID, ACTOR_USER_ID)).isEqualTo(1);
+    assertThat(adapter.recordSuppressedDenial(TENANT_ID, ACTOR_USER_ID)).isEqualTo(2);
+    assertThat(adapter.recordSuppressedDenial(UUID.randomUUID(), ACTOR_USER_ID))
+        .as("another tenant has its own count")
+        .isEqualTo(1);
+  }
+
+  @Test
+  void should_restartTheSuppressedCount_when_aNewThrottleEpisodeBegins() {
+    when(rateLimitStore.tryConsume(eq(EXPECTED_KEY), eq(WINDOW_SECONDS), eq(MAX_DENIALS)))
+        .thenReturn(RateLimitResult.reject(10), RateLimitResult.reject(10));
+    adapter.recordDenial(TENANT_ID, ACTOR_USER_ID); // episode 1 begins
+    adapter.recordSuppressedDenial(TENANT_ID, ACTOR_USER_ID);
+    adapter.recordSuppressedDenial(TENANT_ID, ACTOR_USER_ID);
+    clock.advance(Duration.ofSeconds(11));
+    assertThat(adapter.isThrottled(TENANT_ID, ACTOR_USER_ID)).isFalse(); // episode 1 over
+
+    adapter.recordDenial(TENANT_ID, ACTOR_USER_ID); // episode 2 begins
+
+    assertThat(adapter.recordSuppressedDenial(TENANT_ID, ACTOR_USER_ID))
+        .as("the first suppressed denial of a new episode is the one that logs")
+        .isEqualTo(1);
+  }
+
+  @Test
   void should_evictExpiredEntry_when_isThrottledCalledAfterWindowExpires() {
     when(rateLimitStore.tryConsume(eq(EXPECTED_KEY), eq(WINDOW_SECONDS), eq(MAX_DENIALS)))
         .thenReturn(RateLimitResult.reject(10));

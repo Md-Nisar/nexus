@@ -79,6 +79,10 @@ GRANT SELECT, INSERT, DELETE ON nexus.role_permissions TO 'nexus_app'@'%';
 GRANT SELECT, INSERT         ON nexus.user_roles       TO 'nexus_app'@'%';
 GRANT UPDATE (revoked_at)    ON nexus.user_roles       TO 'nexus_app'@'%';
 
+-- US-018 C1 (V9, soft delete and PATCH of custom roles): column-scoped, the ADR 0015 D7 precedent.
+-- No DELETE and no table-level UPDATE on roles; is_system_role, tenant_id and id stay unwritable.
+GRANT UPDATE (name, description, deleted_at) ON nexus.roles TO 'nexus_app'@'%';
+
 FLUSH PRIVILEGES;
 ```
 
@@ -91,7 +95,8 @@ this list, and never add `WITH GRANT OPTION`.
 SHOW GRANTS FOR 'nexus_app'@'%';
 ```
 
-Expected output (nine lines, plus the implicit `GRANT USAGE`):
+Expected output (ten lines, plus the implicit `GRANT USAGE`; the `roles` column grant is the
+US-018 C1 addition and is applied per environment after the code that uses it is deployed):
 
 ```
 GRANT USAGE ON *.* TO `nexus_app`@`%`
@@ -104,6 +109,7 @@ GRANT SELECT, INSERT ON `nexus`.`roles` TO `nexus_app`@`%`
 GRANT SELECT, INSERT, DELETE ON `nexus`.`role_permissions` TO `nexus_app`@`%`
 GRANT SELECT, INSERT ON `nexus`.`user_roles` TO `nexus_app`@`%`
 GRANT UPDATE (`revoked_at`) ON `nexus`.`user_roles` TO `nexus_app`@`%`
+GRANT UPDATE (`deleted_at`, `description`, `name`) ON `nexus`.`roles` TO `nexus_app`@`%`
 ```
 
 If anything else appears (`DROP`, `ALTER`, `CREATE`, `GRANT OPTION`, or `UPDATE`/`DELETE` on

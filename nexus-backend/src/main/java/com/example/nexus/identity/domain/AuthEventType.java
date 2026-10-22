@@ -53,7 +53,24 @@ public enum AuthEventType {
   // comment on the PRIORITY field below for the admission reasoning.
   ROLE_CREATED("ROLE_CREATED"),
   ROLE_PERMISSION_GRANTED("ROLE_PERMISSION_GRANTED"),
-  ROLE_PERMISSION_REVOKED("ROLE_PERMISSION_REVOKED");
+  ROLE_PERMISSION_REVOKED("ROLE_PERMISSION_REVOKED"),
+
+  // US-018 C1 (03-design.md 11.1): a role soft delete. Not PRIORITY, like ROLE_CREATED: it is
+  // written on the atomic path (SecureEventService#recordEventInCurrentTransaction), never through
+  // the retry buffer, so lane admission does not apply.
+  ROLE_DELETED("ROLE_DELETED"),
+
+  // US-018 C1: a role rename or description change (PATCH). Atomic path only, like ROLE_DELETED, so
+  // not PRIORITY. Its metadata carries the changed field names and the old and new NAME, never the
+  // description text.
+  ROLE_UPDATED("ROLE_UPDATED"),
+
+  // US-018 A7 (03-design.md §7.2): break-glass first-administrator grant, SUCCESS or FAILURE.
+  // Deliberately NOT in PRIORITY below — it is never written on the buffered path: SUCCESS joins
+  // the grant transaction and a refusal's FAILURE row commits in its own transaction, both through
+  // AuthEventPort#recordOrThrow, so a failed write propagates (rolling the grant back, or logged as
+  // RBAC_AUDIT_WRITE_LOST for a refusal) and is never enqueued to the retry buffer.
+  ROLE_BREAK_GLASS_GRANT("ROLE_BREAK_GLASS_GRANT");
 
   // ROLE_ASSIGNED/ROLE_REVOKED are PRIORITY (T-R4, reversing the original US-012 D10 decision):
   // role-change audit events must not share the drop-newest STANDARD lane with high-volume

@@ -75,7 +75,7 @@ class ActiveAssignmentIT {
     return roleRepository.save(
         new Role(
             uuidGenerator.newId(),
-            uuidGenerator.newId(),
+            TENANT_ID,
             "AA-" + tag + "-" + UUID.randomUUID(),
             null,
             false));

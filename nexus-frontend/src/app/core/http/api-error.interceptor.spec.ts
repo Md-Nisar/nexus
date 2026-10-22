@@ -1,12 +1,14 @@
 import { TestBed } from '@angular/core/testing';
-import { HttpClient, provideHttpClient, withInterceptors } from '@angular/common/http';
+import { HttpClient, HttpContext, provideHttpClient, withInterceptors } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { Router } from '@angular/router';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { apiErrorInterceptor } from './api-error.interceptor';
 import { LoggerService } from '../logging/logger.service';
 import { APP_CONFIG } from '../config/app-config';
 import { correlationIdInterceptor } from './correlation-id.interceptor';
 import { AppError } from '../../shared/types/app-error';
+import { SKIP_ACCESS_DENIED_REDIRECT } from './skip-access-denied-redirect';
 
 describe('apiErrorInterceptor', () => {
   let loggerSpy: {
@@ -15,6 +17,7 @@ describe('apiErrorInterceptor', () => {
     warn: ReturnType<typeof vi.fn>;
     error: ReturnType<typeof vi.fn>;
   };
+  let routerSpy: { navigate: ReturnType<typeof vi.fn> };
 
   function setup() {
     loggerSpy = {
@@ -24,11 +27,14 @@ describe('apiErrorInterceptor', () => {
       error: vi.fn(),
     };
 
+    routerSpy = { navigate: vi.fn().mockResolvedValue(true) };
+
     TestBed.configureTestingModule({
       providers: [
         provideHttpClient(withInterceptors([correlationIdInterceptor, apiErrorInterceptor])),
         provideHttpClientTesting(),
         { provide: LoggerService, useValue: loggerSpy },
+        { provide: Router, useValue: routerSpy },
         {
           provide: APP_CONFIG,
           useValue: { production: false, apiBaseUrl: '/api', logLevel: 'debug' },
@@ -83,13 +89,13 @@ describe('apiErrorInterceptor', () => {
         code: 'RBAC_001',
         detail: 'You do not have permission to perform this action',
         traceId: 'trace-rbac-1',
-        requiredPermission: 'roles:read',
+        requiredPermission: 'role:read',
       },
       { status: 403, statusText: 'Forbidden' },
     );
 
     expect(captured?.code).toBe('RBAC_001');
-    expect(captured?.requiredPermission).toBe('roles:read');
+    expect(captured?.requiredPermission).toBe('role:read');
   });
 
   it('should leave requiredPermission undefined for an ACCESS_DENIED problem response', () => {
@@ -186,5 +192,87 @@ describe('apiErrorInterceptor', () => {
       expect.stringContaining('General network or client-side transport failure.'),
       expect.any(Object),
     );
+  });
+  describe('403 RBAC_001 redirect (US-018 C6)', () => {
+    function failWith(
+      status: number,
+      body: Record<string, unknown>,
+      options: { context?: HttpContext } = {},
+    ): { captured: AppError | undefined } {
+      const { http, controller } = setup();
+      const result: { captured: AppError | undefined } = { captured: undefined };
+      http
+        .get('/api/v1/roles', { context: options.context })
+        .subscribe({ error: (e: AppError) => (result.captured = e) });
+      controller.expectOne('/api/v1/roles').flush(body, { status, statusText: 'Error' });
+      return result;
+    }
+
+    it('should navigate to /access-denied when a request fails with 403 RBAC_001', () => {
+      failWith(403, { code: 'RBAC_001', detail: 'Missing permission.' });
+
+      expect(routerSpy.navigate).toHaveBeenCalledOnce();
+      expect(routerSpy.navigate).toHaveBeenCalledWith(['/access-denied']);
+    });
+
+    it('should navigate without query parameters or extras derived from the server response', () => {
+      failWith(403, {
+        code: 'RBAC_001',
+        detail: 'Missing permission.',
+        requiredPermission: 'role:write',
+        returnUrl: 'https://evil.example',
+      });
+
+      const call = routerSpy.navigate.mock.calls[0];
+      expect(call).toEqual([['/access-denied']]);
+      expect(JSON.stringify(call)).not.toContain('role:write');
+      expect(JSON.stringify(call)).not.toContain('evil.example');
+    });
+
+    it('should still propagate the AppError to the subscriber when it redirects', () => {
+      const result = failWith(403, { code: 'RBAC_001', detail: 'Missing permission.' });
+
+      expect(result.captured?.code).toBe('RBAC_001');
+    });
+
+    it('should not navigate for the filter-level ACCESS_DENIED 403', () => {
+      const result = failWith(403, { code: 'ACCESS_DENIED', detail: 'No access.' });
+
+      expect(routerSpy.navigate).not.toHaveBeenCalled();
+      expect(result.captured?.code).toBe('ACCESS_DENIED');
+    });
+
+    it('should not navigate on a 401', () => {
+      failWith(401, { code: 'AUTH_003', detail: 'Token rejected.' });
+
+      expect(routerSpy.navigate).not.toHaveBeenCalled();
+    });
+
+    it('should not navigate on a 404', () => {
+      failWith(404, { code: 'ROLE_NOT_FOUND', detail: 'No such role.' });
+
+      expect(routerSpy.navigate).not.toHaveBeenCalled();
+    });
+
+    it('should not navigate on a RBAC_001 code carried by a non-403 status', () => {
+      failWith(409, { code: 'RBAC_001', detail: 'Odd.' });
+
+      expect(routerSpy.navigate).not.toHaveBeenCalled();
+    });
+
+    it('should not navigate when the request carries SKIP_ACCESS_DENIED_REDIRECT, yet still propagate', () => {
+      const result = failWith(
+        403,
+        { code: 'RBAC_001', detail: 'Missing permission.' },
+        { context: new HttpContext().set(SKIP_ACCESS_DENIED_REDIRECT, true) },
+      );
+
+      expect(routerSpy.navigate).not.toHaveBeenCalled();
+      expect(result.captured?.code).toBe('RBAC_001');
+    });
+
+    it('should default the opt-out token to false', () => {
+      expect(new HttpContext().get(SKIP_ACCESS_DENIED_REDIRECT)).toBe(false);
+    });
   });
 });

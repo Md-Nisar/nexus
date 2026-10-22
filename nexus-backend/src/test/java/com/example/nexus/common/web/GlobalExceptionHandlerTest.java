@@ -15,6 +15,7 @@ import com.example.nexus.common.domain.ConflictException;
 import com.example.nexus.common.domain.DomainException;
 import com.example.nexus.common.domain.FieldValidationException;
 import com.example.nexus.common.domain.RateLimitException;
+import com.example.nexus.common.domain.RefreshThrottledException;
 import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.common.domain.TokenExpiredException;
 import com.example.nexus.common.security.DenialReason;
@@ -250,6 +251,30 @@ class GlobalExceptionHandlerTest {
         assertThat(problem).isNotNull();
         assertThat(problem.getProperties()).containsEntry("code", "AUTH_RES_001");
         assertThat(problem.getDetail()).isEqualTo("Too many requests. Try again later.");
+    }
+
+    @Test
+    void should_return429WithRetryAfterAndLogNoWarn_when_refreshThrottled() {
+        // US-018 T-013: the use case owns the single per-window WARN; the handler must not add
+        // one WARN per rejected request on top of it.
+        Logger logger = (Logger) LoggerFactory.getLogger(GlobalExceptionHandler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.WARN);
+        try {
+            ResponseEntity<ProblemDetail> response =
+                    handler.handleRateLimit(new RefreshThrottledException(23L));
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+            assertThat(response.getHeaders().getFirst("Retry-After")).isEqualTo("23");
+            assertThat(response.getBody().getProperties()).containsEntry("code", "RATE_001");
+            assertThat(appender.list).isEmpty();
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+            logger.setLevel(Level.OFF);
+        }
     }
 
     @Test

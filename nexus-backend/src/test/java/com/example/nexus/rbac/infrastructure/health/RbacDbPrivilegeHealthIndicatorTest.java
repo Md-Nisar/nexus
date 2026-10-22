@@ -266,6 +266,33 @@ class RbacDbPrivilegeHealthIndicatorTest {
     assertThat(health.getDetails()).containsEntry("rolesHasTableScopedUpdateGrant", false);
   }
 
+  /**
+   * US-018 C1: the roles column-scoped leg exempts exactly {@code name}, {@code description} and
+   * {@code deleted_at}, so a grant on those (before or after the column grant is applied) is UP,
+   * while any other column ({@code is_system_role}, {@code tenant_id}, {@code id}) is still found.
+   * The mocked connection cannot evaluate SQL, so this pins the statement text; the real grants are
+   * exercised by {@code RbacDbPrivilegeHealthIndicatorIT} and {@code RolesPrivilegeIT}.
+   */
+  @Test
+  void should_exemptOnlyTheC1ColumnSet_when_checkingRolesColumnScopedUpdate() throws SQLException {
+    givenConnectedAs("nexus_app@%");
+
+    var health = indicator().health();
+
+    assertThat(health.getStatus()).isEqualTo(Status.UP);
+    org.mockito.ArgumentCaptor<String> sql = org.mockito.ArgumentCaptor.forClass(String.class);
+    verify(connection, org.mockito.Mockito.atLeastOnce()).prepareStatement(sql.capture());
+    String rolesColumnQuery =
+        sql.getAllValues().stream()
+            .filter(q -> q.contains("COLUMN_PRIVILEGES") && q.contains("TABLE_NAME = 'roles'"))
+            .findFirst()
+            .orElseThrow();
+    assertThat(rolesColumnQuery)
+        .contains("COLUMN_NAME NOT IN ('name', 'description', 'deleted_at')")
+        .doesNotContain("is_system_role")
+        .doesNotContain("tenant_id");
+  }
+
   @Test
   void should_report_down_when_roles_has_delete_grant() throws SQLException {
     givenConnectedAs("app_user@%");

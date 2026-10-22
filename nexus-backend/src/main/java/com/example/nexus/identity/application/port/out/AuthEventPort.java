@@ -28,10 +28,12 @@ public interface AuthEventPort {
    * Persists an event, flushing immediately, and propagates any failure to the caller — the
    * opposite contract of {@link #record(AuthEvent)}.
    *
-   * <p>Used only by {@code SecureEventService#recordEventInCurrentTransaction} (US-018 A6), on the
+   * <p>Used by {@code SecureEventService#recordEventInCurrentTransaction} (US-018 A6), on the
    * atomic RBAC success-audit path ({@code RbacAuditPort}'s Group A methods): the audit write joins
    * the caller's mutation transaction, so a failure here must roll that transaction back rather
-   * than being buffered for retry. The flush is required — {@link AuthEvent} has an assigned {@code
+   * than being buffered for retry. Also used by {@code
+   * SecureEventService#recordEventOrThrowInNewTransaction} (US-018 A7) for a break-glass refusal
+   * row, whose short-lived process would never drain the retry buffer. The flush is required — {@link AuthEvent} has an assigned {@code
    * @Id}, so without it the failure would otherwise surface only at commit, as an unmapped {@code
    * TransactionSystemException}.
    *

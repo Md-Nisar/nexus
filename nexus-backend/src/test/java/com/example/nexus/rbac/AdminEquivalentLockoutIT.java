@@ -40,11 +40,18 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 
 /**
- * US-017 T-007(a)/(e) (04-tasks.md; 03-design.md §11.3, A-4): a dedicated class (per A-4, not an
- * extension of the already-1000+-line {@link LastAdminLockoutIT}) exercising D5's cross-role,
- * distinct-HOLDER (not distinct-ROW) counting under a genuine concurrent race — the story's
- * central risk — and (e) proving M11's lock set never crosses a tenant boundary, even when fed a
- * deliberately cross-tenant role-id list.
+ * US-017 T-007(a)/(e) (04-tasks.md; 03-design.md §11.3, A-4), re-cast by US-018 T-016 (ledger row
+ * 3, 04-tasks.md "AdminEquivalentLockoutIT becomes admin-defining cases"): a dedicated class (per
+ * A-4, not an extension of the already-1000+-line {@link LastAdminLockoutIT}) exercising the
+ * cross-role, distinct-HOLDER (not distinct-ROW) counting under a genuine concurrent race — the
+ * story's central risk — and (e) proving M11's lock set never crosses a tenant boundary, even when
+ * fed a deliberately cross-tenant role-id list.
+ *
+ * <p><b>The population is now admin-defining roles</b> (ADR-0021 D6): a role is in the lockout
+ * population iff it carries every permission of the catalogue. The former H-1 case (a role with
+ * one dangerous permission must not count) is re-cast as "a role one permission short of the
+ * catalogue must not count"; the former "caller-qualifying via all three dangerous permissions"
+ * custom role is a custom admin-defining role.
  *
  * <p>Reuses {@link LastAdminLockoutIT}'s {@link CyclicBarrier}/{@link Future}/outcome-counting
  * harness shape and its "any unexpected exception type fails loudly" rule verbatim (A-4) — the
@@ -58,10 +65,6 @@ class AdminEquivalentLockoutIT {
 
   // Seeded literals — V5__rbac_schema.sql header comment (same constants used elsewhere in this
   // package, e.g. LastAdminLockoutIT/RoleRevocationSymmetryIT).
-  private static final UUID TENANT_WRITE_PERMISSION_ID =
-      UUID.fromString("019f6839-1801-7000-8000-000000000002");
-  private static final UUID USER_WRITE_PERMISSION_ID =
-      UUID.fromString("019f6839-1803-7000-8000-000000000004");
   private static final UUID ROLE_WRITE_PERMISSION_ID =
       UUID.fromString("019f6839-1805-7000-8000-000000000006");
 
@@ -77,52 +80,41 @@ class AdminEquivalentLockoutIT {
   // ── (a) The story's central risk: cross-role distinct-holder counting under real concurrency ──
 
   /**
-   * Seeds ONE tenant with exactly TWO distinct admin-equivalent holders across TWO DIFFERENT
-   * admin-equivalent roles: {@code admin} holds the literal {@code TENANT_ADMIN} role, and {@code
-   * dangerousHolder} holds a separate custom role carrying ALL THREE dangerous permissions. No
-   * other admin-equivalent holder exists in this tenant. Two threads fire concurrently via a
-   * {@link CyclicBarrier}, EACH a SELF-revocation ({@code admin} revoking their own {@code
-   * TENANT_ADMIN} row; {@code dangerousHolder} revoking their own dangerous-role row) —
-   * deliberately not one actor revoking the other, so that each thread's caller-gate check
-   * (M5b, which runs INSIDE the transaction, after M11's lock) depends only on that thread's OWN
-   * actor's OWN row, never on whether the OTHER thread has already committed. (An earlier version
-   * of this fixture had {@code admin} perform both revokes; once {@code admin}'s own row was
-   * revoked by the winning thread, the LOSING thread's caller-gate check legitimately denied
-   * {@code admin} as no-longer-an-admin (403), which is correct production behaviour but made
-   * this test's outcome order-dependent between a 403 and a 409 — not the property this test
-   * exists to pin. Self-revocation on both sides removes that dependency.)
+   * Seeds ONE tenant with exactly TWO distinct administrators across TWO DIFFERENT admin-defining
+   * roles: {@code admin} holds {@code TENANT_ADMIN}, and {@code customHolder} holds a separate
+   * custom role that also carries the whole catalogue. No other administrator exists in this
+   * tenant. Two threads fire concurrently via a {@link CyclicBarrier}, EACH a SELF-revocation
+   * ({@code admin} revoking their own {@code TENANT_ADMIN} row; {@code customHolder} revoking their
+   * own custom-role row) — deliberately not one actor revoking the other, so that each thread's
+   * administrator requirement (decided from M11's rows, inside the lock) depends only on that
+   * thread's OWN row, never on whether the OTHER thread has already committed.
    *
    * <p>A single-role, single-user fixture (Harness A/B in {@code LastAdminLockoutIT}) cannot
-   * distinguish row-counting from holder-counting — D5's defect is specifically that a naive
+   * distinguish row-counting from holder-counting — the defect is specifically that a naive
    * per-role {@code size() <= 1} check would see "role A has 1 holder" and "role B has 1 holder"
-   * independently and let BOTH revocations through, zeroing the tenant. M11's shared union lock is
-   * built from the SAME tenant-wide admin-equivalent role-id set (§7.2) regardless of which
-   * specific role either thread targets, so these two transactions genuinely contend for the same
-   * lock range: exactly ONE thread's {@code wouldLeaveTenantWithoutAdminEquivalentHolder} check
-   * must see the OTHER holder still active (succeeds) and the other must see the holder count
-   * would drop to zero (blocked, 409 {@code RBAC_002}) — deterministic regardless of which thread
-   * wins the lock race, since both lock the SAME two-row range in the SAME acquisition order (no
-   * deadlock is possible here; this is pure serialization, exactly Harness A's shape). Any other
-   * exception type fails this test loudly, exactly as {@code LastAdminLockoutIT}'s harnesses do.
+   * independently and let BOTH revocations through, zeroing the tenant. M11's set lock is built
+   * from the SAME tenant-wide admin-defining role-id set regardless of which specific role either
+   * thread targets, so these two transactions genuinely contend for the same lock range: exactly
+   * ONE thread's lockout check must see the OTHER holder still active (succeeds) and the other
+   * must see the holder count would drop to zero (blocked, 409 {@code RBAC_002}) — deterministic
+   * regardless of which thread wins the lock race, since both lock the SAME two-row range in the
+   * SAME acquisition order (no deadlock is possible here; this is pure serialization, exactly
+   * Harness A's shape). Any other exception type fails this test loudly, exactly as {@code
+   * LastAdminLockoutIT}'s harnesses do.
    */
   @Test
   void
-      should_blockExactlyOneOfTwoConcurrentRevokes_when_theyWouldJointlyZeroTheTenantsDistinctAdminEquivalentHolders()
+      should_blockExactlyOneOfTwoConcurrentRevokes_when_theyWouldJointlyZeroTheTenantsDistinctAdministrators()
           throws Exception {
     UUID tenantId = uuidGenerator.newId();
     Role adminRole = seedTenantAdminRole(tenantId, "cross-role");
     User admin = seedUser(tenantId, "cross-role-admin");
     seedActiveAssignment(tenantId, adminRole.getId(), admin.getId(), admin.getId());
 
-    // Carries ALL THREE dangerous permissions -- not just role:write -- so dangerousHolder
-    // qualifies for the caller gate via callerHoldsFullyAdminEquivalent and can self-revoke.
-    Role dangerousRole = seedRole(tenantId, "CROSS-ROLE-DANGEROUS", "cross-role");
-    grantPermission(dangerousRole.getId(), ROLE_WRITE_PERMISSION_ID);
-    grantPermission(dangerousRole.getId(), USER_WRITE_PERMISSION_ID);
-    grantPermission(dangerousRole.getId(), TENANT_WRITE_PERMISSION_ID);
-    // US-018 L-1: the self-revoking holder must still hold user:role:assign in M13.
-    grantPermission(dangerousRole.getId(), RbacSeededPermissionIds.USER_ROLE_ASSIGN);
-    User dangerousHolder = seedUser(tenantId, "cross-role-dangerous-holder");
+    // A custom role carrying the whole catalogue: admin-defining by its permissions alone.
+    Role dangerousRole = seedRole(tenantId, "CROSS-ROLE-CUSTOM-ADMIN", "cross-role");
+    grantWholeCatalogue(dangerousRole.getId());
+    User dangerousHolder = seedUser(tenantId, "cross-role-custom-holder");
     seedActiveAssignment(tenantId, dangerousRole.getId(), dangerousHolder.getId(), admin.getId());
 
     RoleChangeActor adminActor = new RoleChangeActor(admin.getId(), tenantId);
@@ -177,45 +169,39 @@ class AdminEquivalentLockoutIT {
     assertThat(outcomes.stream().filter("LOCKOUT"::equals).count())
         .as(
             "the other must be blocked -- revoking BOTH would zero the tenant's distinct"
-                + " admin-equivalent holders across two DIFFERENT roles, exactly the defect D5's"
-                + " cross-role holder counting exists to prevent: "
+                + " administrators across two DIFFERENT roles, exactly the defect the cross-role"
+                + " holder counting exists to prevent: "
                 + outcomes)
         .isEqualTo(1L);
     assertThat(
             countDistinctAdminEquivalentHolders(
                 tenantId, List.of(adminRole.getId(), dangerousRole.getId())))
-        .as("the tenant must retain exactly one distinct admin-equivalent holder after the race")
+        .as("the tenant must retain exactly one distinct administrator after the race")
         .isEqualTo(1);
   }
 
-  // ── H-1 regression (06-code-review.md, 2026-09-24): an ANY-only holder must never count ──
+  // ── Re-cast H-1: a holder of a role one permission short must never count ────────────────
 
   /**
-   * Reproduces the exact H-1 finding against a real database. {@code admin} is the tenant's SOLE
-   * literal {@code TENANT_ADMIN}; {@code anyOnlyHolder} holds a SEPARATE custom role carrying only
-   * ONE dangerous permission ({@code user:write}) -- ANY-qualifying (so it's part of M11's lock
-   * set and the pre-fix distinct-holder count), but NOT caller-qualifying (it can never pass {@code
-   * requireCallerHoldsAdminEquivalentRole}). Before the fix, {@code anyOnlyHolder} counted as a
-   * "remaining admin" for the lockout guard, so {@code admin}'s self-revocation of the tenant's
-   * ONLY caller-qualifying role would have SUCCEEDED (204) -- silently bricking the tenant's
-   * ability to ever administer itself again, while {@code RbacZeroActiveAdminsHealthIndicator}
-   * (also ANY-based, pre-fix) kept reporting healthy. After the fix, the lockout guard restricts
-   * the distinct-holder check to the caller-qualifying subset of what M11 locked, so this
-   * self-revocation must now be BLOCKED (409 {@code RBAC_002}).
+   * The former H-1 regression, re-cast for the one definition of "administrator". {@code admin} is
+   * the tenant's SOLE holder of an admin-defining role ({@code TENANT_ADMIN}); {@code
+   * almostHolder} holds a SEPARATE custom role carrying every catalogue permission except one. That
+   * role is not admin-defining, so it is outside the lockout population: {@code admin}'s
+   * self-revocation of the tenant's ONLY admin-defining assignment must be BLOCKED (409 {@code
+   * RBAC_002}), not allowed because "someone with nearly everything remains".
    */
   @Test
-  void should_blockSelfRevoke_when_onlyRemainingHolderIsAnyQualifyingButNotCallerQualifying_H1()
+  void should_blockSelfRevoke_when_theOnlyOtherHolderHoldsARoleOnePermissionShortOfTheCatalogue()
       throws Exception {
     UUID tenantId = uuidGenerator.newId();
     Role adminRole = seedTenantAdminRole(tenantId, "h1");
     User admin = seedUser(tenantId, "h1-admin");
     seedActiveAssignment(tenantId, adminRole.getId(), admin.getId(), admin.getId());
 
-    // ONE dangerous permission only -- ANY-qualifying, NOT caller-qualifying (H-1).
-    Role anyOnlyRole = seedRole(tenantId, "H1-ANY-ONLY", "h1");
-    grantPermission(anyOnlyRole.getId(), USER_WRITE_PERMISSION_ID);
-    User anyOnlyHolder = seedUser(tenantId, "h1-any-only-holder");
-    seedActiveAssignment(tenantId, anyOnlyRole.getId(), anyOnlyHolder.getId(), admin.getId());
+    Role almostRole = seedRole(tenantId, "H1-ALMOST-ADMIN", "h1");
+    grantWholeCatalogueExceptOne(almostRole.getId());
+    User almostHolder = seedUser(tenantId, "h1-almost-holder");
+    seedActiveAssignment(tenantId, almostRole.getId(), almostHolder.getId(), admin.getId());
 
     RoleChangeActor adminActor = new RoleChangeActor(admin.getId(), tenantId);
 
@@ -224,15 +210,41 @@ class AdminEquivalentLockoutIT {
                 () ->
                     roleAssignmentService.revoke(
                         adminActor, admin.getId(), adminRole.getId(), requestContext())))
-        .as("admin is the tenant's sole CALLER-QUALIFYING holder -- the ANY-only holder must not"
-            + " count as a remaining admin, so this self-revocation must be blocked")
+        .as("admin is the tenant's sole administrator -- a holder of a role one permission short"
+            + " of the catalogue must not count as a remaining one, so this self-revocation must"
+            + " be blocked")
         .isInstanceOf(LastAdminRoleException.class);
 
     assertThat(
             countDistinctAdminEquivalentHolders(
-                tenantId, List.of(adminRole.getId(), anyOnlyRole.getId())))
+                tenantId, List.of(adminRole.getId(), almostRole.getId())))
         .as("both rows must remain active -- the blocked revoke must not have committed")
         .isEqualTo(2);
+  }
+
+  /**
+   * Names do not matter: a tenant whose only administrator holds a CUSTOM admin-defining role is
+   * protected exactly like one whose administrator holds {@code TENANT_ADMIN}. (Before M3 the
+   * custom role had to carry all three dangerous permissions to be in the population at all.)
+   */
+  @Test
+  void should_blockSelfRevoke_when_theOnlyAdministratorHoldsACustomAdminDefiningRole() {
+    UUID tenantId = uuidGenerator.newId();
+    Role customAdminRole = seedRole(tenantId, "ONLY-CUSTOM-ADMIN", "custom-only");
+    grantWholeCatalogue(customAdminRole.getId());
+    User admin = seedUser(tenantId, "custom-only-admin");
+    seedActiveAssignment(tenantId, customAdminRole.getId(), admin.getId(), admin.getId());
+    RoleChangeActor adminActor = new RoleChangeActor(admin.getId(), tenantId);
+
+    assertThat(
+            org.assertj.core.api.Assertions.catchThrowable(
+                () ->
+                    roleAssignmentService.revoke(
+                        adminActor, admin.getId(), customAdminRole.getId(), requestContext())))
+        .isInstanceOf(LastAdminRoleException.class);
+
+    assertThat(countDistinctAdminEquivalentHolders(tenantId, List.of(customAdminRole.getId())))
+        .isEqualTo(1);
   }
 
   // ── (e) Cross-tenant: M11's union lock never crosses a tenant boundary ──────────────────
@@ -288,15 +300,34 @@ class AdminEquivalentLockoutIT {
   }
 
   /**
-   * The literal {@code TENANT_ADMIN} role, carrying {@code user:role:assign}: US-018
-   * 07-security-review.md L-1 re-checks it in the revoking caller's fresh M13 holdings. It is not
-   * a dangerous permission, so it changes no admin-equivalence classification here.
+   * A role literally named {@code TENANT_ADMIN} that carries the whole permission catalogue, as the
+   * real one does (V5 seed plus the B7 footer from V6 on): admin-defining by its permissions, and
+   * it includes {@code user:role:assign}, which the revoking caller's fresh M13 holdings must still
+   * contain (07-security-review.md L-1).
    */
   private Role seedTenantAdminRole(UUID tenantId, String tag) {
     Role role =
         roleRepository.save(new Role(uuidGenerator.newId(), tenantId, "TENANT_ADMIN", tag, false));
-    grantPermission(role.getId(), RbacSeededPermissionIds.USER_ROLE_ASSIGN);
+    grantWholeCatalogue(role.getId());
     return role;
+  }
+
+  /** Makes {@code roleId} admin-defining (ADR-0021 D3): attaches every catalogue permission. */
+  private void grantWholeCatalogue(UUID roleId) {
+    jdbc.update(
+        "INSERT INTO role_permissions (role_id, permission_id) "
+            + "SELECT UUID_TO_BIN(?), id FROM permissions",
+        roleId.toString());
+  }
+
+  /** Attaches every catalogue permission except one: one permission short of admin-defining. */
+  private void grantWholeCatalogueExceptOne(UUID roleId) {
+    jdbc.update(
+        "INSERT INTO role_permissions (role_id, permission_id) "
+            + "SELECT UUID_TO_BIN(?), id FROM permissions "
+            + "WHERE id <> UUID_TO_BIN(?)",
+        roleId.toString(),
+        RbacSeededPermissionIds.ROLE_WRITE.toString());
   }
 
   private Role seedRole(UUID tenantId, String name, String tag) {

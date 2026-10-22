@@ -1,5 +1,11 @@
 import { TestBed } from '@angular/core/testing';
-import { HttpClient, provideHttpClient, withInterceptors } from '@angular/common/http';
+import {
+  HttpClient,
+  HttpErrorResponse,
+  HttpHeaders,
+  provideHttpClient,
+  withInterceptors,
+} from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { authInterceptor } from './auth.interceptor';
@@ -8,7 +14,7 @@ import { Router } from '@angular/router';
 import { AuthService } from '../../features/auth/auth.service';
 import { AuthSession } from '../../shared/types/auth';
 import { APP_CONFIG } from '../config/app-config';
-import { of, Subject, throwError } from 'rxjs';
+import { defer, of, Subject, throwError } from 'rxjs';
 import { createAuthSession, createAuthUser } from '../../shared/testing/auth.fixtures';
 
 const TEST_SESSION: AuthSession = createAuthSession({
@@ -484,5 +490,328 @@ describe('authInterceptor', () => {
     expect(resultB).toEqual({ b: 2 });
     expect(resultC).toEqual({ c: 3 });
     expect(mockAuthService.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  // ── Refresh rate limiting (429 / RATE_001, security finding M-1) ───────────
+
+  it('never attaches the bearer token to a third-party origin', () => {
+    mockAuthStore.accessToken.mockReturnValue('secret-token');
+
+    http.get('https://fonts.example.net/css').subscribe();
+
+    const req = controller.expectOne('https://fonts.example.net/css');
+    expect(req.request.headers.has('Authorization')).toBe(false);
+    req.flush('');
+  });
+
+  it.each(['/apiary/x', '/api-docs', '/api.v2/users'])(
+    'never attaches the bearer token to the same-origin sibling path %s',
+    (path) => {
+      mockAuthStore.accessToken.mockReturnValue('secret-token');
+
+      http.get(path).subscribe();
+
+      const req = controller.expectOne(path);
+      expect(req.request.headers.has('Authorization')).toBe(false);
+      req.flush('');
+    },
+  );
+
+  it('attaches the bearer token to the API base path itself', () => {
+    mockAuthStore.accessToken.mockReturnValue('secret-token');
+
+    http.get('/api').subscribe();
+
+    const req = controller.expectOne('/api');
+    expect(req.request.headers.get('Authorization')).toBe('Bearer secret-token');
+    req.flush('');
+  });
+
+  it('does not refresh or end the session when a third-party origin answers 401', () => {
+    mockAuthStore.accessToken.mockReturnValue('secret-token');
+    let error: unknown;
+
+    http.get('https://fonts.example.net/css').subscribe({ error: (e: unknown) => (error = e) });
+    controller
+      .expectOne('https://fonts.example.net/css')
+      .flush('', { status: 401, statusText: 'Unauthorized' });
+
+    expect((error as HttpErrorResponse).status).toBe(401);
+    expect(mockAuthService.refresh).not.toHaveBeenCalled();
+    expect(mockAuthStore.clearSession).not.toHaveBeenCalled();
+  });
+
+  it('does not proactively refresh for a third-party origin even when the token is near expiry', () => {
+    mockAuthStore.session.mockReturnValue(nearExpirySession());
+
+    http.get('https://fonts.example.net/css').subscribe();
+
+    controller.expectOne('https://fonts.example.net/css').flush('');
+    expect(mockAuthService.refresh).not.toHaveBeenCalled();
+  });
+
+  describe('refresh 429', () => {
+    function rateLimited(retryAfter?: string): HttpErrorResponse {
+      return new HttpErrorResponse({
+        status: 429,
+        headers:
+          retryAfter === undefined
+            ? new HttpHeaders()
+            : new HttpHeaders({ 'Retry-After': retryAfter }),
+      });
+    }
+
+    /** refresh() whose subscriptions fail with `errors` in order, then succeed. */
+    function refreshFailingWith(errors: HttpErrorResponse[]): { attempts: () => number } {
+      let n = 0;
+      mockAuthService.refresh.mockImplementation(() =>
+        defer(() => {
+          const err = errors[n++];
+          return err ? throwError(() => err) : of(TEST_SESSION);
+        }),
+      );
+      return { attempts: () => n };
+    }
+
+    function expire401(url: string): void {
+      controller
+        .expectOne(url)
+        .flush({ code: 'UNAUTHORIZED' }, { status: 401, statusText: 'Unauthorized' });
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      mockAuthStore.accessToken.mockReturnValue('expired-token');
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('honours Retry-After, retries the refresh, then replays the request; session kept', () => {
+      const refresh = refreshFailingWith([rateLimited('2')]);
+
+      let result: unknown;
+      http.get('/api/resource').subscribe({ next: (v) => (result = v) });
+      expire401('/api/resource');
+
+      expect(refresh.attempts()).toBe(1);
+      vi.advanceTimersByTime(1_999);
+      expect(refresh.attempts()).toBe(1);
+      vi.advanceTimersByTime(1);
+      expect(refresh.attempts()).toBe(2);
+
+      controller.expectOne('/api/resource').flush({ data: 'ok' });
+      expect(result).toEqual({ data: 'ok' });
+      expect(mockAuthStore.clearSession).not.toHaveBeenCalled();
+      expect(mockRouter.navigate).not.toHaveBeenCalled();
+    });
+
+    it('exhausts 3 attempts, surfaces the original error and keeps the session', () => {
+      const refresh = refreshFailingWith([rateLimited('1'), rateLimited('1'), rateLimited('1')]);
+
+      let error: unknown;
+      http.get('/api/resource').subscribe({ error: (e: unknown) => (error = e) });
+      expire401('/api/resource');
+      vi.advanceTimersByTime(10_000);
+
+      expect(refresh.attempts()).toBe(3);
+      expect(error).toBeInstanceOf(HttpErrorResponse);
+      expect((error as HttpErrorResponse).status).toBe(401);
+      expect(mockAuthStore.clearSession).not.toHaveBeenCalled();
+      expect(mockRouter.navigate).not.toHaveBeenCalled();
+    });
+
+    it('proactive refresh: 429 keeps the session and does not redirect', () => {
+      mockAuthStore.session.mockReturnValue(nearExpirySession());
+      const refresh = refreshFailingWith([rateLimited('1'), rateLimited('1'), rateLimited('1')]);
+
+      let error: unknown;
+      http.get('/api/v1/resource').subscribe({ error: (e: unknown) => (error = e) });
+      vi.advanceTimersByTime(10_000);
+
+      expect(refresh.attempts()).toBe(3);
+      expect((error as HttpErrorResponse).status).toBe(429);
+      expect(mockAuthStore.clearSession).not.toHaveBeenCalled();
+      expect(mockRouter.navigate).not.toHaveBeenCalled();
+    });
+
+    it('a non-429 refresh error (401) still clears the session and is not retried', () => {
+      const refresh = refreshFailingWith([
+        new HttpErrorResponse({ status: 401 }),
+        new HttpErrorResponse({ status: 401 }),
+      ]);
+
+      let errorCaptured = false;
+      http.get('/api/resource').subscribe({ error: () => (errorCaptured = true) });
+      expire401('/api/resource');
+      vi.advanceTimersByTime(10_000);
+
+      expect(refresh.attempts()).toBe(1);
+      expect(mockAuthStore.clearSession).toHaveBeenCalled();
+      expect(mockRouter.navigate).toHaveBeenCalledWith(['/auth/login']);
+      expect(errorCaptured).toBe(true);
+    });
+
+    it('concurrent requests share one refresh across 429 retries', () => {
+      const refresh = refreshFailingWith([rateLimited('1')]);
+
+      let a: unknown;
+      let b: unknown;
+      http.get('/api/a').subscribe({ next: (v) => (a = v) });
+      http.get('/api/b').subscribe({ next: (v) => (b = v) });
+      expire401('/api/a');
+      expire401('/api/b');
+      vi.advanceTimersByTime(1_000);
+
+      expect(mockAuthService.refresh).toHaveBeenCalledTimes(1);
+      expect(refresh.attempts()).toBe(2);
+      controller.expectOne('/api/a').flush({ a: 1 });
+      controller.expectOne('/api/b').flush({ b: 2 });
+      expect(a).toEqual({ a: 1 });
+      expect(b).toEqual({ b: 2 });
+      expect(mockAuthStore.clearSession).not.toHaveBeenCalled();
+    });
+
+    it('succeeds on the third attempt after two 429s, then replays the request; session kept', () => {
+      const refresh = refreshFailingWith([rateLimited('1'), rateLimited('2')]);
+
+      let result: unknown;
+      http.get('/api/resource').subscribe({ next: (v) => (result = v) });
+      expire401('/api/resource');
+      vi.advanceTimersByTime(1_000);
+      expect(refresh.attempts()).toBe(2);
+      vi.advanceTimersByTime(2_000);
+      expect(refresh.attempts()).toBe(3);
+
+      controller.expectOne('/api/resource').flush({ data: 'ok' });
+      expect(result).toEqual({ data: 'ok' });
+      expect(mockAuthStore.clearSession).not.toHaveBeenCalled();
+      expect(mockRouter.navigate).not.toHaveBeenCalled();
+    });
+
+    it('a 401 on the retry after a 429 clears the session and stops retrying', () => {
+      const refresh = refreshFailingWith([
+        rateLimited('1'),
+        new HttpErrorResponse({ status: 401 }),
+      ]);
+
+      let error: unknown;
+      http.get('/api/resource').subscribe({ error: (e: unknown) => (error = e) });
+      expire401('/api/resource');
+      vi.advanceTimersByTime(10_000);
+
+      expect(refresh.attempts()).toBe(2);
+      expect(mockAuthStore.clearSession).toHaveBeenCalledTimes(1);
+      expect(mockRouter.navigate).toHaveBeenCalledWith(['/auth/login']);
+      expect((error as HttpErrorResponse).status).toBe(401);
+    });
+
+    it('starts a fresh refresh for the next 401 after the attempts were exhausted', () => {
+      refreshFailingWith([rateLimited('1'), rateLimited('1'), rateLimited('1')]);
+      http.get('/api/first').subscribe({ error: () => undefined });
+      expire401('/api/first');
+      vi.advanceTimersByTime(10_000);
+      expect(mockAuthService.refresh).toHaveBeenCalledTimes(1);
+      mockAuthService.refresh.mockReturnValue(of(TEST_SESSION));
+
+      let result: unknown;
+      http.get('/api/second').subscribe({ next: (v) => (result = v) });
+      expire401('/api/second');
+
+      expect(mockAuthService.refresh).toHaveBeenCalledTimes(2);
+      controller.expectOne('/api/second').flush({ ok: true });
+      expect(result).toEqual({ ok: true });
+    });
+
+    it('proactive refresh: forwards the request with the new token after a 429 then success', () => {
+      mockAuthStore.session.mockReturnValue(nearExpirySession());
+      const refresh = refreshFailingWith([rateLimited('1')]);
+
+      let result: unknown;
+      http.get('/api/v1/resource').subscribe({ next: (v) => (result = v) });
+      expect(refresh.attempts()).toBe(1);
+      controller.expectNone('/api/v1/resource');
+      vi.advanceTimersByTime(1_000);
+
+      const req = controller.expectOne('/api/v1/resource');
+      expect(req.request.headers.get('Authorization')).toBe(`Bearer ${TEST_SESSION.accessToken}`);
+      req.flush({ data: 'ok' });
+      expect(result).toEqual({ data: 'ok' });
+      expect(mockAuthStore.clearSession).not.toHaveBeenCalled();
+    });
+
+    it('503 AUTH_005 on a normal request is surfaced without refreshing or ending the session', () => {
+      let error: unknown;
+      http.get('/api/resource').subscribe({ error: (e: unknown) => (error = e) });
+
+      controller
+        .expectOne('/api/resource')
+        .flush(
+          { code: 'AUTH_005' },
+          { status: 503, statusText: 'Service Unavailable', headers: { 'Retry-After': '30' } },
+        );
+
+      expect((error as HttpErrorResponse).status).toBe(503);
+      expect(mockAuthService.refresh).not.toHaveBeenCalled();
+      expect(mockAuthStore.clearSession).not.toHaveBeenCalled();
+      expect(mockRouter.navigate).not.toHaveBeenCalled();
+    });
+
+    it('429 RATE_001 on a normal request is surfaced without refreshing or ending the session', () => {
+      let error: unknown;
+      http.get('/api/resource').subscribe({ error: (e: unknown) => (error = e) });
+
+      controller
+        .expectOne('/api/resource')
+        .flush(
+          { code: 'RATE_001' },
+          { status: 429, statusText: 'Too Many Requests', headers: { 'Retry-After': '5' } },
+        );
+
+      expect((error as HttpErrorResponse).status).toBe(429);
+      expect(mockAuthService.refresh).not.toHaveBeenCalled();
+      expect(mockAuthStore.clearSession).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['exactly 1 s', '1', 1_000],
+      ['exactly 60 s', '60', 60_000],
+      ['just above range (61 clamped to 60 s)', '61', 60_000],
+      ['padded with whitespace', ' 7 ', 7_000],
+      ['fractional (not delta-seconds)', '1.5', 5_000],
+      ['an HTTP date (not delta-seconds)', 'Wed, 21 Oct 2026 07:28:00 GMT', 5_000],
+      ['empty', '', 5_000],
+    ])('Retry-After %s waits the clamped delay', (_label, header, expectedMs) => {
+      const refresh = refreshFailingWith([rateLimited(header)]);
+
+      http.get('/api/resource').subscribe({ error: () => undefined });
+      expire401('/api/resource');
+
+      vi.advanceTimersByTime(expectedMs - 1);
+      expect(refresh.attempts()).toBe(1);
+      vi.advanceTimersByTime(1);
+      expect(refresh.attempts()).toBe(2);
+      controller.expectOne('/api/resource').flush({});
+    });
+
+    it.each([
+      ['missing', undefined, 5_000],
+      ['non-numeric', 'soon', 5_000],
+      ['negative', '-3', 5_000],
+      ['zero (clamped up to 1 s)', '0', 1_000],
+      ['above range (clamped to 60 s)', '3600', 60_000],
+    ])('Retry-After %s waits %s ms', (_label, header, expectedMs) => {
+      const refresh = refreshFailingWith([rateLimited(header)]);
+
+      http.get('/api/resource').subscribe({ error: () => undefined });
+      expire401('/api/resource');
+
+      vi.advanceTimersByTime(expectedMs - 1);
+      expect(refresh.attempts()).toBe(1);
+      vi.advanceTimersByTime(1);
+      expect(refresh.attempts()).toBe(2);
+      controller.expectOne('/api/resource').flush({});
+    });
   });
 });

@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.startsWith;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -32,7 +33,7 @@ class LoginRateLimitFilterTest {
   void setUp() {
     rateLimitStore = mock(RateLimitStore.class);
     emailBlindIndexService = mock(EmailBlindIndexService.class);
-    filter = new LoginRateLimitFilter(rateLimitStore, emailBlindIndexService, 5, 60, 5, 900, 30, 10, 20);
+    filter = new LoginRateLimitFilter(rateLimitStore, emailBlindIndexService, 5, 60, 5, 900, 300, 10, 20);
   }
 
   @Test
@@ -51,6 +52,28 @@ class LoginRateLimitFilterTest {
   void shouldNotFilter_returnsFalse_forPostOnLoginPath() {
     MockHttpServletRequest req = new MockHttpServletRequest("POST", "/api/v1/auth/login");
     assertThat(filter.shouldNotFilter(req)).isFalse();
+  }
+
+  @Test
+  void shouldNotFilter_returnsFalse_forPercentEncodedLoginPath() {
+    MockHttpServletRequest req = new MockHttpServletRequest("POST", "/api/v1/auth/%6Cogin");
+    assertThat(filter.shouldNotFilter(req)).isFalse();
+  }
+
+  @Test
+  void shouldNotFilter_returnsFalse_forEncodedSlashAndPathParameterVariants() {
+    assertThat(filter.shouldNotFilter(new MockHttpServletRequest("POST", "/api/v1/auth/login;x=1")))
+        .isFalse();
+    assertThat(filter.shouldNotFilter(new MockHttpServletRequest("POST", "/api/v1/auth/%72efresh")))
+        .isFalse();
+    assertThat(
+            filter.shouldNotFilter(
+                new MockHttpServletRequest("POST", "/api/v1/auth/password/%66orgot")))
+        .isFalse();
+    assertThat(
+            filter.shouldNotFilter(
+                new MockHttpServletRequest("POST", "/api/v1/auth/password/%72eset")))
+        .isFalse();
   }
 
   @Test
@@ -126,6 +149,56 @@ class LoginRateLimitFilterTest {
     verify(chain, never()).doFilter(
         any(jakarta.servlet.ServletRequest.class),
         any(jakarta.servlet.ServletResponse.class));
+  }
+
+  @Test
+  void should_useThreeHundredPerIpTotalAndNeverConsultFailureBucket_when_refreshPath() throws Exception {
+    MockHttpServletRequest req = new MockHttpServletRequest("POST", "/api/v1/auth/refresh");
+    req.setRemoteAddr("10.0.0.2");
+    MockHttpServletResponse res = new MockHttpServletResponse();
+    FilterChain chain = mock(FilterChain.class);
+    when(rateLimitStore.tryConsume("REFRESH_IP:10.0.0.2", 60, 300))
+        .thenReturn(RateLimitResult.permit());
+
+    filter.doFilterInternal(req, res, chain);
+
+    verify(chain).doFilter(any(), any());
+    verify(rateLimitStore).tryConsume("REFRESH_IP:10.0.0.2", 60, 300);
+    verify(rateLimitStore, never()).tryConsume(startsWith("REFRESH_IP_FAIL:"), anyInt(), anyInt());
+    verify(rateLimitStore, never()).tryConsume(startsWith("REFRESH_FAMILY:"), anyInt(), anyInt());
+  }
+
+  /** M-1 (accepted, RES-40): cookie-less junk consumes the same per-IP total as a valid refresh. */
+  @Test
+  void should_consumeIpTotalOncePerRequest_when_refreshCarriesNoCookie() throws Exception {
+    MockHttpServletRequest req = new MockHttpServletRequest("POST", "/api/v1/auth/refresh");
+    req.setRemoteAddr("10.0.0.2");
+    FilterChain chain = mock(FilterChain.class);
+    when(rateLimitStore.tryConsume("REFRESH_IP:10.0.0.2", 60, 300))
+        .thenReturn(RateLimitResult.permit());
+
+    filter.doFilterInternal(req, new MockHttpServletResponse(), chain);
+
+    verify(rateLimitStore, times(1)).tryConsume("REFRESH_IP:10.0.0.2", 60, 300);
+  }
+
+  /** M-1 (accepted, RES-40): a valid refresh behind an exhausted total is refused with 429. */
+  @Test
+  void should_answer429WithRetryAfter_when_ipTotalExhaustedAndRefreshCarriesCookie()
+      throws Exception {
+    MockHttpServletRequest req = new MockHttpServletRequest("POST", "/api/v1/auth/refresh");
+    req.setRemoteAddr("10.0.0.2");
+    req.setCookies(new jakarta.servlet.http.Cookie("refresh_token", "a-valid-looking-value"));
+    MockHttpServletResponse res = new MockHttpServletResponse();
+    FilterChain chain = mock(FilterChain.class);
+    when(rateLimitStore.tryConsume("REFRESH_IP:10.0.0.2", 60, 300))
+        .thenReturn(RateLimitResult.reject(17));
+
+    filter.doFilterInternal(req, res, chain);
+
+    assertThat(res.getStatus()).isEqualTo(429);
+    assertThat(res.getHeader("Retry-After")).isEqualTo("17");
+    verify(chain, never()).doFilter(any(), any());
   }
 
   @Test

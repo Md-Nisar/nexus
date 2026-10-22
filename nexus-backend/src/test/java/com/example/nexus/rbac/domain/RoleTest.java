@@ -39,6 +39,22 @@ class RoleTest {
   }
 
   @Test
+  void should_beLive_when_constructed() {
+    Role role = new Role(UUID.randomUUID(), UUID.randomUUID(), "CUSTOM", null, false);
+
+    assertThat(role.getDeletedAt()).isNull();
+  }
+
+  @Test
+  void should_filterSoftDeletedRows_when_entityMetadataInspected() {
+    org.hibernate.annotations.SQLRestriction restriction =
+        Role.class.getAnnotation(org.hibernate.annotations.SQLRestriction.class);
+
+    assertThat(restriction).isNotNull();
+    assertThat(restriction.value()).isEqualTo("deleted_at IS NULL");
+  }
+
+  @Test
   void should_allowNullDescription_when_constructedWithoutOne() {
     Role role = new Role(UUID.randomUUID(), UUID.randomUUID(), "CUSTOM", null, false);
 

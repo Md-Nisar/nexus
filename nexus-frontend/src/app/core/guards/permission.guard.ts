@@ -2,6 +2,7 @@ import { inject } from '@angular/core';
 import { CanActivateFn, Router } from '@angular/router';
 import { AuthStore } from '../auth/auth.store';
 import { LoggerService } from '../logging/logger.service';
+import { Permission } from '../../shared/types/permission';
 
 /**
  * Route guard that requires the current user to hold a specific RBAC permission.
@@ -15,7 +16,7 @@ import { LoggerService } from '../logging/logger.service';
  * ancestor already carries `authGuard`:
  *
  * ```typescript
- * { path: 'roles', canActivate: [authGuard, permissionGuard], data: { permission: 'roles:read' }, ... }
+ * { path: 'roles', canActivate: [authGuard, permissionGuard], data: { permission: 'role:read' }, ... }
  * ```
  *
  * Angular evaluates a `canActivate` array sequentially and short-circuits on the first
@@ -45,9 +46,15 @@ export const permissionGuard: CanActivateFn = (route, state) => {
   // (tsconfig.json) and Router `Data` is an index-signature type. Annotating as
   // `unknown` keeps `any` out of the file, which `@typescript-eslint/no-explicit-any`
   // requires.
-  const required: unknown = route.data['permission'];
+  const rawRequired: unknown = route.data['permission'];
 
-  if (typeof required !== 'string' || required.length === 0) return true;
+  if (typeof rawRequired !== 'string' || rawRequired.length === 0) return true;
+
+  // Typed as `Permission` for readers and tooling only: a name outside the catalogue is NOT
+  // treated as a misconfiguration here (the fail-open semantics above are pinned, RES-39). It
+  // is simply not held, so it is denied. `app.routes.spec.ts` is the compensating control that
+  // keeps every real route's `data.permission` inside `PERMISSIONS`.
+  const required = rawRequired as Permission;
 
   if (authStore.permissions().includes(required)) return true;
 

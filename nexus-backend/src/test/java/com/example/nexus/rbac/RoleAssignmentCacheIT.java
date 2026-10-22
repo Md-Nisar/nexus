@@ -7,12 +7,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.example.nexus.TestcontainersConfiguration;
 import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.domain.ResourceNotFoundException;
-import com.example.nexus.common.security.DenialReason;
-import com.example.nexus.common.security.InsufficientPermissionException;
 import com.example.nexus.identity.domain.EmailCipher;
 import com.example.nexus.identity.domain.User;
 import com.example.nexus.identity.domain.UuidGenerator;
 import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
+import com.example.nexus.rbac.application.PermissionFreshnessService;
 import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.application.port.out.PermissionCachePort;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
@@ -49,12 +48,13 @@ import org.springframework.transaction.support.TransactionTemplate;
 /**
  * US-012 T-020 (03-design.md §6.5/R-7): proves {@link RoleAssignmentService#assign}/{@link
  * RoleAssignmentService#revoke} evict the two <b>real</b> Redis keys {@link
- * RedisPermissionCacheAdapter} maintains — confirmed by reading that class's {@code roleKey}/{@code
- * permKey} methods directly:
+ * RedisPermissionCacheAdapter} maintains — confirmed by reading {@code RbacRedisKeys} directly.
+ * Since US-018 T-010 the entry is keyed by the permission epoch it was computed under; these users
+ * have no epoch key, so their entry sits under epoch {@code 0}:
  *
  * <pre>{@code
- * {keyPrefix}:rbac:roleset:{tenantId}:{userId}
- * {keyPrefix}:rbac:permset:{tenantId}:{userId}
+ * {keyPrefix}:rbac:roleset:{tenantId}:{userId}:{epoch}
+ * {keyPrefix}:rbac:permset:{tenantId}:{userId}:{epoch}
  * }</pre>
  *
  * with {@code keyPrefix} sourced from {@code nexus.redis.key-prefix} (default {@code nexus}).
@@ -79,6 +79,7 @@ class RoleAssignmentCacheIT {
   @Autowired private UserDirectoryPort userDirectoryPort;
   @Autowired private RbacAuditPort rbacAuditPort;
   @Autowired private PermissionCachePort permissionCachePort;
+  @Autowired private PermissionFreshnessService permissionFreshness;
   @Autowired private RoleChangeThrottlePort throttlePort;
   @Autowired private JpaUserRepository userRepository;
   @Autowired private JpaRoleRepository roleRepository;
@@ -170,8 +171,8 @@ class RoleAssignmentCacheIT {
         new RedisPermissionCacheAdapter(brokenTemplate, keyPrefix, ttlSeconds);
     RoleAssignmentService service =
         new RoleAssignmentService(
-            userRoleAssignmentPort, userDirectoryPort, rbacAuditPort, brokenCache, meterRegistry,
-            throttlePort, maxDenials, windowSeconds);
+            userRoleAssignmentPort, userDirectoryPort, rbacAuditPort, brokenCache,
+            permissionFreshness, meterRegistry, throttlePort, maxDenials, windowSeconds);
     return new RoleAssignmentServiceWithBrokenCache(service, brokenFactory);
   }
 
@@ -280,14 +281,11 @@ class RoleAssignmentCacheIT {
 
     assertThatThrownBy(
             () -> roleAssignmentService.assign(actor, target.getId(), role.getId(), requestContext()))
-        .isInstanceOf(InsufficientPermissionException.class)
-        .satisfies(
-            e ->
-                assertThat(((InsufficientPermissionException) e).getReason())
-                    .isEqualTo(DenialReason.CROSS_TENANT_TARGET));
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "USER_NOT_FOUND");
 
     assertThat(redisTemplate.hasKey(roleKey(actorTenantId, target.getId())))
-        .as("a thrown 403 must never evict — side effects are post-commit only")
+        .as("a thrown 404 must never evict — side effects are post-commit only")
         .isTrue();
     assertThat(redisTemplate.hasKey(permKey(actorTenantId, target.getId()))).isTrue();
   }
@@ -350,7 +348,8 @@ class RoleAssignmentCacheIT {
 
   private void seedCacheEntry(UUID tenantId, UUID userId) {
     permissionCachePort.put(
-        tenantId, userId, new ResolvedPermissions(List.of(SENTINEL_ROLE), List.of(SENTINEL_PERMISSION)));
+        tenantId, userId, 0L,
+        new ResolvedPermissions(List.of(SENTINEL_ROLE), List.of(SENTINEL_PERMISSION)));
   }
 
   private RequestContext requestContext() {
@@ -358,10 +357,10 @@ class RoleAssignmentCacheIT {
   }
 
   private String roleKey(UUID tenantId, UUID userId) {
-    return keyPrefix + ":rbac:roleset:" + tenantId + ":" + userId;
+    return keyPrefix + ":rbac:roleset:" + tenantId + ":" + userId + ":0";
   }
 
   private String permKey(UUID tenantId, UUID userId) {
-    return keyPrefix + ":rbac:permset:" + tenantId + ":" + userId;
+    return keyPrefix + ":rbac:permset:" + tenantId + ":" + userId + ":0";
   }
 }

@@ -1,11 +1,14 @@
 package com.example.nexus.identity.infrastructure.web;
 
 import com.example.nexus.common.security.PublicEndpoint;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.stereotype.Component;
 import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.servlet.mvc.condition.PathPatternsRequestCondition;
@@ -31,7 +34,8 @@ import org.springframework.web.util.ServletRequestPathUtils;
  *   <li>A request is public only if at least one public mapping matches it and no other mapping
  *       does. A non-public mapping without a path-patterns condition cannot be evaluated and is
  *       treated as matching.
- *   <li>Any runtime exception while matching returns {@code false}.
+ *   <li>Any runtime exception while matching returns {@code false} and increments {@code
+ *       nexus.security.public_match_failed_closed} (no path tag, to keep cardinality bounded).
  * </ul>
  *
  * <p>Only the method and path-pattern conditions are evaluated. Consumes, produces, headers and
@@ -58,24 +62,31 @@ import org.springframework.web.util.ServletRequestPathUtils;
  * DispatcherServlet} uses and fails if the first one to answer is not the same {@code
  * @PublicEndpoint} handler. A runtime {@code registerMapping} call needs review.
  */
+@ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @Component
 public class PublicEndpointRequestMatcher {
 
   private static final Logger log = LoggerFactory.getLogger(PublicEndpointRequestMatcher.class);
 
   private final List<Mapping> mappings;
+  private final Counter failedClosed;
 
   /**
    * Builds the matcher from the handler methods registered at the time of construction.
    *
    * @param handlerMapping the MVC handler mapping that dispatches {@code @RestController} handlers
+   * @param meterRegistry registry for the fail-closed counter
    */
   public PublicEndpointRequestMatcher(
-      @Qualifier("requestMappingHandlerMapping") RequestMappingHandlerMapping handlerMapping) {
+      @Qualifier("requestMappingHandlerMapping") RequestMappingHandlerMapping handlerMapping,
+      MeterRegistry meterRegistry) {
     this.mappings =
         handlerMapping.getHandlerMethods().entrySet().stream()
             .map(entry -> new Mapping(entry.getKey(), isPublic(entry.getKey(), entry.getValue())))
             .toList();
+    this.failedClosed = Counter.builder("nexus.security.public_match_failed_closed")
+        .description("Requests treated as non-public because public-endpoint matching failed")
+        .register(meterRegistry);
   }
 
   /**
@@ -100,6 +111,7 @@ public class PublicEndpointRequestMatcher {
       }
       return publicMappingMatches;
     } catch (RuntimeException e) {
+      failedClosed.increment();
       log.debug("public endpoint match failed closed exception={}", e.getClass().getSimpleName());
       return false;
     } finally {

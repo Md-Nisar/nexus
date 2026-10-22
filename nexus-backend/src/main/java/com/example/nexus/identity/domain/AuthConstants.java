@@ -1,5 +1,6 @@
 package com.example.nexus.identity.domain;
 
+import com.example.nexus.common.security.TokenClockSkew;
 import java.time.Duration;
 
 /** Token lifetime constants shared across the identity bounded context. */
@@ -10,7 +11,7 @@ public final class AuthConstants {
   public static final Duration AUTH_VERIFICATION_TOKEN_TTL = Duration.ofHours(24);
   public static final Duration AUTH_RESET_TOKEN_TTL = Duration.ofMinutes(60);
   /** NTP-synchronised infra requires no skew; set to 0 to honour the 900 s design contract. */
-  public static final int AUTH_CLOCK_SKEW_SECONDS = 0;
+  public static final int AUTH_CLOCK_SKEW_SECONDS = TokenClockSkew.SECONDS;
 
   /** Maximum consecutive failed login attempts before the account is locked. */
   public static final int LOCKOUT_THRESHOLD = 5;

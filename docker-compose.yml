@@ -116,8 +116,13 @@ services:
       # schema(s) `nexus` but no schema history table" (empirically confirmed). flyway-migrate
       # already applied every migration above; disable Flyway inside this container entirely.
       SPRING_FLYWAY_ENABLED: "false"
+      # DF-1: trust X-Forwarded-For only from the frontend nginx's fixed address on the `edge`
+      # network, so per-IP limits key per client. Port 1000 is bound to loopback and the
+      # host/gateway address is not trusted. Production pins the real ingress address.
+      NEXUS_TRUSTED_PROXIES: ${NEXUS_TRUSTED_PROXIES:-172\.31\.250\.10}
+    networks: [default, edge]
     ports:
-      - "1000:1000"
+      - "127.0.0.1:1000:1000"
     depends_on:
       mysql:
         condition: service_healthy
@@ -137,10 +142,20 @@ services:
     profiles: ["full"]
     build: ./nexus-frontend
     container_name: nexus-frontend
+    networks:
+      default: {}
+      edge:
+        ipv4_address: 172.31.250.10
     ports:
       - "2000:80"
     depends_on:
       - backend
+
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: 172.31.250.0/24
 
 volumes:
   nexus-mysql-data:

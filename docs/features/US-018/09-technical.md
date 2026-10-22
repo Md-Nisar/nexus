@@ -145,3 +145,136 @@ Final full run: 1177 unit tests (1 skipped), 353 integration tests, 0 failures, 
 ## 11. ADR decision
 
 **No new ADR is needed for M2.** The grant-subset model, the per-role administrator definition, the `user:role:assign` naming amendment and the retirement plan are already recorded in **ADR-0021** (D1 to D8), and the freshness trade-off (JWT staleness, M7 as the systemic fix) in **ADR-0022**. The two review-driven additions, the live DB re-check of the endpoint permission (L-1) and revoke-subset arriving in M2, are tactical applications of ADR-0021 D2 and D5, and the central metric increment is the existing `GlobalExceptionHandler` behaviour. ADR-0021 is still **Proposed**; its status should be moved to Accepted when M2 merges (an ADR status change is a maintainer decision and was not made here).
+
+---
+
+## 12. M7: permission token freshness (A9, A10, T-009 to T-014)
+
+Design: `03-design.md` §9; threat model: `03b-threat-model.md`; decision record: ADR-0022 (Proposed). Reviews: `06-code-review-M7.md`, `07-security-review-M7.md`, `09-code-review-M7-part2.md`, `10-security-review-M7-part2.md`, `12-security-review-pre-PR.md`. Tests: `11-test-audit-M7-part2.md`.
+
+**What it does.** A revoked or detached user's access token is rejected with 401 `AUTH_003` on its next request, instead of staying valid for up to 15 minutes (token) plus 15 minutes (permission cache).
+
+**How.**
+- **Epoch.** Redis key `nexus:rbac:epoch:{tenantId}:{userId}` holds a millisecond counter. One Lua script bumps it to `max(old + 1, Redis TIME)` after the revoking transaction commits (MC-7b). Tokens carry it as `perm_epoch` (schema version 3), read before permissions are resolved (MC-7a). `JwtAuthenticationFilter` rejects a token whose `perm_epoch` is below the current value. Timeouts: 50 ms per read, 500 ms per bump.
+- **Detach fan-out (A10).** A detach bumps every active holder of the role in batches of 500, and the permission cache is keyed by epoch, so a bump also retires the cached set.
+- **Outage policy.** `PermissionFreshnessService` is a per-instance state machine: Healthy, DegradedOpen (3 failures in 10 s), DegradedClosed after 15 min (503 `AUTH_005`, `Retry-After: 30`), Recovering (60 s). While degraded-open, an epoch this instance already saw still makes a token stale.
+- **Locally known epochs.** A bounded last-seen map (read pool and own-bump pool, per tenant and global) holds the highest epoch seen. Pre-PR review M-1: the Healthy and Recovering check and the mint also use it, so a bump Redis refused or lost (`maxmemory`, a bump timeout, a failover) still makes the old token stale, and the mint is then unverified (permission set resolved uncached). A failed bump also records its instant, so a token issued at or before it is stale for a user this instance never saw. `nexus.rbac.epoch.store_regressed` counts the cases.
+- **Replay.** Failed bumps and failed holder reads are queued (bounded, coalesced, per-tenant share) and retried each second.
+- **Refresh limits (T-013).** `REFRESH_FAMILY` 30/60 s, `REFRESH_IP` 300/60 s, `REFRESH_IP_FAIL` 30/60 s, answered 429 `RATE_001`; junk refreshes count against the per-IP total (RES-40, accepted).
+- **Startup (T-014).** `nexus.rbac.redis.require-auth` fails startup unless all three Redis factories authenticate; `application-prod.yml` sets it.
+
+**Decisions made late (pre-PR review).**
+- `server.forward-headers-strategy: none` in `application.yml`: the per-IP keys stay `getRemoteAddr()` only (DF-1). Per-client keys behind a proxy need `native` and a pinned `server.tomcat.remoteip.internal-proxies`.
+- `/actuator/metrics/**` and `/actuator/prometheus` accept only the operator's `nexus.management.scrape-token` (`ScrapeTokenFilter`); no tenant role can read them, and they are closed when the token is unset (RR-M2).
+- A failed bump evicts the users' cached permission sets, so another instance cannot re-mint a detached permission from the cache while Redis refuses writes (RR-M1). Tokens already issued stay valid on other instances for their TTL (RES-46).
+- A refused read-derived last-seen entry pages but does not fail the tenant closed (RES-31).
+- The SPA attaches the bearer token only on whole `/api` path segments.
+
+**Residual risks** (all in `03b-threat-model.md`): RES-26, RES-30 (a Redis outage longer than 15 minutes is a platform-wide authenticated 503; SRE and PM acceptance pending), RES-31, RES-40.
+
+**API surface.** No new endpoint. Refresh answers 429 `RATE_001`; authenticated endpoints can answer 503 `AUTH_005`; `perm_epoch` is a new token claim.
+
+---
+
+## 13. M5: break-glass first-administrator CLI (A7, T-007, T-008)
+
+Design: `03-design.md` section 7 (final behaviour; nothing there was stale for this pass). Decision record: [ADR-0025](../../adr/0025-break-glass-admin-cli.md) (Proposed, Revision 4 adds the implementation facts and O-7). Reviews: `06-code-review-M5-T007.md`, `06-code-review-M5-T008.md`, `07-security-review-M5.md` (APPROVED with conditions), `08-test-audit-M5.md`. Operational companions: runbook section 11, deployment section 11, monitoring section 7, rollback section 8.
+
+**What it does.** An operator runs the service jar with the `break-glass` profile and two options (`--target-user-id`, `--change-ref`). `BootstrapAdminService` grants the tenant's system `TENANT_ADMIN` role to the ACTIVE target in a tenant that has no administrator, under the same ascending set lock as assign and revoke, with `assigned_by` set to the target, and writes the SUCCESS `ROLE_BREAK_GLASS_GRANT` row in the grant transaction. It is reachable only from `rbac.interfaces.cli` (ArchUnit), never calls `assign()` or `revoke()`, and the CLI beans exist only under `break-glass`.
+
+**Exit codes** (`BreakGlassRefusalReason`): 0 granted; 1 `UNEXPECTED_ERROR`; 2 `INVALID_ARGUMENT`; 3 target not found or not ACTIVE; 4 no system `TENANT_ADMIN` role; 5 `TENANT_HAS_ADMIN`; 6 `CHANGE_REF_REUSED`; 7 `CONCURRENT_INVOCATION`. 7 and 1 were confirmed by the user on 2026-10-15. Exit 1 is ambiguous (audited and paged, or a crash with neither); the runbook splits it by the presence of `RBAC_BREAK_GLASS_USED` in the pod log.
+
+**Final behaviour worth knowing** (where it goes beyond the first design text; all in design section 7.1):
+- The grant transaction only decides; every FAILURE row and every page is written after it ends (T-008 review Low 1), so one invocation commits at most one row and a refusal never follows a committed SUCCESS write. A failed GRANTED page is best effort (`RBAC_BREAK_GLASS_ALERT_FAILED`, exit 0).
+- A refusal row is written through `recordEventOrThrowInNewTransaction`, never the retry buffer (the process would never drain it). A failed refusal write is `RBAC_AUDIT_WRITE_LOST`, counted, and swallowed.
+- The replay lookup is global, SUCCESS-only, exact and case-sensitive, a bound parameter, non-locking. It is an allowlist entry in `TenantIsolationArchitectureTest` (signed off by the security review) and, since the test audit, is ArchUnit-contained to `BootstrapAdminService` and its adapter (L-3 closed).
+- `application-break-glass.yml`: no web server, Flyway off, Hikari pool 4, `log-flush-wait` 15 s with an env override. The flush wait also runs before the web-context guard throws (T-008 review Low 2).
+- `SecurityConfig` and `PublicEndpointRequestMatcher` are `@ConditionalOnWebApplication(SERVLET)`; `DevDataInitializer` is `@Profile("dev & !break-glass")`. `NexusApplication.main` exits through `SpringApplication.exit` only under `break-glass`.
+
+**Open.** O-7 (a DISABLED sole administrator gets exit 5; owner decision required before merge, characterised by `..._pendingO7Decision` in `BreakGlassAdminIT`), optional L-1 (the refusal page is not wrapped, so a throwing page hides the refusal code behind exit 1) and L-2 (the target's ACTIVE check is outside the grant transaction). See STATUS.md and `14-pending-items.md`.
+
+**Tests.** Test audit run: surefire 2032 run, 0 failures, 0 errors, 1 skipped (pre-existing); failsafe 497 run, 0 failures; JaCoCo, SpotBugs and Checkstyle green. `BreakGlassAdminIT` has 29 tests, including real child-JVM runs as `nexus_app`.
+
+---
+
+## 14. M3: retire the superseded authorization machinery (A5, D3; T-016 to T-019)
+
+Design: `03-design.md` section 5 (ledger rows 1 to 19). Decision record: ADR-0021. Re-pass: `15-threat-model-repass-M3.md`.
+
+**What it does.** "Administrator" has one meaning everywhere: an active holder of one role that carries every permission in the catalogue (an admin-defining role); never the union across roles. The name-based gates (dangerous permissions, `TENANT_ADMIN` by name) are gone; the grant-subset rules (A2 assign, A3 attach, A4 self-assign, revoke-subset, role-subset) do the work.
+
+**How.**
+- **Ports.** Removed M5, M5b, M7, M10, M12 and `RoleManagementPort.findRoleIdByName`. Added M10' `findRolePermissionIdsForTenantRoles`, M16 `findHeldAdminDefiningRoleIds` (independent per-role `GROUP BY ... HAVING COUNT(DISTINCT) =` catalogue count, non-locking), `findActiveHoldersForRole`, `findActiveHolderUserIdsForRoles`. `RbacAdministrators` gained `adminDefiningRoleIds` and `isAdministrator` over `(role, permission)` pairs.
+- **Assign / revoke.** If the target is admin-defining, M10' then one ascending unsigned-byte `FOR UPDATE` statement (M11) over admin-defining ids plus the target; on that path the caller's administrator status comes from M11's rows (RC-25.1/25.3). Revoke: tenant 404, M3 404, throttle, classify, lock, administrator requirement (`NOT_TENANT_ADMIN`), L-1, union subset (`GRANT_EXCEEDS_CALLER`), distinct-holder lockout (409), update.
+- **Attach / detach.** Attach: A3, then (only if it completes the catalogue) 409 `RBAC_010` while an active holder was assigned by a non-administrator. After commit: row 13 and row 14 signals from an after-commit read. Detach: role-subset before the delete; for an admin-defining role the caller must be an administrator through another role.
+- **Detection.** Self-target assign runs M16 before the INSERT; a disagreement with A4 logs ERROR `RBAC_SELF_ASSIGN_ADMIN_DISAGREEMENT` and counts `nexus.rbac.self_assign_admin_disagreement`. `admin_role_assigned{selfTarget}` fires for admin-defining targets.
+- **Indicator / redaction / break-glass.** The zero-admin indicator compares tenants with an admin-defining role against tenants with an active admin-defining holder (count only, 30 s cache and probe exclusion unchanged). `listActive` redacts `assignedBy` unless the caller is an administrator. `BootstrapAdminService` uses the same definition.
+- **FR-A5.c proxy.** `HexagonalArchitectureTest` scans `rbac/application` sources for the retired symbols.
+
+**Deviations and decisions (recorded).**
+1. Administrator requirement on revoke runs before M13, L-1 and the subset check, so the kept 403 test `should_return403_when_nonAdminAttemptsToRevokeTheTenantsLastAdmin` stays `NOT_TENANT_ADMIN`. Two `RoleRevocationSymmetryIT` tests could not stay verbatim (the dangerous custom role is now `PERMISSION_ABSENT`, `TENANT_ADMIN` fixtures carry the whole catalogue).
+2. Classification (M14/M15) happens before the lock; the union-holder A2 comparison on the lock path uses the M13 snapshot (staleness accepted, same TOCTOU family as RES-27).
+3. The "reverse" disagreement (A4 says administrator, M16 says not) is unreachable by construction in the self-target path and is not tested as a separate signal.
+4. No L-1 on detach beyond the endpoint permission; detach is not in the lock family (RES-28).
+5. The audit `holderCount` field is no longer written on attach (the event field remains, null).
+6. Attach is not retried after commit if the after-commit read fails (`holders="unknown"`); detach holder read is retried once.
+7. k6 load script `load/role-change-privileged-denial-throttle.k6.js` still references retired names and was not updated.
+8. Ordering of denial reasons follows A-13 (administrator requirement first, then subset).
+
+**Tests.** `verify -DskipITs`: 2005 run, 0 failures, 0 errors, 1 skipped; Checkstyle, SpotBugs, JaCoCo and ArchUnit green. Integration tests were rewritten or added (harness C re-scope with the RC-25.3 case, `HeldPermissionPartitionIT`, `AttachEscalationSignalIT`, `BreakGlassAdminIT` custom-admin cases) and compile, but were **not run**: no Docker in the M3 session.
+
+
+---
+
+## 15. M8: Group B hardening (B1, B2, B3, B5, B6, B7, B8; T-020 to T-024)
+
+Design: `03-design.md` section 10. Decisions: ADR-0021 (B1/B8 context), ADR-0022 (B6 addendum). Re-pass: `16-threat-model-repass-M8.md`. Commits: one per task (T-020 `7816b01`, T-021 `d1bc266`, T-022 `6de2ec2`, T-023 `d4ca3d5` and `6ea90ab`, T-024 `331bcab`).
+
+**What it does.**
+- **B1 (T-020).** A cross-tenant user or role id returns the same 404 (`USER_NOT_FOUND` / `ROLE_NOT_FOUND`, same message) as a genuine not-found, on all six service paths (assign, revoke, list assignments, list/attach/detach role permissions) and on the two defensive empty-M14 branches. The service logs WARN `RBAC_CROSS_TENANT_TARGET` and increments the same `permission_denied{permission,reason=CROSS_TENANT_TARGET}` series. The synchronous denial row is gone (it was the timing difference) and the denial is not routed through `AuthEventRetryBuffer`. `RbacAuditPort.recordRoleAssignmentDenied`'s scope is `NOT_TENANT_ADMIN`, `SELF_ASSIGNMENT`, `GRANT_EXCEEDS_CALLER` and the revoke-subset denial. Controllers' `@ApiResponse` text, `US-012/api-spec.json` and the US-012/US-015 monitoring notes say 404.
+- **B3 (T-020).** M3 had already deleted both tenant-tagged meters (A-16), so no code change was needed; `RbacMetricCardinalityTest` (MC-8) exercises success, denial, cross-tenant and throttled paths of both services and asserts no meter has a tenant tag key.
+- **B2 (T-021).** `V7__rbac_roles_id_tenant_unique.sql` (UNIQUE `(id, tenant_id)` on `roles`) and `V8__rbac_user_roles_role_tenant_fk.sql` (composite FK `fk_user_roles_role_tenant`, `fk_user_roles_role` kept), one statement per file. The numbers V7 and V8 were the next free ones on disk (V1 to V6 existed). No entity or grant change.
+- **B7 (T-021).** `db/templates/permission-migration-footer.sql` (outside `db/migration`) holds the footer with the single placeholder `{{INSERTED_PERMISSION_IDS}}` in an A-PRE-V9, an A-V9 and a B block, plus the exposure check and cache flush as comments. `PermissionMigrationFooterScannerTest` scans `db/migration/V*.sql` and the fixtures in `src/test/resources/db/footer-fixtures/`.
+- **B5 (T-022).** `common.security.Permissions` (8 constants plus `ALL`); every `@RequiresPermission` and service `requiredPermission` references it. `PermissionsCatalogueTest` reads annotation values with ArchUnit over production classes; `PermissionsCatalogueIT` compares `ALL` with the table (excluding the `rt:` fixtures of a sibling IT). Frontend: `shared/types/permission.ts`, typed directive input and guard read, fake names fixed (specs and `DEVELOPMENT_GUIDE.md`), `app.routes.spec.ts` walks routes including lazy `loadChildren`.
+- **B6 (T-023).** Harness only; see deviations. `PassThroughPermissionCacheAdapter` is selected by `nexus.rbac.permission-cache.bypass=true` (default `false`, refuses to start under `prod`); `RedisPermissionCacheAdapter` is conditional on it being absent or `false`.
+- **B8 (T-024).** `assign` and `revoke` classify the target, then ask the throttle. A throttled actor is blocked (403 `NOT_TENANT_ADMIN`, no row, counter) only for an admin-defining target or a self-target, before the set lock. Otherwise the request proceeds; if it is then denied (`PERMISSION_ABSENT`, `GRANT_EXCEEDS_CALLER`) it returns that 403 with no audit row, counts `denial_throttled{operation}` and logs one WARN `RBAC_DENIAL_THROTTLED` per window. `RedisRoleChangeThrottleAdapter` (store-type `redis`) keeps the window (sorted set), the throttled-until marker and the suppressed count in Redis, in two Lua scripts that read Redis `TIME`; the memory adapter is now selected only for `memory`. `ThrottleSharedStoreStartupAssertion` fails startup when `nexus.rbac.throttle.require-shared-store=true` meets a non-redis store.
+
+**Deviations and decisions (recorded).**
+1. **`application-prod.yml` not edited** (hook-protected). The line `nexus.rbac.throttle.require-shared-store: true` and `nexus.security.rate-limit.store-type: redis` for production are a human edit (`16-threat-model-repass-M8.md` section 2). The RC-54(b) test is `@Disabled` until then, like T-014's was.
+2. **T-023 is a harness, not a decision.** The staging topology and Docker do not exist, so no benchmark ran and no number is recorded. The ADR-0022 addendum records the rule and that the measurement is deferred to the first deployment; the cache is kept by default until then, so none of the remove-branch deletions were made. The MySQL-QPS criterion is supplied by hand (`--qps-on/--qps-off`), because k6 cannot read it. Beyond the task text: the rule requires the effect to exceed the observed run-to-run spread (the "inconclusive removes" clause made computable), the bypass refuses to start under `prod`, and the harness needs `refresh-ip-max-attempts` raised and 200 accounts to stay under the per-family limit.
+3. **`RoleChangeThrottlePort` gained `recordSuppressedDenial`** (not in the task's file list) so that "at most one WARN per window" is decided by the shared store, not per replica. `suppressedCount` in the WARN is the running count at the one emission, so it is always 1; the counter carries the total. While throttled, a denial does not feed the window (it cannot change the outcome) and the per-denial WARNs (`RBAC_GRANT_EXCEEDS_CALLER` and similar) are skipped for volume.
+4. **Redis throttle adapter uses the main `StringRedisTemplate`** (2 s timeout), not the short-timeout epoch factories: assign/revoke are administrative, low-rate calls, and the adapter fails safe (not throttled) on any Redis error, as the port requires. Documented in the adapter.
+5. **T-020 scope calls.** The two defensive empty-M14 branches (`classifyTarget`, `attachWouldMakeRoleAdminDefining`) also answer 404 (they are tenant-mismatch signals; unreachable today). `classifyTarget` lost two parameters it no longer used. Where an existing IT used a cross-tenant request only as "the cheapest denial" (`RoleAssignmentAuditIT` durability, `ROLE_ASSIGNMENT_DENIED` metadata, the 8-thread `REQUIRES_NEW` race), it now uses `SELF_ASSIGNMENT` or `GRANT_EXCEEDS_CALLER`. The pool-pressure k6 script now drives `GRANT_EXCEEDS_CALLER` with one actor per VU so the throttle does not hide the pressure.
+6. **T-021.** V7/V8 carry no explicit `ALGORITHM`/`LOCK` clause: MySQL picks INPLACE for the unique key and COPY for the FK, and an explicit clause could not be checked without a MySQL server here. V1 to V5 are exempt from the scanner (`FIRST_FOOTER_VERSION = 6`: V5 creates the catalogue). Keyword case is compared exactly (the footer is meant to be instantiated from the template); id order and layout are normalised. The V9 variant puts `r.deleted_at IS NULL` first in the `WHERE`. `RoleResolutionServiceIT` and `GrantSubsetIT` tests that deliberately inserted a mismatched row now assert the insert is rejected.
+7. **T-022.** No route uses `permissionGuard` today, so the route-table assertion on the real table is vacuously true; the fixture tests prove the check works and it will bite on the first gated route. The guard still compares against the live permission list and fails open on a missing or non-string value (the four pinned tests are unchanged apart from the renamed permission literal in the other tests).
+8. **Tooling.** The container's Node (22.22.0) is below the Angular CLI minimum (22.22.3); the frontend gate ran with Node 22.22.3 installed from npm into the session scratchpad. k6 is not installed: the k6 and `.mjs` files were syntax-checked with `node --check` and Prettier, the verdict rule was run with `node --test`.
+
+**Tests.** Backend `verify -DskipITs -Ddependency-check.skip=true`: 2042 run, 0 failures, 0 errors, 2 skipped (one pre-existing, one `@Disabled` RC-54(b)); Checkstyle, SpotBugs, JaCoCo and ArchUnit green (SpotBugs caught two constructor-throw patterns and one exposure finding, fixed with `@PostConstruct` and an exclusion entry). Frontend: `npm run test:ci` 244 passed (30 files), lint and format check clean. Integration tests written and compile-checked but **not run** (no Docker): `CrossTenantNotFoundEquivalenceIT`, `PermissionsCatalogueIT`, `RedisRoleChangeThrottleAdapterIT`, the changed `RoleAssignmentAuditIT`, `RoleAssignmentCacheIT`, `RoleAssignmentSecurityIT`, `RolePermissionSecurityIT`, `RoleResolutionServiceIT`, `GrantSubsetIT`, `RbacSchemaMigrationIT`. k6 not run: `role-assignment-denial-pool-pressure.k6.js`, `role-change-privileged-denial-throttle.k6.js`, `permission-cache-benchmark.js`.
+
+**Open.** Everything in `04-tasks.md`'s M8 checklist that is unticked; the `application-prod.yml` edit; ADR-0023 acceptance; running the ITs and the k6 gates once Docker and a staging topology exist.
+
+## 16. M9: Group C missing features (C1, C2, C3, C5, C6; T-025 to T-030)
+
+Design: `03-design.md` section 11. Re-pass: `17-threat-model-repass-M9.md`. Commits: T-025 `c3710b3`, T-030 `ca0fa9d`, T-026 `e17479c`, T-027 `75498f7`, T-028 `61b4356`, T-029 `0f0ef92`.
+
+**What it does.**
+- **C1 soft delete and PATCH (T-025, T-026, T-027).** `V9__rbac_roles_soft_delete.sql` (one `ALTER`: `deleted_at`, STORED `active_name`, `uq_roles_tenant_active_name`; `uq_roles_tenant_name` stays until V10). `Role` has `@SQLRestriction("deleted_at IS NULL")` and a read-only `deletedAt`. Assign's INSERT is `INSERT ... SELECT ... FROM roles WHERE ... deleted_at IS NULL` (0 rows is 404, no locking read on `roles`). `DELETE`: 404, role-subset 403, `RBAC_003`, set lock (M10' then M11) first when admin-defining, single-column `UPDATE`, `FOR UPDATE` holder read (`RBAC_009` rolls back), atomic `ROLE_DELETED`. `PATCH`: 404, role-subset 403, `RBAC_003`, `RBAC_007`, two-column `UPDATE` (`RBAC_006`), atomic `ROLE_UPDATED` (field names, old/new name, never the description); no epoch bump; CORS allows PATCH. Grant `UPDATE (name, description, deleted_at) ON nexus.roles` is in the three artifacts; `RbacDbPrivilegeHealthIndicator` flags any other column, table-level `UPDATE` and any `DELETE`. Every role-reading JPQL names `deleted_at IS NULL`; the role cap counts live roles; `RbacZeroActiveAdminsHealthIndicator` reports `deletedRoleActiveAssignments` (count only, DOWN above 0).
+- **C2 pagination (T-028).** `page`/`size` parsed by `PageParams` (strings, so `page=abc` is a 400, not a 500). Envelope `data/page/links`, relative links carrying `size`; a page past the end links back to the last real page. Sorts are total orders.
+- **C3 access review (T-029).** `AccessReviewController`/`AccessReviewService`, `audit:read`, ids only, `assignedBy` redacted by `RoleAssignmentService.isCallerAdministrator`, B1-style 404, INFO `RBAC_ACCESS_REVIEW_QUERY`, counter `access_review_query{endpoint}`. **C5** pinned by `RegistrationIT` and `AccessReviewIT`.
+- **C6 (T-030).** `apiErrorInterceptor` navigates to `/access-denied` (no query parameters) on 403 `RBAC_001`; `SKIP_ACCESS_DENIED_REDIRECT` opts out; the error is still rethrown.
+
+**Deviations and decisions.**
+1. **Migration numbers.** V9 is the next free number (V8 exists); no renumbering was needed.
+2. **PATCH check order.** Reserved name (`RBAC_007`, in memory) runs before the uniqueness conflict (`RBAC_006`, from the database), the order create uses. The design lists 006 first; with it a reserved name would always answer 006 because the system roles exist.
+3. **PATCH null semantics.** An absent or `null` field is unchanged; an empty `description` clears it (stored `NULL`). The design's "or null" cannot be told from "absent" with a plain record. A PATCH that changes nothing is a 200 no-op with no audit row.
+4. **Method names.** The service method is `softDeleteRole` and the repository method `assignIfRoleLive`, not `deleteRole`/`insert...`: SpotBugs' `EI_EXPOSE_REP2` treats a class with `delete*`/`insert*` methods as mutable and flags every controller that stores it. `AccessReviewService` has a narrow `EI_EXPOSE_REP2` exclusion for its `MeterRegistry`, as the other services do.
+5. **Detector name.** `countActiveAssignmentsOnDeletedRolesInAnyTenant`: `TenantIsolationArchitectureTest` requires "Tenant" in the name of a repository method without a `tenantId` parameter; the detector is global by design.
+6. **M11 unchanged.** It locks `user_roles` by role id and joins nothing; joining would widen the lock. Its protection is the invariant plus M10' (which excludes deleted roles) building the lock set. `SoftDeletedRoleVisibilityIT` asserts it after the forged row is revoked.
+7. **Effective permissions** use one new statement returning `(permission name, role id)` pairs instead of `findActivePermissionNames` plus a second read, so names and roles come from one snapshot. Role/permission existence for C3 uses `findRole` and the catalogue, so the service has four dependencies.
+8. **DTOs.** `PermissionPageResponse` is new because `PermissionListResponse` also serves the unpaginated `GET /roles/{id}/permissions`. Paged lists are domain `PageResult`s mapped in the controller.
+9. **Retired test intent.** `RolePermissionsPrivilegeIT` no longer asserts "no UPDATE on `roles`": it asserts `is_system_role` stays denied and the `roles` grant is exactly the C1 column set.
+10. **L-5.** The `(RES-45)` id was removed from the "Option (b)" sentence in `03-design.md` 11.1.
+
+**Tests.** Backend `verify -DskipITs -Ddependency-check.skip=true`: 2226 run, 0 failures, 0 errors, 2 skipped (unchanged from M8); Checkstyle, SpotBugs, JaCoCo, ArchUnit green. Frontend: `test:ci` 253 passed (30 files), lint and format clean. ITs written, compile-checked, **not run** (no Docker): `RolesPrivilegeIT`, `RoleDeleteConcurrencyIT`, `SoftDeletedRoleVisibilityIT`, `AccessReviewIT`, additions to `RoleManagementIT`, `RoleManagementAuditIT`, `RbacSchemaMigrationIT`, `RbacRepositoryRoundTripIT`, `RbacDbPrivilegeHealthIndicatorIT`, `RbacZeroActiveAdminsHealthIndicatorIT`, `HeldPermissionPartitionIT`, `BreakGlassAdminIT`, `RegistrationIT`, `RolePermissionsPrivilegeIT`. V9 has never run against MySQL.
+
+**Open.** V9 maintenance window and grants per environment; the `RolesPrivilegeIT`, `RoleDeleteConcurrencyIT` runs; the `deletedRoleActiveAssignments` page; the `audit:read` detection query (`runbook.md` 14); RES-45 acceptance; the 1213 rate; M9-contract (V10, T-031) not started.

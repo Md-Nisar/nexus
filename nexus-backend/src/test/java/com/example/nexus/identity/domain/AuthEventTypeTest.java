@@ -112,8 +112,8 @@ class AuthEventTypeTest {
   }
 
   @Test
-  void should_defineAllTwentySixConstants_when_valuesCalled() {
-    assertThat(AuthEventType.values()).hasSize(26);
+  void should_defineAllTwentyNineConstants_when_valuesCalled() {
+    assertThat(AuthEventType.values()).hasSize(29);
     assertThat(Arrays.stream(AuthEventType.values()).map(Enum::name))
         .containsExactlyInAnyOrder(
             "LOGIN_SUCCESS",
@@ -141,7 +141,10 @@ class AuthEventTypeTest {
             "ROLE_ASSIGNMENT_DENIED",
             "ROLE_CREATED",
             "ROLE_PERMISSION_GRANTED",
-            "ROLE_PERMISSION_REVOKED");
+            "ROLE_PERMISSION_REVOKED",
+            "ROLE_DELETED",
+            "ROLE_UPDATED",
+            "ROLE_BREAK_GLASS_GRANT");
   }
 
   /**
@@ -167,6 +170,38 @@ class AuthEventTypeTest {
   @Test
   void should_returnFalse_when_isPriorityCheckedOnRoleCreated() {
     assertThat(AuthEventType.ROLE_CREATED.isPriority()).isFalse();
+  }
+
+  /** US-018 C1: ROLE_UPDATED, like ROLE_DELETED, is atomic-path only and so never priority. */
+  @Test
+  void should_returnFalse_when_isPriorityCheckedOnRoleUpdated() {
+    assertThat(AuthEventType.ROLE_UPDATED.isPriority()).isFalse();
+    assertThat(AuthEventType.ROLE_UPDATED.wireName()).isEqualTo("ROLE_UPDATED");
+  }
+
+  /** US-018 C1: ROLE_DELETED is written on the atomic path only, never via the retry buffer. */
+  @Test
+  void should_returnFalse_when_isPriorityCheckedOnRoleDeleted() {
+    assertThat(AuthEventType.ROLE_DELETED.isPriority()).isFalse();
+    assertThat(AuthEventType.ROLE_DELETED.wireName()).isEqualTo("ROLE_DELETED");
+  }
+
+  /**
+   * US-018 T-007 (03-design.md §7.2): {@code ROLE_BREAK_GLASS_GRANT} is deliberately NOT priority
+   * — it is never written on the buffered path. Its SUCCESS row is atomic (written inside the
+   * grant's own transaction) and its FAILURE row is an independent best-effort write through
+   * {@code SecureEventService#recordEventOrThrowInNewTransaction}; both go through {@code
+   * AuthEventPort#recordOrThrow}, which never enqueues to the retry buffer, and a lost FAILURE row
+   * is logged as {@code RBAC_AUDIT_WRITE_LOST}.
+   */
+  @Test
+  void should_returnFalse_when_isPriorityCheckedOnRoleBreakGlassGrant() {
+    assertThat(AuthEventType.ROLE_BREAK_GLASS_GRANT.isPriority()).isFalse();
+  }
+
+  @Test
+  void should_returnRoleBreakGlassGrant_when_wireNameCalledOnRoleBreakGlassGrant() {
+    assertThat(AuthEventType.ROLE_BREAK_GLASS_GRANT.wireName()).isEqualTo("ROLE_BREAK_GLASS_GRANT");
   }
 
   @Test

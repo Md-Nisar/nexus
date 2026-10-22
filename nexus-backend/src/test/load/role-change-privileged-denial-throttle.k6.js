@@ -19,6 +19,18 @@
  * actors, which is exactly the RES-19 residual (a pre-authorization tenant-wide X lock, bounded
  * only by D14) this script is now the load-side proof for.
  *
+ * US-018 B8 update (T-024): the throttle is now scoped and shared. A throttled actor is blocked only
+ * on requests that would take the set lock (an admin-defining target, as both scenarios above use)
+ * or target the actor themself; the target is classified FIRST (two non-locking reads, M14 and
+ * M15), then the throttle is consulted, so the short-circuit sits after those reads and before the
+ * set lock. With nexus.security.rate-limit.store-type=redis the throttle state lives in Redis
+ * (nexus:rbac:throttle:{tenantId}:{actorUserId}), so the lookup is one EXISTS, not a map read. A
+ * third scenario, `throttled_benign_denial`, covers the path B8 adds: once actor A is throttled, a
+ * benign-but-denied request is still evaluated normally (403 GRANT_EXCEEDS_CALLER) but writes NO
+ * ROLE_ASSIGNMENT_DENIED row and opens no second connection (RC-33.1); only the counter
+ * nexus.rbac.denial_throttled{operation="assign"} and one WARN RBAC_DENIAL_THROTTLED per window
+ * record it. Not run in the authoring environment (no Docker, no staging topology).
+ *
  * What D14 changes under this load, and what this script is watching for:
  *   - Before the actor crosses `nexus.rbac.denial-throttle.max-denials` denials in the current
  *     `…window-seconds` window, EVERY denied request is "expensive": M11 (the tenant-wide lock,
@@ -27,8 +39,8 @@
  *     `nexus.rbac.privileged_revoke_lock_hold{operation="assign",outcome="denied"}` -- the D7
  *     first-class series, despite the metric's pre-US-017 name -- and the denial-throttle counter
  *     below).
- *   - Once throttled, `requireNotThrottled` (03-design.md §6.1 check 3.5) short-circuits to a 403
- *     BEFORE M11/M8/M5b, the audit write and the metrics -- a single in-memory map lookup. The
+ *   - Once throttled, `evaluateThrottle` (03-design.md §10.8) short-circuits to a 403 BEFORE
+ *     M11/M8/M5b, the audit write and the metrics -- one throttle lookup after classification. The
  *     HTTP status code is identical (403 RBAC_001) in both phases, so this script cannot and does
  *     not assert on status-code shape alone; it watches for the LATENCY/THROUGHPUT signature of
  *     the transition (§9.2's own account of what "bounds cost" means operationally), pulled from
@@ -49,6 +61,8 @@
  *          -e TARGET_USER_ID=<any user id in actor A's own tenant> \
  *          -e TARGET_USER_ID_2=<any user id in actor B's own tenant/scope> \
  *          -e TENANT_ADMIN_ROLE_ID=<the literal TENANT_ADMIN role id in the relevant tenant(s)> \
+ *          -e BENIGN_DENIED_ROLE_ID=<a non-admin-defining role in actor A's tenant that carries a \
+ *                                    permission actor A lacks, so the request is denied> \
  *          nexus-backend/src/test/load/role-change-privileged-denial-throttle.k6.js
  *
  * What to watch (pull from Actuator/Prometheus during and after the run, not from this script):
@@ -61,6 +75,8 @@
  *     pre-gate M11 lock on `assign()`, which did not exist before US-017.
  *   - nexus.rbac.denial_throttled{operation="assign"} -- must start climbing exactly where the
  *     blocked-counter's climb for actor A flattens.
+ *   - ROLE_ASSIGNMENT_DENIED rows in auth_events for actor A -- must stop growing once actor A is
+ *     throttled, although `throttled_benign_denial` keeps sending denied requests (RC-33.1).
  *   - hikaricp_connections_pending / *_acquire_seconds -- must NOT show a sustained rise (the
  *     whole point of check 3.5's placement ahead of M11/M8/M5b and the audit write).
  *   - nexus.rbac.audit_write_failed{operation="deny"} -- must stay at 0.
@@ -80,6 +96,7 @@ const NON_ADMIN_TOKEN_2 = __ENV.NON_ADMIN_TOKEN_2;
 const TARGET_USER_ID = __ENV.TARGET_USER_ID;
 const TARGET_USER_ID_2 = __ENV.TARGET_USER_ID_2;
 const TENANT_ADMIN_ROLE_ID = __ENV.TENANT_ADMIN_ROLE_ID;
+const BENIGN_DENIED_ROLE_ID = __ENV.BENIGN_DENIED_ROLE_ID;
 
 export const options = {
   scenarios: {
@@ -105,6 +122,19 @@ export const options = {
       maxVUs: 40,
       exec: 'actorBHammersTheGateIndependently',
     },
+    // B8: after actor A has been throttled (the sustain scenario passes max-denials within the
+    // first second), keep sending benign-but-denied requests as actor A. They must be evaluated
+    // (403 GRANT_EXCEEDS_CALLER), cost no audit row and no second connection.
+    throttled_benign_denial: {
+      executor: 'constant-arrival-rate',
+      rate: 15,
+      timeUnit: '1s',
+      duration: '20s',
+      startTime: '10s',
+      preAllocatedVUs: 20,
+      maxVUs: 40,
+      exec: 'actorAThrottledBenignDenial',
+    },
   },
   thresholds: {
     // Informational: a non-403 means the pool is exhausted or the app errored outright, not
@@ -122,11 +152,12 @@ function requireEnv() {
     !NON_ADMIN_TOKEN_2 ||
     !TARGET_USER_ID ||
     !TARGET_USER_ID_2 ||
-    !TENANT_ADMIN_ROLE_ID
+    !TENANT_ADMIN_ROLE_ID ||
+    !BENIGN_DENIED_ROLE_ID
   ) {
     throw new Error(
       'Set BASE_URL, NON_ADMIN_TOKEN, NON_ADMIN_TOKEN_2, TARGET_USER_ID, TARGET_USER_ID_2, ' +
-        'TENANT_ADMIN_ROLE_ID env vars before running.'
+        'TENANT_ADMIN_ROLE_ID, BENIGN_DENIED_ROLE_ID env vars before running.'
     );
   }
 }
@@ -159,5 +190,18 @@ export function actorBHammersTheGateIndependently() {
     'actor B: denied as expected (403) or pool exhausted (5xx/timeout) -- inspect body on 5xx': (
       r
     ) => r.status === 403 || r.status >= 500,
+  });
+}
+
+export function actorAThrottledBenignDenial() {
+  requireEnv();
+  const res = http.post(
+    `${BASE_URL}/api/v1/users/${TARGET_USER_ID}/roles`,
+    JSON.stringify({ roleId: BENIGN_DENIED_ROLE_ID }),
+    { headers: { Authorization: `Bearer ${NON_ADMIN_TOKEN}`, 'Content-Type': 'application/json' } }
+  );
+  check(res, {
+    'actor A throttled benign: denied as expected (403) or pool exhausted (5xx/timeout)': (r) =>
+      r.status === 403 || r.status >= 500,
   });
 }
