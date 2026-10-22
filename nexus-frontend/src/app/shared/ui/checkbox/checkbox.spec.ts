@@ -13,6 +13,21 @@ class HostComponent {
   readonly control = new FormControl(false, { nonNullable: true });
 }
 
+@Component({
+  imports: [NxCheckbox],
+  template: `<nx-checkbox label="I agree to the"><a href="/terms">terms</a></nx-checkbox>`,
+})
+class ProjectionHostComponent {}
+
+describe('NxCheckbox content projection', () => {
+  it('renders projected content after the label', async () => {
+    const fixture = TestBed.createComponent(ProjectionHostComponent);
+    await fixture.whenStable();
+    const label: HTMLElement = fixture.nativeElement.querySelector('label');
+    expect(label.querySelector('a')?.textContent).toBe('terms');
+  });
+});
+
 describe('NxCheckbox', () => {
   let fixture: ComponentFixture<NxCheckbox>;
 

@@ -128,6 +128,8 @@ export { NxCheckbox } from './checkbox/checkbox';
 
 export { NxChip } from './chip/chip';
 
+export { NxIcon } from './icon/icon';
+
 export { NxInput } from './input/input';
 
 export { NxSearchField } from './search-field/search-field';

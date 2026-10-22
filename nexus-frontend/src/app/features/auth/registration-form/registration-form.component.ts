@@ -2,13 +2,11 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { FormControl, FormGroup, ReactiveFormsModule, Validators } from '@angular/forms';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { RouterLink } from '@angular/router';
-import { MatIconModule } from '@angular/material/icon';
 import { AuthService } from '../auth.service';
 import { AppError } from '../../../shared/types/app-error';
 import { ViewState, failure, idle, loading, success } from '../../../shared/types/view-state';
 import { PasswordStrengthMeterComponent } from './password-strength-meter/password-strength-meter.component';
-import { MatCheckboxModule } from '@angular/material/checkbox';
-import { NxInput, NxButton } from '../../../shared/ui';
+import { NxButton, NxCheckbox, NxIcon, NxInput } from '../../../shared/ui';
 
 /**
  * User registration form component.
@@ -27,11 +25,11 @@ import { NxInput, NxButton } from '../../../shared/ui';
   imports: [
     ReactiveFormsModule,
     RouterLink,
-    MatIconModule,
-    MatCheckboxModule,
     PasswordStrengthMeterComponent,
     NxInput,
     NxButton,
+    NxCheckbox,
+    NxIcon,
   ],
   templateUrl: './registration-form.component.html',
   styleUrl: './registration-form.component.scss',

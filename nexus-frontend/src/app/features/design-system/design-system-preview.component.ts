@@ -1,6 +1,5 @@
 import { Component, computed, inject } from '@angular/core';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
-import { MatIconModule } from '@angular/material/icon';
 import { ThemeService } from '../../core/theme.service';
 import {
   NxAnnouncer,
@@ -37,7 +36,6 @@ import {
   selector: 'app-design-system-preview',
   imports: [
     ReactiveFormsModule,
-    MatIconModule,
     NxBadge,
     NxButton,
     NxBreadcrumb,

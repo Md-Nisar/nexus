@@ -2,7 +2,7 @@
 @if (state().kind === 'success') {
   <output class="reg-form__success" data-testid="reg-success">
     <!-- Decorative icon; status role announces the message to screen readers -->
-    <mat-icon aria-hidden="true" class="reg-form__success-icon">check_circle</mat-icon>
+    <nx-icon name="check_circle" class="reg-form__success-icon" />
     <h2 class="reg-form__success-heading">Check your inbox</h2>
     <p class="reg-form__success-body">
       We've sent a verification link to your email address. Please click the link to activate your
@@ -50,14 +50,14 @@
 
     <!-- Consent section: checkbox with conditional error message below -->
     <div class="reg-form__consent">
-      <mat-checkbox
+      <nx-checkbox
         class="reg-form__consent-check"
         formControlName="consentAccepted"
-        aria-describedby="reg-consent-error"
+        label="I agree to the"
+        testId="reg-consent-checkbox"
       >
-        I agree to the
         <a routerLink="/legal/terms" class="reg-form__terms-link">terms and conditions</a>
-      </mat-checkbox>
+      </nx-checkbox>
       <!-- Consent error: shown only if validation fails; aria-describedby links to checkbox -->
       @if (consentError()) {
         <p id="reg-consent-error" class="reg-form__field-error" role="alert">

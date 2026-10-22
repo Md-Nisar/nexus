@@ -29,8 +29,8 @@ let nextId = 0;
       [aria-describedby]="reasonId()"
       (change)="onToggle($event)"
       (blur)="onTouched()"
-      >{{ label() }}</mat-checkbox
-    >
+      >{{ label() }}<ng-content
+    /></mat-checkbox>
     @if (disabledReason()) {
       <span class="nx-checkbox__reason" data-testid="nx-checkbox-reason" [id]="reasonIdValue">{{
         disabledReason()
