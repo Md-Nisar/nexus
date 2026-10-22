@@ -81,4 +81,18 @@ describe('authGuard', () => {
     expect(urlTree._commands).toEqual(['/auth/login']);
     expect(urlTree._extras).toEqual({ queryParams: { returnUrl: '/role-test?tab=x' } });
   });
+
+  it.each([
+    ['503 AUTH_005', { code: 'AUTH_005', message: 'unavailable', retryAfterSeconds: 30 }],
+    ['a network error', { code: 'NETWORK_ERROR', message: 'Could not reach the server.' }],
+  ])(
+    'cancels navigation without redirecting on cold start when refresh fails with %s',
+    async (_n, error) => {
+      mockAuthStore.isAuthenticated.mockReturnValue(false);
+      mockAuthService.refresh.mockReturnValue(throwError(() => error));
+
+      const result = await firstValueFrom(runGuard() as Observable<GuardResult>);
+      expect(result).toBe(false);
+    },
+  );
 });
