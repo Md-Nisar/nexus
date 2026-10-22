@@ -113,7 +113,7 @@ import { AppError } from '../../../shared/types/app-error';
         padding: var(--nx-space-3) var(--nx-space-4);
         border-radius: var(--nx-radius-sm);
         background: var(--nx-color-success-surface);
-        color: var(--nx-color-success);
+        color: var(--nx-color-success-text);
         font-size: var(--nx-text-base);
       }
 
@@ -121,7 +121,7 @@ import { AppError } from '../../../shared/types/app-error';
         padding: var(--nx-space-3) var(--nx-space-4);
         border-radius: var(--nx-radius-sm);
         background: var(--nx-color-error-surface);
-        color: var(--nx-color-error);
+        color: var(--nx-color-error-text);
         font-size: var(--nx-text-base);
       }
 
@@ -132,7 +132,7 @@ import { AppError } from '../../../shared/types/app-error';
 
         a {
           font-size: var(--nx-text-sm);
-          color: var(--nx-color-primary);
+          color: var(--nx-color-primary-text);
           text-decoration: none;
 
           &:hover {
@@ -149,7 +149,7 @@ import { AppError } from '../../../shared/types/app-error';
         text-align: center;
 
         a {
-          color: var(--nx-color-primary);
+          color: var(--nx-color-primary-text);
           text-decoration: none;
 
           &:hover {

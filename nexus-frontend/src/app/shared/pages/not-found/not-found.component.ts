@@ -13,5 +13,10 @@ import { NxPageHeader } from '../../ui';
     />
     <a routerLink="/dashboard" data-testid="not-found-dashboard-link">Go to dashboard</a>
   `,
+  styles: `
+    a {
+      color: var(--nx-color-primary-text);
+    }
+  `,
 })
 export class NotFoundComponent {}

@@ -5,12 +5,12 @@
 .nx-tabs {
   --mat-tab-header-label-text-font: var(--nx-font-family);
   --mat-tab-header-label-text-size: var(--nx-text-base);
-  --mat-tab-header-active-label-text-color: var(--nx-color-primary);
-  --mat-tab-header-inactive-label-text-color: var(--nx-color-on-surface-muted);
-  --mat-tab-header-active-focus-label-text-color: var(--nx-color-primary);
-  --mat-tab-header-active-hover-label-text-color: var(--nx-color-primary);
-  --mat-tab-header-inactive-focus-label-text-color: var(--nx-color-on-surface);
-  --mat-tab-header-inactive-hover-label-text-color: var(--nx-color-on-surface);
+  --mat-tab-active-label-text-color: var(--nx-color-primary-text);
+  --mat-tab-inactive-label-text-color: var(--nx-color-on-surface-muted);
+  --mat-tab-active-focus-label-text-color: var(--nx-color-primary-text);
+  --mat-tab-active-hover-label-text-color: var(--nx-color-primary-text);
+  --mat-tab-inactive-focus-label-text-color: var(--nx-color-on-surface);
+  --mat-tab-inactive-hover-label-text-color: var(--nx-color-on-surface);
   --mdc-tab-indicator-active-indicator-color: var(--nx-color-primary);
   --mat-tab-header-divider-color: var(--nx-color-outline);
 }

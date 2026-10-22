@@ -37,7 +37,7 @@
     font-size: 48px;
     width: 48px;
     height: 48px;
-    color: var(--nx-color-primary);
+    color: var(--nx-color-primary-text);
     animation: spin 1s linear infinite;
   }
 
@@ -47,11 +47,11 @@
     height: 48px;
 
     &--success {
-      color: var(--nx-color-success);
+      color: var(--nx-color-success-text);
     }
 
     &--error {
-      color: var(--nx-color-error);
+      color: var(--nx-color-error-text);
     }
   }
 

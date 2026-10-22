@@ -33,11 +33,16 @@
     color var(--nx-duration-base) var(--nx-easing-standard),
     opacity var(--nx-duration-base) var(--nx-easing-standard);
 
-  /* Disabled & loading states */
-  &:disabled,
-  &--loading {
+  /* Disabled state (native :disabled is exempt from contrast rules) */
+  &:disabled {
     opacity: 0.38;
     cursor: not-allowed;
+    pointer-events: none;
+  }
+
+  /* Loading keeps full opacity: dimming would drop the label below 4.5:1 */
+  &--loading {
+    cursor: progress;
     pointer-events: none;
   }
 
@@ -80,7 +85,7 @@
   /* Secondary — outlined with primary color */
   &--secondary {
     background-color: transparent;
-    color: var(--nx-color-primary);
+    color: var(--nx-color-primary-text);
     border: 1px solid var(--nx-color-outline);
 
     &:hover:not(:disabled) {
@@ -91,7 +96,7 @@
   /* Tertiary — text-only primary button */
   &--tertiary {
     background-color: transparent;
-    color: var(--nx-color-primary);
+    color: var(--nx-color-primary-text);
 
     &:hover:not(:disabled) {
       background-color: var(--nx-color-primary-surface);

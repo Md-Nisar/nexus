@@ -67,14 +67,14 @@
   &__field-error {
     margin: 0;
     font-size: var(--nx-text-xs);
-    color: var(--nx-color-error);
+    color: var(--nx-color-error-text);
   }
 
   &__error-banner {
     padding: var(--nx-space-3) var(--nx-space-4);
     border-radius: var(--nx-radius-sm);
     background: var(--nx-color-error-surface);
-    color: var(--nx-color-error);
+    color: var(--nx-color-error-text);
     font-size: var(--nx-text-base);
   }
 
@@ -83,7 +83,7 @@
      ───────────────────────────────────────────────────────────────────── */
 
   &__terms-link {
-    color: var(--nx-color-primary);
+    color: var(--nx-color-primary-text);
     text-decoration: none;
     transition: color var(--nx-duration-base) var(--nx-easing-standard);
 
@@ -100,7 +100,7 @@
     text-align: center;
 
     a {
-      color: var(--nx-color-primary);
+      color: var(--nx-color-primary-text);
       text-decoration: none;
       transition: color var(--nx-duration-base) var(--nx-easing-standard);
 
@@ -134,7 +134,7 @@
   font-size: 48px;
   width: 48px;
   height: 48px;
-  color: var(--nx-color-success);
+  color: var(--nx-color-success-text);
 }
 
 .reg-form__success-heading {
