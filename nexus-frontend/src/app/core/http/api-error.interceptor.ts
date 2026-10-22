@@ -139,9 +139,12 @@ interface ProblemDocument {
   readonly reason?: unknown;
 }
 
+/** Upper bound for `Retry-After`: a hostile or buggy header must not silence the toast for long. */
+export const MAX_RETRY_AFTER_SECONDS = 300;
+
 /**
- * Reads a delta-seconds `Retry-After` value. Anything else (absent, an HTTP date, a fraction,
- * zero or a negative number) yields `undefined`.
+ * Reads a delta-seconds `Retry-After` value, capped at {@link MAX_RETRY_AFTER_SECONDS}. Anything
+ * else (absent, an HTTP date, a fraction, zero or a negative number) yields `undefined`.
  */
 function parseRetryAfterSeconds(raw: string | null | undefined): number | undefined {
   const value = raw?.trim() ?? '';
@@ -149,7 +152,7 @@ function parseRetryAfterSeconds(raw: string | null | undefined): number | undefi
     return undefined;
   }
   const seconds = Number(value);
-  return seconds > 0 ? seconds : undefined;
+  return seconds > 0 ? Math.min(seconds, MAX_RETRY_AFTER_SECONDS) : undefined;
 }
 
 /**

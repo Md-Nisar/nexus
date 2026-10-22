@@ -96,6 +96,20 @@ export interface DialogData {
 }
 
 /**
+ * Data for {@link NxDialog.confirmTyped}: a destructive confirmation the user must type to
+ * unlock.
+ */
+export interface TypedConfirmData {
+  readonly title: string;
+  readonly message: string;
+  /** Exact text (case-sensitive, compared after trimming the input) that unlocks confirm. */
+  readonly expectedText: string;
+  readonly confirmLabel: string;
+  /** Defaults to "Cancel". */
+  readonly cancelLabel?: string;
+}
+
+/**
  * Internal shell component rendering a standard confirmation dialog.
  *
  * This component is opened and managed by `NxDialog.open(data)` — never instantiate
@@ -138,20 +152,6 @@ export interface DialogData {
  * - Escape key closes dialog (native MatDialog behavior)
  * - Backdrop prevents interaction with page content until dismissed
  */
-/**
- * Data for {@link NxDialog.confirmTyped}: a destructive confirmation the user must type to
- * unlock.
- */
-export interface TypedConfirmData {
-  readonly title: string;
-  readonly message: string;
-  /** Exact text (case-sensitive, compared after trimming the input) that unlocks confirm. */
-  readonly expectedText: string;
-  readonly confirmLabel: string;
-  /** Defaults to "Cancel". */
-  readonly cancelLabel?: string;
-}
-
 @Component({
   selector: 'nx-dialog-shell',
   imports: [MatDialogModule, MatButtonModule, MatIconModule],
@@ -198,6 +198,53 @@ export class NxDialogShell {
    * @internal Used only within this shell component; not exposed to consumers.
    */
   readonly data: DialogData = inject<DialogData>(MAT_DIALOG_DATA);
+}
+
+/**
+ * Danger confirmation shell. Confirm stays focusable but `aria-disabled` (and inert) until
+ * the trimmed input equals `expectedText`; the dialog closes with `true` only on confirm.
+ */
+@Component({
+  selector: 'nx-typed-confirm-shell',
+  imports: [MatDialogModule, MatButtonModule, ReactiveFormsModule, NxInput],
+  template: `
+    <div class="nx-dialog nx-dialog--danger" data-testid="nx-dialog">
+      <div class="nx-dialog__header">
+        <h2 mat-dialog-title class="nx-dialog__title">{{ data.title }}</h2>
+      </div>
+      <mat-dialog-content class="nx-dialog__content">
+        <p class="nx-dialog__message">{{ data.message }}</p>
+        <nx-input [label]="'Type ' + data.expectedText + ' to confirm'" [formControl]="typed" />
+      </mat-dialog-content>
+      <mat-dialog-actions align="end" class="nx-dialog__actions">
+        <button mat-button data-testid="nx-typed-confirm-cancel" [mat-dialog-close]="false">
+          {{ data.cancelLabel ?? 'Cancel' }}
+        </button>
+        <button
+          mat-flat-button
+          class="nx-dialog__confirm--danger"
+          data-testid="nx-typed-confirm-confirm"
+          [aria-disabled]="!matches()"
+          (click)="confirm()"
+        >
+          {{ data.confirmLabel }}
+        </button>
+      </mat-dialog-actions>
+    </div>
+  `,
+  styleUrl: './dialog.scss',
+})
+export class NxTypedConfirmShell {
+  readonly data: TypedConfirmData = inject<TypedConfirmData>(MAT_DIALOG_DATA);
+  private readonly dialogRef = inject<MatDialogRef<NxTypedConfirmShell, boolean>>(MatDialogRef);
+
+  protected readonly typed = new FormControl('', { nonNullable: true });
+  private readonly value = toSignal(this.typed.valueChanges, { initialValue: '' });
+  protected readonly matches = computed(() => this.value().trim() === this.data.expectedText);
+
+  protected confirm(): void {
+    if (this.matches()) this.dialogRef.close(true);
+  }
 }
 
 /**
@@ -288,53 +335,6 @@ export class NxDialogShell {
  * - All text and buttons are semantic and properly labeled
  * - Danger variant uses color + icon + text (not color alone) to signal intent
  */
-/**
- * Danger confirmation shell. Confirm stays focusable but `aria-disabled` (and inert) until
- * the trimmed input equals `expectedText`; the dialog closes with `true` only on confirm.
- */
-@Component({
-  selector: 'nx-typed-confirm-shell',
-  imports: [MatDialogModule, MatButtonModule, ReactiveFormsModule, NxInput],
-  template: `
-    <div class="nx-dialog nx-dialog--danger" data-testid="nx-dialog">
-      <div class="nx-dialog__header">
-        <h2 mat-dialog-title class="nx-dialog__title">{{ data.title }}</h2>
-      </div>
-      <mat-dialog-content class="nx-dialog__content">
-        <p class="nx-dialog__message">{{ data.message }}</p>
-        <nx-input [label]="'Type ' + data.expectedText + ' to confirm'" [formControl]="typed" />
-      </mat-dialog-content>
-      <mat-dialog-actions align="end" class="nx-dialog__actions">
-        <button mat-button data-testid="nx-typed-confirm-cancel" [mat-dialog-close]="false">
-          {{ data.cancelLabel ?? 'Cancel' }}
-        </button>
-        <button
-          mat-flat-button
-          class="nx-dialog__confirm--danger"
-          data-testid="nx-typed-confirm-confirm"
-          [aria-disabled]="!matches()"
-          (click)="confirm()"
-        >
-          {{ data.confirmLabel }}
-        </button>
-      </mat-dialog-actions>
-    </div>
-  `,
-  styleUrl: './dialog.scss',
-})
-export class NxTypedConfirmShell {
-  readonly data: TypedConfirmData = inject<TypedConfirmData>(MAT_DIALOG_DATA);
-  private readonly dialogRef = inject<MatDialogRef<NxTypedConfirmShell, boolean>>(MatDialogRef);
-
-  protected readonly typed = new FormControl('', { nonNullable: true });
-  private readonly value = toSignal(this.typed.valueChanges, { initialValue: '' });
-  protected readonly matches = computed(() => this.value().trim() === this.data.expectedText);
-
-  protected confirm(): void {
-    if (this.matches()) this.dialogRef.close(true);
-  }
-}
-
 @Service()
 export class NxDialog {
   /**

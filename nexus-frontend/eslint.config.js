@@ -47,11 +47,29 @@ module.exports = defineConfig([
       "no-restricted-syntax": [
         "error",
         {
-          selector: "MemberExpression[property.name=/^(innerHTML|outerHTML)$/i]",
+          selector:
+            "MemberExpression[property.name=/^(innerHTML|outerHTML|insertAdjacentHTML|createContextualFragment)$/i]",
           message: "HTML sinks are forbidden (RC-62.1). Bind text, or add a typed component.",
         },
         {
-          selector: "CallExpression[callee.property.name=/^bypassSecurityTrust/]",
+          selector:
+            "MemberExpression[computed=true][property.value=/^(innerHTML|outerHTML|insertAdjacentHTML|createContextualFragment)$/i]",
+          message: "HTML sinks are forbidden (RC-62.1). Bind text, or add a typed component.",
+        },
+        {
+          selector: "Property[key.name=/^(innerHTML|outerHTML)$/i]",
+          message: "HTML sinks are forbidden (RC-62.1). Bind text, or add a typed component.",
+        },
+        {
+          selector: "CallExpression[callee.object.name='document'][callee.property.name=/^write(ln)?$/]",
+          message: "document.write is forbidden (RC-62.1).",
+        },
+        {
+          selector: "Identifier[name=/^bypassSecurityTrust/]",
+          message: "bypassSecurityTrust* is forbidden (RC-62.1), including aliases and destructuring.",
+        },
+        {
+          selector: "MemberExpression[computed=true][property.value=/^bypassSecurityTrust/]",
           message: "bypassSecurityTrust* is forbidden (RC-62.1).",
         },
       ],

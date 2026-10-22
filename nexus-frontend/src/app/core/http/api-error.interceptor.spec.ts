@@ -374,6 +374,17 @@ describe('apiErrorInterceptor', () => {
       controller.verify();
     });
 
+    it.each([
+      ['99999999', 300],
+      ['300', 300],
+      ['299', 299],
+      ['9'.repeat(400), 300],
+    ])('should cap Retry-After %j at 300 seconds', (value, expected) => {
+      const { captured } = failWith(503, { code: 'AUTH_005' }, { 'Retry-After': value });
+
+      expect(captured?.retryAfterSeconds).toBe(expected);
+    });
+
     it.each(['', 'soon', '-5', '0', '1.5', 'Wed, 21 Oct 2026 07:28:00 GMT'])(
       'should leave retryAfterSeconds undefined for Retry-After %j',
       (value) => {

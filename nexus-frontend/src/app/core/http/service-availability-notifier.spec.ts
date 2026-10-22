@@ -37,6 +37,21 @@ describe('ServiceAvailabilityNotifier', () => {
     );
   });
 
+  it('should cap an excessive Retry-After at 300 seconds, in the message and the window', async () => {
+    notifier.notifyUnavailable(99_999_999);
+    notifier.notifyUnavailable(Infinity);
+    await vi.dynamicImportSettled();
+
+    expect(toast.warning).toHaveBeenCalledOnce();
+    expect(toast.warning).toHaveBeenCalledWith(
+      'Nexus is temporarily unavailable. Try again in 300 seconds.',
+    );
+    vi.advanceTimersByTime(300_000);
+    notifier.notifyUnavailable(30);
+    await vi.dynamicImportSettled();
+    expect(toast.warning).toHaveBeenCalledTimes(2);
+  });
+
   it('should show one toast for two 503s within the Retry-After window, and never navigate', async () => {
     notifier.notifyUnavailable(30);
     vi.advanceTimersByTime(29_999);

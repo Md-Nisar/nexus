@@ -1,3 +1,4 @@
+import { requireBackend } from '../fixtures/backend';
 import { expect, test } from '../fixtures/test';
 
 test.describe('cold-start deep link', () => {
@@ -26,6 +27,8 @@ test.describe('cold-start deep link', () => {
   });
 
   test('a signed-out visitor is sent to login, not to access denied', async ({ page }) => {
+    // Only a real 401 from the refresh call redirects to login; a network error does not.
+    await requireBackend();
     await page.goto('/dashboard');
     await expect(page).toHaveURL(/\/auth\/login\?returnUrl=%2Fdashboard$/);
     await expect(page.getByTestId('login-submit')).toBeVisible();

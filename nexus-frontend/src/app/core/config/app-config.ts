@@ -95,7 +95,8 @@ const SAFE_HREF = /^(?:mailto:|https:\/\/)[^\s\u0000-\u001f\u007f]+$/i;
  * @security Blocks `javascript:`, `data:`, `ftp:` and scheme-relative values from configuration.
  */
 export function parseSupportContact(raw: SupportContact | null | undefined): SupportContact | null {
-  if (!raw || raw.label.trim().length === 0) return null;
+  if (!raw || typeof raw.label !== 'string' || typeof raw.href !== 'string') return null;
+  if (raw.label.trim().length === 0) return null;
   return SAFE_HREF.test(raw.href) ? raw : null;
 }
 

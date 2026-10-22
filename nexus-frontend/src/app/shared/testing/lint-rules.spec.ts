@@ -42,6 +42,53 @@ export class LintFixture { html = ''; }
     expect(await ruleIds(FEATURE, source)).toContain('no-restricted-syntax');
   });
 
+  it.each([
+    [
+      'bracket access to innerHTML',
+      `export function f(el: HTMLElement): void { el['innerHTML'] = 'x'; }`,
+    ],
+    [
+      'bracket access to outerHTML',
+      `export function f(el: HTMLElement): void { el['outerHTML'] = 'x'; }`,
+    ],
+    [
+      'insertAdjacentHTML',
+      `export function f(el: HTMLElement): void { el.insertAdjacentHTML('beforeend', 'x'); }`,
+    ],
+    [
+      'bracket insertAdjacentHTML',
+      `export function f(el: HTMLElement): void { el['insertAdjacentHTML']('beforeend', 'x'); }`,
+    ],
+    ['createContextualFragment', `export const f = (r: Range) => r.createContextualFragment('x');`],
+    ['document.write', `export function f(): void { document.write('x'); }`],
+    [
+      'destructured innerHTML',
+      `export function f(el: HTMLElement): void { Object.assign(el, { innerHTML: 'x' }); }`,
+    ],
+    [
+      'destructured bypassSecurityTrust*',
+      `export function f(s: { bypassSecurityTrustHtml(v: string): unknown }): unknown {
+  const { bypassSecurityTrustHtml } = s;
+  return bypassSecurityTrustHtml('x');
+}`,
+    ],
+    [
+      'aliased bypassSecurityTrust*',
+      `export function f(s: { bypassSecurityTrustUrl(v: string): unknown }): unknown {
+  const trust = s.bypassSecurityTrustUrl;
+  return trust('x');
+}`,
+    ],
+    [
+      'bracket bypassSecurityTrust*',
+      `export function f(s: Record<string, (v: string) => unknown>): unknown {
+  return s['bypassSecurityTrustHtml']('x');
+}`,
+    ],
+  ])('rejects %s', async (_name, source) => {
+    expect(await ruleIds(FEATURE, `${source}\n`)).toContain('no-restricted-syntax');
+  });
+
   it('rejects Material imports from a feature', async () => {
     const source = `import { MatButtonModule } from '@angular/material/button';
 export const m = MatButtonModule;

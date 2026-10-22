@@ -3,6 +3,9 @@ import { Injector, Service, inject } from '@angular/core';
 /** Window used when a 503 `AUTH_005` carries no usable `Retry-After` (the backend sends 30). */
 const DEFAULT_RETRY_AFTER_S = 30;
 
+/** Longest window honoured, whatever the caller passes. */
+const MAX_RETRY_AFTER_S = 300;
+
 /**
  * Tells the user that Nexus is temporarily unavailable (503 `AUTH_005`, design §12.10).
  *
@@ -26,7 +29,7 @@ export class ServiceAvailabilityNotifier {
     if (now < this.suppressUntilMs) {
       return;
     }
-    const seconds = retryAfterSeconds ?? DEFAULT_RETRY_AFTER_S;
+    const seconds = Math.min(retryAfterSeconds ?? DEFAULT_RETRY_AFTER_S, MAX_RETRY_AFTER_S);
     this.suppressUntilMs = now + seconds * 1000;
     const unit = seconds === 1 ? 'second' : 'seconds';
     const message = `Nexus is temporarily unavailable. Try again in ${seconds} ${unit}.`;
