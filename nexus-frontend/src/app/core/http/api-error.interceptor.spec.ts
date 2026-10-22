@@ -379,8 +379,11 @@ describe('apiErrorInterceptor', () => {
       ['300', 300],
       ['299', 299],
       ['9'.repeat(400), 300],
-    ])('should cap Retry-After %j at 300 seconds', (value, expected) => {
+    ])('should cap Retry-After %j at 300 seconds', async (value, expected) => {
       const { captured } = failWith(503, { code: 'AUTH_005' }, { 'Retry-After': value });
+      // The 503 also raises the availability toast through a lazy import; let it settle inside
+      // the test, or it resolves after TestBed teardown and rejects with NG0205.
+      await vi.dynamicImportSettled();
 
       expect(captured?.retryAfterSeconds).toBe(expected);
     });

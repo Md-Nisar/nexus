@@ -505,6 +505,52 @@ class UserDirectoryIT {
     assertThat(byId.getHeaders().getCacheControl()).contains("no-store");
   }
 
+  // ── authorization matrix (test audit: GET routes had no 401/403 pin) ───────────────────
+
+  private static final List<String> DIRECTORY_GET_ROUTES =
+      List.of(
+          "/api/v1/users",
+          "/api/v1/users?ids=" + UUID.nameUUIDFromBytes(new byte[] {1}),
+          "/api/v1/users/" + UUID.nameUUIDFromBytes(new byte[] {2}));
+
+  @Test
+  void should_return403Rbac001OnEveryGetRoute_when_theCallerLacksDirectoryRead() {
+    String token = tokenWithoutDirectoryRead();
+
+    List<String> answers =
+        DIRECTORY_GET_ROUTES.stream()
+            .map(uri -> get(token, uri))
+            .map(r -> r.getStatusCode().value() + " " + JSON.readTree(r.getBody()).get("code").asString())
+            .toList();
+
+    assertThat(answers).containsOnly("403 RBAC_001");
+  }
+
+  @Test
+  void should_return401OnEveryRoute_when_noTokenIsSent() {
+    List<Integer> statuses = new ArrayList<>();
+    for (String uri : DIRECTORY_GET_ROUTES) {
+      statuses.add(
+          restTemplate
+              .exchange("http://localhost:" + port + uri, HttpMethod.GET, HttpEntity.EMPTY, String.class)
+              .getStatusCode()
+              .value());
+    }
+    HttpHeaders json = new HttpHeaders();
+    json.setContentType(MediaType.APPLICATION_JSON);
+    statuses.add(
+        restTemplate
+            .exchange(
+                "http://localhost:" + port + "/api/v1/users/lookup",
+                HttpMethod.POST,
+                new HttpEntity<>(emailBody("a@example.test"), json),
+                String.class)
+            .getStatusCode()
+            .value());
+
+    assertThat(statuses).containsOnly(401);
+  }
+
   // ── fixtures ──────────────────────────────────────────────────────────────────────────
 
   private record Tenant(UUID id, User reader, String token) {}
