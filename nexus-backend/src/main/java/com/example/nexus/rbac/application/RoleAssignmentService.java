@@ -232,10 +232,17 @@ public class RoleAssignmentService {
     // throttled actor is blocked only on the paths that take the set lock or target themself.
     TargetClassification target = classifyTarget(actor, role, OPERATION_ASSIGN);
     boolean throttled = evaluateThrottle(actor, targetUserId, target, OPERATION_ASSIGN);
-    SetLock setLock = target.adminDefining() ? acquireSetLock(actor, target, role) : null;
-    Timer.Sample lockHoldSample = setLock == null ? null : setLock.holdTimer();
+    SetLock preLockClassified = target.adminDefining() ? acquireSetLock(actor, target, role) : null;
+    Timer.Sample lockHoldSample = preLockClassified == null ? null : preLockClassified.holdTimer();
 
     try {
+      // RC-57.2 (US-019 review R1-2): A4 and the PII administrator answer classify the locked
+      // roles from a current read under the set lock, never from the pre-lock M10' read, so a
+      // demotion that committed while this assign waited cannot leave its holders administrators.
+      SetLock setLock =
+          preLockClassified == null
+              ? null
+              : classifyLockedRolesNow(actor, target, preLockClassified);
       List<RolePermissionRef> heldRolePermissions =
           userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(
               actor.userId(), actor.tenantId());
@@ -524,8 +531,8 @@ public class RoleAssignmentService {
    * The set lock and what it returned. {@code lockedHolders} are current and X-locked rows, so
    * {@link #callerHoldsAdministratorRole} answers "is the caller an administrator?" without
    * touching the snapshot (ADR-0021 D2). {@code adminDefiningRoleIds} comes from M10' as returned
-   * by {@link #acquireSetLock}; revoke replaces it with the current read through {@link
-   * #classifyLockedRolesNow} (RC-57.2).
+   * by {@link #acquireSetLock}; assign and revoke replace it with the current read through
+   * {@link #classifyLockedRolesNow} (RC-57.2).
    */
   private record SetLock(
       List<UUID> lockedRoleIds,

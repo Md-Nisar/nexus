@@ -695,6 +695,45 @@ class RoleAssignmentServiceTest {
     verify(userRoleAssignmentPort).assign(actorId, roleId, tenantId, actorId);
   }
 
+  /**
+   * US-019 review R1-2 / S1-Medium (RC-57.2): the caller holds a locked row of a role that M10'
+   * (read before the lock) still lists as admin-defining, but a demotion committed while this
+   * self-assign waited on the set lock. The current read under the lock decides: the caller is no
+   * longer an administrator, so A4 denies with 403 SELF_ASSIGNMENT and nothing is written.
+   */
+  @Test
+  void should_denySelfAssignment_when_theCallersAdminRoleWasDemotedWhileWaitingOnTheSetLock() {
+    UUID callersAdminRoleId = UUID.randomUUID();
+    stubTargetUserAndRole(actorId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(holder(actorId, callersAdminRoleId)), callersAdminRoleId);
+    stubCallerIsUnionHolder();
+    stubCurrentReadUnderTheSetLock(
+        List.of(
+            ref(callersAdminRoleId, P1),
+            ref(roleId, P1),
+            ref(roleId, P2)));
+
+    assertThatThrownBy(() -> service.assign(actor, actorId, roleId, ctx))
+        .satisfies(e -> assertThat(reasonOf(e)).isEqualTo(DenialReason.SELF_ASSIGNMENT));
+
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+  }
+
+  /** The current read is taken after the set lock, as revoke does (RC-46: no lock before it). */
+  @Test
+  void should_readTheLockedRolesPermissionsAfterTheSetLock_when_assigningAnAdminDefiningRole() {
+    stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(holder(UUID.randomUUID(), roleId)));
+    stubCallerIsAdministrator();
+    stubSuccessfulInsert();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    InOrder order = Mockito.inOrder(userRoleAssignmentPort);
+    order.verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), any());
+    order.verify(userRoleAssignmentPort).lockRolePermissionsForRoles(eq(tenantId), any());
+  }
+
   /** A holder of the TARGET role (itself admin-defining) counts: the target is in the lock set. */
   @Test
   void should_treatTheCallerAsAdministrator_when_callerHoldsTheAdminDefiningTargetRoleItself() {
@@ -3020,9 +3059,12 @@ class RoleAssignmentServiceTest {
         .isEqualTo(1.0);
   }
 
-  /** The set-lock path is not re-read here: R is in the lock set and assign holds its rows. */
+  /**
+   * The set-lock path takes only the RC-57.2 read over the lock set, once, and no post-insert
+   * RC-56.2 read: R is in the lock set and assign holds its rows.
+   */
   @Test
-  void should_notReadTheRolesCurrentPermissions_when_assigningAnAdminDefiningRole() {
+  void should_readTheLockSetsPermissionsOnlyOnce_when_assigningAnAdminDefiningRole() {
     stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
     stubAdminDefiningTarget(List.of());
     stubCallerIsUnionHolder();
@@ -3030,7 +3072,7 @@ class RoleAssignmentServiceTest {
 
     service.assign(actor, targetUserId, roleId, ctx);
 
-    verify(userRoleAssignmentPort, never()).lockRolePermissionsForRoles(any(), any());
+    verify(userRoleAssignmentPort, times(1)).lockRolePermissionsForRoles(any(), any());
   }
 
   // ---------------------------------------------------------------------------------------
