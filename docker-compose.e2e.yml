@@ -1,0 +1,26 @@
+# CI-only override for the full-stack e2e workflow (.github/workflows/e2e-full-stack.yml,
+# US-019 T-027). Never used for local development or any shared environment.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d backend
+#
+# Naming `backend` starts it with its dependencies (mysql, redis, flyway-migrate) and nothing
+# else, so nginx (`frontend`, port 2000) stays down and the Playwright `webServer` dev server owns
+# that port. The backend keeps the base file's wiring: dev profile (seeds the personas), the
+# least-privilege `nexus_app` database user (RC-63(h)), and Flyway disabled inside the container
+# because `flyway-migrate` already ran the migrations and grants as root.
+#
+# The only changes are below. The raised limits exist here and nowhere else: no application*.yml
+# may raise them (RateLimitProfileDefaultsTest).
+services:
+  backend:
+    environment:
+      # Reach the compose Redis service; the application default is localhost, which inside the
+      # container would silently fall back to the in-memory, fail-open paths.
+      REDIS_HOST: redis
+      # The runner reaches the published port from the Docker gateway, which is not a trusted
+      # proxy, so every persona login across all workers shares one per-IP bucket.
+      NEXUS_SECURITY_RATE_LIMIT_IP_MAX_ATTEMPTS: "1000"
+      NEXUS_SECURITY_RATE_LIMIT_USER_MAX_ATTEMPTS: "1000"
+      NEXUS_SECURITY_RATE_LIMIT_REFRESH_IP_MAX_ATTEMPTS: "10000"
+      NEXUS_SECURITY_RATE_LIMIT_REFRESH_FAMILY_MAX_ATTEMPTS: "1000"
+      NEXUS_SECURITY_RATE_LIMIT_REFRESH_FAIL_MAX_ATTEMPTS: "1000"
