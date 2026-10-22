@@ -13,6 +13,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
  * {@link UserDirectoryQueryPort} over {@link JpaUserRepository} (US-019 B1, design §4.1). The
@@ -20,9 +21,13 @@ import org.springframework.stereotype.Component;
  * the whole read rather than returning a partial page. Only the five directory fields are mapped:
  * the blind index, password hash, counters and lock expiry never leave this class.
  *
+ * <p>Every method is one read-only transaction that ends when it returns, so the caller holds no
+ * connection while it writes its audit row (review R2-1, {@code UserDirectoryService}).
+ *
  * <p>The only caller of the unscoped {@link JpaUserRepository#countByIdIn} (RC-61.2, ArchUnit).
  */
 @Component
+@Transactional(readOnly = true)
 public class JpaUserDirectoryQueryAdapter implements UserDirectoryQueryPort {
 
   private static final Sort BY_ID = Sort.by("id");

@@ -15,7 +15,6 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 /**
  * The user directory reads (US-019 B1, design §4.2): list, batch, by-id and exact-email lookup,
@@ -31,13 +30,17 @@ import org.springframework.transaction.annotation.Transactional;
  * EmailBlindIndexService#blindIndex} (ADR-0006) and never logged. The per-actor throttle and
  * ceiling live in {@link DirectoryAccessGuard}, consulted by the controller first.
  *
+ * <p><b>No transaction here (review R2-1).</b> Each query-port call is its own read-only
+ * transaction, opened by the port's JPA adapter and over before the audit row is written. The audit write is a {@code REQUIRES_NEW} transaction;
+ * called inside an open read transaction it would need a second pooled connection while holding
+ * the first, so enough concurrent reads would exhaust the pool and lose their audit rows.
+ *
  * <p><b>Audit and logs (design §4.5, §17).</b> Every successful read writes one {@code
  * USER_DIRECTORY_READ} row through {@link DirectoryReadAuditPort} and logs one INFO {@code
  * IDENTITY_DIRECTORY_READ}, both carrying counts and ids only: never an email, a blind index or the
  * id list.
  */
 @Service
-@Transactional(readOnly = true)
 public class UserDirectoryService {
 
   private static final Logger log = LoggerFactory.getLogger(UserDirectoryService.class);
