@@ -25,7 +25,7 @@ describe('authGuard', () => {
   let mockAuthService: { refresh: ReturnType<typeof vi.fn> };
 
   const dummyRoute = {} as ActivatedRouteSnapshot;
-  const dummyState = {} as RouterStateSnapshot;
+  const dummyState = { url: '/role-test?tab=x' } as RouterStateSnapshot;
 
   /**
    * Executes the guard in the test injection context.
@@ -47,7 +47,8 @@ describe('authGuard', () => {
         {
           provide: Router,
           useValue: {
-            createUrlTree: (commands: string[]) => ({ _commands: commands }) as unknown as UrlTree,
+            createUrlTree: (commands: string[], extras?: unknown) =>
+              ({ _commands: commands, _extras: extras }) as unknown as UrlTree,
             navigate: vi.fn(),
           },
         },
@@ -76,7 +77,8 @@ describe('authGuard', () => {
     mockAuthService.refresh.mockReturnValue(throwError(() => new Error('cookie gone')));
 
     const result = await firstValueFrom(runGuard() as Observable<GuardResult>);
-    const urlTree = result as unknown as { _commands: string[] };
+    const urlTree = result as unknown as { _commands: string[]; _extras: unknown };
     expect(urlTree._commands).toEqual(['/auth/login']);
+    expect(urlTree._extras).toEqual({ queryParams: { returnUrl: '/role-test?tab=x' } });
   });
 });

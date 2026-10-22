@@ -115,6 +115,25 @@ describe('route tree shape (US-019 A2)', () => {
     expect(layout.children?.map((c) => c.path)).toEqual(expect.arrayContaining(PUBLIC_PATHS));
   });
 
+  it('pins the public layout children to exactly auth, access-denied and design-system', () => {
+    const layout = routes.find((r) => r.children?.some((c) => c.path === 'auth')) as Route;
+    expect((layout.children ?? []).map((c) => c.path).sort()).toEqual([...PUBLIC_PATHS].sort());
+  });
+
+  it('declares canActivateChild with authGuard on no route (RC-65: refresh-reuse logout)', async () => {
+    async function offenders(table: Routes, prefix = ''): Promise<string[]> {
+      const found: string[] = [];
+      for (const route of table) {
+        const path = `${prefix}/${route.path ?? ''}`.replace(/\/+/g, '/');
+        if ((route.canActivateChild as readonly unknown[] | undefined)?.includes(authGuard))
+          found.push(path);
+        found.push(...(await offenders(await childrenOf(route), path)));
+      }
+      return found;
+    }
+    expect(await offenders(routes)).toEqual([]);
+  });
+
   it('does not place any public path inside the shell', () => {
     const shell = routes.find((r) => r.canActivate?.includes(authGuard)) as Route;
     const shellPaths = (shell.children ?? []).map((c) => c.path);

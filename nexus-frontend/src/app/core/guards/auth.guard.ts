@@ -15,9 +15,10 @@ import { AuthService } from '../../features/auth/auth.service';
  * This handles cold-start scenarios (page reload) where the in-memory session
  * is null but the secure refresh cookie may still be valid.
  *
- * @returns true to allow navigation, or a UrlTree to redirect to /auth/login.
+ * @returns true to allow navigation, or a UrlTree to redirect to /auth/login with the attempted
+ * URL as `returnUrl`. The login form validates it with `safeReturnUrl` before navigating.
  */
-export const authGuard: CanActivateFn = () => {
+export const authGuard: CanActivateFn = (_route, state) => {
   const authStore = inject(AuthStore);
   const authService = inject(AuthService);
   const router = inject(Router);
@@ -26,6 +27,8 @@ export const authGuard: CanActivateFn = () => {
 
   return authService.refresh().pipe(
     map(() => true as const),
-    catchError(() => of(router.createUrlTree(['/auth/login']))),
+    catchError(() =>
+      of(router.createUrlTree(['/auth/login'], { queryParams: { returnUrl: state.url } })),
+    ),
   );
 };

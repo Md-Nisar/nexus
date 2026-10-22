@@ -68,6 +68,35 @@ export interface AppConfig {
    * @see LoggerService for how this value is used
    */
   readonly logLevel: LogLevel;
+
+  /**
+   * Optional "contact your administrator" link shown on the Access Denied page.
+   * `null` hides the link; no placeholder ships. Consumers must pass the value through
+   * {@link parseSupportContact}, which accepts only `mailto:` and `https://` hrefs.
+   * The real value is a product decision (US-019 Q-N5).
+   */
+  readonly supportContact: SupportContact | null;
+}
+
+/** A labelled contact link. */
+export interface SupportContact {
+  readonly label: string;
+  readonly href: string;
+}
+
+// eslint-disable-next-line no-control-regex
+const SAFE_HREF = /^(?:mailto:|https:\/\/)[^\s\u0000-\u001f\u007f]+$/i;
+
+/**
+ * Validates a configured support contact.
+ *
+ * @returns the contact when its `href` is a `mailto:` or `https://` URL without whitespace or
+ *   control characters and its label is non-empty; otherwise `null` (the link stays hidden).
+ * @security Blocks `javascript:`, `data:`, `ftp:` and scheme-relative values from configuration.
+ */
+export function parseSupportContact(raw: SupportContact | null | undefined): SupportContact | null {
+  if (!raw || raw.label.trim().length === 0) return null;
+  return SAFE_HREF.test(raw.href) ? raw : null;
 }
 
 /**

@@ -147,7 +147,7 @@ describe('cold start routing (real router, real shell and guards)', () => {
       refresh.flush({ message: 'expired' }, { status: 401, statusText: 'Unauthorized' }),
     );
 
-    expect(url().startsWith('/auth/login')).toBe(true);
+    expect(url()).toBe('/auth/login?returnUrl=%2Frole-test');
   });
 
   it('sends exactly one POST /refresh, including the shell priming request', async () => {

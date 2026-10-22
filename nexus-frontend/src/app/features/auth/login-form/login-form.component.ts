@@ -3,6 +3,7 @@ import { FormGroup, FormControl, Validators, ReactiveFormsModule } from '@angula
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { NxButton, NxInput } from '../../../shared/ui';
 import { AuthService } from '../auth.service';
+import { safeReturnUrl } from '../../../core/routing/safe-return-url';
 import { AppError } from '../../../shared/types/app-error';
 
 /**
@@ -227,7 +228,7 @@ export class LoginFormComponent implements OnInit {
    * Submits the login form.
    *
    * Marks fields as touched, validates form, and calls AuthService.login().
-   * On success, navigates to /dashboard. On error, displays error-code-specific messages:
+   * On success, navigates to the validated `returnUrl` (see `safeReturnUrl`), else /dashboard. On error, displays error-code-specific messages:
    * - AUTH_001: Invalid credentials
    * - AUTH_002: Email not verified
    * - RATE_001: Rate limited
@@ -246,7 +247,9 @@ export class LoginFormComponent implements OnInit {
     this.authService.login(email, password).subscribe({
       next: () => {
         this.loading.set(false);
-        this.router.navigate(['/dashboard']);
+        this.router.navigateByUrl(
+          safeReturnUrl(this.route.snapshot.queryParamMap.get('returnUrl')),
+        );
       },
       error: (err: AppError) => {
         this.loading.set(false);

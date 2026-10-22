@@ -29,3 +29,14 @@
   outline: 2px solid var(--nx-color-primary);
   outline-offset: 2px;
 }
+
+.access-denied__roles {
+  margin: var(--nx-space-4) 0 0;
+  text-align: center;
+  color: var(--nx-color-on-surface);
+}
+
+.access-denied__roles-caption {
+  color: var(--nx-color-on-surface-muted);
+  font-size: var(--nx-text-sm);
+}
