@@ -2,6 +2,7 @@ import { Component } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { Router, provideRouter } from '@angular/router';
 import { afterEach, describe, expect, it } from 'vitest';
+import { DashboardComponent } from '../../features/dashboard/dashboard.component';
 import { startRouteFocus } from './route-focus';
 
 @Component({ template: '<h1 id="page-h1" tabindex="-1">Page</h1>' })
@@ -37,9 +38,10 @@ describe('startRouteFocus', () => {
   async function go(router: Router, url: string, content: 'h1' | 'none'): Promise<void> {
     host.replaceChildren();
     if (content === 'h1') {
-      const h1 = document.createElement('h1');
-      h1.tabIndex = -1;
-      host.appendChild(h1);
+      // The real dashboard markup: a bare h1 without tabindex.
+      const dashboard = TestBed.createComponent(DashboardComponent);
+      dashboard.detectChanges();
+      host.appendChild(dashboard.nativeElement);
     }
     await router.navigateByUrl(url);
     await new Promise((resolve) => setTimeout(resolve, 0));

@@ -28,6 +28,7 @@ export function startRouteFocus(router: Router, doc: Document): void {
           doc.querySelector<HTMLElement>('#main-content h1') ??
           doc.querySelector<HTMLElement>('h1') ??
           doc.getElementById('main-content');
+        if (target && !target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1');
         target?.focus();
       });
     });
