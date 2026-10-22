@@ -10,7 +10,7 @@ import { enterAddress } from '../fixtures/secret-input';
  *   - Angular dev server running on :2000  (handled by playwright.config.ts webServer)
  *   - Spring Boot backend running on :1000 (start manually: ./mvnw spring-boot:run)
  *   - Pre-seeded, email-verified test user:
- *       email:    process.env.E2E_TEST_USER_EMAIL    (default: test@example.com)
+ *       email:    process.env.E2E_TEST_USER_EMAIL    (default: the admin persona)
  *       password: process.env.E2E_TEST_USER_PASSWORD (default: TestPass99!)
  *
  * Backend-dependent tests skip locally when :1000 is not reachable and fail when

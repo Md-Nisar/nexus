@@ -77,7 +77,11 @@ function* files(path) {
 
 const IMAGE = /\.(png|jpe?g)$/i;
 
-export function scan(paths, needles) {
+/**
+ * `onHit({ label, kind, before, after })` is optional and receives the text around a plain-value
+ * match (the match itself is never passed on) so a failing CI run says where the address is.
+ */
+export function scan(paths, needles, onHit) {
   const hits = [];
   for (const path of paths) {
     for (const file of files(path)) {
@@ -87,6 +91,15 @@ export function scan(paths, needles) {
         for (const { kind, value, pattern } of needles) {
           if (value ? lower.includes(value) : pattern.test(text)) {
             hits.push(`${kind} found in ${label}`);
+            const at = value ? lower.indexOf(value) : -1;
+            if (onHit && at >= 0) {
+              onHit({
+                label,
+                kind,
+                before: text.slice(Math.max(0, at - 80), at),
+                after: text.slice(at + value.length, at + value.length + 20),
+              });
+            }
           }
         }
       }
@@ -137,7 +150,9 @@ async function main(argv) {
     return 2;
   }
   const emails = Object.values(PERSONAS).map((persona) => persona.email);
-  const hits = scan(existing, needlesFor(emails, key));
+  const hits = scan(existing, needlesFor(emails, key), ({ label, before, after }) =>
+    console.error(`  near ${label}: ${JSON.stringify(before)} <match> ${JSON.stringify(after)}`),
+  );
   if (hits.length > 0) {
     for (const hit of new Set(hits)) console.error(hit);
     return 1;
