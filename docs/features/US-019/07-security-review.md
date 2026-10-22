@@ -2,6 +2,8 @@
 
 **Date:** 2026-10-22 · **Diff:** `origin/main...HEAD` at 946d771 · **Reviewers:** two fresh-context security-reviewer agents (S1 backend vs. threat model 03b, S2 frontend/CI/supply chain). Run on the Sonnet model because the Opus weekly limit was reached; the Opus re-check items are listed in section 3. Reports are reproduced as written.
 
+**Overall verdict after the fix pass: APPROVE WITH NITS. No open Blocker or High.** S1's High (attach provenance TOCTOU) is fixed (2ca17e7) and was re-reviewed by a fresh delta reviewer (section 4). Sonnet-run; the Opus re-check queue in section 3 stays open.
+
 ## 1. Slice S1 — backend
 ## US-019 security review, slice S1 (backend)
 
@@ -222,3 +224,98 @@ Reviewed for authentication/token handling, authorization guards, input validati
 | S2-7 | Low | Fixed | `10e2d61`: `parseSupportContact` returns `null` for a non-string label or href |
 | S2-8 | Low | Deferred | P-9 (required check, CODEOWNERS entries, upstream SHA verification) |
 | S2-9 | Nit | Accepted | Lockfile growth comes from the Angular 22.0.4 to 22.2.3 upgrade; every `resolved` URL is the npm registry and CI uses `npm ci --ignore-scripts` |
+
+
+## 4. Delta review of the fix commits (fresh reviewer, 2026-10-22)
+
+Scope: commits 2ca17e7..aea67c3 and the frontend fixes 20b9f7b..10e2d61. Reproduced as written.
+
+US-019 delta security review (946d771..HEAD)
+
+### Summary
+Blocker 0, High 0, Medium 0, Low 4, Nit 3. Verdict: APPROVE WITH NITS.
+Reviewed production diff (backend + frontend) in full; tests only skimmed by name (see Not covered). No Maven/Docker run.
+
+### Findings
+
+1. LOW - Lookup interceptor counts for GET too (metric corruption)
+   `identity/interfaces/rest/LookupAuthorizationFirst.java:addInterceptors/afterCompletion`
+   `addPathPatterns(LOOKUP_PATH)` has no method filter. `GET /api/v1/users/lookup` resolves to `getUser("lookup")`
+   (`UserDirectoryController.java:147`), whose `parseUuid` throws a 400 inside `measured("get")`, which counts
+   `get/invalid`. The interceptor then also counts `lookup/invalid` for that 400. Authorization is unaffected
+   (same permission as GET by id). Fix: in `afterCompletion` return unless `"POST".equals(request.getMethod())`.
+
+2. LOW - `batch()` lost its single read snapshot
+   `identity/application/UserDirectoryService.java:batch` (after F3)
+   `findByTenantAndIds` and `countByIdIn` are now two transactions, so the foreign-id count
+   (`countByIdIn - found.size()`) can skew if a user row is added or removed between them. This can emit a false
+   `IDENTITY_DIRECTORY_CROSS_TENANT_TARGET` WARN and counter bump (a negative result is simply ignored). No data
+   leak. Fix: accept and document, or add one port method returning both under one `@Transactional(readOnly)`.
+
+3. LOW - authGuard `false` on a cold start leaves a blank shell with no recovery affordance
+   `nexus-frontend/src/app/core/guards/auth.guard.ts:35-43`
+   A reload during a 503 `AUTH_005` or a network error cancels the initial navigation. Nothing is activated, so the
+   user sees an empty outlet and one toast, with only a manual reload to recover. Security-wise this fails closed.
+   Returning `false` never admits a signed-out user: the guard only runs when the in-memory session is null, and
+   `false` activates no route. An attacker who can force a 503 gains nothing but denial of service. For an in-app
+   navigation the user stays on the previous route, whose API calls would 401 anyway. Also, 502/504 from a gateway
+   (different `code`) still redirect to login, which is inconsistent. Fix: render a retry affordance on a cancelled
+   initial navigation, and treat `status >= 502` the same way if the interceptor exposes it.
+
+4. LOW - Lint hardening still has false-negative holes
+   `nexus-frontend/eslint.config.js` (no-restricted-syntax block)
+   Not matched by the new selectors:
+   - template-literal computed access: `` el[`innerHTML`] ``;
+   - a string-literal object key: `{ 'innerHTML': x }` (`Property[key.name]` misses `key.value`);
+   - `document.write` through an alias or `doc.write(...)` (the selector needs the identifier `document`; `route-focus.ts` itself uses `doc`);
+   - `setAttribute('srcdoc' | 'onclick', ...)`, `eval`, `new Function`, `DOMParser`+`importNode`.
+   Angular's own sanitiser covers template `[innerHTML]` bindings. Fix: add `TemplateLiteral` computed-property and
+   `Property[key.value=...]` selectors, a `CallExpression[callee.property.name=/^write(ln)?$/]` selector, and
+   `no-eval` / `no-new-func`.
+
+5. NIT - `ServiceAvailabilityNotifier` cap does not guard NaN
+   `core/http/service-availability-notifier.ts:32`: `Math.min(NaN, 300)` is NaN, so `suppressUntilMs` becomes NaN and
+   the toast is never suppressed. The only caller (`parseRetryAfterSeconds`) can't produce NaN, so this is
+   defence-in-depth only.
+
+6. NIT - `SAFE_HREF` accepts `https://user@host` and `mailto:` with query headers
+   `core/config/app-config.ts:~92`. The value comes from build or runtime config, not user input, so the risk is
+   low. The new `typeof` guards are correct and close the earlier TypeError and bypass on non-string values.
+
+7. NIT - Formatting: `UserDirectoryService.java` javadoc line over 100 columns, `RoleManagementService.java`
+   javadoc lines over 100 columns, and `LookupAuthorizationFirst` import order (`org.springframework.http` before
+   `context`). Run the formatter check (not run here).
+
+### Verified OK
+
+(1) F1/F2 lock order and authorization soundness
+- Attach, newly. `attachPermission` (`RoleManagementService.java` ~358-381) now runs: authz (`requireCallerHoldsPermission`, PII rule, both before any provenance read), then the non-locking fast-fail, then `hasPermission`, then `lockRoleRow` (R row X), then `acquireSetLock` (`user_roles` FOR UPDATE, ascending, one statement), then `lockRolePermissionsForRoles` (FOR SHARE, `adminDefiningNow`), then the `role_permissions` insert and `lockPermissionIdsForRole`. This is the same roles -> user_roles -> role_permissions order as a promoting replace (`:579-586`). A demoting replace, delete of an admin-defining role and detach take user_roles first, but only on admin-defining roles, for which attach is a duplicate or never reaches the lock. So no pair takes the two resources in opposite orders.
+- Attach, deadlock analysis. While waiting on user_roles, attach holds only R's row. The assign `INSERT ... SELECT FROM roles` (`JpaUserRoleRepository.java:272-289`) takes S on R's row before it writes any user_roles row, so assign waits on attach holding nothing attach needs. Revoke, assign-to-admin-defining-D and delete-D hold user_roles on the admin-defining set and then D's row or role_permissions. None of them needs R's row X, so there is no cycle. Attach vs attach on different roles contend only on the shared admin-defining rows, which are locked in one ordered statement.
+- Attach, tail effects. InnoDB locking reads are current reads, so the locked read sees an assign that committed after the transaction's snapshot (the R1-1 scenario). R's X lock stops any later holder. The attach check uses `holder.roleId == role.id` and an administrator set from `adminDefiningNow`, the same as the replace path. R itself is not admin-defining pre-insert, so its holders can't vouch for each other. `countReplace` is gated on `OPERATION_REPLACE`, so there is no attach metric pollution. The throw rolls back the transaction before the audit row. Stale M10' can only drop a newly promoted admin role from the set, which fails closed (a false RBAC_010, never a false pass).
+- Pre-lock fast-fail. It sits after A3 and the PII rule, so there is no pre-authorization information leak. The 409 `RBAC_010` text names no holder.
+- Assign (F2). `classifyLockedRolesNow` (`RoleAssignmentService.java:603`) runs inside the try block after `acquireSetLock`, so A4, the PII administrator answer and `callerHoldsAdministratorRole` use the current admin-defining set over locked rows. A demoted-role holder no longer passes A4. Revoke already did this. Staleness left in `target.targetPermissionIds()` for A2 and the PII grant can only be a superset, because the set-lock path is only taken for a role that was admin-defining (full catalogue) pre-lock. Skipping `requireAssignKeptItsClassification` when `setLock != null` is safe, since the target is in the lock set. `Math.clamp` to `max/min` is equivalent and no longer throws if the window is under 1.
+
+(2) F3 transaction placement
+- The only caller of the query port is `UserDirectoryService`; the controller is the only caller of the service. `toView` maps entities to records inside the adapter's transaction, so there are no lazy loads outside it. The converter that decrypts the email cipher also runs inside it.
+- The adapter is a `@Component` implementing an interface, so the `@Transactional` proxy applies. No self-invocation. No ArchUnit rule restricts `@Transactional` placement (grep over `architecture/`).
+- No double-open: the service holds no transaction, and `DirectoryReadAuthEventAdapter` is the REQUIRES_NEW best-effort write (catches RuntimeException, logs a WARN). The audit metadata is operation, count, status filter, outcome and resolvedUserId only, with no email or blind index.
+- `get()`'s `notFound()` calls `existsById` outside a transaction as a single Spring Data call. That call is itself read-only transactional and unscoped by design.
+
+(3) F4 interceptor
+- `preHandle` calls the same `TenantAwarePermissionEvaluator.hasPermission` that the `@RequiresPermission` SpEL calls, on the same `SecurityContextHolder` authentication. The tenant and permissions come from the token details via `AuthenticatedRequestDetails`, never the request. The `@RequiresPermission` annotation stays as the authoritative check.
+- Path variants: with Spring 6 `PathPatternParser` there is no trailing-slash or suffix matching, and matching is case-sensitive. The interceptor and the handler mapping use the same matching, so any variant that reaches the handler also runs the interceptor. Semicolons and matrix parameters are rejected by Spring Security's `StrictHttpFirewall` before MVC. CORS preflight is answered by the Security `CorsFilter` (`SecurityConfig.java:83`) before MVC, so the interceptor never sees an unauthenticated OPTIONS.
+- Exceptions thrown from `preHandle` go through the same `@RestControllerAdvice`, giving a 403 `RBAC_001`. `afterCompletion` is skipped when `preHandle` throws, so a denied caller is never counted.
+- Dropping `consumes`: the body converter still answers 415 for form-encoded, `text/plain`, multipart and missing Content-Type, because only the Jackson converter is bound to `@RequestBody`. Those requests are refused after the permission check. CSRF is disabled and stateless, and the API authenticates on the `Authorization` header, so a cross-site form POST carries no credential. No content-type confusion path.
+- No double counting: `FieldValidationException` is only thrown for a lookup from within `measured` for non-lookup operations. Lookup's 400/415 occur at argument resolution, outside `measured` (but see finding 1 for GET).
+
+(4) Frontend
+- `authGuard`: 401/403 and any other refresh failure still redirect with `returnUrl`, which the login form validates with `safeReturnUrl`. Only `AUTH_005` or `NETWORK_ERROR`, both produced by the interceptor and not by a response body field alone, return `false`. Nothing is activated on `false`.
+- The Retry-After cap (300 s) is applied in both the parser and the notifier. `route-focus` only sets `tabindex=-1` on a heading or main. `parseSupportContact` now rejects non-string label/href.
+- Lint: `innerHTML`/`outerHTML`/`insertAdjacentHTML`/`createContextualFragment`, computed string-literal access, `Property` keys, `document.write` and `bypassSecurityTrust*` identifiers (aliases, destructuring) are now covered. See finding 4 for the remaining holes.
+
+### Not covered
+- Test files were not read in depth: `AttachProvenanceRaceIT`, `SelfAssignDemotionRaceIT` and the directory ITs were checked by test name only. I did not confirm that `AttachProvenanceRaceIT` exercises a real concurrent attach vs assign interleaving (it appears to be hook-driven, so the deadlock-freedom argument above is from static lock-order analysis, not from an observed run).
+- No `dependency:tree` / `npm audit` (the brief forbids Maven; the delta adds no dependencies).
+- `dialog.ts` rewrite, e2e specs, `scan-pii.mjs` and `playwright.config.ts` changes were not reviewed.
+
+Disposition of the delta Lows: #1 (GET /users/lookup double-counts `invalid`), #2 (`batch` counts foreign ids across two transactions), #3 (blank shell with no retry affordance on a cold-start 503) and #4 (lint holes: template-literal computed access, string-literal keys, aliased `doc.write`, `eval`, `new Function`) are Deferred; see pending items P-30 to P-33. Not covered by the delta review: whether `AttachProvenanceRaceIT` runs a real concurrent attach vs assign (the test audit's mutation run shows it fails without the fix), `dialog.ts`, the e2e specs and dependency scans.

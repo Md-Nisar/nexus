@@ -56,3 +56,13 @@ Environments: none exists, so nothing here has run against a real staging or pro
 ## Not tracked here
 
 Review findings that were fixed or accepted are in the Disposition tables of [06-code-review.md](06-code-review.md) and [07-security-review.md](07-security-review.md). US-018 pending items stay in [../US-018/14-pending-items.md](../US-018/14-pending-items.md).
+
+
+## Added by the delta security review
+
+| ID | Item | Owner | Blocks |
+|---|---|---|---|
+| P-30 | `LookupAuthorizationFirst.afterCompletion` has no method filter, so `GET /api/v1/users/lookup` double-counts `lookup/invalid` | Backend | none |
+| P-31 | `UserDirectoryService.batch` counts foreign ids across two transactions after the F3 move; the count can skew | Backend | none |
+| P-32 | `authGuard` leaves a blank shell with no retry affordance on a cold-start 503 (R3-M2 reading) | Frontend / UX | none (UX decision) |
+| P-33 | Lint rule gaps: template-literal computed access, string-literal keys, aliased `doc.write`, `eval`, `new Function` | Frontend | none |
