@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { requireBackend } from '../fixtures/backend';
 
 /**
  * E2E: US-002 registration happy path + accessibility.
@@ -10,20 +11,11 @@ import AxeBuilder from '@axe-core/playwright';
  *   - MailHog running on :1025/:8025      (docker compose up -d mailhog)
  *
  * The accessibility test always runs (no backend needed).
- * Backend-dependent tests skip automatically when :1000 is not reachable.
- * The email-verification step skips automatically when MailHog is not reachable.
+ * Backend-dependent tests skip locally when :1000 is not reachable, and fail when
+ * E2E_REQUIRE_BACKEND=1 (CI). The email-verification step does the same for MailHog.
  */
 
 const MAILHOG_API = 'http://localhost:8025/api/v2/messages';
-
-async function isBackendUp(request: import('@playwright/test').APIRequestContext): Promise<boolean> {
-  try {
-    const resp = await request.get('http://localhost:1000/actuator/health', { timeout: 2_000 });
-    return resp.ok();
-  } catch {
-    return false;
-  }
-}
 
 // Poll MailHog for an email to `toAddress`, retrying up to `attempts` times.
 async function fetchVerificationToken(
@@ -74,10 +66,7 @@ test.describe('registration', () => {
   });
 
   test('happy path — fill form, see success, verify email', async ({ page, request }) => {
-    if (!(await isBackendUp(request))) {
-      test.skip(true, 'Backend is not reachable');
-      return;
-    }
+    await requireBackend();
     const email = `e2e-${Date.now()}@example.com`;
 
     // ── 1. Navigate and fill the registration form ──────────────────────────
@@ -97,6 +86,10 @@ test.describe('registration', () => {
     // ── 3. Fetch verification token from MailHog (skip if unavailable) ──────
     const token = await fetchVerificationToken(request, email, 10, 2_000);
     if (!token) {
+      // CI starts MailHog (e2e-full-stack.yml), so a missing mail is a failure there, not a skip.
+      if (process.env['E2E_REQUIRE_BACKEND'] === '1') {
+        throw new Error('No verification email in MailHog and E2E_REQUIRE_BACKEND=1');
+      }
       test.skip(true, 'MailHog is not reachable');
       return;
     }
@@ -109,11 +102,8 @@ test.describe('registration', () => {
     await expect(page.locator('[data-testid="verif-success"]')).toContainText('Email verified');
   });
 
-  test('expired / invalid token shows error with resend link', async ({ page, request }) => {
-    if (!(await isBackendUp(request))) {
-      test.skip(true, 'Backend is not reachable');
-      return;
-    }
+  test('expired / invalid token shows error with resend link', async ({ page }) => {
+    await requireBackend();
     // 63 f-chars — invalid format, backend returns 410 AUTH_VRF_002
     const badToken = 'f'.repeat(64);
 

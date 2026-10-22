@@ -5,7 +5,8 @@
 #
 # Naming `backend` starts it with its dependencies (mysql, redis, flyway-migrate) and nothing
 # else, so nginx (`frontend`, port 2000) stays down and the Playwright `webServer` dev server owns
-# that port. The backend keeps the base file's wiring: dev profile (seeds the personas), the
+# that port (the workflow also starts `mailhog`, which the registration spec needs). The backend
+# keeps the base file's wiring: dev profile (seeds the personas), the
 # least-privilege `nexus_app` database user (RC-63(h)), and Flyway disabled inside the container
 # because `flyway-migrate` already ran the migrations and grants as root.
 #
@@ -17,6 +18,9 @@ services:
       # Reach the compose Redis service; the application default is localhost, which inside the
       # container would silently fall back to the in-memory, fail-open paths.
       REDIS_HOST: redis
+      # The dev profile points mail at localhost, which inside the container is the backend itself.
+      # The registration e2e reads the verification mail from MailHog (started by the workflow).
+      SPRING_MAIL_HOST: mailhog
       # The runner reaches the published port from the Docker gateway, which is not a trusted
       # proxy, so every persona login across all workers shares one per-IP bucket.
       NEXUS_SECURITY_RATE_LIMIT_IP_MAX_ATTEMPTS: "1000"

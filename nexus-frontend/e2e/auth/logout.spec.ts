@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { requireBackend } from '../fixtures/backend';
 
 /**
  * E2E: US-005 — logout with refresh token revocation.
@@ -10,22 +11,12 @@ import { test, expect } from '@playwright/test';
  *       email:    process.env.E2E_TEST_USER_EMAIL    (default: test@example.com)
  *       password: process.env.E2E_TEST_USER_PASSWORD (default: TestPass99!)
  *
- * Backend-dependent tests skip automatically when :1000 is not reachable.
+ * Backend-dependent tests skip locally when :1000 is not reachable and fail when
+ * E2E_REQUIRE_BACKEND=1 (CI).
  */
 
 const EMAIL = process.env['E2E_TEST_USER_EMAIL'] ?? 'test@example.com';
 const PASSWORD = process.env['E2E_TEST_USER_PASSWORD'] ?? 'TestPass99!';
-
-async function isBackendUp(
-  request: import('@playwright/test').APIRequestContext,
-): Promise<boolean> {
-  try {
-    const resp = await request.get('http://localhost:1000/actuator/health', { timeout: 2_000 });
-    return resp.ok();
-  } catch {
-    return false;
-  }
-}
 
 async function openUserMenu(page: import('@playwright/test').Page): Promise<void> {
   await page.locator('[data-testid="nx-menu-trigger"]').click();
@@ -40,10 +31,8 @@ async function login(page: import('@playwright/test').Page): Promise<void> {
 }
 
 test.describe('US-005 — logout with refresh token revocation', () => {
-  test.beforeEach(async ({ request }, testInfo) => {
-    if (!(await isBackendUp(request))) {
-      testInfo.skip();
-    }
+  test.beforeEach(async () => {
+    await requireBackend();
   });
 
   test('TS-1 — golden path: logout redirects to /auth/login and shows confirmation toast', async ({

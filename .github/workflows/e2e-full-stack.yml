@@ -41,8 +41,11 @@ jobs:
       # Naming `backend` starts it with mysql, redis and flyway-migrate (migrations and the
       # nexus_app grants run as root first); `frontend` (nginx) is not started, so the Playwright
       # webServer dev server owns port 2000. The backend runs the dev profile as `nexus_app`.
+      # `mailhog` is started too: the registration spec reads its verification email from it
+      # (the e2e override points the backend's SMTP host at it), and with E2E_REQUIRE_BACKEND=1
+      # a missing email fails the spec instead of skipping it.
       - name: Start Backend Stack
-        run: $COMPOSE up -d --build backend
+        run: $COMPOSE up -d --build backend mailhog
 
       - name: Wait For Backend Readiness
         run: |
