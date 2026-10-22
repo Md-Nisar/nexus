@@ -196,4 +196,29 @@ Reviewed for authentication/token handling, authorization guards, input validati
 
 ## 4. Disposition
 
-_To be completed after the fix pass._
+**Date:** 2026-10-22. Commit SHAs are from `git log --oneline origin/main..HEAD` on `feature/US-019`. Pending ids (P-n) are in [14-pending-items.md](14-pending-items.md). The Opus re-check of the locking and `safeReturnUrl` fixes is queued as P-12. Findings carry the numbers used in the slice reports above.
+
+### S1 (backend)
+
+| Id | Severity | Status | Disposition |
+|---|---|---|---|
+| S1-1 | High | Fixed | `2ca17e7`: attach re-judges the `RBAC_010` provenance under the set lock after the role-row lock (same fix as R1-1). Opus re-check P-12 |
+| S1-2 | Medium | Fixed | `fdb18ae`: assign classifies from a current read under the set lock (same fix as R1-2). Opus re-check P-12 |
+| S1-3 | Low | Fixed | `aea67c3`: ArchUnit containment of the `existsById` probe (same as R2-3) |
+| S1-4 | Low | Fixed (lookup); Accepted (PUT) | `99d2db2`: lookup authorises before the body is read. Accepted for `PUT /roles/{roleId}/permissions`: a malformed body gets 400 before 403, no value is echoed and no state is revealed; the controller Javadoc states the order |
+| S1-5 | Nit | Accepted | The `replaced` label is recorded in the design amendments (P-19); `AppError.reason` typing is P-17; the SpotBugs exclusions follow the file's convention |
+| S1-6 | Nit | Deferred | P-18 (by-id 404 writes no audit row; design text amended, decision pending) |
+
+### S2 (frontend, CI, supply chain)
+
+| Id | Severity | Status | Disposition |
+|---|---|---|---|
+| S2-1 | Medium | Fixed | `8dd824e`: the workflow starts `mailhog`, the e2e backend's SMTP host points at it, and logout, session-refresh and registration use `requireBackend()` or throw under `E2E_REQUIRE_BACKEND=1`. The path itself has not run end to end: P-11 |
+| S2-2 | Medium | Fixed | `302d088`: the PII scan covers encoded forms, every embedded report zip and the registrant pattern; CI takes no screenshots and the scan fails on any image |
+| S2-3 | Low | Accepted | Edge notes with no exploit (the worst case is a redirect back to login). Re-check with the Opus queue: P-12 |
+| S2-4 | Low | Fixed | `10e2d61`: `Retry-After` capped at 300 s |
+| S2-5 | Low | Accepted | `permissionGuard` fail-open on a missing `data.permission` is documented as UX only; `app.routes.spec.ts` and `permission-guard-contract.spec.ts` compensate and no gated route exists yet |
+| S2-6 | Low | Fixed | `10e2d61`: the HTML-sink rule also bans bracket access, `insertAdjacentHTML`, `createContextualFragment`, `document.write`, `innerHTML` property keys and aliased or destructured `bypassSecurityTrust*`; `lint-rules.spec.ts` |
+| S2-7 | Low | Fixed | `10e2d61`: `parseSupportContact` returns `null` for a non-string label or href |
+| S2-8 | Low | Deferred | P-9 (required check, CODEOWNERS entries, upstream SHA verification) |
+| S2-9 | Nit | Accepted | Lockfile growth comes from the Angular 22.0.4 to 22.2.3 upgrade; every `resolved` URL is the npm registry and CI uses `npm ci --ignore-scripts` |

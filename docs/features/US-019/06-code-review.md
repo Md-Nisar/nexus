@@ -190,4 +190,46 @@ Full read of every shared/ui wrapper spec (checkbox, chip, menu, search-field, s
 
 ## 4. Disposition
 
-_To be completed after the fix pass._
+**Date:** 2026-10-22. Commit SHAs are from `git log --oneline origin/main..HEAD` on `feature/US-019`. Pending ids (P-n) are in [14-pending-items.md](14-pending-items.md). Verification of the fixes: [08-test-audit.md](08-test-audit.md) (backend 2626 unit and 693 integration tests green, frontend 515 green). The Opus re-check of the locking fixes is queued as P-12.
+
+### R1 (RBAC logic and locking)
+
+| Id | Severity | Status | Disposition |
+|---|---|---|---|
+| R1-1 | High | Fixed | `2ca17e7`: a catalogue-completing attach takes the set lock after the role-row lock and judges the holders from locked reads; `AttachProvenanceRaceIT`. Opus re-check P-12 |
+| R1-2 | Medium | Fixed | `fdb18ae`: assign classifies from a current read under the set lock; `SelfAssignDemotionRaceIT`. Opus re-check P-12 |
+| R1-3 | Low | Deferred | P-22 (one `SELECT` per id in `attachPermissions`; no latency budget, so no measured harm) |
+| R1-4 | Low | Fixed | `aea67c3`: `AssignRoleContentionIT` logs the p95 numbers instead of asserting 50 ms |
+| R1-5 | Low | Fixed (partly) | `aea67c3`: the controller shares the service's metric constants. Accepted: the 428 is still counted in the controller (it occurs before the service is reached), and `getRole`/`updateRole` keep their zero default for a missing count |
+| R1-6 | Low | Fixed | `aea67c3`: `Math.max(1, Math.min(retry, window))`; test with windows 0 and -5 |
+| R1-7 | Nit | Accepted | Metric gap only (a failed commit records no `error` lock-hold sample); no behaviour impact |
+| R1-8 | Nit | Accepted | Counts may be a few milliseconds newer than the role row; benign |
+
+### R2 (identity, common, config, seeds)
+
+| Id | Severity | Status | Disposition |
+|---|---|---|---|
+| R2-1 | Medium | Fixed | `19b5352`: the transaction moved to the query-port adapter so the audit write needs no second connection; `UserDirectoryConnectionPoolIT` |
+| R2-2 | Medium | Fixed | `99d2db2`: `LookupAuthorizationFirst` authorises before the body is read; `UserDirectoryIT` pins 403 for blank, malformed, empty, non-JSON, oversized and text/plain bodies. Opus re-check P-12 |
+| R2-3 | Low | Fixed | `aea67c3`: ArchUnit contains `existsById` (port: `UserDirectoryService` only; repository: the adapter only) with negative fixtures |
+| R2-4 | Low | Accepted | The WARN per foreign id is the detection signal; bounded by the 600 per minute ceiling. Alert on rate, not count (monitoring.md) |
+| R2-5 | Low | Fixed | `aea67c3`: lookup bodies rejected before the handler (400, 415) count as `outcome=invalid`; denied callers are not counted |
+| R2-6 | Low | Accepted | By design (ADR-0021 D3). Documented: pre-deploy exposure query and flag sequencing in [deployment.md](deployment.md) section 4, runbook section 6 |
+| R2-7 | Nit | Accepted | Class-wide `EI_EXPOSE_REP2` exclusions follow the file's convention for constructor-injected Spring beans, each with a comment |
+| R2-8 | Nit | Fixed | `aea67c3`: the throttle exception Javadoc names `DirectoryAccessGuard` |
+| R2-9 | Nit | Accepted | Dev-only seed fixture; profile guard `dev & !break-glass & !prod` verified |
+
+### R3 (frontend, e2e, CI)
+
+| Id | Severity | Status | Disposition |
+|---|---|---|---|
+| R3-1 | Medium | Fixed | `20b9f7b`: route focus sets `tabindex=-1` on the target before focusing; the spec renders the real dashboard markup |
+| R3-2 | Medium | Fixed | `eb051f0`: `authGuard` cancels navigation on 503 `AUTH_005` or a network error instead of redirecting; other failures still redirect. What the user then sees is open: P-20 |
+| R3-3 | Medium | Fixed (unit); Deferred (e2e) | `5d89de4`: `shell.spec.ts` proves permission-filtered nav per persona with an injected gated item. The e2e map cannot catch a filtering bug until a gated item exists: P-27 |
+| R3-4 | Low | Fixed | `10e2d61`: `Retry-After` capped at 300 s in the interceptor and the notifier |
+| R3-5 | Low | Fixed | `10e2d61`: the misplaced dialog doc comments moved back to their declarations |
+| R3-6 | Low | Fixed | `302d088`: `scan-pii` also matches `%40`, double-encoded, JSON-escaped and entity forms and the registrant pattern, and fails on any image; logout and session-refresh record no trace (P-21) |
+| R3-7 | Low | Accepted | The `E2E_MIN_TESTS` floor is hand-maintained on purpose and says so in the workflow comment; a changed count turns the check red |
+| R3-8 | Low | Fixed | `10e2d61`: the signed-out cold-start e2e requires the backend. The design-system a11y spec needs none by design |
+| R3-9 | Nit | Accepted | Token aliasing in dark mode is intended. The darker `--nx-color-error` has had no visual review: P-25 |
+| R3-10 | Nit | Deferred | P-13 (three grandfathered Material imports, exempted in ESLint with a removal comment) |
