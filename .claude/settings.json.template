@@ -95,6 +95,15 @@
     "claude-md-management@claude-plugins-official": true,
     "feature-dev@claude-plugins-official": false,
     "security-guidance@claude-plugins-official": true,
-    "claude-code-setup@claude-plugins-official": true
+    "claude-code-setup@claude-plugins-official": true,
+    "ponytail@ponytail": true
+  },
+  "extraKnownMarketplaces": {
+    "ponytail": {
+      "source": {
+        "source": "github",
+        "repo": "DietrichGebert/ponytail"
+      }
+    }
   }
 }
