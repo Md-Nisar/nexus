@@ -39,6 +39,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.jdbc.autoconfigure.JdbcConnectionDetails;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -55,9 +57,9 @@ import org.testcontainers.containers.MySQLContainer;
  * {@code FOR SHARE} current read of R's {@code role_permissions} (RC-56.2) and holds those S locks
  * until it commits. This proves, with the application <b>connected as {@code nexus_app}</b>, that
  * assign racing each {@code role_permissions} writer on the same R (attach, detach, and a B8 replace
- * on the role-row path) never deadlocks and never fails, 50 iterations each, and that the wait the
- * assign adds to the writer stays below 50 ms at the 95th percentile at dev volume: the writer's
- * p95 duration when started together with an assign, minus its p95 alone.
+ * on the role-row path) never deadlocks and never fails, 50 iterations each, and logs (does not
+ * assert) the wait the assign adds to the writer: the writer's p95 duration when started together
+ * with an assign, minus its p95 alone.
  *
  * <p>Lock orders (design §10.4): assign takes R's row S (its {@code INSERT … SELECT}), its new
  * {@code user_roles} row, then the {@code FOR SHARE} read. Attach and B8 take R's row X first, so
@@ -72,7 +74,7 @@ class AssignRoleContentionIT {
 
   private static final int ITERATIONS = 50;
   private static final int WARM_UP = 10;
-  private static final long MAX_ADDED_WAIT_P95_MS = 50;
+  private static final Logger log = LoggerFactory.getLogger(AssignRoleContentionIT.class);
   private static final String NEXUS_APP_USER = "nexus_app";
   private static final String NEXUS_APP_PASSWORD = "nexus_app_test_only";
   private static final UUID ROLE_READ = RbacSeededPermissionIds.ROLE_READ;
@@ -141,21 +143,21 @@ class AssignRoleContentionIT {
   }
 
   @Test
-  void should_neverDeadlockAndAddUnder50MsP95_when_anAssignRacesAnAttachOnTheSameRole()
+  void should_neverDeadlockOrFail_when_anAssignRacesAnAttachOnTheSameRole()
       throws Exception {
     Function<Role, Callable<Void>> attach = role -> attach(role, USER_WRITE);
     measureAgainstAssign(() -> seedRole(USER_READ), attach, Set.of(USER_READ, USER_WRITE));
   }
 
   @Test
-  void should_neverDeadlockAndAddUnder50MsP95_when_anAssignRacesADetachOnTheSameRole()
+  void should_neverDeadlockOrFail_when_anAssignRacesADetachOnTheSameRole()
       throws Exception {
     Function<Role, Callable<Void>> detach = role -> detach(role, AUDIT_READ);
     measureAgainstAssign(() -> seedRole(USER_READ, AUDIT_READ), detach, Set.of(USER_READ));
   }
 
   @Test
-  void should_neverDeadlockAndAddUnder50MsP95_when_anAssignRacesAReplaceOnTheSameRole()
+  void should_neverDeadlockOrFail_when_anAssignRacesAReplaceOnTheSameRole()
       throws Exception {
     Function<Role, Callable<Void>> replace =
         role ->
@@ -169,9 +171,8 @@ class AssignRoleContentionIT {
   /**
    * Runs {@code writer} alone ({@link #ITERATIONS} times after {@link #WARM_UP}) and then started
    * together with an assign of the same fresh role ({@link #ITERATIONS} times), asserting that both
-   * racers always succeed, that the role ends at {@code expectedSet} with the assignee holding it,
-   * and that the writer's contended p95 exceeds its uncontended p95 by less than {@link
-   * #MAX_ADDED_WAIT_P95_MS}.
+   * racers always succeed and that the role ends at {@code expectedSet} with the assignee holding
+   * it; the writer's p95 alone and contended are logged, not asserted.
    */
   private void measureAgainstAssign(
       Supplier<Role> freshRole,
@@ -202,10 +203,13 @@ class AssignRoleContentionIT {
       assertThat(activeHolders(role)).as("iteration %d", i).containsExactly(assignee.getId());
     }
 
-    long addedWaitMs = (p95(contended) - p95(alone)) / 1_000_000;
-    assertThat(addedWaitMs)
-        .as("added wait p95 (alone %s ns, contended %s ns)", p95(alone), p95(contended))
-        .isLessThan(MAX_ADDED_WAIT_P95_MS);
+    // Timing is reported, not asserted (US-019 review R1-4): a latency delta on a shared CI runner
+    // is noise, and the invariants (no deadlock, no failure, the right end state) are asserted above.
+    log.info(
+        "ASSIGN_CONTENTION_P95 writer p95 alone={} ns, against a concurrent assign={} ns, added={} ms",
+        p95(alone),
+        p95(contended),
+        (p95(contended) - p95(alone)) / 1_000_000);
   }
 
   // ── Racers ───────────────────────────────────────────────────────────────────────────

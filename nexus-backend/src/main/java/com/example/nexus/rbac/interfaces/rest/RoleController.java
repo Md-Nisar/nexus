@@ -306,9 +306,11 @@ public class RoleController {
     try {
       ifMatchTag = IfMatchHeader.parse(ifMatch);
     } catch (PreconditionRequiredException e) {
-      Counter.builder("nexus.rbac.permission_replace")
-          .tag("outcome", "precondition_required")
-          .tag("lockPath", "none")
+      Counter.builder(RoleManagementService.COUNTER_PERMISSION_REPLACE)
+          .tag(
+              RoleManagementService.TAG_OUTCOME,
+              RoleManagementService.OUTCOME_PRECONDITION_REQUIRED)
+          .tag(RoleManagementService.TAG_LOCK_PATH, RoleManagementService.LOCK_PATH_NONE)
           .register(meterRegistry)
           .increment();
       throw e;

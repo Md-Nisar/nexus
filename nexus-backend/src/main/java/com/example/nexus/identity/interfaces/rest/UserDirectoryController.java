@@ -62,7 +62,7 @@ public class UserDirectoryController {
       Pattern.compile(
           "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
 
-  private static final String METRIC_REQUESTS = "nexus.identity.directory.requests";
+  static final String METRIC_REQUESTS = "nexus.identity.directory.requests";
   private static final String METRIC_DURATION = "nexus.identity.directory.duration";
   private static final String METRIC_LOOKUP_RESULT = "nexus.identity.directory.lookup_result";
 
@@ -239,7 +239,9 @@ public class UserDirectoryController {
    * Runs one directory operation and records {@code requests{operation, outcome}} and {@code
    * duration{operation}}. Outcomes are {@code ok}, {@code not_found}, {@code invalid}, {@code
    * throttled} and, for anything else (an authorization failure, a server error), {@code error}.
-   * No tag carries a tenant, a user or an email.
+   * No tag carries a tenant, a user or an email. A lookup body rejected before the handler runs
+   * (size cap, bean validation, wrong media type) never reaches here; {@link
+   * LookupAuthorizationFirst} counts those as {@code invalid}.
    */
   private <T> T measured(String operation, Supplier<T> action) {
     Timer.Sample sample = Timer.start(meterRegistry);

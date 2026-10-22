@@ -21,6 +21,7 @@ import com.example.nexus.rbac.domain.UserRole;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.io.ByteArrayInputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -97,6 +98,7 @@ class UserDirectoryIT {
   @Autowired private JwtPort jwtPort;
   @Autowired private JdbcTemplate jdbc;
   @Autowired private EmailBlindIndexService blindIndex;
+  @Autowired private MeterRegistry meterRegistry;
 
   private RestTemplate restTemplate;
 
@@ -328,6 +330,40 @@ class UserDirectoryIT {
   }
 
   @Test
+  void should_countInvalid_when_aPermittedCallersLookupBodyIsRejectedBeforeTheHandler() {
+    Tenant a = tenantWithReader();
+    double before = lookupRequests("invalid");
+    HttpHeaders textHeaders = new HttpHeaders();
+    textHeaders.setBearerAuth(a.token());
+    textHeaders.setContentType(MediaType.TEXT_PLAIN);
+
+    ResponseEntity<String> blank = lookup(a.token(), emailBody("   "));
+    ResponseEntity<String> oversized =
+        lookup(a.token(), "{\"email\":\"x@example.test\"" + " ".repeat(1100) + "}");
+    ResponseEntity<String> notJson =
+        restTemplate.exchange(
+            "http://localhost:" + port + "/api/v1/users/lookup",
+            HttpMethod.POST,
+            new HttpEntity<>("x", textHeaders),
+            String.class);
+
+    assertThat(blank.getStatusCode().value()).isEqualTo(400);
+    assertThat(oversized.getStatusCode().value()).isEqualTo(400);
+    assertThat(notJson.getStatusCode().value()).isEqualTo(415);
+    assertThat(lookupRequests("invalid") - before).isEqualTo(3.0);
+  }
+
+  @Test
+  void should_notCountInvalid_when_aCallerWithoutDirectoryReadIsDeniedBeforeTheBody() {
+    double before = lookupRequests("invalid");
+
+    ResponseEntity<String> denied = lookup(tokenWithoutDirectoryRead(), emailBody("   "));
+
+    assertThat(denied.getStatusCode().value()).isEqualTo(403);
+    assertThat(lookupRequests("invalid") - before).isZero();
+  }
+
+  @Test
   void should_return400_when_aChunkedBodyWithoutContentLengthExceeds1KiB() throws Exception {
     Tenant a = tenantWithReader();
     byte[] oversized =
@@ -519,6 +555,15 @@ class UserDirectoryIT {
         HttpMethod.POST,
         new HttpEntity<>(body, headers),
         String.class);
+  }
+
+  private double lookupRequests(String outcome) {
+    var counter =
+        meterRegistry
+            .find("nexus.identity.directory.requests")
+            .tags("operation", "lookup", "outcome", outcome)
+            .counter();
+    return counter == null ? 0.0 : counter.count();
   }
 
   private static String emailBody(String email) {

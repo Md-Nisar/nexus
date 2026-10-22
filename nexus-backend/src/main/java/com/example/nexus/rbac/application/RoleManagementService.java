@@ -125,10 +125,13 @@ public class RoleManagementService {
   private static final String TAG_HOLDERS = "holders";
   private static final String HOLDERS_UNKNOWN = "unknown";
 
-  private static final String COUNTER_PERMISSION_REPLACE = "nexus.rbac.permission_replace";
-  private static final String TAG_OUTCOME = "outcome";
-  private static final String TAG_LOCK_PATH = "lockPath";
-  private static final String LOCK_PATH_NONE = "none";
+  /** Shared with the controller, which counts the 428 before the service is reached (R1-5). */
+  public static final String COUNTER_PERMISSION_REPLACE = "nexus.rbac.permission_replace";
+
+  public static final String TAG_OUTCOME = "outcome";
+  public static final String TAG_LOCK_PATH = "lockPath";
+  public static final String LOCK_PATH_NONE = "none";
+  public static final String OUTCOME_PRECONDITION_REQUIRED = "precondition_required";
   private static final String LOCK_PATH_ROLE_ROW = "role_row";
   private static final String LOCK_PATH_SET_LOCK = "set_lock";
   private static final String OUTCOME_REPLACED = "replaced";

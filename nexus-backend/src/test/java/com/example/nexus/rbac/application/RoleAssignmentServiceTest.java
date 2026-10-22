@@ -59,6 +59,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mock;
@@ -2482,6 +2483,28 @@ class RoleAssignmentServiceTest {
     verify(throttlePort, never()).recordDenial(any(), any());
     verifyNoInteractions(rbacAuditPort, permissionCachePort);
     assertThat(deniedThrottledCount("assign")).isEqualTo(1.0);
+  }
+
+  /**
+   * US-019 review R1-6: the window is an unvalidated property. A window under one second must not
+   * turn the 429 into a 500 (the clamp's lower bound would exceed its upper bound); Retry-After
+   * stays at least one second.
+   */
+  @ParameterizedTest
+  @ValueSource(ints = {0, -5})
+  void should_throw429WithOneSecondRetryAfter_when_theThrottleWindowIsBelowOneSecond(int window) {
+    RoleAssignmentService shortWindowService =
+        new RoleAssignmentService(
+            userRoleAssignmentPort, userDirectoryPort, rbacAuditPort, permissionCachePort,
+            permissionFreshness, transactionManager, meterRegistry, throttlePort,
+            new PiiPermissionGrantRule(true, meterRegistry), MAX_DENIALS, window);
+    stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(CATALOGUE));
+    when(throttlePort.throttleStatus(tenantId, actorId)).thenReturn(THROTTLED);
+
+    assertThatThrownBy(() -> shortWindowService.assign(actor, targetUserId, roleId, ctx))
+        .satisfies(e -> assertThrottled(e, 1L));
   }
 
   @Test

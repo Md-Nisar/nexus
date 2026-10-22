@@ -486,6 +486,15 @@ class HexagonalArchitectureTest {
     static final ArchRule unscoped_user_count_is_called_only_by_the_directory_adapter =
             ArchitectureRules.UNSCOPED_USER_COUNT_IS_CALLED_ONLY_BY_THE_DIRECTORY_ADAPTER;
 
+    // US-019 review R2-3: the unscoped existsById probes stay inside the directory service/adapter.
+    @ArchTest
+    static final ArchRule unscoped_user_existence_probe_is_called_only_by_the_directory_service =
+            ArchitectureRules.UNSCOPED_USER_EXISTENCE_PROBE_IS_CALLED_ONLY_BY_THE_DIRECTORY_SERVICE;
+
+    @ArchTest
+    static final ArchRule unscoped_user_exists_by_id_is_called_only_by_the_directory_adapter =
+            ArchitectureRules.UNSCOPED_USER_EXISTS_BY_ID_IS_CALLED_ONLY_BY_THE_DIRECTORY_ADAPTER;
+
     // US-019 RC-63(k): isSensitive is UX only; only the response mapper reads the sets.
     @ArchTest
     static final ArchRule sensitivity_sets_are_read_only_by_the_response_mapper =

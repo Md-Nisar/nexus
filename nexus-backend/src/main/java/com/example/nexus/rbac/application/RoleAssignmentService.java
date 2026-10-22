@@ -728,7 +728,7 @@ public class RoleAssignmentService {
     if (target.adminDefining() || targetUserId.equals(actor.userId())) {
       countThrottled(operation);
       throw new RoleChangeThrottledException(
-          Math.clamp(status.retryAfterSeconds(), 1L, (long) windowSeconds));
+          Math.max(1L, Math.min(status.retryAfterSeconds(), (long) windowSeconds)));
     }
     return true;
   }

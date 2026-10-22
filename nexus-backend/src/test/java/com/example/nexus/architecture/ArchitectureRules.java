@@ -5,6 +5,8 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
 import com.example.nexus.common.Profiles;
 import com.example.nexus.common.security.Permissions;
+import com.example.nexus.identity.application.UserDirectoryService;
+import com.example.nexus.identity.application.port.out.UserDirectoryQueryPort;
 import com.example.nexus.identity.infrastructure.persistence.BreakGlassGrantLookupAdapter;
 import com.example.nexus.identity.infrastructure.persistence.JpaAuthEventRepository;
 import com.example.nexus.identity.infrastructure.persistence.JpaUserDirectoryQueryAdapter;
@@ -161,6 +163,46 @@ public final class ArchitectureRules {
           .because(
               "US-019 RC-61.2: the count is unscoped by tenant by design; a second caller could turn"
                   + " it into a cross-tenant existence oracle.")
+          .allowEmptyShould(true);
+
+  /**
+   * US-019 review R2-3: the directory port's {@code existsById} probes users of any tenant. Only
+   * {@link UserDirectoryService} may call it (a by-id miss: it decides a WARN, never the response).
+   */
+  public static final ArchRule UNSCOPED_USER_EXISTENCE_PROBE_IS_CALLED_ONLY_BY_THE_DIRECTORY_SERVICE =
+      noClasses()
+          .that()
+          .doNotBelongToAnyOf(UserDirectoryService.class)
+          .should()
+          .callMethodWhere(
+              DescribedPredicate.describe(
+                  "target is UserDirectoryQueryPort.existsById",
+                  (JavaMethodCall call) ->
+                      call.getTargetOwner().isEquivalentTo(UserDirectoryQueryPort.class)
+                          && "existsById".equals(call.getName())))
+          .because(
+              "US-019 R2-3: the probe is unscoped by tenant by design; a second caller could turn"
+                  + " it into a cross-tenant existence oracle.")
+          .allowEmptyShould(true);
+
+  /**
+   * US-019 review R2-3: the repository's inherited {@code existsById} on users is keyed by id alone.
+   * Only {@link JpaUserDirectoryQueryAdapter} may call it, behind the port rule above.
+   */
+  public static final ArchRule UNSCOPED_USER_EXISTS_BY_ID_IS_CALLED_ONLY_BY_THE_DIRECTORY_ADAPTER =
+      noClasses()
+          .that()
+          .doNotBelongToAnyOf(JpaUserDirectoryQueryAdapter.class)
+          .should()
+          .callMethodWhere(
+              DescribedPredicate.describe(
+                  "target is JpaUserRepository.existsById",
+                  (JavaMethodCall call) ->
+                      call.getTargetOwner().isEquivalentTo(JpaUserRepository.class)
+                          && "existsById".equals(call.getName())))
+          .because(
+              "US-019 R2-3: existsById on users is unscoped by tenant; a second caller could turn it"
+                  + " into a cross-tenant existence oracle.")
           .allowEmptyShould(true);
 
   /**
