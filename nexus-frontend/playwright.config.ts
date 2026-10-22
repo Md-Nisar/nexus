@@ -8,6 +8,10 @@ import { defineConfig, devices } from '@playwright/test';
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: true,
+  // Playwright otherwise copies the commit message, author addresses and the PR's git diff into the
+  // HTML and JSON reports that CI uploads, and the diff carries repository text, such as docs that
+  // name the dev personas. Nothing in the reports needs it.
+  captureGitInfo: { commit: false, diff: false },
   forbidOnly: !!process.env['CI'],
   retries: process.env['CI'] ? 2 : 0,
   reporter: process.env['CI'] ? [['html', { open: 'never' }], ['github']] : 'list',
