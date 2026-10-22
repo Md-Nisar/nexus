@@ -107,6 +107,13 @@ public class RoleManagementService {
   private static final String LOG_KEY_PERMISSION_NAME = "permissionName";
   private static final String LOG_KEY_ACTOR_USER_ID = "actorUserId";
 
+  private static final String MESSAGE_NO_SUCH_ROLE = "No such role";
+  private static final String CODE_ROLE_NOT_FOUND = "ROLE_NOT_FOUND";
+  private static final String EVENT_SUBSET_DENIED = "RBAC_ROLE_SUBSET_DENIED";
+  private static final String KEY_NON_ADMIN_ASSIGNED_COUNT = "nonAdminAssignedCount";
+  private static final String KEY_HOLDER_COUNT = "holderCount";
+  private static final String TAG_PERMISSION = "permission";
+  private static final String TAG_REASON = "reason";
   private static final String OPERATION_DETACH = "detach";
   private static final String OPERATION_ATTACH = "attach";
   private static final String OPERATION_DELETE = "delete";
@@ -373,7 +380,7 @@ public class RoleManagementService {
     // RC-64: R's row X lock before the insert, so concurrent attaches on R queue here instead of
     // deadlocking in the current read below (T-D28). Order: roles, then role_permissions (RC-46).
     if (!roleManagementPort.lockRoleRow(role.id(), actor.tenantId())) {
-      throw new ResourceNotFoundException("ROLE_NOT_FOUND", "No such role");
+      throw new ResourceNotFoundException(CODE_ROLE_NOT_FOUND, MESSAGE_NO_SUCH_ROLE);
     }
     if (becameAdminDefining) {
       requireNoLockedNonAdministratorAssignedHolder(actor, role, catalogueIds);
@@ -549,7 +556,7 @@ public class RoleManagementService {
     Set<UUID> snapshot =
         userRoleAssignmentPort
             .findPermissionIdsForRole(role.id(), actor.tenantId())
-            .orElseThrow(() -> new ResourceNotFoundException("ROLE_NOT_FOUND", "No such role"));
+            .orElseThrow(() -> new ResourceNotFoundException(CODE_ROLE_NOT_FOUND, MESSAGE_NO_SUCH_ROLE));
     String snapshotVersion = RolePermissionSetVersion.of(role.id(), snapshot);
     Set<UUID> adds = difference(target, snapshot);
     Set<UUID> removes = difference(snapshot, target);
@@ -578,7 +585,7 @@ public class RoleManagementService {
     String lockPath = plan.needsSetLock() ? LOCK_PATH_SET_LOCK : LOCK_PATH_ROLE_ROW;
     SetLockRows setLockFirst = plan.demotion() ? acquireSetLock(actor, role, catalogueIds) : null;
     if (!roleManagementPort.lockRoleRow(role.id(), actor.tenantId())) {
-      throw new ResourceNotFoundException("ROLE_NOT_FOUND", "No such role");
+      throw new ResourceNotFoundException(CODE_ROLE_NOT_FOUND, MESSAGE_NO_SUCH_ROLE);
     }
     Timer.Sample lockHold = Timer.start(meterRegistry);
     try {
@@ -641,15 +648,7 @@ public class RoleManagementService {
     }
 
     if (setLock != null) {
-      Set<UUID> adminDefiningNow = adminDefiningNow(actor, setLock, plan.catalogueIds());
-      if (plan.demotion()) {
-        requireAdministratorThroughAnotherLockedRole(
-            actor, role, setLock, adminDefiningNow, OPERATION_REPLACE);
-      }
-      if (plan.promotion()) {
-        requireNoLockedHolderAssignedByNonAdministrator(
-            actor, role, setLock, adminDefiningNow, OPERATION_REPLACE);
-      }
+      requireSetLockInvariants(actor, role, plan, setLock);
     }
 
     Map<UUID, String> removedNames = Map.of();
@@ -688,7 +687,7 @@ public class RoleManagementService {
               .addKeyValue("replaceId", replaceId)
               .addKeyValue("addedCount", adds.size())
               .addKeyValue("removedCount", removes.size())
-              .addKeyValue("lockPath", lockPath)
+              .addKeyValue(TAG_LOCK_PATH, lockPath)
               .addKeyValue("replacedBy", actor.userId())
               .log("Role permission set replaced");
           if (plan.piiGrant() == PiiPermissionGrantRule.Outcome.DELEGATED) {
@@ -702,6 +701,20 @@ public class RoleManagementService {
 
     return new RolePermissionSet(
         role.id(), permissions, RolePermissionSetVersion.of(role.id(), plan.target()));
+  }
+
+  /** Steps 10 and 11 of {@link #replaceRolePermissions}: demotion and promotion checks. */
+  private void requireSetLockInvariants(
+      RoleChangeActor actor, RoleView role, ReplacePlan plan, SetLockRows setLock) {
+    Set<UUID> adminDefiningNow = adminDefiningNow(actor, setLock, plan.catalogueIds());
+    if (plan.demotion()) {
+      requireAdministratorThroughAnotherLockedRole(
+          actor, role, setLock, adminDefiningNow, OPERATION_REPLACE);
+    }
+    if (plan.promotion()) {
+      requireNoLockedHolderAssignedByNonAdministrator(
+          actor, role, setLock, adminDefiningNow, OPERATION_REPLACE);
+    }
   }
 
   /**
@@ -744,7 +757,7 @@ public class RoleManagementService {
       return;
     }
     log.atWarn()
-        .addKeyValue(LOG_KEY_EVENT, "RBAC_ROLE_SUBSET_DENIED")
+        .addKeyValue(LOG_KEY_EVENT, EVENT_SUBSET_DENIED)
         .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
         .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
         .addKeyValue(LOG_KEY_ROLE_ID, role.id())
@@ -790,12 +803,12 @@ public class RoleManagementService {
         .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
         .addKeyValue(LOG_KEY_ROLE_ID, role.id())
         .addKeyValue("operation", operation)
-        .addKeyValue("nonAdminAssignedCount", nonAdminAssignedCount)
+        .addKeyValue(KEY_NON_ADMIN_ASSIGNED_COUNT, nonAdminAssignedCount)
         .log("Refused a permission change that would make a role admin-defining while some of"
             + " its holders were assigned by a non-administrator");
     Counter.builder(COUNTER_PERMISSION_DENIED)
-        .tag("permission", ROLE_WRITE)
-        .tag("reason", REASON_ATTACH_PROVENANCE)
+        .tag(TAG_PERMISSION, ROLE_WRITE)
+        .tag(TAG_REASON, REASON_ATTACH_PROVENANCE)
         .register(meterRegistry)
         .increment();
     if (OPERATION_REPLACE.equals(operation)) {
@@ -818,7 +831,7 @@ public class RoleManagementService {
             .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
             .addKeyValue(LOG_KEY_ROLE_ID, role.id());
     if (holderCount.isPresent()) {
-      warn = warn.addKeyValue("holderCount", holderCount.get());
+      warn = warn.addKeyValue(KEY_HOLDER_COUNT, holderCount.get());
     }
     warn.log("Role ceased to be admin-defining");
     Counter.builder(COUNTER_ROLE_CEASED_ADMIN_DEFINING).register(meterRegistry).increment();
@@ -874,7 +887,7 @@ public class RoleManagementService {
       }
       if (!allowed) {
         log.atWarn()
-            .addKeyValue(LOG_KEY_EVENT, "RBAC_ROLE_SUBSET_DENIED")
+            .addKeyValue(LOG_KEY_EVENT, EVENT_SUBSET_DENIED)
             .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
             .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
             .addKeyValue(LOG_KEY_ROLE_ID, role.id())
@@ -1052,7 +1065,7 @@ public class RoleManagementService {
     String newName = nameChanged ? name : role.name();
 
     if (roleManagementPort.updateRole(role.id(), actor.tenantId(), newName, newDescription) == 0) {
-      throw new ResourceNotFoundException("ROLE_NOT_FOUND", "No such role");
+      throw new ResourceNotFoundException(CODE_ROLE_NOT_FOUND, MESSAGE_NO_SUCH_ROLE);
     }
 
     List<String> changedFields = new java.util.ArrayList<>(2);
@@ -1116,7 +1129,7 @@ public class RoleManagementService {
         subset.adminDefining() ? acquireSetLock(actor, role, subset.catalogueIds()) : null;
 
     if (roleManagementPort.softDeleteRole(role.id(), actor.tenantId(), Instant.now()) == 0) {
-      throw new ResourceNotFoundException("ROLE_NOT_FOUND", "No such role");
+      throw new ResourceNotFoundException(CODE_ROLE_NOT_FOUND, MESSAGE_NO_SUCH_ROLE);
     }
 
     if (setLock != null) {
@@ -1139,7 +1152,7 @@ public class RoleManagementService {
           .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
           .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
           .addKeyValue(LOG_KEY_ROLE_ID, role.id())
-          .addKeyValue("holderCount", holders.size())
+          .addKeyValue(KEY_HOLDER_COUNT, holders.size())
           .log("Refused to delete a role that still has active holders");
       throw new RoleHasHoldersException();
     }
@@ -1198,7 +1211,7 @@ public class RoleManagementService {
     RoleView view =
         roleManagementPort
             .findRole(roleId)
-            .orElseThrow(() -> new ResourceNotFoundException("ROLE_NOT_FOUND", "No such role"));
+            .orElseThrow(() -> new ResourceNotFoundException(CODE_ROLE_NOT_FOUND, MESSAGE_NO_SUCH_ROLE));
     if (!view.tenantId().equals(actor.tenantId())) {
       log.atWarn()
           .addKeyValue(LOG_KEY_EVENT, "RBAC_CROSS_TENANT_TARGET")
@@ -1208,11 +1221,11 @@ public class RoleManagementService {
           .addKeyValue("operation", operation)
           .log("Refused a role change: the target belongs to another tenant");
       Counter.builder(COUNTER_PERMISSION_DENIED)
-          .tag("permission", requiredPermission)
-          .tag("reason", DenialReason.CROSS_TENANT_TARGET.name())
+          .tag(TAG_PERMISSION, requiredPermission)
+          .tag(TAG_REASON, DenialReason.CROSS_TENANT_TARGET.name())
           .register(meterRegistry)
           .increment();
-      throw new ResourceNotFoundException("ROLE_NOT_FOUND", "No such role");
+      throw new ResourceNotFoundException(CODE_ROLE_NOT_FOUND, MESSAGE_NO_SUCH_ROLE);
     }
     return view;
   }
@@ -1320,7 +1333,7 @@ public class RoleManagementService {
       return new SubsetCheck(adminDefining, catalogueIds);
     }
     log.atWarn()
-        .addKeyValue(LOG_KEY_EVENT, "RBAC_ROLE_SUBSET_DENIED")
+        .addKeyValue(LOG_KEY_EVENT, EVENT_SUBSET_DENIED)
         .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
         .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
         .addKeyValue(LOG_KEY_ROLE_ID, role.id())
@@ -1347,7 +1360,7 @@ public class RoleManagementService {
         userRoleAssignmentPort
             .findPermissionIdsForRole(role.id(), actor.tenantId())
             .orElseThrow(
-                () -> new ResourceNotFoundException("ROLE_NOT_FOUND", "No such role"));
+                () -> new ResourceNotFoundException(CODE_ROLE_NOT_FOUND, MESSAGE_NO_SUCH_ROLE));
     if (RbacAdministrators.isAdminDefining(rolePermissionIds, catalogueIds)) {
       return false;
     }
@@ -1412,12 +1425,12 @@ public class RoleManagementService {
         .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
         .addKeyValue(LOG_KEY_ROLE_ID, role.id())
         .addKeyValue(LOG_KEY_PERMISSION_ID, permissionId)
-        .addKeyValue("nonAdminAssignedCount", nonAdminAssignedCount)
+        .addKeyValue(KEY_NON_ADMIN_ASSIGNED_COUNT, nonAdminAssignedCount)
         .log("Refused an attach that would make a role admin-defining while some of its holders "
             + "were assigned by a non-administrator");
     Counter.builder(COUNTER_PERMISSION_DENIED)
-        .tag("permission", ROLE_WRITE)
-        .tag("reason", REASON_ATTACH_PROVENANCE)
+        .tag(TAG_PERMISSION, ROLE_WRITE)
+        .tag(TAG_REASON, REASON_ATTACH_PROVENANCE)
         .register(meterRegistry)
         .increment();
     throw new AttachProvenanceConflictException();
@@ -1544,8 +1557,8 @@ public class RoleManagementService {
                 .addKeyValue(
                     addedPermissionIds.size() == 1 ? LOG_KEY_PERMISSION_ID : "permissionIds",
                     addedPermissionIds.size() == 1 ? addedPermissionIds.get(0) : addedPermissionIds)
-                .addKeyValue("holderCount", holderCount)
-                .addKeyValue("nonAdminAssignedCount", read.nonAdminAssignedCount())
+                .addKeyValue(KEY_HOLDER_COUNT, holderCount)
+                .addKeyValue(KEY_NON_ADMIN_ASSIGNED_COUNT, read.nonAdminAssignedCount())
                 .log("Permission attached to a role with holders assigned by a non-administrator");
             Counter.builder(COUNTER_ATTACH_ESCALATES)
                 .tag(TAG_HOLDERS, holderCountBucket(holderCount))
@@ -1565,7 +1578,7 @@ public class RoleManagementService {
             .addKeyValue(LOG_KEY_ROLE_ID, role.id())
             .addKeyValue("grantedBy", actor.userId());
     if (snapshot.isPresent()) {
-      warn = warn.addKeyValue("holderCount", snapshot.get().holders().size());
+      warn = warn.addKeyValue(KEY_HOLDER_COUNT, snapshot.get().holders().size());
     }
     warn.log("Role became admin-defining");
     Counter.builder(COUNTER_ROLE_BECAME_ADMIN_DEFINING)

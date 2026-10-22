@@ -67,6 +67,7 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
   private static final Logger log = LoggerFactory.getLogger(RbacAuthEventAdapter.class);
 
   /** US-018 A7 (03-design.md §7.2): the fixed {@code actorType} of every break-glass row. */
+  private static final String KEY_OPERATION = "operation";
   private static final String BREAK_GLASS_ACTOR_TYPE = "BREAK_GLASS_CLI";
   private static final String OPERATION_BREAK_GLASS_GRANT = "breakGlassGrant";
   private static final String OPERATION_BREAK_GLASS_REFUSAL = "breakGlassRefusal";
@@ -263,7 +264,7 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
       metadata.put("holderCount", event.holderCount());
     }
     if (event.operation() != null) {
-      metadata.put("operation", event.operation());
+      metadata.put(KEY_OPERATION, event.operation());
     }
     if (event.replaceId() != null) {
       metadata.put("replaceId", event.replaceId().toString());
@@ -430,11 +431,11 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
         .addKeyValue("roleId", roleId)
         .addKeyValue("actorUserId", actorUserId)
         .addKeyValue("traceId", traceId)
-        .addKeyValue("operation", operation)
+        .addKeyValue(KEY_OPERATION, operation)
         .log("RBAC audit write lost: operation={} tenantId={} targetUserId={} roleId={}",
             operation, tenantId, targetUserId, roleId, e);
     Counter.builder("nexus.rbac.audit_write_failed")
-        .tag("operation", operation)
+        .tag(KEY_OPERATION, operation)
         .tag("mode", "best_effort")
         .register(meterRegistry)
         .increment();
@@ -452,11 +453,11 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
         .addKeyValue("tenantId", tenantId)
         .addKeyValue("roleId", roleId)
         .addKeyValue("actorUserId", actorUserId)
-        .addKeyValue("operation", operation)
+        .addKeyValue(KEY_OPERATION, operation)
         .log("RBAC audit write failed: operation={} tenantId={} roleId={}",
             operation, tenantId, roleId, e);
     Counter.builder("nexus.rbac.audit_write_failed")
-        .tag("operation", operation)
+        .tag(KEY_OPERATION, operation)
         .tag("mode", "atomic")
         .register(meterRegistry)
         .increment();
@@ -489,7 +490,7 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
       metadata.put("reason", reasonName);
     }
     if (operation != null) {
-      metadata.put("operation", operation);
+      metadata.put(KEY_OPERATION, operation);
     }
     if (missingCount != null) {
       metadata.put("missingCount", missingCount);

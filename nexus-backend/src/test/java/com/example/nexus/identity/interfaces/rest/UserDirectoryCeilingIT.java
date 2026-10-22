@@ -46,7 +46,7 @@ import org.springframework.web.client.RestTemplate;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
 
-/**
+/*
  * US-019 T-005 (design §4.5, NF-S5): the per-actor lookup throttle of 30 per 60 s through the
  * real server. The 31st lookup gets 429 {@code USER_DIR_001} with {@code Retry-After}, and a burst
  * of rejections leaves exactly one WARN {@code IDENTITY_DIRECTORY_THROTTLED}, the exception handler

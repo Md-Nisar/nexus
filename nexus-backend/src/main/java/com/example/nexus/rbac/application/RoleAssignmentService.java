@@ -196,6 +196,38 @@ public class RoleAssignmentService {
     this.windowSeconds = windowSeconds;
   }
 
+  private void afterAssignCommitted(
+      RoleChangeActor actor,
+      UUID targetUserId,
+      UUID roleId,
+      PiiPermissionGrantRule.Outcome piiGrant,
+      Timer.Sample lockHoldSample,
+      TargetClassification target,
+      boolean selfTarget) {
+    permissionCachePort.evict(actor.tenantId(), targetUserId);
+    log.atInfo()
+        .addKeyValue(LOG_KEY_EVENT, "ROLE_ASSIGNED")
+        .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+        .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
+        .addKeyValue(LOG_KEY_ROLE_ID, roleId)
+        .addKeyValue("assignedBy", actor.userId())
+        .log("Role assigned");
+    if (piiGrant == PiiPermissionGrantRule.Outcome.DELEGATED) {
+      piiGrantRule.recordDelegated(actor.tenantId(), actor.userId(), roleId, targetUserId);
+    }
+    // Stopped from afterCommit(), the true "at commit" point.
+    stopLockHoldTimer(lockHoldSample, OPERATION_ASSIGN, OUTCOME_ASSIGNED);
+    // Row 9: an administrator was minted. Ticket, never page: a self-target by an
+    // administrator is legitimate. Bounded tag, no tenant tag.
+    if (target.adminDefining()) {
+      Counter.builder(COUNTER_ADMIN_ROLE_ASSIGNED)
+          .tag(TAG_SELF_TARGET, Boolean.toString(selfTarget))
+          .register(meterRegistry)
+          .increment();
+      detectNonAdministratorAssignedHolder(actor.tenantId(), roleId, target.catalogueIds());
+    }
+  }
+
   /**
    * Grants {@code roleId} to {@code targetUserId} within the actor's own tenant. Returns the
    * created assignment, including its DB-generated {@code assignedAt}.
@@ -311,30 +343,9 @@ public class RoleAssignmentService {
               requestContext));
 
       registerPostCommitSideEffects(
-          () -> {
-            permissionCachePort.evict(actor.tenantId(), targetUserId);
-            log.atInfo()
-                .addKeyValue(LOG_KEY_EVENT, "ROLE_ASSIGNED")
-                .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
-                .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
-                .addKeyValue(LOG_KEY_ROLE_ID, roleId)
-                .addKeyValue("assignedBy", actor.userId())
-                .log("Role assigned");
-            if (piiGrant == PiiPermissionGrantRule.Outcome.DELEGATED) {
-              piiGrantRule.recordDelegated(actor.tenantId(), actor.userId(), roleId, targetUserId);
-            }
-            // Stopped from afterCommit(), the true "at commit" point.
-            stopLockHoldTimer(lockHoldSample, OPERATION_ASSIGN, OUTCOME_ASSIGNED);
-            // Row 9: an administrator was minted. Ticket, never page: a self-target by an
-            // administrator is legitimate. Bounded tag, no tenant tag.
-            if (target.adminDefining()) {
-              Counter.builder(COUNTER_ADMIN_ROLE_ASSIGNED)
-                  .tag(TAG_SELF_TARGET, Boolean.toString(selfTarget))
-                  .register(meterRegistry)
-                  .increment();
-              detectNonAdministratorAssignedHolder(actor.tenantId(), roleId, target.catalogueIds());
-            }
-          });
+          () ->
+              afterAssignCommitted(
+                  actor, targetUserId, roleId, piiGrant, lockHoldSample, target, selfTarget));
 
       return assignment;
     } catch (InsufficientPermissionException e) {

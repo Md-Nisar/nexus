@@ -53,6 +53,10 @@ public class UserDirectoryService {
   private static final String CODE_USER_NOT_FOUND = "USER_NOT_FOUND";
   private static final String MESSAGE_NO_SUCH_USER = "No such user";
 
+  private static final String KEY_EVENT = "event";
+  private static final String KEY_TENANT_ID = "tenantId";
+  private static final String KEY_ACTOR_USER_ID = "actorUserId";
+  private static final String KEY_OPERATION = "operation";
   private static final String EVENT_READ = "IDENTITY_DIRECTORY_READ";
 
   private final UserDirectoryQueryPort queryPort;
@@ -95,10 +99,10 @@ public class UserDirectoryService {
     long omittedForeign = batch.omittedForeign();
     if (omittedForeign > 0) {
       log.atWarn()
-          .addKeyValue("event", EVENT_CROSS_TENANT_TARGET)
-          .addKeyValue("tenantId", tenantId)
-          .addKeyValue("actorUserId", actorUserId)
-          .addKeyValue("operation", "BATCH")
+          .addKeyValue(KEY_EVENT, EVENT_CROSS_TENANT_TARGET)
+          .addKeyValue(KEY_TENANT_ID, tenantId)
+          .addKeyValue(KEY_ACTOR_USER_ID, actorUserId)
+          .addKeyValue(KEY_OPERATION, "BATCH")
           .addKeyValue("omittedCount", omittedForeign)
           .log("Omitted users of another tenant from a directory batch read");
       meterRegistry.counter(COUNTER_CROSS_TENANT_MISS).increment();
@@ -145,7 +149,7 @@ public class UserDirectoryService {
    */
   private void audit(UUID tenantId, UUID actorUserId, Read read) {
     Map<String, Object> metadata = new LinkedHashMap<>();
-    metadata.put("operation", read.operation());
+    metadata.put(KEY_OPERATION, read.operation());
     metadata.put("resultCount", read.resultCount());
     metadata.put("statusFilter", read.statusFilter());
     if (read.outcome() != null) {
@@ -158,10 +162,10 @@ public class UserDirectoryService {
 
     var entry =
         log.atInfo()
-            .addKeyValue("event", EVENT_READ)
-            .addKeyValue("tenantId", tenantId)
-            .addKeyValue("actorUserId", actorUserId)
-            .addKeyValue("operation", read.operation())
+            .addKeyValue(KEY_EVENT, EVENT_READ)
+            .addKeyValue(KEY_TENANT_ID, tenantId)
+            .addKeyValue(KEY_ACTOR_USER_ID, actorUserId)
+            .addKeyValue(KEY_OPERATION, read.operation())
             .addKeyValue("resultCount", read.resultCount())
             .addKeyValue("statusFilter", read.statusFilter());
     if (read.requestedCount() != null) {
@@ -176,10 +180,10 @@ public class UserDirectoryService {
   private ResourceNotFoundException notFound(UUID tenantId, UUID actorUserId, UUID userId) {
     if (queryPort.existsById(userId)) {
       log.atWarn()
-          .addKeyValue("event", EVENT_CROSS_TENANT_TARGET)
-          .addKeyValue("tenantId", tenantId)
-          .addKeyValue("actorUserId", actorUserId)
-          .addKeyValue("operation", "GET")
+          .addKeyValue(KEY_EVENT, EVENT_CROSS_TENANT_TARGET)
+          .addKeyValue(KEY_TENANT_ID, tenantId)
+          .addKeyValue(KEY_ACTOR_USER_ID, actorUserId)
+          .addKeyValue(KEY_OPERATION, "GET")
           .log("Refused a directory read: the target belongs to another tenant");
       meterRegistry.counter(COUNTER_CROSS_TENANT_MISS).increment();
     }

@@ -63,6 +63,8 @@ public class GlobalExceptionHandler {
   private static final String KEY_ERROR_TYPE = "errorType";
   private static final String KEY_DETAILS = "details";
   private static final String KEY_MESSAGE = "message";
+  private static final String MESSAGE_VALIDATION_FAILED = "Request validation failed.";
+  private static final String KEY_REASON = "reason";
   private static final String KEY_FIELD = "field";
 
   private final MeterRegistry meterRegistry;
@@ -158,7 +160,7 @@ public class GlobalExceptionHandler {
   ProblemDetail handleBodyValidation(MethodArgumentNotValidException e) {
     logHandledException(e, LEVEL_DEBUG, CODE_VALIDATION_FAILED);
     ProblemDetail problem =
-        problem(HttpStatus.BAD_REQUEST, CODE_VALIDATION_FAILED, "Request validation failed.");
+        problem(HttpStatus.BAD_REQUEST, CODE_VALIDATION_FAILED, MESSAGE_VALIDATION_FAILED);
     problem.setProperty(
         KEY_DETAILS,
         e.getBindingResult().getFieldErrors().stream()
@@ -173,7 +175,7 @@ public class GlobalExceptionHandler {
   ProblemDetail handleParamValidation(ConstraintViolationException e) {
     logHandledException(e, LEVEL_DEBUG, CODE_VALIDATION_FAILED);
     ProblemDetail problem =
-        problem(HttpStatus.BAD_REQUEST, CODE_VALIDATION_FAILED, "Request validation failed.");
+        problem(HttpStatus.BAD_REQUEST, CODE_VALIDATION_FAILED, MESSAGE_VALIDATION_FAILED);
     List<Map<String, String>> details = e.getConstraintViolations().stream()
         .map(v -> Map.of(
             KEY_FIELD, String.valueOf(v.getPropertyPath()),
@@ -186,20 +188,20 @@ public class GlobalExceptionHandler {
   @ExceptionHandler(InsufficientPermissionException.class)
   ProblemDetail handleInsufficientPermission(InsufficientPermissionException e) {
     Map<String, Object> extraFields = new LinkedHashMap<>();
-    extraFields.put("reason", e.getReason().name());
+    extraFields.put(KEY_REASON, e.getReason().name());
     extraFields.put("requiredPermission", e.getRequiredPermission());
     extraFields.put("userId", MDC.get(AuthenticationDetailKeys.MDC_USER_ID));
     extraFields.put("tenantId", MDC.get(AuthenticationDetailKeys.MDC_TENANT_ID));
     logHandledException(e, "WARN", "RBAC_001", extraFields);
     Counter.builder("nexus.rbac.permission_denied")
         .tag("permission", e.getRequiredPermission())
-        .tag("reason", e.getReason().name())
+        .tag(KEY_REASON, e.getReason().name())
         .register(meterRegistry)
         .increment();
     ProblemDetail problem =
         problem(HttpStatus.FORBIDDEN, "RBAC_001", "You do not have permission to perform this action");
     problem.setProperty("requiredPermission", e.getRequiredPermission());
-    problem.setProperty("reason", CallerFacingDenialReason.of(e.getReason()).name());
+    problem.setProperty(KEY_REASON, CallerFacingDenialReason.of(e.getReason()).name());
     return problem;
   }
 
@@ -254,7 +256,7 @@ public class GlobalExceptionHandler {
   ProblemDetail handleMissingHeader(MissingRequestHeaderException e) {
     logHandledException(e, LEVEL_DEBUG, CODE_VALIDATION_FAILED);
     ProblemDetail problem =
-        problem(HttpStatus.BAD_REQUEST, CODE_VALIDATION_FAILED, "Request validation failed.");
+        problem(HttpStatus.BAD_REQUEST, CODE_VALIDATION_FAILED, MESSAGE_VALIDATION_FAILED);
     problem.setProperty(
         KEY_DETAILS,
         List.of(Map.of(KEY_FIELD, e.getHeaderName(), KEY_MESSAGE, "Header is required.")));

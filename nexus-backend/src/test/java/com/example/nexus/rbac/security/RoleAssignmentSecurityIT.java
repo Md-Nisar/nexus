@@ -88,10 +88,6 @@ class RoleAssignmentSecurityIT {
   // Dangerous per RbacDangerousPermissions.NAMES -- used by the T-S7 freshness-on-the-privilege-
   // path extension below to construct a role that is privileged WITHOUT being named TENANT_ADMIN.
   private static final UUID ROLE_WRITE_PERMISSION_ID = RbacSeededPermissionIds.ROLE_WRITE;
-  // Dangerous per RbacDangerousPermissions.NAMES -- used by T-007(c)/(d) below to construct a
-  // caller who qualifies via RbacAdminEquivalence#isFullyAdminEquivalent (ALL three), never named
-  // TENANT_ADMIN.
-  private static final UUID TENANT_WRITE_PERMISSION_ID = RbacSeededPermissionIds.TENANT_WRITE;
 
   @Value("${local.server.port}")
   private int port;
