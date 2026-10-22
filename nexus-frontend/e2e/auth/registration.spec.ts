@@ -47,6 +47,7 @@ async function fetchVerificationToken(
         if (match) return match[1];
       }
     } catch {
+      // MailHog not reachable yet: fall through and report no token
     }
   }
   return null;
@@ -54,7 +55,7 @@ async function fetchVerificationToken(
 
 
 interface MailHogMessage {
-  To?: Array<{ Mailbox: string; Domain: string }>;
+  To?: { Mailbox: string; Domain: string }[];
   Content?: { Body: string };
 }
 
