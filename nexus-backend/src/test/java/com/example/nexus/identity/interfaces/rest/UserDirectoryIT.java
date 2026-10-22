@@ -354,6 +354,24 @@ class UserDirectoryIT {
   }
 
   @Test
+  void should_notCountLookupInvalid_when_aGetOnTheLookupPathAnswers400() {
+    Tenant a = tenantWithReader();
+    double before = lookupRequests("invalid");
+    HttpHeaders headers = new HttpHeaders();
+    headers.setBearerAuth(a.token());
+
+    ResponseEntity<String> response =
+        restTemplate.exchange(
+            "http://localhost:" + port + "/api/v1/users/lookup",
+            HttpMethod.GET,
+            new HttpEntity<>(headers),
+            String.class);
+
+    assertThat(response.getStatusCode().value()).isEqualTo(400);
+    assertThat(lookupRequests("invalid") - before).isZero();
+  }
+
+  @Test
   void should_notCountInvalid_when_aCallerWithoutDirectoryReadIsDeniedBeforeTheBody() {
     double before = lookupRequests("invalid");
 

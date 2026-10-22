@@ -41,7 +41,7 @@ Environments: none exists, so nothing here has run against a real staging or pro
 | P-13 | Three feature files still import Material (registration form, verification landing, design-system preview) under an ESLint exemption. Migrate to `shared/ui` (`NxCheckbox` now exists) and delete the exemption | Frontend | none | R3-10 |
 | P-14 | `axe-core` 4.14.0 (devDependency, `"license": "MPL-2.0"` in its package.json) is used by the e2e suite. Confirm that MPL-2.0 is acceptable for a test-only dependency | Legal | none (recommended before merge) | S2 |
 | P-15 | RC-62.2: record the toolchain-only critical npm advisories (`@angular/build`, `tar`, `piscina`, `proxy-addr`) with the Frontend Tech Lead as owner and a review date. `npm audit --omit=dev` was clean at review | Frontend Tech Lead | none | threat model RC-62 |
-| P-16 | `nexus-frontend/src/app/features/dashboard/README.md` is stale: it documents a component that navigates after logout with `Router`, but the dashboard is now an empty page and logout belongs to the shell | Frontend | none | T-010 |
+| P-16 | **DONE 2026-10-22.** `features/dashboard/README.md` rewritten to describe the empty page; logout lives in the shell | Frontend | none | T-010 |
 | P-17 | `AppError.reason` is typed `string`; the design types it `RbacDenialReason` | Frontend | US-020 | S1-5, T-028 |
 | P-18 | Decide: a by-id directory 404 writes no audit row (pinned by `UserDirectoryIT.should_notAudit_when_aByIdReadFindsNoUser`); the design says one row per request. Either keep it (the design amendment records this) or change code and that test together | Security/Privacy | none | S1-6, 08-test-audit gap 2 |
 | P-19 | The shipped outcome label for a successful replace is `replaced` (design said `applied`); the design is amended. Alert rules use `replaced`. Reverse only with the `RoleManagementServiceTest` assertions | Md Nisar Ahmed | none | S1-5 |
@@ -50,7 +50,7 @@ Environments: none exists, so nothing here has run against a real staging or pro
 | P-22 | `JpaRoleManagementAdapter.attachPermissions` runs one `SELECT` per id (merge on `RolePermission`), inside the role-row lock; a 100-permission replace costs about 100 extra selects. Make `RolePermission` `Persistable` or batch | Backend | none (no latency budget) | R1-3 |
 | P-23 | O-1: no request rate or latency budget exists, so no load test was added. The directory and authorization endpoints are not hot paths. Design §16 proposes p95 under 200 ms for B1, B3 and B4 at dev volume | Md Nisar Ahmed | none | `04-tasks.md` G-1, O-1 |
 | P-24 | ADR-0021 (Rev 3), ADR-0026 and ADR-0027 are still "Proposed"; move them to Accepted when the PR merges | Md Nisar Ahmed | none | `docs/adr` |
-| P-26 | The design's `nexus.rbac.permission_replace.changes` distribution summary was not implemented; add it or drop it from the design | Backend | none | monitoring.md §1 |
+| P-26 | **DECIDED 2026-10-22: dropped.** The `nexus.rbac.permission_replace.changes` summary is not shipped; the audit event carries `addedCount` and `removedCount` and no alert uses it. Design amendment 2 and monitoring.md §1 already say so | Backend | none | monitoring.md §1 |
 | P-29 | `api-spec.json` is not committed; generate it from the running app at release time | Release owner | release | 09-technical.md |
 
 ## Not tracked here
@@ -62,7 +62,7 @@ Review findings that were fixed or accepted are in the Disposition tables of [06
 
 | ID | Item | Owner | Blocks |
 |---|---|---|---|
-| P-30 | `LookupAuthorizationFirst.afterCompletion` has no method filter, so `GET /api/v1/users/lookup` double-counts `lookup/invalid` | Backend | none |
+| P-30 | **DONE 2026-10-22.** `afterCompletion` counts POST only; `UserDirectoryIT` (22 tests) green with a new GET case | Backend | none |
 | P-31 | `UserDirectoryService.batch` counts foreign ids across two transactions after the F3 move; the count can skew | Backend | none |
 | P-32 | `authGuard` leaves a blank shell with no retry affordance on a cold-start 503 (R3-M2 reading) | Frontend / UX | none (UX decision) |
 | P-33 | Lint rule gaps: template-literal computed access, string-literal keys, aliased `doc.write`, `eval`, `new Function` | Frontend | none |

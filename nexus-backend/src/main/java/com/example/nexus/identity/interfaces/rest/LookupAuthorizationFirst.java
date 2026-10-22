@@ -7,6 +7,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -60,14 +61,18 @@ class LookupAuthorizationFirst implements WebMvcConfigurer, HandlerInterceptor {
    * Counts {@code requests{operation=lookup, outcome=invalid}} for a body the handler never saw: a
    * 400 (size cap, bean validation, unreadable body) or 415 after the permission check passed. The
    * handler's own {@code measured} wrapper cannot see these, and the lookup handler itself never
-   * answers 400 or 415, so nothing is counted twice. A denied caller never gets here.
+   * answers 400 or 415, so nothing is counted twice. A denied caller never gets here, and only POST counts: the by-id read
+   * {@code GET /api/v1/users/lookup} answers 400 as an invalid id and is counted by its own
+   * handler.
    */
   @Override
   public void afterCompletion(
       HttpServletRequest request, HttpServletResponse response, Object handler, Exception ex) {
     int status = response.getStatus();
-    if (status == HttpStatus.BAD_REQUEST.value()
-        || status == HttpStatus.UNSUPPORTED_MEDIA_TYPE.value()) {
+    boolean lookupCall = HttpMethod.POST.matches(request.getMethod());
+    if (lookupCall
+        && (status == HttpStatus.BAD_REQUEST.value()
+            || status == HttpStatus.UNSUPPORTED_MEDIA_TYPE.value())) {
       meterRegistry
           .counter(UserDirectoryController.METRIC_REQUESTS, "operation", "lookup", "outcome", "invalid")
           .increment();
