@@ -2,7 +2,11 @@ import { expectNoSeriousA11yViolations } from '../fixtures/axe';
 import { SIGN_IN_PERSONAS, PersonaKey } from '../fixtures/personas';
 import { expect, test } from '../fixtures/test';
 
-/** Nav labels each persona sees. Only the ungated Dashboard exists until the console ships. */
+/**
+ * Nav labels each persona sees. Only the ungated Dashboard exists until the console ships, so this
+ * cannot catch a filtering bug; the permission filtering itself is proved by the gated-nav cases in
+ * src/app/core/layout/shell/shell.spec.ts.
+ */
 const NAV_LABELS: Readonly<Record<PersonaKey, readonly string[]>> = {
   admin: ['Dashboard'],
   admin2: ['Dashboard'],

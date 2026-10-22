@@ -65,6 +65,12 @@ async function render(url = '/dashboard') {
   return { harness, root, router: TestBed.inject(Router) };
 }
 
+/**
+ * Permission-filtered navigation is proved HERE, not in e2e: the e2e per-persona nav spec
+ * (e2e/access-management/shell.spec.ts) only sees the ungated Dashboard until the access console
+ * ships gated items, so it cannot fail on a filtering bug. GATED_NAV adds a gated item through
+ * NAV_ITEMS_TOKEN so each persona below is checked against a real permission requirement.
+ */
 describe('Shell', () => {
   it('primes /v1/users/me exactly once', async () => {
     const { http } = setup();
@@ -90,6 +96,20 @@ describe('Shell', () => {
     http.expectOne(`${API}/v1/users/me`).flush({});
     expect(root.querySelector('[data-testid="nav-dashboard"]')).not.toBeNull();
     expect(root.querySelector('[data-testid="nav-roles"]')).toBeNull();
+  });
+
+  it.each([
+    ['holds no permission', [], ['nav-dashboard']],
+    ['holds only an unrelated permission', ['user:read'], ['nav-dashboard']],
+    ['holds the required permission', ['role:read'], ['nav-dashboard', 'nav-roles']],
+  ])('renders exactly the permitted nav items for a persona that %s', async (_n, perms, ids) => {
+    const { http } = setup(undefined, perms);
+    const { root } = await render();
+    http.expectOne(`${API}/v1/users/me`).flush({});
+    const rendered = Array.from(root.querySelectorAll('[data-testid^="nav-"]'))
+      .map((el) => el.getAttribute('data-testid'))
+      .filter((id) => id !== 'nav-toggle');
+    expect(rendered).toEqual(ids);
   });
 
   it('shows the item once the permission is held, reactively', async () => {
