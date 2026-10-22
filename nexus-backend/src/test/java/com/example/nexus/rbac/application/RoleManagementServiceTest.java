@@ -1241,7 +1241,7 @@ class RoleManagementServiceTest {
         .isEqualTo(1.0);
   }
 
-  /** A completing attach was already judged by RBAC_010 on its snapshot: no RBAC_012 for it. */
+  /** A completing attach is judged by RBAC_010, not by the RBAC_012 re-classification. */
   @Test
   void should_attachWithoutRbac012_when_theSnapshotAlreadySaidTheAttachCompletesTheCatalogue() {
     stubCompletingAttach();
@@ -1253,6 +1253,99 @@ class RoleManagementServiceTest {
 
     verify(rbacAuditPort).recordRolePermissionGranted(any());
     assertThat(meterRegistry.find("nexus.rbac.role_classification_changed").counter()).isNull();
+  }
+
+  /**
+   * US-019 review R1-1 (RC-46 promotion order): a completing attach re-judges its holders under
+   * locks after the role row and before the insert: roles first, then the set lock, then the
+   * current read of the locked roles' permissions. A plain re-read would see the old REPEATABLE
+   * READ snapshot.
+   */
+  @Test
+  void should_takeTheSetLockAfterTheRoleRowAndBeforeTheInsert_when_theAttachCompletesTheCatalogue() {
+    stubCompletingAttach();
+    when(userRoleAssignmentPort.findActiveHoldersForRole(roleId, tenantId)).thenReturn(List.of());
+    when(roleManagementPort.hasPermission(roleId, P2)).thenReturn(false);
+    when(roleManagementPort.lockPermissionIdsForRole(roleId)).thenReturn(CATALOGUE);
+
+    inUncommittedSynchronization(() -> service.attachPermission(actor, roleId, P2, ctx));
+
+    InOrder order = inOrder(roleManagementPort, userRoleAssignmentPort);
+    order.verify(roleManagementPort).lockRoleRow(roleId, tenantId);
+    order.verify(userRoleAssignmentPort).lockActiveAssignmentHolders(tenantId, List.of(roleId));
+    order.verify(userRoleAssignmentPort).lockRolePermissionsForRoles(tenantId, List.of(roleId));
+    order.verify(roleManagementPort).attachPermission(roleId, P2);
+  }
+
+  /**
+   * US-019 review R1-1: the pre-lock read found no holder, but an assign by a non-administrator
+   * committed before the attach got the role row. The locked rows show it: 409 RBAC_010, nothing
+   * inserted, no audit row.
+   */
+  @Test
+  void should_throw409Rbac010AndInsertNothing_when_aNonAdministratorAssignedHolderAppearsUnderTheLocks() {
+    stubCompletingAttach();
+    when(userRoleAssignmentPort.findActiveHoldersForRole(roleId, tenantId)).thenReturn(List.of());
+    when(roleManagementPort.hasPermission(roleId, P2)).thenReturn(false);
+    when(userRoleAssignmentPort.lockActiveAssignmentHolders(tenantId, List.of(roleId)))
+        .thenReturn(List.of(lockedRow(UUID.randomUUID(), roleId, UUID.randomUUID())));
+
+    assertThatThrownBy(
+            () ->
+                inUncommittedSynchronization(
+                    () -> service.attachPermission(actor, roleId, P2, ctx)))
+        .isInstanceOf(AttachProvenanceConflictException.class)
+        .hasFieldOrPropertyWithValue("code", "RBAC_010");
+
+    verify(roleManagementPort, never()).attachPermission(any(), any());
+    verifyNoInteractions(rbacAuditPort, permissionCachePort, permissionFreshness);
+    assertThat(
+            meterRegistry
+                .get("nexus.rbac.permission_denied")
+                .tag("reason", "ATTACH_PROVENANCE")
+                .counter()
+                .count())
+        .isEqualTo(1.0);
+    assertThat(meterRegistry.find("nexus.rbac.permission_replace").counter()).isNull();
+  }
+
+  /** The assigner holds a locked row of a role that is admin-defining in the current read. */
+  @Test
+  void should_attach_when_theLockedHolderWasAssignedByAnAdministratorOfTheCurrentRead() {
+    UUID assigner = UUID.randomUUID();
+    UUID adminRoleId = UUID.randomUUID();
+    stubCompletingAttach();
+    when(userRoleAssignmentPort.findActiveHoldersForRole(roleId, tenantId)).thenReturn(List.of());
+    when(roleManagementPort.hasPermission(roleId, P2)).thenReturn(false);
+    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId))
+        .thenReturn(
+            List.of(new RolePermissionRef(adminRoleId, P1), new RolePermissionRef(adminRoleId, P2)));
+    List<UUID> lockSet =
+        RoleAssignmentService.buildAscendingLockSet(Set.of(adminRoleId), roleId);
+    when(userRoleAssignmentPort.lockActiveAssignmentHolders(tenantId, lockSet))
+        .thenReturn(
+            List.of(
+                lockedRow(assigner, adminRoleId, assigner),
+                lockedRow(UUID.randomUUID(), roleId, assigner)));
+    when(userRoleAssignmentPort.lockRolePermissionsForRoles(tenantId, lockSet))
+        .thenReturn(
+            List.of(new RolePermissionRef(adminRoleId, P1), new RolePermissionRef(adminRoleId, P2)));
+    when(roleManagementPort.lockPermissionIdsForRole(roleId)).thenReturn(CATALOGUE);
+
+    inUncommittedSynchronization(() -> service.attachPermission(actor, roleId, P2, ctx));
+
+    verify(roleManagementPort).attachPermission(roleId, P2);
+  }
+
+  /** A non-completing attach takes no set lock (the rare branch only). */
+  @Test
+  void should_notTakeTheSetLock_when_theAttachDoesNotCompleteTheCatalogue() {
+    stubNonCompletingAttach();
+    when(roleManagementPort.lockPermissionIdsForRole(roleId)).thenReturn(Set.of(P1));
+
+    inUncommittedSynchronization(() -> service.attachPermission(actor, roleId, P1, ctx));
+
+    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(any(), any());
   }
 
   /** A DELETE that committed while the attach waited leaves no live row to lock: 404, no insert. */

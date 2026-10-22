@@ -65,3 +65,4 @@ date,story,task,agent_type,model,agent_id,calls,tool_uses,cache_read,cache_write
 2026-10-22,US-019,T-001,code-reviewer,claude-sonnet-5-5,aaa0538,20,23,1186912,99816,17704,99818,332021
 2026-10-22,US-019,T-002,code-reviewer,claude-sonnet-5-5,a15e2c7,24,29,1704610,123078,21101,123080,429862
 2026-10-22,US-019,,security-reviewer,claude-sonnet-5-5,a4392db,45,54,5012591,185382,39836,185384,932257
+2026-10-22,US-019,,frontend-engineer,claude-sonnet-5-5,a6ce7bf,51,55,3100686,99172,31203,99174,590151

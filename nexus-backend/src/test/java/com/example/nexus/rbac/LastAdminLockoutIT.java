@@ -1349,10 +1349,11 @@ class LastAdminLockoutIT {
    * the provenance branch runs too (M14, M15, the holders, M10', the administrator users) and the
    * post-commit read repeats the holder and administrator reads. Rather than identify each
    * statement, the assertion is the stronger one: <b>no</b> captured statement contains a locking
-   * clause, except the two US-019 {@code lock…} statements attach takes by design (RC-64, RC-56.3),
-   * each identified positively: the role row {@code FOR UPDATE} before the insert and R's {@code
-   * role_permissions} {@code FOR SHARE} after it. Both are privileged for {@code nexus_app}
-   * ({@code RolesPrivilegeIT}, {@code RolePermissionsPrivilegeIT}).
+   * clause, except the US-019 {@code lock…} statements attach takes by design (RC-64, RC-56.3,
+   * and, for a catalogue-completing attach, R1-1), each identified positively: the role row {@code
+   * FOR UPDATE} before the insert, R's {@code role_permissions} {@code FOR SHARE} after it, and the
+   * promotion pair (the set lock and the locked roles' permissions read). All are privileged for
+   * {@code nexus_app} ({@code RolesPrivilegeIT}, {@code RolePermissionsPrivilegeIT}).
    *
    * <p>This replaces the former M7/M8/M9 test (ledger rows 11 and 17): M7 and the M8 call site on
    * these paths are deleted with the name-based gates.
@@ -1389,8 +1390,21 @@ class LastAdminLockoutIT {
     String currentRead =
         findStatementMatching(
             emittedSql, List.of("from role_permissions", "for share"), List.of("join"));
+    // US-019 review R1-1: a catalogue-completing attach re-judges its holders under locks, as a
+    // promoting replace does: the set lock (user_roles FOR UPDATE) and the current read of the
+    // locked roles' permissions (role_permissions joined to roles, FOR SHARE OF rp).
+    String setLock =
+        findStatementMatching(emittedSql, List.of("from user_roles", "for update"), List.of());
+    String lockedPermissionsRead =
+        findStatementMatching(
+            emittedSql, List.of("from role_permissions", "join", "for share"), List.of());
     emittedSql.stream()
-        .filter(sql -> !sql.equals(roleRowLock) && !sql.equals(currentRead))
+        .filter(
+            sql ->
+                !sql.equals(roleRowLock)
+                    && !sql.equals(currentRead)
+                    && !sql.equals(setLock)
+                    && !sql.equals(lockedPermissionsRead))
         .forEach(sql -> assertNoLockingClause(sql, "an attach read"));
     assertThat(emittedSql.stream().filter(sql -> sql.toLowerCase(Locale.ROOT).contains("user_roles")))
         .as("the holder reads (in the transaction and after commit) are captured: " + emittedSql)

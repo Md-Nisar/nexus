@@ -307,7 +307,8 @@ public class RoleManagementService {
    * {@code FOR SHARE} read of R's permissions re-classifies R; if it now covers the catalogue while
    * the snapshot said this attach would not complete it, a change committed while the attach waited
    * and the provenance rule never judged it, so the attach rolls back with the retryable 409 {@code
-   * RBAC_012} and no audit row. Lock order is roles, then role_permissions (RC-46).
+   * RBAC_012} and no audit row. Lock order is roles, then role_permissions (RC-46); a catalogue-completing
+   * attach takes the set lock (user_roles) after the role row, as a promoting replace does.
    *
    * <p><b>Provenance rule (design §5.6, R1-1).</b> If the role is not admin-defining now and its
    * permissions plus the attached one cover the catalogue, the role would turn every holder into an
@@ -315,8 +316,10 @@ public class RoleManagementService {
    * administrator, the attach is refused: otherwise a second account could be promoted by an
    * unwitting administrator (RES-26). A role that is already admin-defining does not match, so its
    * duplicate attach still gets {@code RBAC_005}. Partial escalations stay detective, see the
-   * signals below. The only extra reads are on the rare branch where the attach completes the
-   * catalogue, and they are non-locking.
+   * signals below. The extra work is on the rare branch where the attach completes the catalogue:
+   * a non-locking fast-fail before the role-row lock, then (R1-1) the same rule again after it,
+   * from the set lock's rows and a current read, because a non-locking re-read would still see the
+   * transaction's old snapshot and miss an assign that committed while the attach waited.
    *
    * <p><b>PII grant rule (US-019 §4.8, RC-60.3).</b> Right after A3 (RC-66.1) and before the
    * provenance rule and the duplicate check: attaching {@code user:directory:read} requires the
@@ -368,6 +371,9 @@ public class RoleManagementService {
     // deadlocking in the current read below (T-D28). Order: roles, then role_permissions (RC-46).
     if (!roleManagementPort.lockRoleRow(role.id(), actor.tenantId())) {
       throw new ResourceNotFoundException("ROLE_NOT_FOUND", "No such role");
+    }
+    if (becameAdminDefining) {
+      requireNoLockedNonAdministratorAssignedHolder(actor, role, catalogueIds);
     }
     roleManagementPort.attachPermission(role.id(), permissionId);
     requireAttachKeptItsClassification(
@@ -638,7 +644,8 @@ public class RoleManagementService {
             actor, role, setLock, adminDefiningNow, OPERATION_REPLACE);
       }
       if (plan.promotion()) {
-        requireNoLockedHolderAssignedByNonAdministrator(actor, role, setLock, adminDefiningNow);
+        requireNoLockedHolderAssignedByNonAdministrator(
+            actor, role, setLock, adminDefiningNow, OPERATION_REPLACE);
       }
     }
 
@@ -757,7 +764,11 @@ public class RoleManagementService {
    * (ids and a count), {@code permission_denied{reason=ATTACH_PROVENANCE}}, no audit row.
    */
   private void requireNoLockedHolderAssignedByNonAdministrator(
-      RoleChangeActor actor, RoleView role, SetLockRows setLock, Set<UUID> adminDefiningNow) {
+      RoleChangeActor actor,
+      RoleView role,
+      SetLockRows setLock,
+      Set<UUID> adminDefiningNow,
+      String operation) {
     Set<UUID> administrators = new HashSet<>();
     setLock.holders().stream()
         .filter(holder -> adminDefiningNow.contains(holder.roleId()))
@@ -775,16 +786,18 @@ public class RoleManagementService {
         .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
         .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
         .addKeyValue(LOG_KEY_ROLE_ID, role.id())
-        .addKeyValue("operation", OPERATION_REPLACE)
+        .addKeyValue("operation", operation)
         .addKeyValue("nonAdminAssignedCount", nonAdminAssignedCount)
-        .log("Refused a permission-set replace that would make a role admin-defining while some of"
+        .log("Refused a permission change that would make a role admin-defining while some of"
             + " its holders were assigned by a non-administrator");
     Counter.builder(COUNTER_PERMISSION_DENIED)
         .tag("permission", ROLE_WRITE)
         .tag("reason", REASON_ATTACH_PROVENANCE)
         .register(meterRegistry)
         .increment();
-    countReplace(OUTCOME_CONFLICT, LOCK_PATH_SET_LOCK);
+    if (OPERATION_REPLACE.equals(operation)) {
+      countReplace(OUTCOME_CONFLICT, LOCK_PATH_SET_LOCK);
+    }
     throw new AttachProvenanceConflictException();
   }
 
@@ -1405,6 +1418,22 @@ public class RoleManagementService {
         .register(meterRegistry)
         .increment();
     throw new AttachProvenanceConflictException();
+  }
+
+  /**
+   * US-019 review R1-1: the provenance rule again, under locks, for an attach that completes the
+   * catalogue. The pre-lock check reads the transaction's REPEATABLE READ snapshot, so an assign
+   * by a non-administrator that committed while this attach waited for R's row is invisible to
+   * it. After the role-row lock, this takes the set lock (RC-46 promotion order: roles, then
+   * {@code user_roles}), classifies from the current {@code FOR SHARE} read and judges the locked
+   * holders, exactly as a promoting replace does. R's row X lock keeps any assign (it needs S on
+   * the row) from adding a holder after this point, so the locked read is final.
+   */
+  private void requireNoLockedNonAdministratorAssignedHolder(
+      RoleChangeActor actor, RoleView role, Set<UUID> catalogueIds) {
+    SetLockRows setLock = acquireSetLock(actor, role, catalogueIds);
+    requireNoLockedHolderAssignedByNonAdministrator(
+        actor, role, setLock, adminDefiningNow(actor, setLock, catalogueIds), OPERATION_ATTACH);
   }
 
   /**
