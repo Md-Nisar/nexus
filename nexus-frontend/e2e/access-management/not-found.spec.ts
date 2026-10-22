@@ -1,4 +1,5 @@
 import { expectNoSeriousA11yViolations } from '../fixtures/axe';
+import { requireBackend } from '../fixtures/backend';
 import { expect, test } from '../fixtures/test';
 
 test.describe('not found', () => {
@@ -22,6 +23,8 @@ test.describe('not found', () => {
   });
 
   test('a signed-out visitor to an unknown URL is sent to login', async ({ page }) => {
+    // Only a real 401 from the refresh call redirects to login; a network error does not.
+    await requireBackend();
     await page.goto('/no/such/page');
     await expect(page).toHaveURL(/\/auth\/login\?returnUrl=%2Fno%2Fsuch%2Fpage$/);
   });
