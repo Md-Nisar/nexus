@@ -155,11 +155,12 @@ yield an empty array.
 On denial the guard redirects to `/access-denied` (never `/auth/login` — the user *is*
 authenticated, they just lack the permission).
 
-**`permissionGuard` must never be used alone.** Compose it *after* `authGuard`, or attach
-it to a route whose ancestor already carries `authGuard`. Angular evaluates a
-`canActivate` array sequentially and short-circuits on the first non-`true` result, so
-`authGuard` finishes restoring the session before `permissionGuard` reads it. Used alone,
-a cold start (page reload, in-memory session `null`) makes `permissionGuard` see an empty
+**`permissionGuard` must never be used alone, and never in the same array as `authGuard`.**
+Put `authGuard` on an **ancestor** route (the signed-in `Shell` carries it) and
+`permissionGuard` on the child. Guards in one `canActivate` array run *concurrently*, so
+`permissionGuard` would read the permission list while `authGuard` is still refreshing the
+session; route levels run in sequence, so an ancestor's guard finishes first. Used alone, a
+cold start (page reload, in-memory session `null`) makes `permissionGuard` see an empty
 permission list and send an entitled user to `/access-denied` instead of `/auth/login`.
 
 **`permissionGuard` fails open.** A route that reaches the guard without a non-empty
@@ -243,6 +244,18 @@ http.get(url, { context: new HttpContext().set(SKIP_ACCESS_DENIED_REDIRECT, true
 ```
 
 `SKIP_ACCESS_DENIED_REDIRECT` is exported from `core/http/skip-access-denied-redirect.ts`.
+
+### Dev personas, e2e suite, contrast tokens and nav items (US-019)
+
+**Dev personas.** The backend `dev` profile (the default) seeds known-password accounts at startup (`DevDataInitializer`, never under `prod` or `break-glass`): an administrator (the E2E login), a second administrator, a member, a Role Manager (`role:read`, `role:write`), a User Manager (`user:read`, `user:role:assign`, `user:directory:read`), a locked user, a pending user, and an administrator of a fixture-only second tenant who cannot sign in. All share the dev-only password `TestPass99!`. The addresses live in `nexus-frontend/e2e/fixtures/personas.ts`. They are synthetic; never reuse them or the password anywhere else.
+
+**Run the e2e suite locally.** Start `docker compose up -d` (MySQL, Redis, MailHog), then the backend on the dev profile (`cd nexus-backend && ./mvnw spring-boot:run`), then `cd nexus-frontend && E2E_REQUIRE_BACKEND=1 npm run e2e` (Playwright starts the dev server on :2000 itself; first time `npx playwright install chromium`). Without `E2E_REQUIRE_BACKEND=1`, specs that need the backend are skipped when it is unreachable, which is convenient locally but means a green run proves less. CI sets it, rejects any skipped test and enforces a floor (`E2E_MIN_TESTS` in `.github/workflows/e2e-full-stack.yml`; raise it when you add specs).
+
+**Contrast tokens.** For text use `--nx-color-{primary,error,success,warning}-text`; keep the base `--nx-color-*` for fills, borders and icons. The text tokens are lighter in dark mode and darker in light mode to reach WCAG AA. They are defined in `src/styles/_tokens.scss` for both themes and both `data-theme` overrides; change all three places together.
+
+**Add a nav item.** Add an entry to `NAV_ITEMS` in `src/app/core/layout/nav.config.ts` and a route under the shell in `app.routes.ts`. The item's `permission` must equal the route's `data.permission` (`null` for every signed-in user); `nav.config.spec.ts` fails otherwise. Hiding a nav item is cosmetic, so the route still needs `permissionGuard` and the endpoint `@RequiresPermission`. Add the item to `NAV_LABELS` in the shell e2e spec.
+
+**Agent usage ledger.** `docs/metrics/agent-usage-ledger.csv` is described under "Usage ledger" in *The Operating Model* below; commit the rows the hook appends.
 
 ## Docker
 
