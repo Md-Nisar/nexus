@@ -96,11 +96,11 @@ export class Shell {
       .subscribe({
         next: () => {
           this.toast.success('You have been logged out.');
-          this.router.navigate(['/auth/login']);
+          void this.router.navigate(['/auth/login']);
         },
         error: () => {
           this.toast.error('Logout could not be confirmed, but your session was ended.');
-          this.router.navigate(['/auth/login']);
+          void this.router.navigate(['/auth/login']);
         },
       });
   }

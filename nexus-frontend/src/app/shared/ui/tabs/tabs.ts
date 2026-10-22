@@ -42,6 +42,6 @@ export class NxTabs {
   readonly ariaLabel = input.required<string>();
 
   protected defaultTestId(tab: NavTab): string {
-    return 'nx-tab-' + tab.path.replace(/^\//, '').replace(/\//g, '-');
+    return 'nx-tab-' + tab.path.replace(/^\//, '').replaceAll('/', '-');
   }
 }

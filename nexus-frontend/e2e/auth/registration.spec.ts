@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { requireBackend } from '../fixtures/backend';
+import { enterAddress } from '../fixtures/secret-input';
 
 /**
  * E2E: US-002 registration happy path + accessibility.
@@ -30,9 +31,7 @@ async function fetchVerificationToken(
       const resp = await request.get(MAILHOG_API, { timeout: 3_000 });
       if (!resp.ok()) continue;
       const { items } = (await resp.json()) as { items: MailHogMessage[] };
-      const msg = items?.find((m) =>
-        m.To?.some((t) => `${t.Mailbox}@${t.Domain}` === toAddress),
-      );
+      const msg = items?.find((m) => m.To?.some((t) => `${t.Mailbox}@${t.Domain}` === toAddress));
       if (msg) {
         const body = msg.Content?.Body ?? '';
         const match = body.match(/token=([0-9a-f]{64})/);
@@ -44,7 +43,6 @@ async function fetchVerificationToken(
   }
   return null;
 }
-
 
 interface MailHogMessage {
   To?: { Mailbox: string; Domain: string }[];
@@ -73,7 +71,7 @@ test.describe('registration', () => {
     await page.goto('/auth/register');
     await expect(page.getByLabel('Email address')).toBeVisible();
 
-    await page.locator('input[autocomplete="email"]').fill(email);
+    await enterAddress(page.locator('input[autocomplete="email"]'), email);
     await page.locator('input[autocomplete="new-password"]').fill('ValidPassphrase_99!');
     await page.locator('.reg-form__consent-check input[type="checkbox"]').check();
 

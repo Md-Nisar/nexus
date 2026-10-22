@@ -1,10 +1,11 @@
 import { Page } from '@playwright/test';
 import { requireBackend } from '../fixtures/backend';
 import { PERSONAS, PERSONA_PASSWORD } from '../fixtures/personas';
+import { enterAddress } from '../fixtures/secret-input';
 import { expect, test } from '../fixtures/test';
 
 async function signIn(page: Page): Promise<void> {
-  await page.getByLabel('Email address').fill(PERSONAS.member.email);
+  await enterAddress(page.getByLabel('Email address'), PERSONAS.member.email);
   await page.getByLabel('Password', { exact: true }).fill(PERSONA_PASSWORD);
   await page.getByTestId('login-submit').click();
 }

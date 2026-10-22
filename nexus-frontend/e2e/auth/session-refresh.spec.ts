@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { requireBackend } from '../fixtures/backend';
+import { PERSONAS } from '../fixtures/personas';
+import { enterAddress } from '../fixtures/secret-input';
 
 /**
  * E2E: US-004 — silent session renewal (proactive refresh path).
@@ -15,7 +17,7 @@ import { requireBackend } from '../fixtures/backend';
  * E2E_REQUIRE_BACKEND=1 (CI).
  */
 
-const EMAIL = process.env['E2E_TEST_USER_EMAIL'] ?? 'test@example.com';
+const EMAIL = process.env['E2E_TEST_USER_EMAIL'] ?? PERSONAS.admin.email;
 const PASSWORD = process.env['E2E_TEST_USER_PASSWORD'] ?? 'TestPass99!';
 
 // These specs sign in as the seeded admin persona (the only account that exists), so a retry
@@ -59,7 +61,7 @@ test.describe('US-004 — silent session renewal', () => {
 
     // ── Step 3: log in — session is stored with expiresAt = now + 5 000 ms.
     await page.goto('/auth/login');
-    await page.locator('input[autocomplete="email"]').fill(EMAIL);
+    await enterAddress(page.locator('input[autocomplete="email"]'), EMAIL);
     await page.locator('input[autocomplete="current-password"]').fill(PASSWORD);
     await page.locator('[data-testid="login-submit"]').click();
 
@@ -89,7 +91,7 @@ test.describe('US-004 — silent session renewal', () => {
   }) => {
     // ── Step 1: log in normally (full-TTL session, no intercepted login response).
     await page.goto('/auth/login');
-    await page.locator('input[autocomplete="email"]').fill(EMAIL);
+    await enterAddress(page.locator('input[autocomplete="email"]'), EMAIL);
     await page.locator('input[autocomplete="current-password"]').fill(PASSWORD);
     await page.locator('[data-testid="login-submit"]').click();
 

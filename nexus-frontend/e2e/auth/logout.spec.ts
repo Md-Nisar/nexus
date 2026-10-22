@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { requireBackend } from '../fixtures/backend';
+import { PERSONAS } from '../fixtures/personas';
+import { enterAddress } from '../fixtures/secret-input';
 
 /**
  * E2E: US-005 — logout with refresh token revocation.
@@ -15,7 +17,7 @@ import { requireBackend } from '../fixtures/backend';
  * E2E_REQUIRE_BACKEND=1 (CI).
  */
 
-const EMAIL = process.env['E2E_TEST_USER_EMAIL'] ?? 'test@example.com';
+const EMAIL = process.env['E2E_TEST_USER_EMAIL'] ?? PERSONAS.admin.email;
 const PASSWORD = process.env['E2E_TEST_USER_PASSWORD'] ?? 'TestPass99!';
 
 async function openUserMenu(page: import('@playwright/test').Page): Promise<void> {
@@ -24,7 +26,7 @@ async function openUserMenu(page: import('@playwright/test').Page): Promise<void
 
 async function login(page: import('@playwright/test').Page): Promise<void> {
   await page.goto('/auth/login');
-  await page.locator('input[autocomplete="email"]').fill(EMAIL);
+  await enterAddress(page.locator('input[autocomplete="email"]'), EMAIL);
   await page.locator('input[autocomplete="current-password"]').fill(PASSWORD);
   await page.locator('[data-testid="login-submit"]').click();
   await page.waitForURL(/\/dashboard/, { timeout: 10_000 });

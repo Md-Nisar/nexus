@@ -247,7 +247,7 @@ export class LoginFormComponent implements OnInit {
     this.authService.login(email, password).subscribe({
       next: () => {
         this.loading.set(false);
-        this.router.navigateByUrl(
+        void this.router.navigateByUrl(
           safeReturnUrl(this.route.snapshot.queryParamMap.get('returnUrl')),
         );
       },
