@@ -163,6 +163,18 @@ class OpenApiErrorCatalogueTest {
         .contains("POST keeps personal data out of URLs");
   }
 
+  /**
+   * Review R2-2: the lookup mapping no longer declares {@code consumes} (so the permission check can
+   * precede the media-type check); the contract still advertises a JSON request body.
+   */
+  @Test
+  void should_advertiseAJsonRequestBody_when_describingTheLookupOperation() throws Exception {
+    Map<String, Object> content =
+        JsonPath.read(apiDocs(), "$.paths['/api/v1/users/lookup'].post.requestBody.content");
+
+    assertThat(content).containsOnlyKeys("application/json");
+  }
+
   private String apiDocs() throws Exception {
     return mvc.perform(get("/v3/api-docs")).andReturn().getResponse().getContentAsString();
   }

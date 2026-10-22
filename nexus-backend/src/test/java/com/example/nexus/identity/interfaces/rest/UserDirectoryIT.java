@@ -371,6 +371,50 @@ class UserDirectoryIT {
     assertThat(response.getBody()).doesNotContain("sentinel-local");
   }
 
+  // ── authorization precedes body handling (review R2-2) ─────────────────────────────────
+
+  @Test
+  void should_return403BeforeAnyBodyError_when_aCallerWithoutDirectoryReadSendsABadLookupBody() {
+    String token = tokenWithoutDirectoryRead();
+    String oversized = "{\"email\":\"sentinel-local@example.test\"" + " ".repeat(1100) + "}";
+    Map<String, String> bodies =
+        Map.of(
+            "blank", emailBody("   "),
+            "malformed", emailBody("sentinel-local-at-example.test"),
+            "missing email", "{}",
+            "not json", "sentinel-local{",
+            "over 1 KiB", oversized);
+
+    List<String> failures = new ArrayList<>();
+    bodies.forEach(
+        (name, body) -> {
+          ResponseEntity<String> response = lookup(token, body);
+          String code = response.getBody() == null ? null : JSON.readTree(response.getBody()).path("code").asString();
+          if (response.getStatusCode().value() != 403 || !"RBAC_001".equals(code)) {
+            failures.add(name + " -> " + response.getStatusCode().value() + " " + code);
+          }
+          assertThat(response.getBody()).as(name).doesNotContain("sentinel-local");
+        });
+    assertThat(failures).isEmpty();
+  }
+
+  @Test
+  void should_return403BeforeTheMediaTypeCheck_when_aCallerWithoutDirectoryReadSendsANonJsonLookupBody() {
+    HttpHeaders headers = new HttpHeaders();
+    headers.setBearerAuth(tokenWithoutDirectoryRead());
+    headers.setContentType(MediaType.TEXT_PLAIN);
+
+    ResponseEntity<String> response =
+        restTemplate.exchange(
+            "http://localhost:" + port + "/api/v1/users/lookup",
+            HttpMethod.POST,
+            new HttpEntity<>(emailBody("sentinel-local@example.test"), headers),
+            String.class);
+
+    assertThat(response.getStatusCode().value()).isEqualTo(403);
+    assertThat(JSON.readTree(response.getBody()).path("code").asString()).isEqualTo("RBAC_001");
+  }
+
   // ── decryption failure ────────────────────────────────────────────────────────────────
 
   @Test
@@ -441,6 +485,11 @@ class UserDirectoryIT {
     userRoleRepository.save(
         new UserRole(uuidGenerator.newId(), reader.getId(), role.getId(), tenantId, reader.getId()));
     return new Tenant(tenantId, reader, jwtPort.issue(reader).token());
+  }
+
+  /** A fresh tenant's active user who holds no role, so no {@code user:directory:read}. */
+  private String tokenWithoutDirectoryRead() {
+    return jwtPort.issue(seedUser(uuidGenerator.newId(), "no-role", true)).token();
   }
 
   private User seedUser(UUID tenantId, String tag, boolean verified) {

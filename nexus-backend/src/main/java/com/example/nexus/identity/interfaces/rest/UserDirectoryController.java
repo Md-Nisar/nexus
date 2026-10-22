@@ -32,7 +32,6 @@ import java.util.UUID;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -189,7 +188,7 @@ public class UserDirectoryController {
    *
    * @return 200 with {@code data} holding zero or one user; a miss and another tenant's user alike
    */
-  @PostMapping(path = "/lookup", consumes = MediaType.APPLICATION_JSON_VALUE)
+  @PostMapping(path = "/lookup")
   @RequiresPermission(USER_DIRECTORY_READ)
   @Operation(
       summary = "Look up one user of the tenant by exact email",
