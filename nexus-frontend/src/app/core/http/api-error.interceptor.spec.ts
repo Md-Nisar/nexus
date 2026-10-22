@@ -319,6 +319,12 @@ describe('apiErrorInterceptor', () => {
       expect(captured?.reason).toBeUndefined();
     });
 
+    it('should ignore an unrecognised string reason in an RBAC_001 response', () => {
+      const { captured } = failWith(403, { code: 'RBAC_001', reason: 'SOMETHING_NEW' });
+
+      expect(captured?.reason).toBeUndefined();
+    });
+
     it('should never carry a reason on a non-RBAC_001 response', () => {
       const { captured } = failWith(403, { code: 'ACCESS_DENIED', reason: 'UNSPECIFIED' });
 

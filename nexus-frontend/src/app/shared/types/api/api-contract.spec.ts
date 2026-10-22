@@ -10,6 +10,8 @@ import userDirectoryEntry from '../../../../../../contracts/api/user-directory-e
 import userDirectoryPage from '../../../../../../contracts/api/user-directory-page.json';
 import userLookupRequest from '../../../../../../contracts/api/user-lookup-request.json';
 import userLookupResponse from '../../../../../../contracts/api/user-lookup-response.json';
+import type { AppError } from '../app-error';
+import { isRbacDenialReason } from './rbac';
 import type {
   CallerAuthorizationResponse,
   CallerRoleEntry,
@@ -136,8 +138,16 @@ describe('API contract fixtures', () => {
   it('should record RBAC_001 with a reason and RBAC_012 as typed error codes', () => {
     const code001: RbacErrorCode = problemRbac001.code as RbacErrorCode;
     const code012: RbacErrorCode = problemRbac012.code as RbacErrorCode;
+    expect(isRbacDenialReason(problemRbac001.reason)).toBe(true);
     const reason: RbacDenialReason = problemRbac001.reason as RbacDenialReason;
-    expect([code001, code012, reason]).toEqual(['RBAC_001', 'RBAC_012', 'GRANT_EXCEEDS_CALLER']);
+    const appError: AppError = { code: problemRbac001.code, message: 'x', reason };
+    expect([code001, code012, appError.reason]).toEqual([
+      'RBAC_001',
+      'RBAC_012',
+      'GRANT_EXCEEDS_CALLER',
+    ]);
+    expect(isRbacDenialReason('NOT_A_REASON')).toBe(false);
+    expect(isRbacDenialReason(7)).toBe(false);
     expect(problemRbac012.status).toBe(409);
     expect('reason' in problemRbac012).toBe(false);
   });

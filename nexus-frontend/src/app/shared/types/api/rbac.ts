@@ -59,8 +59,18 @@ export interface ReplaceRolePermissionsRequest {
 }
 
 /** Why the backend refused an `RBAC_001`; see `AppError.reason`. */
-export type RbacDenialReason =
-  'GRANT_EXCEEDS_CALLER' | 'SELF_ASSIGNMENT' | 'ADMINISTRATOR_REQUIRED' | 'UNSPECIFIED';
+export const RBAC_DENIAL_REASONS = [
+  'GRANT_EXCEEDS_CALLER',
+  'SELF_ASSIGNMENT',
+  'ADMINISTRATOR_REQUIRED',
+  'UNSPECIFIED',
+] as const;
+
+export type RbacDenialReason = (typeof RBAC_DENIAL_REASONS)[number];
+
+export function isRbacDenialReason(value: unknown): value is RbacDenialReason {
+  return RBAC_DENIAL_REASONS.some((reason) => reason === value);
+}
 
 /**
  * Error codes the RBAC endpoints return. `RBAC_012` is a 409: the role's classification changed

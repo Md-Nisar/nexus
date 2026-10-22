@@ -3,6 +3,7 @@ import { inject } from '@angular/core';
 import { Router } from '@angular/router';
 import { catchError, throwError } from 'rxjs';
 import { AppError, isAppError } from '../../shared/types/app-error';
+import { isRbacDenialReason } from '../../shared/types/api/rbac';
 import { LoggerService } from '../logging/logger.service';
 import { CORRELATION_HEADER } from './correlation-id.interceptor';
 import { ServiceAvailabilityNotifier } from './service-availability-notifier';
@@ -106,7 +107,7 @@ function toAppError(error: unknown, correlationId?: string): AppError {
           typeof body.requiredPermission === 'string' ? body.requiredPermission : undefined,
         // RC-63(l): only RBAC_001 carries a reason; anything else is ignored.
         reason:
-          body.code === 'RBAC_001' && typeof body.reason === 'string' ? body.reason : undefined,
+          body.code === 'RBAC_001' && isRbacDenialReason(body.reason) ? body.reason : undefined,
         retryAfterSeconds: parseRetryAfterSeconds(error.headers?.get('Retry-After')),
       };
     }

@@ -1,3 +1,5 @@
+import type { RbacDenialReason } from './api/rbac';
+
 /**
  * Normalized application error shape.
  *
@@ -90,7 +92,7 @@ export interface AppError {
    * A component may use it to choose an inline explanation; the Access Denied page never
    * shows it (A9). Do not put it in a URL or send it to analytics.
    */
-  readonly reason?: string;
+  readonly reason?: RbacDenialReason;
 
   /**
    * Whole seconds the backend asked the client to wait, from a delta-seconds `Retry-After`
