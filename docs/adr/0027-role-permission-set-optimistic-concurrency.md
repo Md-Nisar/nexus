@@ -1,6 +1,6 @@
 # ADR 0027 — Optimistic Concurrency for the Role Permission-Set Replace
 
-**Status:** Proposed (2026-10-19; US-019 threat-model RC-55, RC-56, RC-57, RC-58 folded in, 2026-10-19; delta review RC-64 folded in, 2026-10-19)
+**Status:** Accepted 2026-10-22 with the US-019 PR (accepted under delegation from Md Nisar Ahmed, story owner; history: 2026-10-19; US-019 threat-model RC-55, RC-56, RC-57, RC-58 folded in, 2026-10-19; delta review RC-64 folded in, 2026-10-19)
 **Date:** 2026-10-19
 **Author:** Principal Architect
 **Feature:** EPIC-002, US-019 B8

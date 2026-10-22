@@ -1,6 +1,6 @@
 # ADR 0026 — User Directory Permission, PII Transport and Delegation
 
-**Status:** Proposed (2026-10-19; US-019 threat-model RC-60, RC-61 and RC-63(e) folded in, 2026-10-19; delta review RC-66 folded in, 2026-10-19)
+**Status:** Accepted 2026-10-22 with the US-019 PR (accepted under delegation from Md Nisar Ahmed, story owner; history: 2026-10-19; US-019 threat-model RC-60, RC-61 and RC-63(e) folded in, 2026-10-19; delta review RC-66 folded in, 2026-10-19)
 **Date:** 2026-10-19
 **Author:** Principal Architect
 **Feature:** EPIC-002, US-019 B1/B2 and B5

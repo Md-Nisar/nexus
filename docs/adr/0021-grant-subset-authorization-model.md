@@ -1,6 +1,6 @@
 # ADR 0021 — Grant-Subset Authorization Model for Role Assignment and Role Definition
 
-**Status:** Proposed (Revision 1: threat-model RC-23, RC-25 to RC-28 and RC-38 folded in, 2026-09-26; Revision 2: delta review RC-48 and RC-50(a)/(b) folded in, 2026-09-30; Revision 3: US-019 B7 caller-facing reason, B8 as a grant-like operation, and US-019 threat-model RC-56/RC-57 corrections to D6 and D8, 2026-10-19; delta review RC-64/RC-66 wording, 2026-10-19)
+**Status:** Accepted 2026-10-22 with the US-019 PR (accepted under delegation from Md Nisar Ahmed, story owner; history: Revision 1: threat-model RC-23, RC-25 to RC-28 and RC-38 folded in, 2026-09-26; Revision 2: delta review RC-48 and RC-50(a)/(b) folded in, 2026-09-30; Revision 3: US-019 B7 caller-facing reason, B8 as a grant-like operation, and US-019 threat-model RC-56/RC-57 corrections to D6 and D8, 2026-10-19; delta review RC-64/RC-66 wording, 2026-10-19)
 **Date:** 2026-09-26
 **Feature:** EPIC-002 (RBAC Foundation), US-018 milestones M2 (A1–A4) and M3 (A5)
 **Supersedes in part:** ADR-0017 D1, D3, D5; ADR-0018 D1, D2, D3, D8, and the population of D4; amends ADR-0013 D1 (naming). Bodies of accepted ADRs are not edited (ADR-0001).
