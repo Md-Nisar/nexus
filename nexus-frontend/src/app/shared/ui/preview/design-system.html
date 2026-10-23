@@ -484,6 +484,41 @@
         color: var(--nx-color-primary);
       }
 
+      /* ── Banner (nx-banner) ── */
+      .banner {
+        display: flex;
+        align-items: flex-start;
+        gap: var(--nx-space-3);
+        padding: var(--nx-space-3) var(--nx-space-4);
+        border: 1px solid var(--nx-color-outline);
+        border-left-width: var(--nx-space-1);
+        border-radius: var(--nx-radius-md);
+        color: var(--nx-color-on-surface);
+        font-size: var(--nx-text-sm);
+      }
+      .banner .icon {
+        font-family: 'Material Icons Round', sans-serif;
+        font-size: var(--nx-text-xl);
+      }
+      .banner__title {
+        margin: 0;
+        font-weight: 600;
+      }
+      .banner__body {
+        margin: var(--nx-space-1) 0 0;
+      }
+      .banner--info {
+        border-left-color: var(--nx-color-primary);
+        background: var(--nx-color-primary-surface);
+      }
+      .banner--warning {
+        border-left-color: var(--nx-color-warning);
+        background: var(--nx-color-warning-surface);
+      }
+      .banner--warning .icon {
+        color: var(--nx-color-warning);
+      }
+
       /* ── Empty / Error state ── */
       .state {
         display: flex;
@@ -943,6 +978,30 @@
       </div>
       <div class="toast toast--info">
         <span class="icon">info</span>New release available. Refresh to update.
+      </div>
+    </div>
+
+    <!-- ── Banner ──────────────────────────────────────────────────────────── -->
+    <h2>Banner — nx-banner</h2>
+    <div class="preview-grid">
+      <div class="banner banner--warning" role="status">
+        <span class="icon" aria-hidden="true">warning</span>
+        <div>
+          <p class="banner__title">You can view, but not change, access</p>
+          <p class="banner__body">
+            We couldn't load your access details, so changes are turned off.
+          </p>
+          <button class="btn btn--secondary btn--sm" style="margin-top: var(--nx-space-2)">
+            Retry
+          </button>
+        </div>
+      </div>
+      <div class="banner banner--info">
+        <span class="icon" aria-hidden="true">info</span>
+        <div>
+          <p class="banner__title">Information</p>
+          <p class="banner__body">Roles bundle permissions.</p>
+        </div>
       </div>
     </div>
 

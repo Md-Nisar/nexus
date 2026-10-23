@@ -132,6 +132,16 @@
       background-color: var(--nx-color-inverse-surface);
     }
   }
+
+  /* aria-disabled (focusable disabled with a visible reason, US-020 design §12.0): full-contrast
+     text on a neutral surface instead of dimming, so the focusable label stays readable. Declared
+     after the variants so it also wins over their hover rules. */
+  &[aria-disabled='true'],
+  &[aria-disabled='true']:hover {
+    background-color: var(--nx-color-surface-3);
+    color: var(--nx-color-on-surface);
+    cursor: not-allowed;
+  }
 }
 
 /* Loading spinner animation */

@@ -14,6 +14,7 @@
       <li><a class="ds-nav__link" href="#table">Table</a></li>
       <li><a class="ds-nav__link" href="#empty">Empty State</a></li>
       <li><a class="ds-nav__link" href="#error">Error State</a></li>
+      <li><a class="ds-nav__link" href="#banner">Banner</a></li>
       <li><a class="ds-nav__link" href="#toast">Toast</a></li>
       <li><a class="ds-nav__link" href="#menu">Menu</a></li>
       <li><a class="ds-nav__link" href="#selection">Selection</a></li>
@@ -118,7 +119,17 @@
           <nx-button variant="primary" [loading]="true">Loading</nx-button>
           <nx-button variant="primary" [disabled]="true">Disabled</nx-button>
           <nx-button variant="secondary" [disabled]="true">Disabled</nx-button>
+          <nx-button
+            variant="primary"
+            [ariaDisabled]="true"
+            ariaDescribedBy="ds-aria-disabled-reason"
+            >Focusable disabled</nx-button
+          >
         </div>
+        <p id="ds-aria-disabled-reason" class="ds-section__description">
+          <code>ariaDisabled</code> keeps the button in the tab order with a visible reason linked
+          by <code>ariaDescribedBy</code>.
+        </p>
       </div>
 
       <p class="ds-section__label">With icons</p>
@@ -442,6 +453,43 @@
             <nx-button variant="secondary" size="sm">Contact admin</nx-button>
           </nx-error-state>
         </div>
+      </div>
+    </section>
+
+    <!-- Banner section: nx-banner page-level messages (info, success, warning, error) -->
+    <section id="banner" class="ds-section">
+      <h2 class="ds-section__heading">Banner — nx-banner</h2>
+      <p class="ds-section__description">
+        Live region by variant (<code>error</code> is <code>role=alert</code>, others
+        <code>role=status</code>); the previews use <code>live="off"</code> so the page does not
+        announce on load.
+      </p>
+      <div style="display: flex; flex-direction: column; gap: var(--nx-space-3)">
+        <nx-banner variant="info" title="Information" live="off">
+          <p>Roles bundle permissions.</p>
+        </nx-banner>
+        <nx-banner variant="success" title="Saved" live="off">
+          <p>Role updated: 2 added, 1 removed.</p>
+        </nx-banner>
+        @if (!bannerDismissed()) {
+          <nx-banner
+            variant="warning"
+            title="You can view, but not change, access"
+            live="off"
+            [dismissible]="true"
+            (dismissed)="bannerDismissed.set(true)"
+          >
+            <p>We couldn't load your access details, so changes are turned off.</p>
+            <nx-button slot="actions" variant="secondary" size="sm">Retry</nx-button>
+          </nx-banner>
+        } @else {
+          <nx-button variant="secondary" size="sm" (clicked)="bannerDismissed.set(false)"
+            >Show the dismissed banner</nx-button
+          >
+        }
+        <nx-banner variant="error" title="Something went wrong" live="off">
+          <p>Try again. If it keeps happening, contact support and quote the reference.</p>
+        </nx-banner>
       </div>
     </section>
 
