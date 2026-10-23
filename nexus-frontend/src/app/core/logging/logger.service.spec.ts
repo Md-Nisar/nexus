@@ -6,7 +6,12 @@ import { APP_CONFIG, AppConfig } from '../config/app-config';
 describe('LoggerService', () => {
   function setup(logLevel: AppConfig['logLevel'], production = false) {
     TestBed.configureTestingModule({
-      providers: [{ provide: APP_CONFIG, useValue: { production, apiBaseUrl: '/api', logLevel } }],
+      providers: [
+        {
+          provide: APP_CONFIG,
+          useValue: { production, apiBaseUrl: '/api', logLevel, accessConsoleEnabled: false },
+        },
+      ],
     });
     return TestBed.inject(LoggerService);
   }

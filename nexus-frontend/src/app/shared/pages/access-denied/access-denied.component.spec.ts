@@ -13,6 +13,7 @@ const BASE_CONFIG: AppConfig = {
   apiBaseUrl: '/api',
   logLevel: 'debug',
   supportContact: null,
+  accessConsoleEnabled: false,
 };
 
 function render(supportContact: AppConfig['supportContact'], roles?: readonly string[]) {

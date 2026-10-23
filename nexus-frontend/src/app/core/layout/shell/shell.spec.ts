@@ -17,8 +17,15 @@ import { NAV_ITEMS, NAV_ITEMS_TOKEN, NavItem } from '../nav.config';
 import { Shell } from './shell';
 
 const GATED_NAV: readonly NavItem[] = [
-  ...NAV_ITEMS,
-  { id: 'roles', label: 'Roles', path: '/roles', icon: 'lock', permission: 'role:read' },
+  ...NAV_ITEMS.filter((item) => item.id === 'dashboard'),
+  { id: 'roles', label: 'Roles', path: '/roles', icon: 'lock', anyOf: ['role:read'] },
+  {
+    id: 'console',
+    label: 'Console',
+    path: '/console',
+    icon: 'admin_panel_settings',
+    anyOf: ['role:read', 'user:directory:read'],
+  },
 ];
 
 const API = 'http://localhost:1000/api';
@@ -38,7 +45,15 @@ function setup(
       { provide: NAV_ITEMS_TOKEN, useValue: GATED_NAV },
       { provide: AuthService, useValue: { logout: logoutFn } },
       { provide: NxToast, useValue: toast },
-      { provide: APP_CONFIG, useValue: { production: false, apiBaseUrl: API, logLevel: 'debug' } },
+      {
+        provide: APP_CONFIG,
+        useValue: {
+          production: false,
+          apiBaseUrl: API,
+          logLevel: 'debug',
+          accessConsoleEnabled: false,
+        },
+      },
       provideAnimationsAsync(),
       provideHttpClient(),
       provideHttpClientTesting(),
@@ -49,6 +64,7 @@ function setup(
           children: [
             { path: 'dashboard', component: Page },
             { path: 'roles', component: Page },
+            { path: 'console', component: Page },
           ],
         },
       ]),
@@ -66,10 +82,10 @@ async function render(url = '/dashboard') {
 }
 
 /**
- * Permission-filtered navigation is proved HERE, not in e2e: the e2e per-persona nav spec
- * (e2e/access-management/shell.spec.ts) only sees the ungated Dashboard until the access console
- * ships gated items, so it cannot fail on a filtering bug. GATED_NAV adds a gated item through
- * NAV_ITEMS_TOKEN so each persona below is checked against a real permission requirement.
+ * Permission-filtered navigation is proved HERE, against fixture items supplied through
+ * NAV_ITEMS_TOKEN: a single-permission item (roles) and an any-of item (console), so each persona
+ * below is checked against both kinds of requirement. The e2e per-persona nav spec
+ * (e2e/access-management/shell.spec.ts) covers only the real items the seeded personas reach.
  */
 describe('Shell', () => {
   it('primes /v1/users/me exactly once', async () => {
@@ -101,7 +117,13 @@ describe('Shell', () => {
   it.each([
     ['holds no permission', [], ['nav-dashboard']],
     ['holds only an unrelated permission', ['user:read'], ['nav-dashboard']],
-    ['holds the required permission', ['role:read'], ['nav-dashboard', 'nav-roles']],
+    ['holds role:read', ['role:read'], ['nav-dashboard', 'nav-roles', 'nav-console']],
+    ['holds user:directory:read', ['user:directory:read'], ['nav-dashboard', 'nav-console']],
+    [
+      'holds both any-of members',
+      ['role:read', 'user:directory:read'],
+      ['nav-dashboard', 'nav-roles', 'nav-console'],
+    ],
   ])('renders exactly the permitted nav items for a persona that %s', async (_n, perms, ids) => {
     const { http } = setup(undefined, perms);
     const { root } = await render();
