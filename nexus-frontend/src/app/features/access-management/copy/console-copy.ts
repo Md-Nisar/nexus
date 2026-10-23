@@ -1,11 +1,17 @@
+import type { RbacDenialReason, RbacErrorCode } from '../../../shared/types/api/rbac';
+import type { DirectoryErrorCode } from '../../../shared/types/api/user-directory';
+
 /**
  * Every string of the access console (US-020 design §9, §14). **PROVISIONAL: not UX/PM approved**
  * (Gate 1 Q2); approved D3 text replaces these values without code changes elsewhere.
  *
- * T-006 adds the layout strings only. The error map (`RbacErrorMessages`, `resolveConsoleError`,
- * `format`) arrives with the first page that maps errors (A-10).
+ * T-006 added the layout strings; T-007 adds the whole error map (`RbacErrorMessages`,
+ * `Rbac001ReasonCopy`, `NotEnabledCopy`, `format`; A-10) and the roles list strings. Later tasks add
+ * only the §14.2 page strings of their own pages. Permission labels follow in T-008 and the
+ * propagation constant in T-011.
  *
- * All values are plain text rendered by interpolation; none is ever HTML.
+ * All values are plain text rendered by interpolation; none is ever HTML. The console renders this
+ * text and never `AppError.message` (design §9.2).
  */
 export const CONSOLE_COPY = {
   /** Accessible name of the area sub-nav (design §6.1). */
@@ -45,4 +51,335 @@ export const CONSOLE_COPY = {
     title: 'Nexus is temporarily unavailable',
     body: "We can't confirm your access right now.",
   },
+
+  /** Label of the failure reference line ("Reference: {id}"). */
+  reference: 'Reference:',
+
+  /** Badges shared by the pages (§14.2). */
+  badges: {
+    system: 'System',
+    custom: 'Custom',
+    hiddenCharacters: 'Contains hidden characters',
+    hiddenCharactersExplanation:
+      'This text contains characters that are invisible or change text direction. Check it carefully.',
+  },
+
+  /** The roles list (§12.2, §14.2). */
+  roles: {
+    title: 'Roles',
+    create: 'Create role',
+    searchLabel: 'Search roles',
+    filterLabel: 'Filter by type',
+    filterAll: 'All',
+    filterSystem: 'System',
+    filterCustom: 'Custom',
+    caption: 'Roles',
+    resultCount: '{n} roles',
+    resultCountOne: '1 role',
+    loadingCount: 'Loading roles: {loaded} of {total}',
+    loadingUnknown: 'Loading roles',
+    truncated: 'Only the first {n} roles are loaded; search covers those only.',
+    emptyCustom: 'No custom roles yet',
+    emptySearch: 'No roles match your search',
+    noDescription: 'No description',
+    columns: {
+      name: 'Name',
+      type: 'Type',
+      description: 'Description',
+      permissions: 'Permissions',
+      members: 'Members',
+      created: 'Created',
+    },
+  },
 } as const;
+
+/**
+ * Every error code the console has copy for (design §2.3): the RBAC codes, the directory codes and
+ * the generic codes. Any other code gets the generic copy plus a reference.
+ */
+export type ConsoleErrorCode =
+  | RbacErrorCode
+  | DirectoryErrorCode
+  | 'VALIDATION_FAILED'
+  | 'PRECONDITION_FAILED'
+  | 'PRECONDITION_REQUIRED'
+  | 'RESOURCE_NOT_FOUND'
+  | 'ROLE_NOT_FOUND'
+  | 'USER_NOT_FOUND'
+  | 'PERMISSION_NOT_FOUND'
+  | 'ROLE_ASSIGNMENT_NOT_FOUND'
+  | 'ACCESS_DENIED'
+  | 'AUTH_005'
+  | 'NETWORK_ERROR'
+  | 'HTTP_ERROR'
+  | 'INTERNAL_ERROR'
+  | 'UNEXPECTED_ERROR';
+
+/** Where an error shows: beside the control, in a banner, in place of the page, or at a field. */
+export type ErrorPresentation = 'inline' | 'banner' | 'page' | 'field';
+
+/** Title and body of one error (design §9.1). Both are plain text; `{n}` style placeholders only. */
+export interface ErrorCopy {
+  readonly title: string;
+  readonly body: string;
+  readonly presentation: ErrorPresentation;
+  /** The server already agrees with what the user wanted (already assigned, already removed). */
+  readonly convergent?: true;
+  /** Show "Reference: {traceId or correlationId}". */
+  readonly showsReference?: true;
+  /** The body carries `{n}` seconds to wait; the control stays off for that long. */
+  readonly showsWait?: true;
+  /** A retry cannot help (the thing is gone, or the area is switched off). */
+  readonly retryable?: false;
+}
+
+/** The area an error occurred in; chooses the "not enabled" copy of a `RESOURCE_NOT_FOUND`. */
+export type ConsoleErrorArea = 'roles' | 'permissions' | 'users' | 'assignments' | 'profile';
+
+/** Replaces `{name}` with the matching value as text; a placeholder with no value stays as written. */
+export function format(
+  template: string,
+  values: Readonly<Record<string, string | number>>,
+): string {
+  return template.replace(/\{(\w+)\}/g, (placeholder, key: string) =>
+    Object.hasOwn(values, key) ? String(values[key]) : placeholder,
+  );
+}
+
+/** Why a 403 `RBAC_001` was refused (design §14.1). */
+export const Rbac001ReasonCopy: Readonly<Record<RbacDenialReason, ErrorCopy>> = {
+  GRANT_EXCEEDS_CALLER: {
+    title: "You can't grant this",
+    body: "This includes access you don't hold yourself. Ask someone who holds it, or an administrator.",
+    presentation: 'inline',
+    showsReference: true,
+  },
+  SELF_ASSIGNMENT: {
+    title: "You can't change your own roles",
+    body: 'Ask an administrator to make this change.',
+    presentation: 'inline',
+    showsReference: true,
+  },
+  ADMINISTRATOR_REQUIRED: {
+    title: 'Administrator needed',
+    body: 'Only an administrator can make this change.',
+    presentation: 'inline',
+    showsReference: true,
+  },
+  UNSPECIFIED: {
+    title: "You don't have permission to do this",
+    body: 'If you think you should, contact your administrator and quote the reference.',
+    presentation: 'inline',
+    showsReference: true,
+  },
+};
+
+/** "Not enabled" copy of a `RESOURCE_NOT_FOUND`, by area: the feature flag is off (design §12.0). */
+export const NotEnabledCopy: Readonly<Record<ConsoleErrorArea, ErrorCopy>> = {
+  roles: {
+    title: "Roles aren't enabled",
+    body: "Role management isn't turned on for your organisation yet.",
+    presentation: 'page',
+    retryable: false,
+  },
+  permissions: {
+    title: "Roles aren't enabled",
+    body: "Role management isn't turned on for your organisation yet.",
+    presentation: 'page',
+    retryable: false,
+  },
+  users: {
+    title: "Users aren't enabled",
+    body: "The user directory isn't turned on for your organisation yet.",
+    presentation: 'page',
+    retryable: false,
+  },
+  assignments: {
+    title: "Role assignment isn't enabled",
+    body: "Assigning roles isn't turned on for your organisation yet.",
+    presentation: 'page',
+    retryable: false,
+  },
+  profile: {
+    title: 'You can view, but not change, access',
+    body: "We couldn't load your access details, so changes are turned off.",
+    presentation: 'banner',
+    retryable: false,
+  },
+};
+
+/** A `VALIDATION_FAILED` on a list load: the page parameter is out of range (design §14.1). */
+export const ListPageErrorCopy: Readonly<Record<'default' | 'users', ErrorCopy>> = {
+  default: {
+    title: "This page doesn't exist",
+    body: 'Go back to the first page.',
+    presentation: 'page',
+  },
+  users: {
+    title: "This page doesn't exist",
+    body: 'This page is past the end of the list. Use the status filter to narrow it.',
+    presentation: 'page',
+  },
+};
+
+/** A 503 `AUTH_005` on an action rather than a page load (design §14.1). */
+export const ActionUnavailableCopy: ErrorCopy = {
+  title: 'Nothing was changed',
+  body: 'Nexus is temporarily unavailable. Try again in {n} seconds.',
+  presentation: 'inline',
+  showsReference: true,
+  showsWait: true,
+};
+
+const GENERIC: ErrorCopy = {
+  title: 'Something went wrong',
+  body: 'Try again. If it keeps happening, contact support and quote the reference.',
+  presentation: 'page',
+  showsReference: true,
+};
+
+/**
+ * The copy of every {@link ConsoleErrorCode} (design §9.1, §14.1; provisional D3). Exhaustive by
+ * type. `RBAC_001` here is the reason-less copy; use {@link Rbac001ReasonCopy} when the error
+ * carries a reason. `RESOURCE_NOT_FOUND` here is the roles copy; see {@link NotEnabledCopy}.
+ *
+ * `RBAC_006` and `RBAC_007` show at the name field; their titles are the fallback for assistive
+ * technology and summaries.
+ */
+export const RbacErrorMessages: Readonly<Record<ConsoleErrorCode, ErrorCopy>> = {
+  RBAC_001: Rbac001ReasonCopy.UNSPECIFIED,
+  RBAC_002: {
+    title: 'This would leave no administrator',
+    body: "Nexus didn't remove this role because your organisation would have no administrator. Give someone else an administrator role first.",
+    presentation: 'inline',
+  },
+  RBAC_003: {
+    title: "System roles can't be changed",
+    body: 'You can clone this role to make a custom one.',
+    presentation: 'banner',
+  },
+  RBAC_004: {
+    title: 'Already assigned',
+    body: 'This person already had this role.',
+    presentation: 'inline',
+    convergent: true,
+  },
+  RBAC_005: {
+    title: 'Already granted',
+    body: 'This permission is already on the role.',
+    presentation: 'inline',
+    convergent: true,
+  },
+  RBAC_006: {
+    title: 'Role name already in use',
+    body: 'A role with this name already exists. Choose another name.',
+    presentation: 'field',
+  },
+  RBAC_007: {
+    title: 'Role name is reserved',
+    body: 'This name is reserved. Choose another name.',
+    presentation: 'field',
+  },
+  RBAC_008: {
+    title: 'Role limit reached',
+    body: 'Your organisation has reached its limit for roles. Delete a role you no longer need, then try again.',
+    presentation: 'banner',
+  },
+  RBAC_009: {
+    title: 'Role still has members',
+    body: 'Remove all {n} members before deleting this role.',
+    presentation: 'inline',
+  },
+  RBAC_010: {
+    title: 'An administrator needs to review this role',
+    body: "This change would give the role every permission while one of its members was assigned by someone who isn't an administrator. Ask an administrator to review its members first.",
+    presentation: 'inline',
+    showsReference: true,
+  },
+  RBAC_011: {
+    title: 'Too many refused attempts',
+    body: 'Try again in {n} seconds.',
+    presentation: 'inline',
+    showsWait: true,
+  },
+  RBAC_012: {
+    title: 'The role changed while saving',
+    body: "This role changed while your change was being saved. We tried again and it still didn't go through. Reload the role and try again.",
+    presentation: 'inline',
+    showsReference: true,
+  },
+  USER_DIR_001: {
+    title: 'Too many lookups',
+    body: 'Try again in {n} seconds.',
+    presentation: 'inline',
+    showsWait: true,
+  },
+  USER_DIR_002: {
+    title: 'Too many requests',
+    body: "You've made a lot of directory requests in a short time. Try again in {n} seconds.",
+    presentation: 'inline',
+    showsWait: true,
+  },
+  VALIDATION_FAILED: {
+    title: 'Some details need fixing',
+    body: 'Fix the highlighted details and try again.',
+    presentation: 'field',
+  },
+  PRECONDITION_FAILED: {
+    title: 'Someone else changed this role',
+    body: 'Their changes are now shown, and your changes are still staged. Review them and save again.',
+    presentation: 'banner',
+  },
+  PRECONDITION_REQUIRED: {
+    title: "We couldn't save this",
+    body: 'A technical problem stopped the save. Your changes are kept.',
+    presentation: 'inline',
+    showsReference: true,
+  },
+  RESOURCE_NOT_FOUND: NotEnabledCopy.roles,
+  ROLE_NOT_FOUND: {
+    title: 'This role no longer exists',
+    body: 'It may have been deleted. Go back to Roles.',
+    presentation: 'page',
+    retryable: false,
+  },
+  USER_NOT_FOUND: {
+    title: "We couldn't find this person",
+    body: "They aren't in your organisation, or the link is wrong.",
+    presentation: 'page',
+    retryable: false,
+  },
+  PERMISSION_NOT_FOUND: {
+    title: 'A permission no longer exists',
+    body: 'Reload the page and try again.',
+    presentation: 'inline',
+    showsReference: true,
+  },
+  ROLE_ASSIGNMENT_NOT_FOUND: {
+    title: 'Already removed',
+    body: 'This role had already been removed.',
+    presentation: 'inline',
+    convergent: true,
+  },
+  ACCESS_DENIED: {
+    title: "You don't have access to this",
+    body: 'Contact your administrator and quote the reference.',
+    presentation: 'inline',
+    showsReference: true,
+  },
+  AUTH_005: {
+    title: CONSOLE_COPY.unavailable.title,
+    body: CONSOLE_COPY.unavailable.body,
+    presentation: 'page',
+    showsReference: true,
+    showsWait: true,
+  },
+  NETWORK_ERROR: {
+    title: "We couldn't reach Nexus",
+    body: 'Check your connection and try again.',
+    presentation: 'page',
+  },
+  HTTP_ERROR: GENERIC,
+  INTERNAL_ERROR: GENERIC,
+  UNEXPECTED_ERROR: GENERIC,
+};

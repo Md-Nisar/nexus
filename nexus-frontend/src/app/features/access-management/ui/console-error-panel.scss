@@ -1,0 +1,28 @@
+.console-error-panel {
+  display: grid;
+  gap: var(--nx-space-3);
+  padding: var(--nx-space-6) var(--nx-space-4);
+
+  &__title {
+    margin: 0;
+    font-size: var(--nx-text-lg);
+    font-weight: var(--nx-weight-semibold);
+    color: var(--nx-color-on-surface);
+  }
+
+  &__body {
+    margin: 0;
+    color: var(--nx-color-on-surface-muted);
+  }
+
+  &__reference {
+    margin: 0;
+    font-size: var(--nx-text-sm);
+    color: var(--nx-color-on-surface-muted);
+  }
+
+  &__id {
+    font-family: var(--nx-font-family-mono);
+    overflow-wrap: anywhere;
+  }
+}

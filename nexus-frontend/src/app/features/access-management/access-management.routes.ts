@@ -1,7 +1,9 @@
 import { inject } from '@angular/core';
 import { CanActivateFn, Router, Routes } from '@angular/router';
 import { AuthStore } from '../../core/auth/auth.store';
+import { permissionGuard } from '../../core/guards/permission.guard';
 import { AuthorizationProfileStore } from './data/authorization-profile.store';
+import { RolesStore } from './data/roles.store';
 import { AccessConsoleLayout } from './layout/access-console-layout';
 import { CONSOLE_AREAS } from './layout/console-areas';
 
@@ -28,8 +30,8 @@ export const firstAreaRedirect: CanActivateFn = () => {
  * console chunk.
  *
  * - The `''` child is the {@link AccessConsoleLayout}. Its route `providers` scope the console
- *   stores to the console: {@link AuthorizationProfileStore} here; the roles and catalogue stores
- *   join with their pages.
+ *   stores to the console: {@link AuthorizationProfileStore} and {@link RolesStore} here; the
+ *   catalogue store joins with its page.
  * - Its empty path always leaves through {@link firstAreaRedirect}. The `title` on that route is
  *   never shown; it satisfies the "every page route has a title" contract.
  * - Every area page added below carries `permissionGuard` with its own `data.permission` and a
@@ -39,7 +41,7 @@ export const ACCESS_MANAGEMENT_ROUTES: Routes = [
   {
     path: '',
     component: AccessConsoleLayout,
-    providers: [AuthorizationProfileStore],
+    providers: [AuthorizationProfileStore, RolesStore],
     children: [
       {
         path: '',
@@ -47,6 +49,14 @@ export const ACCESS_MANAGEMENT_ROUTES: Routes = [
         title: 'Access management',
         canActivate: [firstAreaRedirect],
         children: [],
+      },
+      {
+        // `permission` is the roles entry of CONSOLE_AREAS (pinned by the routes spec).
+        path: 'roles',
+        title: 'Roles',
+        canActivate: [permissionGuard],
+        data: { permission: 'role:read' },
+        loadComponent: () => import('./roles/roles-list.page').then((m) => m.RolesListPage),
       },
     ],
   },

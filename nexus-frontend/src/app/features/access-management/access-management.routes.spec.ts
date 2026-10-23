@@ -25,8 +25,11 @@ import { apiErrorInterceptor } from '../../core/http/api-error.interceptor';
 import { authInterceptor } from '../../core/http/auth.interceptor';
 import { correlationIdInterceptor } from '../../core/http/correlation-id.interceptor';
 import { createAuthSession, createAuthStoreStub } from '../../shared/testing/auth.fixtures';
+import { permissionGuard } from '../../core/guards/permission.guard';
 import { ACCESS_MANAGEMENT_ROUTES, firstAreaRedirect } from './access-management.routes';
 import { AuthorizationProfileStore } from './data/authorization-profile.store';
+import { RolesStore } from './data/roles.store';
+import { CONSOLE_AREAS } from './layout/console-areas';
 import { AccessConsoleLayout } from './layout/access-console-layout';
 
 const API = 'http://localhost:1000/api';
@@ -67,6 +70,40 @@ describe('ACCESS_MANAGEMENT_ROUTES (US-020 design §4.2)', () => {
     // A redirect function runs in route recognition, before the shell's authGuard has restored
     // the session at cold start, so it would always see no permissions.
     expect(first.redirectTo).toBeUndefined();
+  });
+
+  it('provides the roles store on the layout route, beside the profile store', () => {
+    expect(layoutRoute().providers).toContain(RolesStore);
+  });
+
+  describe('roles area (T-007)', () => {
+    function rolesRoute(): Route {
+      const route = layoutRoute().children?.find((child) => child.path === 'roles');
+      expect(route).toBeDefined();
+      return route as Route;
+    }
+
+    it('comes after the "" redirect child, under the layout', () => {
+      const paths = layoutRoute().children?.map((child) => child.path);
+      expect(paths?.[0]).toBe('');
+      expect(paths).toContain('roles');
+    });
+
+    it('is guarded by permissionGuard with the permission its console area requires', () => {
+      const route = rolesRoute();
+      const area = CONSOLE_AREAS.find((candidate) => candidate.id === 'roles');
+      expect(route.canActivate).toEqual([permissionGuard]);
+      expect(route.data).toEqual({ permission: area?.permission });
+      expect(area?.path).toBe('/admin/access/roles');
+      expect(route.canActivateChild).toBeUndefined();
+    });
+
+    it('has a static title and is lazy', () => {
+      const route = rolesRoute();
+      expect(route.title).toBe('Roles');
+      expect(route.component).toBeUndefined();
+      expect(route.loadComponent).toBeTypeOf('function');
+    });
   });
 });
 
@@ -132,7 +169,7 @@ describe('console entry with the real router', () => {
                 {
                   ...layout,
                   children: [
-                    ...(layout.children ?? []),
+                    ...(layout.children ?? []).filter((child) => child.path !== 'roles'),
                     { path: 'roles', title: 'Roles', component: FixturePage },
                     { path: 'permissions', title: 'Permissions', component: FixturePage },
                     { path: 'users', title: 'Users', component: FixturePage },

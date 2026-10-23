@@ -1,0 +1,156 @@
+:host {
+  display: block;
+}
+
+.roles {
+  display: grid;
+  gap: var(--nx-space-4);
+  min-width: 0;
+}
+
+.roles__create {
+  display: grid;
+  justify-items: end;
+  gap: var(--nx-space-1);
+}
+
+.roles__reason {
+  margin: 0;
+  max-width: calc(var(--nx-space-24) * 3);
+  font-size: var(--nx-text-sm);
+  color: var(--nx-color-on-surface-muted);
+  text-align: end;
+}
+
+.roles__loading {
+  display: grid;
+  gap: var(--nx-space-3);
+}
+
+.roles__loading-text {
+  margin: 0;
+  color: var(--nx-color-on-surface-muted);
+}
+
+.roles__skeleton {
+  display: block;
+  height: var(--nx-space-10);
+}
+
+.roles__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--nx-space-3);
+}
+
+.roles__search {
+  flex: 1 1 calc(var(--nx-space-24) * 2);
+  min-width: 0;
+}
+
+.roles__filter {
+  flex: 0 1 calc(var(--nx-space-24) * 2);
+  min-width: 0;
+}
+
+.roles__count {
+  margin: 0;
+  align-self: center;
+  color: var(--nx-color-on-surface-muted);
+}
+
+.roles__none {
+  color: var(--nx-color-on-surface-muted);
+}
+
+.roles__number {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Column labels exist only for the card layout, where the header row is hidden. */
+.roles__label {
+  display: none;
+}
+
+.roles__name {
+  font-weight: var(--nx-weight-medium);
+}
+
+/* 320 px (design §12.2, WCAG 1.4.10): one card per row, no sideways scroll. nx-table renders
+   Material table cells and has no card mode, so the card layout reaches into its cells. */
+@media (max-width: 599px) {
+  :host ::ng-deep .roles__table {
+    .nx-table-wrapper {
+      overflow-x: visible;
+      border: 0;
+    }
+
+    /* The header row stays for assistive technology and is hidden visually. */
+    tr.mat-mdc-header-row {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+    }
+
+    table,
+    tbody {
+      display: block;
+    }
+
+    tr.mat-mdc-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      grid-template-areas:
+        'name name name'
+        'type permissions members'
+        'description description description'
+        'created created created';
+      gap: var(--nx-space-1) var(--nx-space-3);
+      margin-block-end: var(--nx-space-3);
+      padding: var(--nx-space-3);
+      border: 1px solid var(--nx-color-outline-variant);
+      border-radius: var(--nx-radius-md);
+    }
+
+    td.mat-mdc-cell {
+      display: block;
+      min-width: 0;
+      padding: 0;
+      border: 0;
+    }
+
+    td.mat-column-name {
+      grid-area: name;
+    }
+
+    td.mat-column-type {
+      grid-area: type;
+    }
+
+    td.mat-column-permissions {
+      grid-area: permissions;
+    }
+
+    td.mat-column-members {
+      grid-area: members;
+    }
+
+    td.mat-column-description {
+      grid-area: description;
+    }
+
+    td.mat-column-created {
+      grid-area: created;
+    }
+
+    .roles__label {
+      display: block;
+      font-size: var(--nx-text-xs);
+      color: var(--nx-color-on-surface-muted);
+    }
+  }
+}
