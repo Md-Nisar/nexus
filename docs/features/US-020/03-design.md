@@ -5,7 +5,7 @@
 **Author:** Principal Architect
 **Status:** Draft 2 (revised for RC-68..RC-77), 2026-10-23. Draft 1 went to the Gate 2 threat model (`03b-threat-model.md`, verdict: conditional pass); this draft is for Gate 2 review.
 
-**Gate 2:** pending
+**Gate 2:** approved 2026-10-23 by Md Nisar Ahmed (human items H-1 to H-6, UX/PM approval of the provisional D2/D3, and P-11 remain open)
 
 **Delta-review items D-1 to D-6** (`03b-threat-model.md` §12, all Low, none blocks Gate 2). They are **binding on the named slice's merge gate** and are carried into `04-tasks.md`; where they conflict with the sections below, §12 of the threat model wins until this document is next revised:
 - **D-1 (S3b, §15.3, F-5):** hidden-character detection matches `[\p{Cf}\p{Default_Ignorable_Code_Point}\p{Zs}\p{Zl}\p{Zp}]` except U+0020, with test cases for Hangul fillers, variation selectors and non-ASCII spaces.
