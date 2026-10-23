@@ -1,0 +1,15 @@
+:host {
+  display: inline-flex;
+  flex-direction: column;
+}
+
+.nx-checkbox {
+  font-family: var(--nx-font-family);
+  color: var(--nx-color-on-surface);
+}
+
+.nx-checkbox__reason {
+  margin-inline-start: var(--nx-space-8);
+  font-size: var(--nx-text-xs);
+  color: var(--nx-color-on-surface-faint);
+}

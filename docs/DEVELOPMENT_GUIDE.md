@@ -155,11 +155,12 @@ yield an empty array.
 On denial the guard redirects to `/access-denied` (never `/auth/login` — the user *is*
 authenticated, they just lack the permission).
 
-**`permissionGuard` must never be used alone.** Compose it *after* `authGuard`, or attach
-it to a route whose ancestor already carries `authGuard`. Angular evaluates a
-`canActivate` array sequentially and short-circuits on the first non-`true` result, so
-`authGuard` finishes restoring the session before `permissionGuard` reads it. Used alone,
-a cold start (page reload, in-memory session `null`) makes `permissionGuard` see an empty
+**`permissionGuard` must never be used alone, and never in the same array as `authGuard`.**
+Put `authGuard` on an **ancestor** route (the signed-in `Shell` carries it) and
+`permissionGuard` on the child. Guards in one `canActivate` array run *concurrently*, so
+`permissionGuard` would read the permission list while `authGuard` is still refreshing the
+session; route levels run in sequence, so an ancestor's guard finishes first. Used alone, a
+cold start (page reload, in-memory session `null`) makes `permissionGuard` see an empty
 permission list and send an entitled user to `/access-denied` instead of `/auth/login`.
 
 **`permissionGuard` fails open.** A route that reaches the guard without a non-empty
@@ -244,6 +245,18 @@ http.get(url, { context: new HttpContext().set(SKIP_ACCESS_DENIED_REDIRECT, true
 
 `SKIP_ACCESS_DENIED_REDIRECT` is exported from `core/http/skip-access-denied-redirect.ts`.
 
+### Dev personas, e2e suite, contrast tokens and nav items (US-019)
+
+**Dev personas.** The backend `dev` profile (the default) seeds known-password accounts at startup (`DevDataInitializer`, never under `prod` or `break-glass`): an administrator (the E2E login), a second administrator, a member, a Role Manager (`role:read`, `role:write`), a User Manager (`user:read`, `user:role:assign`, `user:directory:read`), a locked user, a pending user, and an administrator of a fixture-only second tenant who cannot sign in. All share the dev-only password `TestPass99!`. The addresses live in `nexus-frontend/e2e/fixtures/personas.ts`. They are synthetic; never reuse them or the password anywhere else.
+
+**Run the e2e suite locally.** Start `docker compose up -d` (MySQL, Redis, MailHog), then the backend on the dev profile (`cd nexus-backend && ./mvnw spring-boot:run`), then `cd nexus-frontend && E2E_REQUIRE_BACKEND=1 npm run e2e` (Playwright starts the dev server on :2000 itself; first time `npx playwright install chromium`). Without `E2E_REQUIRE_BACKEND=1`, specs that need the backend are skipped when it is unreachable, which is convenient locally but means a green run proves less. CI sets it, rejects any skipped test and enforces a floor (`E2E_MIN_TESTS` in `.github/workflows/e2e-full-stack.yml`; raise it when you add specs).
+
+**Contrast tokens.** For text use `--nx-color-{primary,error,success,warning}-text`; keep the base `--nx-color-*` for fills, borders and icons. The text tokens are lighter in dark mode and darker in light mode to reach WCAG AA. They are defined in `src/styles/_tokens.scss` for both themes and both `data-theme` overrides; change all three places together.
+
+**Add a nav item.** Add an entry to `NAV_ITEMS` in `src/app/core/layout/nav.config.ts` and a route under the shell in `app.routes.ts`. The item's `permission` must equal the route's `data.permission` (`null` for every signed-in user); `nav.config.spec.ts` fails otherwise. Hiding a nav item is cosmetic, so the route still needs `permissionGuard` and the endpoint `@RequiresPermission`. Add the item to `NAV_LABELS` in the shell e2e spec.
+
+**Agent usage ledger.** `docs/metrics/agent-usage-ledger.csv` is described under "Usage ledger" in *The Operating Model* below; commit the rows the hook appends.
+
 ## Docker
 
 ```bash
@@ -285,6 +298,18 @@ Every non-trivial change follows this model. It is enforced by approval gates (h
 - **DB design** (ADR 0003): Flyway migration plan; additive vs expand/contract; indexes; audit columns; naming (`docs/coding-standards.md`).
 - **Security** (`SECURITY.md`): STRIDE threat model; each threat → a mitigation task; authz/PII/tenant concerns.
 - **Frontend** (`angular-standards`): routes, smart/dumb components, signal state, guards.
+
+### Agent dispatch and context economy
+
+An agent's context grows with everything it reads and is re-sent on every model call, so cost is driven by context size times call count, not by the token figure the UI shows (that figure is the size of the last context, not a total). Measured on US-019 (design, threat model, breakdown): 197 calls, 58M cache-read tokens, and three resumes after long waits that each rebuilt a 380K-550K context. None of the rules below reduce what an agent must verify.
+
+- **Fresh agent for revisions and delta reviews.** Brief it with the concrete asks and section numbers; do not `SendMessage`-resume a finished agent after more than ~5 minutes (the prompt cache has expired and the whole context is rewritten). Resume only an agent that died before writing its deliverable.
+- **Read selectively.** `Grep` for headings or identifiers, then ranged `Read`. Whole-file reads are for the document being reviewed adversarially (first-pass threat model reads the whole design). Do not re-read a file you just wrote; grep the changed lines.
+- **Upstream documents are read once per agent** and cited by section number. Briefs carry the gate decisions (for example requirements section 13a) so the agent does not re-derive them.
+- **Short final answers.** The artifact is the deliverable; the final answer is path, counts, decisions and human asks.
+- **Usage transparency.** A `SubagentStop` hook (`.claude/hooks/agent-usage.mjs`) prints a one-line token report when each agent stops: calls, tool uses, last context (the figure the UI shows), max context, cache-read, cache-write, uncached input, output (a lower bound) and an input-equivalent total, plus the delta for a resumed agent. Every report is appended to `~/.claude/nexus-agent-usage.jsonl`. `node .claude/hooks/agent-usage.mjs --report` prints one row per agent for the latest session. The input-equivalent weights (`0.1,1.25,5` for cache-read, cache-write, output) are an assumption, overridable with `NEXUS_USAGE_WEIGHTS`; billing comes from the provider's usage page.
+- **Usage ledger.** The same hook appends one row per agent to the committed `docs/metrics/agent-usage-ledger.csv` (date, story, task, agent type, model, agent id, calls, tool uses, cache-read, cache-write, output lower bound, max context, input-equivalent). Story and task are the first `US-nnn` and `T-nnn` found in the agent's prompt, so name the task first in every dispatch prompt; a row without them is design-phase or cross-task work. Rows are cumulative per agent (a resumed agent adds a newer row; readers keep the last). `node .claude/hooks/agent-usage.mjs --ledger` totals by story and task; `--backfill <subagents dir>` adds agents the ledger lacks. Not captured: the main session's own usage, thinking tokens and dollars. Commit the ledger with each task so cost is reviewed alongside the diff.
+- **Resume cost check.** After a usage-limit stop, resuming is right only if the agent had no deliverable yet and its exploration is the work to keep.
 
 ### Action half — build, prove, ship
 

@@ -73,7 +73,7 @@ html {
   /* Input & label text color states */
   --mdc-outlined-text-field-input-text-color: var(--nx-color-on-surface);
   --mdc-outlined-text-field-label-text-color: var(--nx-color-on-surface-faint);
-  --mdc-outlined-text-field-focus-label-text-color: var(--nx-color-primary);
+  --mdc-outlined-text-field-focus-label-text-color: var(--nx-color-primary-text);
   --mdc-outlined-text-field-hover-label-text-color: var(--nx-color-on-surface-muted);
 
   /* Outline color states */
@@ -84,14 +84,14 @@ html {
 
   /* Disabled & error states */
   --mdc-outlined-text-field-disabled-input-text-color: var(--nx-color-on-surface-dim);
-  --mdc-outlined-text-field-error-label-text-color: var(--nx-color-error);
+  --mdc-outlined-text-field-error-label-text-color: var(--nx-color-error-text);
   --mdc-outlined-text-field-error-outline-color: var(--nx-color-error);
   --mdc-outlined-text-field-error-focus-outline-color: var(--nx-color-error);
   --mdc-outlined-text-field-error-hover-outline-color: var(--nx-color-error);
 
   /* Form field helper/error text */
   --mat-form-field-subscript-text-color: var(--nx-color-on-surface-faint);
-  --mat-form-field-error-text-color: var(--nx-color-error);
+  --mat-form-field-error-text-color: var(--nx-color-error-text);
 
   /* ─────────────────────────────────────────────────────────────────────────
      CHECKBOX — Override M3 dark theme's default amber/orange unselected color
@@ -107,4 +107,19 @@ html {
   --mdc-checkbox-selected-focus-icon-color: var(--nx-color-primary);
   --mdc-checkbox-selected-pressed-icon-color: var(--nx-color-primary);
   --mdc-checkbox-selected-checkmark-color: var(--nx-color-on-primary);
+
+  /* ─────────────────────────────────────────────────────────────────────────
+     SURFACE TEXT BRIDGE — Material component tokens that still resolve to the dark-only
+     palette; remap so labels, card text and tables follow the active theme (WCAG AA)
+     ───────────────────────────────────────────────────────────────────────── */
+  --mat-form-field-outlined-label-text-color: var(--nx-color-on-surface-faint);
+  --mat-form-field-outlined-hover-label-text-color: var(--nx-color-on-surface-muted);
+  --mat-form-field-outlined-focus-label-text-color: var(--nx-color-primary-text);
+  --mat-form-field-outlined-input-text-color: var(--nx-color-on-surface);
+  --mat-form-field-outlined-error-label-text-color: var(--nx-color-error-text);
+  --mat-card-subtitle-text-color: var(--nx-color-on-surface-muted);
+  --mat-card-title-text-color: var(--nx-color-on-surface);
+  --mat-table-background-color: var(--nx-color-surface);
+  --mat-table-row-item-label-text-color: var(--nx-color-on-surface);
+  --mat-table-header-headline-color: var(--nx-color-on-surface-muted);
 }

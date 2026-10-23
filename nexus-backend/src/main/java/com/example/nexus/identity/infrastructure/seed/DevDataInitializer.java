@@ -1,15 +1,8 @@
 package com.example.nexus.identity.infrastructure.seed;
 
-import com.example.nexus.identity.application.EmailBlindIndexService;
-import com.example.nexus.identity.application.port.out.PasswordHasherPort;
-import com.example.nexus.identity.application.port.out.UserRegistrationPort;
-import com.example.nexus.identity.domain.EmailCipher;
-import com.example.nexus.identity.domain.User;
-import com.example.nexus.identity.domain.UuidGenerator;
-import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.domain.RbacRoleNames;
-import java.time.Instant;
-import java.util.Optional;
+import java.util.Arrays;
+import java.util.Set;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,103 +10,107 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Profile;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Seeds a pre-verified E2E test user on startup when the {@code dev} profile is active.
+ * Seeds the dev personas on startup when the {@code dev} profile is active (US-019 C1): the E2E
+ * administrator, a second administrator, a member, a Role Manager, a User Manager, a locked user
+ * and a pending user in the bootstrap tenant, plus a fixture-only second tenant whose administrator
+ * holds a custom role built from the whole permission catalogue.
  *
- * <p>The user is created in ACTIVE status (email verification bypassed) so Playwright E2E
- * tests can log in immediately without a verification email flow. Idempotent — skips
- * insertion if the user already exists.
+ * <p>Runs as one transaction: a partial seed rolls back and completes on the next start. Idempotent
+ * through {@link DevUserSeeder} and {@link DevRbacSeeder}. Every persona assignment records the
+ * seeded E2E administrator as {@code assigned_by}, never the persona itself, because a
+ * self-reference is the break-glass signature (RC-63(g)). The E2E administrator's own {@code
+ * TENANT_ADMIN} assignment is the root of that chain and keeps its self-reference.
  *
- * <p>The user is also assigned the seeded {@code TENANT_ADMIN} system role (all permissions), so
- * E2E and performance tests can exercise the RBAC endpoints. This is dev-only: it goes through
- * {@link UserRoleAssignmentPort}, the same persistence path as a real assignment, but skips the
- * caller-permission checks that would otherwise make the first admin impossible to create.
- *
- * <p>Never active under {@code break-glass} (US-018 T-008): a break-glass process must not grant
- * TENANT_ADMIN through this unchecked path.
- *
- * <p>Credentials: {@code test@example.com} / {@code TestPass99!}
+ * <p>Never active under {@code break-glass} or {@code prod}: a process in either must not create
+ * known-password administrators through this unchecked path. All personas share one dev-only
+ * password (see {@link DevUserSeeder}); no email or password is logged.
  */
 @Component
-@Profile("dev & !break-glass")
+@Profile("dev & !break-glass & !prod")
 public class DevDataInitializer implements ApplicationRunner {
+
+  static final String ROLE_MANAGER_ROLE = "Role Manager";
+  static final String USER_MANAGER_ROLE = "User Manager";
+  static final String DEV_ADMIN_ROLE = "Dev Administrator";
 
   private static final Logger log = LoggerFactory.getLogger(DevDataInitializer.class);
 
-  private static final String E2E_EMAIL = "test@example.com";
-  private static final String E2E_PASSWORD = "TestPass99!";
-
-  private final UserRegistrationPort userRegistrationPort;
-  private final EmailBlindIndexService emailBlindIndexService;
-  private final PasswordHasherPort passwordHasherPort;
-  private final UuidGenerator uuidGenerator;
-  private final UserRoleAssignmentPort userRoleAssignmentPort;
+  private final DevUserSeeder userSeeder;
+  private final DevRbacSeeder rbacSeeder;
+  private final Environment environment;
   private final UUID defaultTenantId;
 
   public DevDataInitializer(
-      UserRegistrationPort userRegistrationPort,
-      EmailBlindIndexService emailBlindIndexService,
-      PasswordHasherPort passwordHasherPort,
-      UuidGenerator uuidGenerator,
-      UserRoleAssignmentPort userRoleAssignmentPort,
+      DevUserSeeder userSeeder,
+      DevRbacSeeder rbacSeeder,
+      Environment environment,
       @Value("${nexus.identity.default-tenant-id}") UUID defaultTenantId) {
-    this.userRegistrationPort = userRegistrationPort;
-    this.emailBlindIndexService = emailBlindIndexService;
-    this.passwordHasherPort = passwordHasherPort;
-    this.uuidGenerator = uuidGenerator;
-    this.userRoleAssignmentPort = userRoleAssignmentPort;
+    this.userSeeder = userSeeder;
+    this.rbacSeeder = rbacSeeder;
+    this.environment = environment;
     this.defaultTenantId = defaultTenantId;
   }
 
   @Override
   @Transactional
   public void run(ApplicationArguments args) {
-    String emailHmac = emailBlindIndexService.blindIndex(E2E_EMAIL);
+    log.warn(
+        "DEV_SEED_ACTIVE profiles={} known-password accounts are being seeded",
+        Arrays.toString(environment.getActiveProfiles()));
+    SeedReport report = new SeedReport();
 
-    Optional<User> existing =
-        userRegistrationPort.findByTenantAndEmailHmac(defaultTenantId, emailHmac);
-    if (existing.isPresent()) {
-      log.debug("E2E test user already exists — skipping seed");
-      grantTenantAdmin(existing.get());
-      return;
-    }
+    UUID admin = userSeeder.ensureUser(
+        defaultTenantId, DevUserSeeder.E2E_EMAIL, DevUserSeeder.State.ACTIVE, report);
+    rbacSeeder.ensureAssignment(
+        defaultTenantId, admin, RbacRoleNames.TENANT_ADMIN, admin, report);
 
-    String passwordHash = passwordHasherPort.hash(E2E_PASSWORD);
-    Instant now = Instant.now();
+    seedBootstrapTenantPersonas(admin, report);
+    seedSecondTenant(admin, report);
 
-    User user = new User(
-        uuidGenerator.newId(),
-        defaultTenantId,
-        new EmailCipher(E2E_EMAIL),
-        emailHmac,
-        passwordHash,
-        now);
-    user = userRegistrationPort.save(user);
-
-    // Bypass the email verification flow — mark ACTIVE immediately for E2E use.
-    user.verify(now);
-    userRegistrationPort.save(user);
-
-    log.info("E2E test user seeded: {} (tenant {})", E2E_EMAIL, defaultTenantId);
-    grantTenantAdmin(user);
+    log.info(
+        "DEV_SEED_COMPLETED created={} skipped={}", report.createdCount(), report.skippedCount());
   }
 
-  /** Idempotent: also runs for a user seeded by an earlier version, before this role existed. */
-  private void grantTenantAdmin(User user) {
-    Optional<UUID> roleId =
-        userRoleAssignmentPort.findRoleIdByName(defaultTenantId, RbacRoleNames.TENANT_ADMIN);
-    if (roleId.isEmpty()) {
-      log.warn("{} role not found for tenant {} — test user left without roles",
-          RbacRoleNames.TENANT_ADMIN, defaultTenantId);
-      return;
-    }
-    if (userRoleAssignmentPort.hasActiveAssignment(user.getId(), roleId.get())) {
-      return;
-    }
-    userRoleAssignmentPort.assign(user.getId(), roleId.get(), defaultTenantId, user.getId());
-    log.info("E2E test user assigned {}", RbacRoleNames.TENANT_ADMIN);
+  private void seedBootstrapTenantPersonas(UUID admin, SeedReport report) {
+    String roleManager = rbacSeeder.ensureRole(
+        defaultTenantId, ROLE_MANAGER_ROLE, "Dev persona: manages roles",
+        Set.of("role:read", "role:write"), report);
+    String userManager = rbacSeeder.ensureRole(
+        defaultTenantId, USER_MANAGER_ROLE, "Dev persona: manages user role assignments",
+        Set.of("user:read", "user:role:assign", "user:directory:read"), report);
+
+    persona(DevUserSeeder.SECOND_ADMIN_EMAIL, DevUserSeeder.State.ACTIVE,
+        RbacRoleNames.TENANT_ADMIN, admin, report);
+    persona(DevUserSeeder.MEMBER_EMAIL, DevUserSeeder.State.ACTIVE,
+        RbacRoleNames.MEMBER, admin, report);
+    persona(DevUserSeeder.ROLE_MANAGER_EMAIL, DevUserSeeder.State.ACTIVE,
+        roleManager, admin, report);
+    persona(DevUserSeeder.USER_MANAGER_EMAIL, DevUserSeeder.State.ACTIVE,
+        userManager, admin, report);
+    persona(DevUserSeeder.LOCKED_EMAIL, DevUserSeeder.State.LOCKED,
+        RbacRoleNames.MEMBER, admin, report);
+    userSeeder.ensureUser(
+        defaultTenantId, DevUserSeeder.PENDING_EMAIL, DevUserSeeder.State.PENDING, report);
+  }
+
+  private void persona(
+      String email, DevUserSeeder.State state, String roleName, UUID admin, SeedReport report) {
+    UUID userId = userSeeder.ensureUser(defaultTenantId, email, state, report);
+    rbacSeeder.ensureAssignment(defaultTenantId, userId, roleName, admin, report);
+  }
+
+  private void seedSecondTenant(UUID admin, SeedReport report) {
+    String role = rbacSeeder.ensureRoleWithEveryPermission(
+        DevUserSeeder.SECOND_TENANT_ID, DEV_ADMIN_ROLE,
+        "Dev fixture: every permission, second tenant", report);
+    UUID userId = userSeeder.ensureUser(
+        DevUserSeeder.SECOND_TENANT_ID, DevUserSeeder.SECOND_TENANT_ADMIN_ID,
+        DevUserSeeder.SECOND_TENANT_ADMIN_EMAIL, DevUserSeeder.State.ACTIVE, report);
+    rbacSeeder.ensureAssignment(DevUserSeeder.SECOND_TENANT_ID, userId, role, admin, report);
   }
 }

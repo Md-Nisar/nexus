@@ -10,18 +10,21 @@ import com.example.nexus.common.domain.RequestContext;
 import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.common.security.InsufficientPermissionException;
 import com.example.nexus.rbac.application.PermissionFreshnessService;
+import com.example.nexus.rbac.application.PiiPermissionGrantRule;
 import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.application.port.out.PermissionCachePort;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.RoleChangeThrottlePort;
 import com.example.nexus.rbac.application.port.out.RoleManagementPort;
+import com.example.nexus.rbac.application.port.out.ThrottleStatus;
 import com.example.nexus.rbac.application.port.out.UserDirectoryPort;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
+import com.example.nexus.rbac.domain.RoleChangeThrottledException;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.RoleView;
 import io.micrometer.core.instrument.Meter;
@@ -64,13 +67,15 @@ class RbacMetricCardinalityTest {
     RoleAssignmentService assignmentService =
         new RoleAssignmentService(
             assignmentPort, directoryPort, mock(RbacAuditPort.class),
-            mock(PermissionCachePort.class), mock(PermissionFreshnessService.class), registry,
-            throttlePort, 5, 60);
+            mock(PermissionCachePort.class), mock(PermissionFreshnessService.class),
+            mock(PlatformTransactionManager.class), registry, throttlePort,
+            new PiiPermissionGrantRule(true, registry), 5, 60);
     RoleManagementService managementService =
         new RoleManagementService(
             managementPort, assignmentPort, mock(RbacAuditPort.class),
             mock(PermissionFreshnessService.class), mock(PermissionCachePort.class),
-            mock(PlatformTransactionManager.class), registry, 500L);
+            mock(PlatformTransactionManager.class), registry,
+            new PiiPermissionGrantRule(true, registry), UUID::randomUUID, 500L);
 
     Role role = new Role(roleId, tenantId, "MEMBER", "desc", false);
     when(directoryPort.findTenantId(targetId)).thenReturn(Optional.of(tenantId));
@@ -102,9 +107,9 @@ class RbacMetricCardinalityTest {
     assertThatThrownBy(() -> managementService.listRolePermissions(actor, foreignRoleId))
         .isInstanceOf(ResourceNotFoundException.class);
     // Throttled path (a throttled actor is blocked on a self-target).
-    when(throttlePort.isThrottled(tenantId, actorId)).thenReturn(true);
+    when(throttlePort.throttleStatus(tenantId, actorId)).thenReturn(new ThrottleStatus(true, 30));
     assertThatThrownBy(() -> assignmentService.assign(actor, actorId, roleId, RequestContext.UNKNOWN))
-        .isInstanceOf(InsufficientPermissionException.class);
+        .isInstanceOf(RoleChangeThrottledException.class);
 
     assertThat(registry.getMeters()).as("the paths above must have emitted meters").isNotEmpty();
     for (Meter meter : registry.getMeters()) {

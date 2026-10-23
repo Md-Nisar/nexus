@@ -17,6 +17,7 @@ import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.domain.AttachProvenanceConflictException;
 import com.example.nexus.rbac.domain.DuplicateRolePermissionException;
 import com.example.nexus.rbac.domain.PermissionView;
+import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
 import com.example.nexus.rbac.domain.UserRole;
@@ -66,8 +67,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 @Tag("IT")
 class AttachEscalationSignalIT {
 
-  private static final UUID ROLE_WRITE_PERMISSION_ID =
-      UUID.fromString("019f6839-1805-7000-8000-000000000006");
+  private static final UUID ROLE_WRITE_PERMISSION_ID = RbacSeededPermissionIds.ROLE_WRITE;
 
   private static final String ESCALATION_COUNTER = "nexus.rbac.attach_escalates_non_admin_assigned";
   private static final String BECAME_ADMIN_DEFINING_COUNTER = "nexus.rbac.role_became_admin_defining";

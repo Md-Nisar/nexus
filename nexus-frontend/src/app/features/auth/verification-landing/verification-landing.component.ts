@@ -1,10 +1,10 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { MatIconModule } from '@angular/material/icon';
 import { AuthService } from '../auth.service';
 import { AppError } from '../../../shared/types/app-error';
 import { ViewState, failure, loading, success } from '../../../shared/types/view-state';
+import { NxIcon } from '../../../shared/ui';
 
 /**
  * Email verification landing page (US-002).
@@ -24,7 +24,7 @@ import { ViewState, failure, loading, success } from '../../../shared/types/view
  */
 @Component({
   selector: 'app-verification-landing',
-  imports: [MatIconModule, RouterLink],
+  imports: [NxIcon, RouterLink],
   templateUrl: './verification-landing.component.html',
   styleUrl: './verification-landing.component.scss',
 })

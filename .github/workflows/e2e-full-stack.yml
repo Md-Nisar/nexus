@@ -1,0 +1,129 @@
+name: E2E Full Stack
+
+# US-019 T-027 (design 13.4, RC-63(h)). Runs the Playwright suite against the compose backend.
+# `pull_request` only, read-only token, no secrets: never `pull_request_target`, which would hand
+# a write token to fork code. Making this a required check is an Ops action (Q9).
+on:
+  pull_request:
+    paths:
+      - "nexus-backend/**"
+      - "nexus-frontend/**"
+      - "contracts/**"
+      - "docker-compose.yml"
+      - "docker-compose.e2e.yml"
+      - ".github/workflows/e2e-full-stack.yml"
+
+concurrency:
+  group: e2e-full-stack-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  COMPOSE: docker compose -f docker-compose.yml -f docker-compose.e2e.yml
+  # Floor for executed tests; `playwright test --list` reports 31. Raise it when specs are added
+  # so that a spec that stops running cannot go unnoticed.
+  E2E_MIN_TESTS: "31"
+
+jobs:
+  e2e:
+    name: e2e-full-stack
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # Naming `backend` starts it with mysql, redis and flyway-migrate (migrations and the
+      # nexus_app grants run as root first); `frontend` (nginx) is not started, so the Playwright
+      # webServer dev server owns port 2000. The backend runs the dev profile as `nexus_app`.
+      # `mailhog` is started too: the registration spec reads its verification email from it
+      # (the e2e override points the backend's SMTP host at it), and with E2E_REQUIRE_BACKEND=1
+      # a missing email fails the spec instead of skipping it.
+      - name: Start Backend Stack
+        run: $COMPOSE up -d --build backend mailhog
+
+      - name: Wait For Backend Readiness
+        run: |
+          deadline=$((SECONDS + 300))
+          until curl -fsS http://localhost:1000/actuator/health/readiness > /dev/null; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "Backend not ready after 5 minutes" >&2
+              $COMPOSE ps -a
+              $COMPOSE logs --no-color flyway-migrate backend | tail -n 200
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: nexus-frontend/package-lock.json
+
+      - name: Install Dependencies
+        working-directory: nexus-frontend
+        run: npm ci --ignore-scripts
+
+      - name: Install Playwright Browsers
+        working-directory: nexus-frontend
+        run: npx --no playwright install --with-deps chromium
+
+      - name: Self-Test CI Guards
+        working-directory: nexus-frontend
+        run: node --test e2e/tools/tools.selftest.mjs
+
+      - name: Run E2E Tests
+        working-directory: nexus-frontend
+        env:
+          CI: "true"
+          E2E_REQUIRE_BACKEND: "1"
+          PLAYWRIGHT_HTML_OPEN: never
+          PLAYWRIGHT_JSON_OUTPUT_NAME: playwright-results.json
+        run: npx --no playwright test --reporter=github,html,json
+
+      - name: Assert Tests Executed And None Skipped
+        if: always()
+        working-directory: nexus-frontend
+        run: node e2e/tools/assert-executed.mjs playwright-results.json --min "$E2E_MIN_TESTS"
+
+      - name: Collect Backend Log
+        if: always()
+        run: |
+          mkdir -p e2e-logs
+          $COMPOSE logs --no-color backend > e2e-logs/backend.log
+
+      # Persona addresses and their blind indexes (keyed with the dev HMAC key) must not appear
+      # in the backend log, the report or the traces. Artifacts are uploaded only if this passes.
+      - name: Scan For Persona PII
+        id: pii
+        if: always()
+        working-directory: nexus-frontend
+        run: |
+          mkdir -p test-results
+          node e2e/tools/scan-pii.mjs \
+            --hmac-key-from ../nexus-backend/src/main/resources/application-dev.yml \
+            ../e2e-logs playwright-report playwright-results.json test-results
+
+      - name: Upload E2E Artifacts
+        if: always() && steps.pii.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-full-stack
+          path: |
+            nexus-frontend/playwright-report
+            nexus-frontend/playwright-results.json
+            nexus-frontend/test-results
+            e2e-logs
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Stop Stack
+        if: always()
+        run: $COMPOSE down --volumes

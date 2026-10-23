@@ -1,0 +1,3 @@
+// Boundary fixture for SeededPermissionLiteralScanTest: a seeded ROLE id (019f6839-181x) is not a
+// permission literal and must not be reported.
+private static final UUID MEMBER_ROLE_ID = UUID.fromString("019f6839-1811-7000-8000-00000000000b");

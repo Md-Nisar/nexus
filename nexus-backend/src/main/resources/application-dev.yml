@@ -54,3 +54,5 @@ feature:
     enabled: true
   nexus-us015-rbac-role-management:
     enabled: true
+  nexus-us019-user-directory:
+    enabled: true

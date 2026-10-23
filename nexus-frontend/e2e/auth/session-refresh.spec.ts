@@ -1,4 +1,7 @@
 import { test, expect } from '@playwright/test';
+import { requireBackend } from '../fixtures/backend';
+import { PERSONAS } from '../fixtures/personas';
+import { enterAddress } from '../fixtures/secret-input';
 
 /**
  * E2E: US-004 — silent session renewal (proactive refresh path).
@@ -7,29 +10,24 @@ import { test, expect } from '@playwright/test';
  *   - Angular dev server running on :2000  (handled by playwright.config.ts webServer)
  *   - Spring Boot backend running on :1000 (start manually: ./mvnw spring-boot:run)
  *   - Pre-seeded, email-verified test user:
- *       email:    process.env.E2E_TEST_USER_EMAIL    (default: test@example.com)
+ *       email:    process.env.E2E_TEST_USER_EMAIL    (default: the admin persona)
  *       password: process.env.E2E_TEST_USER_PASSWORD (default: TestPass99!)
  *
- * Backend-dependent tests skip automatically when :1000 is not reachable.
+ * Backend-dependent tests skip locally when :1000 is not reachable and fail when
+ * E2E_REQUIRE_BACKEND=1 (CI).
  */
 
-const EMAIL = process.env['E2E_TEST_USER_EMAIL'] ?? 'test@example.com';
+const EMAIL = process.env['E2E_TEST_USER_EMAIL'] ?? PERSONAS.admin.email;
 const PASSWORD = process.env['E2E_TEST_USER_PASSWORD'] ?? 'TestPass99!';
 
-async function isBackendUp(request: import('@playwright/test').APIRequestContext): Promise<boolean> {
-  try {
-    const resp = await request.get('http://localhost:1000/actuator/health', { timeout: 2_000 });
-    return resp.ok();
-  } catch {
-    return false;
-  }
-}
+// These specs sign in as the seeded admin persona (the only account that exists), so a retry
+// trace would carry the persona address and fail the PII scan. No trace is recorded instead of
+// allow-listing the persona in the scan.
+test.use({ trace: 'off' });
 
 test.describe('US-004 — silent session renewal', () => {
-  test.beforeEach(async ({ request }, testInfo) => {
-    if (!(await isBackendUp(request))) {
-      testInfo.skip();
-    }
+  test.beforeEach(async () => {
+    await requireBackend();
   });
 
   test('TS-1 — proactive refresh fires before expiry; protected request succeeds without login prompt', async ({
@@ -63,7 +61,7 @@ test.describe('US-004 — silent session renewal', () => {
 
     // ── Step 3: log in — session is stored with expiresAt = now + 5 000 ms.
     await page.goto('/auth/login');
-    await page.locator('input[autocomplete="email"]').fill(EMAIL);
+    await enterAddress(page.locator('input[autocomplete="email"]'), EMAIL);
     await page.locator('input[autocomplete="current-password"]').fill(PASSWORD);
     await page.locator('[data-testid="login-submit"]').click();
 
@@ -82,6 +80,10 @@ test.describe('US-004 — silent session renewal', () => {
     await expect(page).not.toHaveURL(/\/auth\/login/);
     await expect(page.locator('[data-testid="dashboard-root"]')).toBeVisible({ timeout: 5_000 });
     expect(refreshCallCount).toBeGreaterThanOrEqual(1);
+
+    // The session is still usable: the shell's user menu offers logout.
+    await page.locator('[data-testid="nx-menu-trigger"]').click();
+    await expect(page.locator('[data-testid="logout-button"]')).toBeVisible();
   });
 
   test('TS-4 — replay of revoked refresh token clears session and redirects to login', async ({
@@ -89,7 +91,7 @@ test.describe('US-004 — silent session renewal', () => {
   }) => {
     // ── Step 1: log in normally (full-TTL session, no intercepted login response).
     await page.goto('/auth/login');
-    await page.locator('input[autocomplete="email"]').fill(EMAIL);
+    await enterAddress(page.locator('input[autocomplete="email"]'), EMAIL);
     await page.locator('input[autocomplete="current-password"]').fill(PASSWORD);
     await page.locator('[data-testid="login-submit"]').click();
 

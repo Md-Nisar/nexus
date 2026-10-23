@@ -1,3 +1,5 @@
+import type { SupportContact } from '../app/core/config/app-config';
+
 /**
  * Development environment configuration.
  *
@@ -53,4 +55,13 @@ export const environment = {
    * @default 'debug'
    */
   logLevel: 'debug',
+
+  /**
+   * Support contact link for the Access Denied page. `null` hides the link until the product
+   * owner supplies a value (US-019 Q-N5). Accepted forms: `mailto:` or `https://` only.
+   *
+   * @type {SupportContact | null}
+   * @default null
+   */
+  supportContact: null as SupportContact | null,
 } as const;

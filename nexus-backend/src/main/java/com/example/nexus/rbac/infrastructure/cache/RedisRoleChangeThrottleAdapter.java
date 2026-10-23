@@ -1,8 +1,10 @@
 package com.example.nexus.rbac.infrastructure.cache;
 
 import com.example.nexus.rbac.application.port.out.RoleChangeThrottlePort;
+import com.example.nexus.rbac.application.port.out.ThrottleStatus;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -37,6 +39,10 @@ import org.springframework.stereotype.Component;
 public class RedisRoleChangeThrottleAdapter implements RoleChangeThrottlePort {
 
   private static final Logger log = LoggerFactory.getLogger(RedisRoleChangeThrottleAdapter.class);
+
+  // PTTL replies for a key that does not exist and for a key without an expiry.
+  private static final long PTTL_KEY_ABSENT = -2L;
+  private static final long PTTL_NO_EXPIRY = -1L;
 
   // KEYS[1] window (sorted set), KEYS[2] throttled-until marker, KEYS[3] suppressed count.
   // ARGV[1] window ms, ARGV[2] max denials, ARGV[3] unique member suffix.
@@ -91,13 +97,28 @@ public class RedisRoleChangeThrottleAdapter implements RoleChangeThrottlePort {
     this.windowMillis = windowSeconds * 1000L;
   }
 
+  /**
+   * One {@code PTTL} on the throttled-until marker (US-019 B7, design §9.3): {@code -2} (absent)
+   * is not throttled; {@code -1} (no expiry, which the record script never leaves) is throttled for
+   * the whole window; otherwise the remaining time rounded up to whole seconds, at least 1.
+   */
   @Override
-  public boolean isThrottled(UUID tenantId, UUID actorUserId) {
+  public ThrottleStatus throttleStatus(UUID tenantId, UUID actorUserId) {
     try {
-      return Boolean.TRUE.equals(redisTemplate.hasKey(keys.throttleUntil(tenantId, actorUserId)));
+      Long pttl =
+          redisTemplate.getExpire(keys.throttleUntil(tenantId, actorUserId), TimeUnit.MILLISECONDS);
+      if (pttl == null || pttl == PTTL_KEY_ABSENT) {
+        return ThrottleStatus.NOT_THROTTLED;
+      }
+      if (pttl == PTTL_NO_EXPIRY) {
+        return new ThrottleStatus(true, windowMillis / 1000);
+      }
+      return new ThrottleStatus(true, Math.max(1L, Math.ceilDiv(pttl, 1000L)));
     } catch (RuntimeException e) {
-      log.warn("RBAC_THROTTLE_REDIS_UNAVAILABLE operation=isThrottled, failing safe (not throttled)", e);
-      return false;
+      log.warn(
+          "RBAC_THROTTLE_REDIS_UNAVAILABLE operation=throttleStatus, failing safe (not throttled)",
+          e);
+      return ThrottleStatus.NOT_THROTTLED;
     }
   }
 

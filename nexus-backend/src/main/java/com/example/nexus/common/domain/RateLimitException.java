@@ -16,4 +16,12 @@ public class RateLimitException extends DomainException {
   public long retryAfterSeconds() {
     return retryAfterSeconds;
   }
+
+  /**
+   * Whether the thrower already emitted its own log line for this rejection, so the exception
+   * handler logs at DEBUG instead of WARN.
+   */
+  public boolean selfReported() {
+    return false;
+  }
 }

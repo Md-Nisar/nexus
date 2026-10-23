@@ -7,7 +7,9 @@ import com.tngtech.archunit.core.domain.JavaMethod;
 import com.tngtech.archunit.core.importer.ClassFileImporter;
 import com.tngtech.archunit.core.importer.ImportOption;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -41,11 +43,33 @@ class PermissionsCatalogueTest {
   }
 
   @Test
-  void should_listAllEightCatalogueEntries_when_readingPermissionsAll() {
+  void should_listAllNineCatalogueEntries_when_readingPermissionsAll() {
     assertThat(Permissions.ALL)
         .containsExactlyInAnyOrder(
             "tenant:read", "tenant:write", "user:read", "user:write", "role:read", "role:write",
-            "audit:read", "user:role:assign");
+            "audit:read", "user:role:assign", "user:directory:read");
+  }
+
+  @Test
+  void should_partitionTheCatalogue_when_unioningSensitiveAndNonSensitive() {
+    Set<String> union = new HashSet<>(Permissions.SENSITIVE);
+    union.addAll(Permissions.NON_SENSITIVE);
+
+    assertThat(union).isEqualTo(Permissions.ALL);
+  }
+
+  @Test
+  void should_haveNoOverlap_when_intersectingSensitiveAndNonSensitive() {
+    Set<String> intersection = new HashSet<>(Permissions.SENSITIVE);
+    intersection.retainAll(Permissions.NON_SENSITIVE);
+
+    assertThat(intersection).isEmpty();
+  }
+
+  @Test
+  void should_classifyTheProposedDefaults_when_readingTheSets() {
+    assertThat(Permissions.NON_SENSITIVE)
+        .containsExactlyInAnyOrder("tenant:read", "user:read", "role:read");
   }
 
   private static List<String> requiredPermissionValues(JavaClasses classes) {

@@ -206,11 +206,14 @@ public class SecurityConfig {
     CorsConfiguration cfg = new CorsConfiguration();
     cfg.setAllowedOrigins(List.of(frontendBaseUrl));
     cfg.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
-    cfg.setAllowedHeaders(List.of("Content-Type", "Authorization", "X-Correlation-Id"));
+    // If-Match: the role permission-set replace (US-019 B8) is a conditional PUT.
+    cfg.setAllowedHeaders(
+        List.of("Content-Type", "Authorization", "X-Correlation-Id", "If-Match"));
     // Expose only headers the browser JS legitimately reads. Set-Cookie is intentionally NOT
     // exposed: the refresh cookie is HttpOnly (never script-readable) and the browser applies it
-    // automatically, so exposing it grants nothing while widening the CORS surface.
-    cfg.setExposedHeaders(List.of("Retry-After", "X-Correlation-Id"));
+    // automatically, so exposing it grants nothing while widening the CORS surface. ETag is the
+    // permission-set version the SPA sends back in If-Match (US-019 B8).
+    cfg.setExposedHeaders(List.of("Retry-After", "X-Correlation-Id", "ETag"));
     cfg.setAllowCredentials(true);
     cfg.setMaxAge(3600L);
     UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();

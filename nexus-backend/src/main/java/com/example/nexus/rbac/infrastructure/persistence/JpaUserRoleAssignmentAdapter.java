@@ -97,8 +97,28 @@ public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
     return userRoleRepository
         .lockActiveAssignmentHoldersByRoles(roleIdBytes, toBytes(tenantId))
         .stream()
-        .map(ur -> new ActiveAssignmentHolder(ur.getId(), ur.getUserId(), ur.getRoleId()))
+        .map(
+            ur ->
+                new ActiveAssignmentHolder(
+                    ur.getId(), ur.getUserId(), ur.getRoleId(), ur.getAssignedBy()))
         .toList();
+  }
+
+  @Override
+  public List<RolePermissionRef> lockRolePermissionsForRoles(
+      UUID tenantId, Collection<UUID> roleIds) {
+    if (roleIds.isEmpty()) {
+      return List.of();
+    }
+    List<byte[]> roleIdBytes = roleIds.stream().map(JpaUserRoleAssignmentAdapter::toBytes).toList();
+    return userRoleRepository.lockRolePermissionsByRoleIds(roleIdBytes, toBytes(tenantId)).stream()
+        .map(row -> new RolePermissionRef(fromBytes((byte[]) row[0]), fromBytes((byte[]) row[1])))
+        .toList();
+  }
+
+  private static UUID fromBytes(byte[] bytes) {
+    ByteBuffer buf = ByteBuffer.wrap(bytes);
+    return new UUID(buf.getLong(), buf.getLong());
   }
 
   @Override

@@ -166,7 +166,88 @@ class RolesPrivilegeIT {
     }
   }
 
+  // ── US-019 B8 (design §10.4, AS-1): the replace's role-row lock, as nexus_app ──────────
+
+  /**
+   * The production {@code FOR UPDATE} on the live role row succeeds under the column-scoped
+   * {@code UPDATE} grant, and a second {@code nexus_app} connection running it blocks (lock wait
+   * timeout 1205 with a 1 s timeout) until the first commits, after which it gets the lock.
+   */
+  @Test
+  void should_lockTheLiveRoleRowAndBlockASecondLocker_when_selectingForUpdateAsNexusApp()
+      throws Exception {
+    UUID tenantId = uuidGenerator.newId();
+    Role role = seedRole(tenantId);
+    nexusApp.setAutoCommit(false);
+
+    assertThat(lockRoleRow(nexusApp, role.getId(), tenantId)).as("the first locker").isTrue();
+
+    try (Connection second =
+        DriverManager.getConnection(
+            mysqlContainer.getJdbcUrl(), NEXUS_APP_USER, NEXUS_APP_PASSWORD)) {
+      second.setAutoCommit(false);
+      try (Statement statement = second.createStatement()) {
+        statement.execute("SET SESSION innodb_lock_wait_timeout = 1");
+      }
+      assertThatThrownBy(() -> lockRoleRow(second, role.getId(), tenantId))
+          .as("a second locker must wait for the first")
+          .isInstanceOf(SQLException.class)
+          .satisfies(e -> assertThat(((SQLException) e).getErrorCode()).isEqualTo(1205));
+      second.rollback();
+
+      nexusApp.commit();
+
+      assertThat(lockRoleRow(second, role.getId(), tenantId))
+          .as("after the first commits, the second gets the lock")
+          .isTrue();
+      second.rollback();
+    }
+  }
+
+  @Test
+  void should_returnNoRow_when_lockingASoftDeletedRoleAsNexusApp() throws Exception {
+    UUID tenantId = uuidGenerator.newId();
+    Role role = seedRole(tenantId);
+    softDelete(role.getId(), tenantId);
+
+    assertThat(lockRoleRow(nexusApp, role.getId(), tenantId)).isFalse();
+  }
+
+  @Test
+  void should_returnNoRow_when_lockingARoleOfAnotherTenantAsNexusApp() throws Exception {
+    Role role = seedRole(uuidGenerator.newId());
+
+    assertThat(lockRoleRow(nexusApp, role.getId(), uuidGenerator.newId())).isFalse();
+  }
+
   // ── Statements under test, as nexus_app ────────────────────────────────────────────────
+
+  /** The production {@code lockLiveRoleRow} statement, taken from its @Query annotation. */
+  private static boolean lockRoleRow(Connection connection, UUID roleId, UUID tenantId)
+      throws Exception {
+    String named =
+        JpaRoleRepository.class
+            .getMethod("lockLiveRoleRow", byte[].class, byte[].class)
+            .getAnnotation(Query.class)
+            .value();
+    Map<String, byte[]> values = Map.of("roleId", toBytes(roleId), "tenantId", toBytes(tenantId));
+    List<String> order = new ArrayList<>();
+    Matcher matcher = Pattern.compile(":(\\w+)").matcher(named);
+    StringBuilder positional = new StringBuilder();
+    while (matcher.find()) {
+      order.add(matcher.group(1));
+      matcher.appendReplacement(positional, "?");
+    }
+    matcher.appendTail(positional);
+    try (PreparedStatement statement = connection.prepareStatement(positional.toString())) {
+      for (int i = 0; i < order.size(); i++) {
+        statement.setBytes(i + 1, values.get(order.get(i)));
+      }
+      try (ResultSet rs = statement.executeQuery()) {
+        return rs.next();
+      }
+    }
+  }
 
   private int softDelete(UUID roleId, UUID tenantId) throws SQLException {
     try (PreparedStatement statement =

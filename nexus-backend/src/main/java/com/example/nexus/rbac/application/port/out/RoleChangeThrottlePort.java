@@ -19,20 +19,23 @@ import java.util.UUID;
 public interface RoleChangeThrottlePort {
 
   /**
-   * Is this actor currently throttled in this tenant? Keyed by {@code (tenantId, actorUserId)}
-   * — never by IP (this path is authenticated; IP is neither stable nor attributable here) and
-   * never by target (an attacker chooses the target freely).
+   * Is this actor currently throttled in this tenant, and for how long? Keyed by {@code
+   * (tenantId, actorUserId)} — never by IP (this path is authenticated; IP is neither stable nor
+   * attributable here) and never by target (an attacker chooses the target freely). The
+   * retry-after feeds the 429 {@code RBAC_011} {@code Retry-After} header (US-019 B7, design
+   * §9.3): whole seconds until the throttle lifts, rounded up, at least 1 when throttled.
    *
-   * <p>MUST fail SAFE and MUST NOT throw: an unavailable throttle store returns {@code false}
-   * ("not throttled"), so the gate's own authorization decision — which is authoritative — still
-   * runs. The throttle bounds cost, it is not an authorization control, and must never be able to
-   * <b>permit</b> anything.
+   * <p>MUST fail SAFE and MUST NOT throw: an unavailable throttle store returns {@link
+   * ThrottleStatus#NOT_THROTTLED}, so the gate's own authorization decision — which is
+   * authoritative — still runs. The throttle bounds cost, it is not an authorization control, and
+   * must never be able to <b>permit</b> anything.
    *
    * @param tenantId the tenant the role-change request targets
    * @param actorUserId the caller attempting the role change
-   * @return {@code true} iff this actor has crossed the denial bound in the current window
+   * @return whether this actor has crossed the denial bound in the current window, and the
+   *     seconds until the throttle lifts
    */
-  boolean isThrottled(UUID tenantId, UUID actorUserId);
+  ThrottleStatus throttleStatus(UUID tenantId, UUID actorUserId);
 
   /**
    * Records one privilege-gate denial against the {@code (tenantId, actorUserId)} bucket. Never

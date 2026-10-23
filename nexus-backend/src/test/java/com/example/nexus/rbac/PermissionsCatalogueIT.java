@@ -33,4 +33,14 @@ class PermissionsCatalogueIT {
 
     assertThat(names).containsExactlyInAnyOrderElementsOf(Permissions.ALL);
   }
+
+  /** US-019 T-001: V11 grows the catalogue to nine with {@code user:directory:read}. */
+  @Test
+  void should_holdNinePermissionsIncludingDirectoryRead_when_flywayHasRun() {
+    List<String> names =
+        jdbc.queryForList(
+            "SELECT name FROM permissions WHERE name NOT LIKE 'rt:%'", String.class);
+
+    assertThat(names).hasSize(9).contains(Permissions.USER_DIRECTORY_READ);
+  }
 }

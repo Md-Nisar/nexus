@@ -1,0 +1,1 @@
+{"suites":[{"title":"a.spec.ts","specs":[{"title":"one","tests":[{"status":"expected"}]},{"title":"needs backend","tests":[{"status":"skipped"}]}]}]}

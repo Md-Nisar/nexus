@@ -1,0 +1,10 @@
+:host {
+  display: block;
+}
+
+.nx-search-field {
+  width: 100%;
+  --mdc-outlined-text-field-container-shape: var(--nx-radius-sm);
+  --mdc-filled-text-field-container-shape: var(--nx-radius-sm) var(--nx-radius-sm) 0 0;
+  font-family: var(--nx-font-family);
+}

@@ -170,6 +170,11 @@ nexus:
     # sets it to true.
     throttle:
       require-shared-store: ${NEXUS_RBAC_THROTTLE_REQUIRE_SHARED_STORE:false}
+    # US-019 RC-60.3: granting user:directory:read (attach, or assign of a role carrying it)
+    # requires an administrator. Default ON until D5 rules; no profile file overrides it, so prod
+    # resolves true (pinned by PiiPermissionGrantRuleTest). false logs WARN
+    # RBAC_PII_GRANT_RULE_DISABLED at startup (RC-66.4).
+    pii-grant-requires-administrator: true
     # Per-user permission epoch (US-018 A9, design §9.2, §9.5). Both timeouts apply to dedicated
     # Redis connections built from spring.data.redis.*; the 2 s timeout above never applies here.
     epoch:
@@ -244,6 +249,19 @@ nexus:
           depth-warn: 250          # 25% of standard-capacity
           depth-critical: 720      # 90% of standard-capacity
           age-critical: 15m
+    # --- User directory (US-019 design §4.5) ---
+    directory:
+      # POST /api/v1/users/lookup, per (tenant, actor) bucket DIR_LOOKUP on the rate-limit store
+      # (NF-S5). Fails open with the store (ADR-0016): the permission is the authorization gate.
+      lookup:
+        max-attempts: 30
+        window-seconds: 60
+      # Every directory operation (list, batch, by id, lookup), per (tenant, actor) bucket DIR_ALL
+      # (RC-61.3): bounds line-rate paging by a stolen token without affecting a human. Fails open
+      # with the store, like the lookup bucket.
+      ceiling:
+        max-attempts: 600
+        window-seconds: 60
   # --- JWT Configuration ---
   jwt:
     private-key-pem: ${NEXUS_JWT_PRIVATE_KEY_PEM:}   # RSA-2048+ PKCS#8 PEM — required in prod; blank = ephemeral key in dev
@@ -291,5 +309,9 @@ feature:
     # Defaults off; AC11 is the platform's only control against the mint side of the M-3
     # self-escalation chain (03-design.md §10), so a config flip is the fastest kill switch if a
     # bypass is ever found post-deploy. Enabled per-env via application-{profile}.yml.
+    enabled: false
+  nexus-us019-user-directory:
+    # Defaults off; gates the user directory reads (US-019 B1/B2), which return users' emails, so a
+    # config flip removes them at once. Enabled per-env via application-{profile}.yml.
     enabled: false
 

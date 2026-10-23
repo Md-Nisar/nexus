@@ -7,6 +7,36 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) · Versioning: 
 
 ## [Unreleased]
 
+### Added — US-019 (Prerequisites for the RBAC access management UI)
+
+**Backend**
+- **User directory** behind `feature.nexus-us019-user-directory.enabled` (default off): `GET /api/v1/users` (page of the tenant's users, or `?ids=` batch of up to 100), `GET /api/v1/users/{userId}`, `POST /api/v1/users/lookup` (exact email in the body, never in the URL), all gated by the new permission `user:directory:read`. Five fields per user (`userId`, `email`, `status`, `emailVerified`, `createdAt`). Another tenant's id is a 404 identical to a missing one. Throttled per (tenant, actor): 429 `USER_DIR_001` (lookup, 30 per 60 s) and `USER_DIR_002` (all directory calls, 600 per 60 s). One best-effort `USER_DIRECTORY_READ` audit row per successful read.
+- `GET /api/v1/users/me/authorization` (same flag): the caller's own live roles, permissions and `isAdministrator`.
+- `GET /api/v1/roles/{roleId}`; `memberCount` and `permissionCount` on role responses; `isSensitive` on permissions.
+- `PUT /api/v1/roles/{roleId}/permissions`: atomic replace of a role's permission set with optimistic concurrency. `GET .../permissions` returns an `ETag`; the PUT requires exactly one strong `If-Match` tag. `ROLE_PERMISSION_GRANTED`/`REVOKED` audit rows with `operation=REPLACE`.
+- Only an administrator may grant `user:directory:read` (`nexus.rbac.pii-grant-requires-administrator`, default `true`; `application-prod.yml` is not edited).
+- Dev profile seeds seven personas and a fixture-only second tenant (`dev & !break-glass & !prod`).
+- Database: **`V11`** (data only, append-only, no down migration) adds the permission `user:directory:read`; the catalogue grows from 8 to 9 permissions, so a role is admin-defining only with all nine. Footer (a) gives the permission to every live role that held all eight, (b) to every system `TENANT_ADMIN`. Flush the permission cache after V11 and enable the directory flag only after the ordering rule in `docs/features/US-019/deployment.md`.
+
+**Release notes - behaviour changes**
+- **500 becomes 400, 405 or 415** for malformed requests on every endpoint: an unreadable JSON body is 400 `VALIDATION_FAILED`, an unsupported content type is 415 `UNSUPPORTED_MEDIA_TYPE`, an unsupported method is 405 `METHOD_NOT_ALLOWED` (with `Allow`), a missing required header is 400 `VALIDATION_FAILED`. Request text is no longer logged.
+- **New 429 `RBAC_011`** (with `Retry-After`) replaces the 403 a throttled actor got on assign or revoke of an admin-defining role or of themselves.
+- **New 409 `RBAC_012`** (retryable): an assign or attach that found the role had become admin-defining while it waited. Clients retry once.
+- **New 412 `PRECONDITION_FAILED` and 428 `PRECONDITION_REQUIRED`** on `PUT /api/v1/roles/{roleId}/permissions`.
+- **403 `RBAC_001` gains `reason`** (`GRANT_EXCEEDS_CALLER`, `SELF_ASSIGNMENT`, `ADMINISTRATOR_REQUIRED`, `UNSPECIFIED`).
+- Assign, attach, revoke and role deletion now classify roles under their locks (RC-56/RC-57); this closes races in which a concurrent assign could leave a non-administrator-assigned holder on a role that an attach had just made admin-defining (`RBAC_010`), or in which a just-demoted administrator still passed the self-assign check.
+- CORS allows the `If-Match` request header and exposes `ETag`.
+
+**Frontend**
+- Signed-in shell (header, permission-filtered navigation, user menu, skip link, landmarks), a Not Found page, route titles and focus, `/` redirects to `/dashboard`, a safe `returnUrl` after sign-in, and a configurable Access Denied contact (hidden until a value is set). A cold-start refresh that fails with 503 `AUTH_005` no longer redirects to login.
+- `shared/ui` wrappers: tri-state checkbox, chip, search field, menu, tooltip, skeleton, breadcrumb, page header, routable tabs, polite announcer, typed-confirmation dialog; `NxTable` custom cells, sticky header and caption. Permission labels and groups.
+- Colour contrast raised to WCAG AA (`--nx-color-*-text` tokens). Angular upgraded to 22.2.3. ESLint bans Angular Material/CDK imports outside `shared/ui` and HTML sinks in `src/app`.
+- Typed API contracts pinned to recorded backend responses in `contracts/api/`.
+
+**Tests, CI and docs**
+- New workflow `.github/workflows/e2e-full-stack.yml` (31 Playwright tests against the compose backend, axe, PII scan). Not yet a required check and not yet run end to end.
+- Gate on 2026-10-22: backend 2626 unit and 693 integration tests, frontend 515 tests, all green. Docs: `docs/features/US-019/` (`09-technical.md`, `deployment.md`, `rollback.md`, `monitoring.md`, `runbook.md`, `14-pending-items.md`, reviews and test audit). ADRs 0021 (Rev 3), 0026, 0027 (Proposed). `api-spec.json` is generated at release time.
+
 ### Added — US-018 Milestone 9 (Group C: C1, C2, C3, C5, C6; T-025 to T-030)
 
 **Backend**

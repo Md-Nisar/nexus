@@ -4,7 +4,7 @@
   @case ('loading') {
     <output class="verif verif--verifying" data-testid="verif-verifying">
       <!-- Spinner icon: aria-hidden because the status message conveys the state to screen readers -->
-      <mat-icon class="verif__spinner-icon" aria-hidden="true">sync</mat-icon>
+      <nx-icon class="verif__spinner-icon" name="sync" />
       <p class="verif__message">Verifying your email address…</p>
     </output>
   }
@@ -13,7 +13,7 @@
   @case ('success') {
     <output class="verif verif--success" data-testid="verif-success">
       <!-- Checkmark icon: decorative only, screen reader sees the heading -->
-      <mat-icon class="verif__icon verif__icon--success" aria-hidden="true">check_circle</mat-icon>
+      <nx-icon class="verif__icon verif__icon--success" name="check_circle" />
       <h2 class="verif__heading">Email verified!</h2>
       <p class="verif__message">Your account is active. You can now log in.</p>
       <!-- Link to login page: next step in the user journey -->
@@ -25,7 +25,7 @@
   @case ('error') {
     <div class="verif verif--error" data-testid="verif-error" role="alert">
       <!-- Error icon: aria-hidden because the heading and message convey the error to screen readers -->
-      <mat-icon class="verif__icon verif__icon--error" aria-hidden="true">error_outline</mat-icon>
+      <nx-icon class="verif__icon verif__icon--error" name="error_outline" />
       <h2 class="verif__heading">Verification failed</h2>
       <!-- Error message from backend; all failure paths return AUTH_VRF_002 with a single message
            to prevent leaking whether the token is invalid, expired, or already consumed (anti-enumeration) -->

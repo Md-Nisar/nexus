@@ -439,6 +439,24 @@ class HexagonalArchitectureTest {
                             + "endpoint that takes an identifier must use @RequiresPermission.")
                     .allowEmptyShould(true);
 
+    // US-019 T-008 (design §6.2 "Must not", T-S13): the caller authorization profile is read live.
+    // A dependency on the permission cache, the token-time resolution or the JWT claim keys would
+    // turn it into an echo of what the token or the cache last saw, misguiding every UI affordance.
+    @ArchTest
+    static final ArchRule caller_authorization_reads_neither_cache_nor_token_claims =
+            noClasses()
+                    .that().haveSimpleNameStartingWith("CallerAuthorization")
+                    .and().resideInAPackage("..rbac..")
+                    .should().dependOnClassesThat().haveFullyQualifiedName(
+                            "com.example.nexus.rbac.application.port.out.PermissionCachePort")
+                    .orShould().dependOnClassesThat().haveFullyQualifiedName(
+                            "com.example.nexus.rbac.application.RoleResolutionService")
+                    .orShould().dependOnClassesThat().haveFullyQualifiedName(
+                            "com.example.nexus.common.security.AuthenticationDetailKeys")
+                    .because("US-019 design §6.2 and threat T-S13: B4 makes live reads in one "
+                            + "snapshot; it never reads the permission cache, the token-time role "
+                            + "resolution or JWT claims beyond the principal and tenant.");
+
     // US-018 T-007 (03-design.md §7.2, EC2). Defined in ArchitectureRules so the fixture tests
     // that prove each rule fires can reach them while this class stays package-private.
     @ArchTest
@@ -462,6 +480,25 @@ class HexagonalArchitectureTest {
     @ArchTest
     static final ArchRule global_break_glass_replay_query_is_called_only_by_its_adapter =
             ArchitectureRules.GLOBAL_BREAK_GLASS_REPLAY_QUERY_IS_CALLED_ONLY_BY_ITS_ADAPTER;
+
+    // US-019 RC-61.2: the allowlisted unscoped user count stays inside the directory adapter.
+    @ArchTest
+    static final ArchRule unscoped_user_count_is_called_only_by_the_directory_adapter =
+            ArchitectureRules.UNSCOPED_USER_COUNT_IS_CALLED_ONLY_BY_THE_DIRECTORY_ADAPTER;
+
+    // US-019 review R2-3: the unscoped existsById probes stay inside the directory service/adapter.
+    @ArchTest
+    static final ArchRule unscoped_user_existence_probe_is_called_only_by_the_directory_service =
+            ArchitectureRules.UNSCOPED_USER_EXISTENCE_PROBE_IS_CALLED_ONLY_BY_THE_DIRECTORY_SERVICE;
+
+    @ArchTest
+    static final ArchRule unscoped_user_exists_by_id_is_called_only_by_the_directory_adapter =
+            ArchitectureRules.UNSCOPED_USER_EXISTS_BY_ID_IS_CALLED_ONLY_BY_THE_DIRECTORY_ADAPTER;
+
+    // US-019 RC-63(k): isSensitive is UX only; only the response mapper reads the sets.
+    @ArchTest
+    static final ArchRule sensitivity_sets_are_read_only_by_the_response_mapper =
+            ArchitectureRules.SENSITIVITY_SETS_ARE_READ_ONLY_BY_THE_RESPONSE_MAPPER;
 
     @ArchTest
     static final ArchRule no_field_injection =

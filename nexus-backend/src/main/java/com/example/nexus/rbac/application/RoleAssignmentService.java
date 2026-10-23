@@ -11,18 +11,22 @@ import com.example.nexus.rbac.application.port.out.PermissionCachePort;
 import com.example.nexus.rbac.application.port.out.RbacAuditEvent;
 import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.RoleChangeThrottlePort;
+import com.example.nexus.rbac.application.port.out.ThrottleStatus;
 import com.example.nexus.rbac.application.port.out.UserDirectoryPort;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
 import com.example.nexus.rbac.domain.ActiveAssignmentRef;
 import com.example.nexus.rbac.domain.ActiveRoleAssignment;
 import com.example.nexus.rbac.domain.DuplicateRoleAssignmentException;
+import com.example.nexus.rbac.domain.HolderProvenance;
 import com.example.nexus.rbac.domain.LastAdminRoleException;
 import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.RbacAdministrators;
 import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RoleChangeActor;
+import com.example.nexus.rbac.domain.RoleChangeThrottledException;
+import com.example.nexus.rbac.domain.RoleClassificationChangedException;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.DistributionSummary;
@@ -30,6 +34,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.time.Instant;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -40,9 +45,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Assigns, revokes, and lists tenant-scoped role assignments (03-design.md §4, §5.3).
@@ -108,6 +116,9 @@ public class RoleAssignmentService {
   private static final String OUTCOME_ERROR = "error";
 
   private static final String COUNTER_ADMIN_ROLE_ASSIGNED = "nexus.rbac.admin_role_assigned";
+  // RC-56.2-3: 409 RBAC_012, tagged with the operation (assign, attach).
+  private static final String COUNTER_ROLE_CLASSIFICATION_CHANGED =
+      "nexus.rbac.role_classification_changed";
   private static final String COUNTER_SELF_ASSIGN_ADMIN_DISAGREEMENT =
       "nexus.rbac.self_assign_admin_disagreement";
   private static final String TAG_SELF_TARGET = "selfTarget";
@@ -148,8 +159,10 @@ public class RoleAssignmentService {
   private final RbacAuditPort rbacAuditPort;
   private final PermissionCachePort permissionCachePort;
   private final PermissionFreshnessService permissionFreshnessService;
+  private final TransactionTemplate holderReadTransaction;
   private final MeterRegistry meterRegistry;
   private final RoleChangeThrottlePort throttlePort;
+  private final PiiPermissionGrantRule piiGrantRule;
   private final int maxDenials;
   private final int windowSeconds;
 
@@ -159,8 +172,10 @@ public class RoleAssignmentService {
       RbacAuditPort rbacAuditPort,
       PermissionCachePort permissionCachePort,
       PermissionFreshnessService permissionFreshnessService,
+      PlatformTransactionManager transactionManager,
       MeterRegistry meterRegistry,
       RoleChangeThrottlePort throttlePort,
+      PiiPermissionGrantRule piiGrantRule,
       @Value("${nexus.rbac.denial-throttle.max-denials}") int maxDenials,
       @Value("${nexus.rbac.denial-throttle.window-seconds}") int windowSeconds) {
     this.userRoleAssignmentPort = userRoleAssignmentPort;
@@ -168,10 +183,49 @@ public class RoleAssignmentService {
     this.rbacAuditPort = rbacAuditPort;
     this.permissionCachePort = permissionCachePort;
     this.permissionFreshnessService = permissionFreshnessService;
+    // As RoleManagementService's: afterCommit still has the committed transaction's resources
+    // bound, so the detector's read runs in a new read-only transaction.
+    this.holderReadTransaction = new TransactionTemplate(transactionManager);
+    this.holderReadTransaction.setPropagationBehavior(
+        TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+    this.holderReadTransaction.setReadOnly(true);
     this.meterRegistry = meterRegistry;
     this.throttlePort = throttlePort;
+    this.piiGrantRule = piiGrantRule;
     this.maxDenials = maxDenials;
     this.windowSeconds = windowSeconds;
+  }
+
+  private void afterAssignCommitted(
+      RoleChangeActor actor,
+      UUID targetUserId,
+      UUID roleId,
+      PiiPermissionGrantRule.Outcome piiGrant,
+      Timer.Sample lockHoldSample,
+      TargetClassification target,
+      boolean selfTarget) {
+    permissionCachePort.evict(actor.tenantId(), targetUserId);
+    log.atInfo()
+        .addKeyValue(LOG_KEY_EVENT, "ROLE_ASSIGNED")
+        .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+        .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
+        .addKeyValue(LOG_KEY_ROLE_ID, roleId)
+        .addKeyValue("assignedBy", actor.userId())
+        .log("Role assigned");
+    if (piiGrant == PiiPermissionGrantRule.Outcome.DELEGATED) {
+      piiGrantRule.recordDelegated(actor.tenantId(), actor.userId(), roleId, targetUserId);
+    }
+    // Stopped from afterCommit(), the true "at commit" point.
+    stopLockHoldTimer(lockHoldSample, OPERATION_ASSIGN, OUTCOME_ASSIGNED);
+    // Row 9: an administrator was minted. Ticket, never page: a self-target by an
+    // administrator is legitimate. Bounded tag, no tenant tag.
+    if (target.adminDefining()) {
+      Counter.builder(COUNTER_ADMIN_ROLE_ASSIGNED)
+          .tag(TAG_SELF_TARGET, Boolean.toString(selfTarget))
+          .register(meterRegistry)
+          .increment();
+      detectNonAdministratorAssignedHolder(actor.tenantId(), roleId, target.catalogueIds());
+    }
   }
 
   /**
@@ -181,9 +235,18 @@ public class RoleAssignmentService {
    * <p>Order: tenant checks (404/403), throttle, classify the target role (is it admin-defining?),
    * the set lock when it is, the caller's live holdings, then in this order the {@code
    * user:role:assign} re-check (07-security-review.md L-1), A4 (self-assignment needs an
-   * administrator), A2 (the role's permissions must be a subset of the caller's), the duplicate
-   * 409 and the insert. One denial row carries the first reason. Neither A4 nor A2 closes RES-26
-   * (pre-positioning through a second account).
+   * administrator), A2 (the role's permissions must be a subset of the caller's), the PII grant
+   * rule, the duplicate 409 and the insert, then, on the non-admin-defining path, the post-insert
+   * current read (409 {@code RBAC_012}, US-019 RC-56.2). One denial row carries the first reason.
+   * Neither A4 nor A2 closes RES-26 (pre-positioning through a second account). After an
+   * admin-defining assign commits, the committed-state detector runs (RC-56.4).
+   *
+   * <p>The PII grant rule (US-019 §4.8, RC-60.3) runs after A2 (RC-66.1): a role whose permissions
+   * (M14) include {@code user:directory:read} may only be assigned by an administrator, decided as
+   * A4 decides it (the set lock's rows, or the snapshot's per-role rows). A denial follows assign's
+   * posture (RC-66.2): 403 {@code NOT_TENANT_ADMIN}, one {@code ROLE_ASSIGNMENT_DENIED} row and a
+   * throttle denial, as for A4 and A2. With the rule switched off, a non-administrator's assign is
+   * reported after commit (RC-60.2).
    *
    * <p>A4's "is the caller an administrator?" comes from the set lock's rows when the target is
    * admin-defining and from the snapshot otherwise; A2 compares against the snapshot's union in
@@ -201,10 +264,17 @@ public class RoleAssignmentService {
     // throttled actor is blocked only on the paths that take the set lock or target themself.
     TargetClassification target = classifyTarget(actor, role, OPERATION_ASSIGN);
     boolean throttled = evaluateThrottle(actor, targetUserId, target, OPERATION_ASSIGN);
-    SetLock setLock = target.adminDefining() ? acquireSetLock(actor, target, role) : null;
-    Timer.Sample lockHoldSample = setLock == null ? null : setLock.holdTimer();
+    SetLock preLockClassified = target.adminDefining() ? acquireSetLock(actor, target, role) : null;
+    Timer.Sample lockHoldSample = preLockClassified == null ? null : preLockClassified.holdTimer();
 
     try {
+      // RC-57.2 (US-019 review R1-2): A4 and the PII administrator answer classify the locked
+      // roles from a current read under the set lock, never from the pre-lock M10' read, so a
+      // demotion that committed while this assign waited cannot leave its holders administrators.
+      SetLock setLock =
+          preLockClassified == null
+              ? null
+              : classifyLockedRolesNow(actor, target, preLockClassified);
       List<RolePermissionRef> heldRolePermissions =
           userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(
               actor.userId(), actor.tenantId());
@@ -221,6 +291,13 @@ public class RoleAssignmentService {
       requireGrantWithinCallerHoldings(
           actor, targetUserId, role, target, heldRolePermissions, OPERATION_ASSIGN,
           requestContext, throttled);
+      PiiPermissionGrantRule.Outcome snapshotPiiGrant =
+          piiGrantRule.evaluate(
+              target.targetPermissionIds(),
+              () -> callerIsAdministrator(actor, setLock, heldRolePermissions, target));
+      if (snapshotPiiGrant == PiiPermissionGrantRule.Outcome.DENIED) {
+        denyPiiPermissionGrant(actor, targetUserId, role, requestContext, throttled);
+      }
 
       if (userRoleAssignmentPort.hasActiveAssignment(targetUserId, roleId)) {
         // Deliberately DEBUG, not WARN: a duplicate-assignment attempt is a benign client bug,
@@ -244,6 +321,11 @@ public class RoleAssignmentService {
       // assignedBy is ALWAYS actor.userId(), never derived from targetUserId or any
       // request-supplied value (T-S3).
       userRoleAssignmentPort.assign(targetUserId, roleId, actor.tenantId(), actor.userId());
+      PiiPermissionGrantRule.Outcome piiGrant =
+          setLock == null
+              ? requireAssignKeptItsClassification(
+                  actor, targetUserId, role, heldRolePermissions, target, snapshotPiiGrant)
+              : snapshotPiiGrant;
 
       // Re-read via the projection rather than the just-persisted entity: a projection reads
       // DB-generated values (assignedAt) directly.
@@ -261,26 +343,9 @@ public class RoleAssignmentService {
               requestContext));
 
       registerPostCommitSideEffects(
-          () -> {
-            permissionCachePort.evict(actor.tenantId(), targetUserId);
-            log.atInfo()
-                .addKeyValue(LOG_KEY_EVENT, "ROLE_ASSIGNED")
-                .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
-                .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
-                .addKeyValue(LOG_KEY_ROLE_ID, roleId)
-                .addKeyValue("assignedBy", actor.userId())
-                .log("Role assigned");
-            // Stopped from afterCommit(), the true "at commit" point.
-            stopLockHoldTimer(lockHoldSample, OPERATION_ASSIGN, OUTCOME_ASSIGNED);
-            // Row 9: an administrator was minted. Ticket, never page: a self-target by an
-            // administrator is legitimate. Bounded tag, no tenant tag.
-            if (target.adminDefining()) {
-              Counter.builder(COUNTER_ADMIN_ROLE_ASSIGNED)
-                  .tag(TAG_SELF_TARGET, Boolean.toString(selfTarget))
-                  .register(meterRegistry)
-                  .increment();
-            }
-          });
+          () ->
+              afterAssignCommitted(
+                  actor, targetUserId, roleId, piiGrant, lockHoldSample, target, selfTarget));
 
       return assignment;
     } catch (InsufficientPermissionException e) {
@@ -299,7 +364,9 @@ public class RoleAssignmentService {
    * Revokes {@code roleId} from {@code targetUserId} within the actor's own tenant.
    *
    * <p>Order (design §5.3): tenant checks (404/403), the assignment lookup (404), throttle, classify
-   * the target role, the set lock when it is admin-defining, then <b>revoke-subset</b> (403): when
+   * the target role, the set lock when it is admin-defining and a current {@code FOR SHARE} read
+   * of the locked roles' permissions that classifies them for the rest (RC-57.2), then
+   * <b>revoke-subset</b> (403): when
    * the role is admin-defining the caller must be an administrator according to the set lock's own
    * rows ({@code NOT_TENANT_ADMIN}, evaluated first because it needs no other read), then the
    * {@code user:role:assign} re-check (L-1), then the caller must hold every permission of the role
@@ -319,10 +386,17 @@ public class RoleAssignmentService {
 
     TargetClassification target = classifyTarget(actor, role, OPERATION_REVOKE);
     boolean throttled = evaluateThrottle(actor, targetUserId, target, OPERATION_REVOKE);
-    SetLock setLock = target.adminDefining() ? acquireSetLock(actor, target, role) : null;
-    Timer.Sample lockHoldSample = setLock == null ? null : setLock.holdTimer();
+    SetLock preLockClassified = target.adminDefining() ? acquireSetLock(actor, target, role) : null;
+    Timer.Sample lockHoldSample = preLockClassified == null ? null : preLockClassified.holdTimer();
 
     try {
+      // RC-57.2: both decisions below classify the locked roles from a current read under the set
+      // lock, never from the pre-lock M10' read, so a demotion that committed while this revoke
+      // waited cannot leave its holders counted as administrators.
+      SetLock setLock =
+          preLockClassified == null
+              ? null
+              : classifyLockedRolesNow(actor, target, preLockClassified);
       // The administrator requirement first: it needs only the rows the set lock just returned,
       // and it keeps the reason a non-administrator sees on an admin-defining role stable
       // (NOT_TENANT_ADMIN, A-13) whatever else they lack.
@@ -467,9 +541,12 @@ public class RoleAssignmentService {
   /**
    * The set lock and what it returned. {@code lockedHolders} are current and X-locked rows, so
    * {@link #callerHoldsAdministratorRole} answers "is the caller an administrator?" without
-   * touching the snapshot (ADR-0021 D2).
+   * touching the snapshot (ADR-0021 D2). {@code adminDefiningRoleIds} comes from M10' as returned
+   * by {@link #acquireSetLock}; assign and revoke replace it with the current read through
+   * {@link #classifyLockedRolesNow} (RC-57.2).
    */
   private record SetLock(
+      List<UUID> lockedRoleIds,
       Set<UUID> adminDefiningRoleIds,
       List<ActiveAssignmentHolder> lockedHolders,
       Timer.Sample holdTimer) {
@@ -523,7 +600,26 @@ public class RoleAssignmentService {
     List<ActiveAssignmentHolder> lockedHolders =
         userRoleAssignmentPort.lockActiveAssignmentHolders(actor.tenantId(), lockSet);
     recordLockSetSize(lockedHolders.size());
-    return new SetLock(adminDefiningRoleIds, lockedHolders, Timer.start(meterRegistry));
+    return new SetLock(lockSet, adminDefiningRoleIds, lockedHolders, Timer.start(meterRegistry));
+  }
+
+  /**
+   * RC-57.2 (T-E49): which locked roles are admin-defining <b>now</b>, from a {@code FOR SHARE}
+   * read of the lock set's {@code role_permissions} taken after the set lock, replacing the
+   * pre-lock M10' classification. An uncommitted detach or permission-set replace on one of them is
+   * waited for, then seen. Lock order: after the requester's {@code user_roles} locks, and no
+   * {@code role_permissions} writer waits on {@code user_roles} or {@code roles} while holding a
+   * record (T-T24), so no cycle.
+   */
+  private SetLock classifyLockedRolesNow(
+      RoleChangeActor actor, TargetClassification target, SetLock setLock) {
+    Set<UUID> adminDefiningNow =
+        RbacAdministrators.adminDefiningRoleIds(
+            userRoleAssignmentPort.lockRolePermissionsForRoles(
+                actor.tenantId(), setLock.lockedRoleIds()),
+            target.catalogueIds());
+    return new SetLock(
+        setLock.lockedRoleIds(), adminDefiningNow, setLock.lockedHolders(), setLock.holdTimer());
   }
 
   /**
@@ -606,7 +702,8 @@ public class RoleAssignmentService {
   /**
    * D14, re-scoped by US-018 B8 (Decision 25; 03-design.md §10.8): after the 404s and the target's
    * classification, before every authorization read of the caller. Returns whether the actor is
-   * currently throttled. A throttled actor is BLOCKED (403, no audit row, counter) only when the
+   * currently throttled. A throttled actor is BLOCKED (US-019 B7: 429 {@code RBAC_011} with a
+   * {@code Retry-After} bounded to [1, window]; no audit row; counter) only when the
    * request would take the set lock (the target role is admin-defining) or targets the actor
    * themself: those are the paths the throttle exists to bound (T-D10, T-D11, RES-8; ADR-0018 D7).
    * Every other request is evaluated normally, so an authorized benign change still succeeds
@@ -614,33 +711,35 @@ public class RoleAssignmentService {
    *
    * <p>A throttled actor never reaches the set lock: this runs before {@link #acquireSetLock}.
    * Classifying first tells a throttled actor whether a target is admin-defining by whether the
-   * request is blocked (one bit, RES-33, accepted).
+   * request is blocked; the 429 makes that bit explicit on every target (RES-33, T-I22, RES-47,
+   * accepted).
    *
-   * <p>Defense in depth (MC-7(i)): {@link RoleChangeThrottlePort#isThrottled} is documented to
+   * <p>Defense in depth (MC-7(i)): {@link RoleChangeThrottlePort#throttleStatus} is documented to
    * fail safe and never throw, but a throwing implementation must not turn an availability
-   * problem into a false block here: any exception is swallowed and treated as "not throttled",
-   * falling through to the real gate, which remains authoritative.
+   * problem into a false block here: any exception, or a {@code null} answer, is treated as "not
+   * throttled", falling through to the real gate, which remains authoritative.
    */
   private boolean evaluateThrottle(
       RoleChangeActor actor, UUID targetUserId, TargetClassification target, String operation) {
-    boolean throttled;
+    ThrottleStatus status;
     try {
-      throttled = throttlePort.isThrottled(actor.tenantId(), actor.userId());
+      status = throttlePort.throttleStatus(actor.tenantId(), actor.userId());
     } catch (RuntimeException e) {
       log.atError()
           .addKeyValue(LOG_KEY_EVENT, "RBAC_THROTTLE_IS_THROTTLED_CALL_FAILED")
           .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
           .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
           .addKeyValue(LOG_KEY_OPERATION, operation)
-          .log("isThrottled threw despite its never-throw contract", e);
+          .log("throttleStatus threw despite its never-throw contract", e);
       return false;
     }
-    if (!throttled) {
+    if (status == null || !status.throttled()) {
       return false;
     }
     if (target.adminDefining() || targetUserId.equals(actor.userId())) {
       countThrottled(operation);
-      throw new InsufficientPermissionException(USER_ROLE_ASSIGN, DenialReason.NOT_TENANT_ADMIN);
+      throw new RoleChangeThrottledException(
+          Math.max(1L, Math.min(status.retryAfterSeconds(), (long) windowSeconds)));
     }
     return true;
   }
@@ -741,6 +840,102 @@ public class RoleAssignmentService {
   }
 
   /**
+   * RC-56.2 and RC-66.3, on the non-admin-defining path right after the insert: a current {@code
+   * FOR SHARE} read of R's permissions. The conditional insert took R's row S lock, so it may have
+   * waited on a permission-set replace (B8) that holds R's row X, while A2, the PII grant rule and
+   * the classification came from the snapshot taken before that wait. If R is admin-defining now,
+   * or R now carries {@code user:directory:read} and the PII grant rule denies the caller, the
+   * assign throws the retryable 409 {@code RBAC_012}: the insert rolls back and no audit row
+   * (success or denial) is written. The retry classifies R again and takes the set-lock path (A4,
+   * A2 and the administrator answer from locked rows) or meets the PII rule. Lock order: after R's
+   * row S and the {@code user_roles} insert, and no {@code role_permissions} writer waits on {@code
+   * roles} or {@code user_roles} while holding a record (T-T24), so no cycle.
+   *
+   * <p>Returns the PII rule's outcome for the after-commit delegation signal: the current read's
+   * when it is a delegation (the rule switched off and R gained the permission while the assign
+   * waited), the snapshot's otherwise.
+   */
+  private PiiPermissionGrantRule.Outcome requireAssignKeptItsClassification(
+      RoleChangeActor actor,
+      UUID targetUserId,
+      Role role,
+      List<RolePermissionRef> heldRolePermissions,
+      TargetClassification target,
+      PiiPermissionGrantRule.Outcome snapshotPiiGrant) {
+    Set<UUID> current = new HashSet<>();
+    userRoleAssignmentPort
+        .lockRolePermissionsForRoles(actor.tenantId(), List.of(role.getId()))
+        .forEach(ref -> current.add(ref.permissionId()));
+    PiiPermissionGrantRule.Outcome currentPiiGrant =
+        piiGrantRule.evaluate(
+            current, () -> callerIsAdministrator(actor, null, heldRolePermissions, target));
+    if (!RbacAdministrators.isAdminDefining(current, target.catalogueIds())
+        && currentPiiGrant != PiiPermissionGrantRule.Outcome.DENIED) {
+      return currentPiiGrant == PiiPermissionGrantRule.Outcome.DELEGATED
+          ? currentPiiGrant
+          : snapshotPiiGrant;
+    }
+    log.atInfo()
+        .addKeyValue(LOG_KEY_EVENT, "RBAC_ROLE_CLASSIFICATION_CHANGED")
+        .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+        .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+        .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
+        .addKeyValue(LOG_KEY_ROLE_ID, role.getId())
+        .addKeyValue(LOG_KEY_OPERATION, OPERATION_ASSIGN)
+        .log("Rolled back an assign: the role changed class while the assign waited");
+    Counter.builder(COUNTER_ROLE_CLASSIFICATION_CHANGED)
+        .tag(LOG_KEY_OPERATION, OPERATION_ASSIGN)
+        .register(meterRegistry)
+        .increment();
+    throw new RoleClassificationChangedException();
+  }
+
+  /**
+   * RC-56.4 after an assign of an admin-defining role commits, in a read-only transaction of its
+   * own: R's active holders with their assigners and the tenant's administrator user set, the reads
+   * attach's row-13 signal makes, then {@link AdminDefiningRoleProvenanceDetector}. A failed read
+   * is logged and skipped: the assignment has committed, and the detector is a backstop.
+   */
+  private void detectNonAdministratorAssignedHolder(
+      UUID tenantId, UUID roleId, Set<UUID> catalogueIds) {
+    try {
+      holderReadTransaction.executeWithoutResult(
+          status -> {
+            List<HolderProvenance> holders =
+                userRoleAssignmentPort.findActiveHoldersForRole(roleId, tenantId);
+            if (holders.isEmpty()) {
+              return;
+            }
+            Set<UUID> adminDefiningRoleIds =
+                resolveAdminDefiningRoleIds(userRoleAssignmentPort, tenantId, catalogueIds);
+            Set<UUID> administratorUserIds =
+                userRoleAssignmentPort.findActiveHolderUserIdsForRoles(
+                    tenantId, adminDefiningRoleIds);
+            int nonAdminAssignedCount =
+                (int)
+                    holders.stream()
+                        .filter(holder -> !administratorUserIds.contains(holder.assignedBy()))
+                        .count();
+            AdminDefiningRoleProvenanceDetector.check(
+                meterRegistry,
+                tenantId,
+                roleId,
+                adminDefiningRoleIds.contains(roleId),
+                holders.size(),
+                nonAdminAssignedCount);
+          });
+    } catch (RuntimeException e) {
+      log.atError()
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_HOLDER_READ_FAILED")
+          .addKeyValue(LOG_KEY_OPERATION, OPERATION_ASSIGN)
+          .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
+          .addKeyValue(LOG_KEY_ROLE_ID, roleId)
+          .addKeyValue("exception", e.getClass().getSimpleName())
+          .log("Reading role holders after commit failed; the provenance detector did not run");
+    }
+  }
+
+  /**
    * A4 (ADR-0021 D4): a caller may assign a role to themselves only if they are an administrator.
    * This closes the literal self-target step only; the same pre-positioning through a second
    * account is not prevented here (RES-26, T-E32). Always throws.
@@ -758,6 +953,31 @@ public class RoleAssignmentService {
         actor, targetUserId, role.getId(), role.getName(), DenialReason.SELF_ASSIGNMENT,
         OPERATION_ASSIGN, requestContext, null);
     throw new InsufficientPermissionException(USER_ROLE_ASSIGN, DenialReason.SELF_ASSIGNMENT);
+  }
+
+  /**
+   * The PII grant rule's denial on assign (US-019 §4.8, RC-66.2), in A2's posture: a throttled
+   * actor's denial is counted without an audit row ({@link #suppressThrottledDenial}); otherwise a
+   * throttle denial, the WARN {@code RBAC_PII_PERMISSION_GRANT_DENIED} and one {@code
+   * ROLE_ASSIGNMENT_DENIED} row. Always throws.
+   */
+  private void denyPiiPermissionGrant(
+      RoleChangeActor actor,
+      UUID targetUserId,
+      Role role,
+      RequestContext requestContext,
+      boolean throttled) {
+    if (throttled) {
+      suppressThrottledDenial(actor, OPERATION_ASSIGN);
+      throw new InsufficientPermissionException(USER_ROLE_ASSIGN, DenialReason.NOT_TENANT_ADMIN);
+    }
+    recordThrottleDenialAndMaybeWarn(actor, OPERATION_ASSIGN);
+    piiGrantRule.warnDenied(
+        actor.tenantId(), actor.userId(), role.getId(), targetUserId, OPERATION_ASSIGN);
+    recordDenial(
+        actor, targetUserId, role.getId(), role.getName(), DenialReason.NOT_TENANT_ADMIN,
+        OPERATION_ASSIGN, requestContext, null);
+    throw new InsufficientPermissionException(USER_ROLE_ASSIGN, DenialReason.NOT_TENANT_ADMIN);
   }
 
   /**

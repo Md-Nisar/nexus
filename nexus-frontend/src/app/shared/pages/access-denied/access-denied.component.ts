@@ -1,5 +1,7 @@
-import { afterNextRender, Component, ElementRef, viewChild } from '@angular/core';
+import { afterNextRender, Component, computed, ElementRef, inject, viewChild } from '@angular/core';
 import { RouterLink } from '@angular/router';
+import { AuthStore } from '../../../core/auth/auth.store';
+import { APP_CONFIG, parseSupportContact } from '../../../core/config/app-config';
 import { NxErrorState } from '../../ui';
 
 /**
@@ -22,7 +24,11 @@ import { NxErrorState } from '../../ui';
  * - Both calls to action are real `<a>` elements with descriptive text (never
  *   "click here"), keyboard-operable by default.
  *
- * @security Renders static copy only. It must never display `AppError.requiredPermission`
+ * ## Contact and roles (US-019 A9)
+ * The contact link renders only when `AppConfig.supportContact` passes `parseSupportContact`.
+ * Role names come from `AuthStore` (as of sign-in); the page still makes no HTTP call.
+ *
+ * @security Renders static copy, the validated contact and the session's role names only. It must never display `AppError.requiredPermission`
  * or any other RBAC detail (EPIC-002 §UX).
  */
 @Component({
@@ -47,23 +53,41 @@ import { NxErrorState } from '../../ui';
           >
             Return to dashboard
           </a>
-          <!-- TODO(PM): replace this RFC 2606 reserved placeholder domain with the real
-               support address before release. -->
-          <a
-            class="access-denied__action"
-            href="mailto:support@yourcompany.example"
-            data-testid="access-denied-contact-link"
-          >
-            Contact your administrator
-          </a>
+          @if (contact(); as support) {
+            <a
+              class="access-denied__action"
+              [href]="support.href"
+              rel="noopener noreferrer"
+              data-testid="access-denied-contact-link"
+            >
+              {{ support.label }}
+            </a>
+          }
         </div>
       </nx-error-state>
+
+      @if (roles().length > 0) {
+        <p class="access-denied__roles" data-testid="access-denied-roles">
+          Your roles: {{ roleList() }}
+          <span class="access-denied__roles-caption">(as of when you signed in)</span>
+        </p>
+      }
     </main>
   `,
   styleUrl: './access-denied.component.scss',
 })
 export class AccessDeniedComponent {
   private readonly heading = viewChild.required<ElementRef<HTMLHeadingElement>>('heading');
+  private readonly authStore = inject(AuthStore);
+  private readonly config = inject(APP_CONFIG);
+
+  /** Configured contact link, or null (hidden) unless its href is `mailto:` or `https://`. */
+  protected readonly contact = computed(() => parseSupportContact(this.config.supportContact));
+
+  /** Role names from the session, i.e. as of sign-in; empty when signed out. */
+  protected readonly roles = computed(() => this.authStore.currentUser()?.roles ?? []);
+
+  protected readonly roleList = computed(() => this.roles().join(', '));
 
   constructor() {
     // afterNextRender (not ngAfterViewInit) is Angular's sanctioned hook for DOM writes

@@ -1,0 +1,6 @@
+{
+  "id" : "0190a000-0000-7000-8000-000000000108",
+  "name" : "user:directory:read",
+  "description" : "Read the tenant user directory, including email addresses",
+  "isSensitive" : true
+}

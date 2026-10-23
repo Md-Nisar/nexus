@@ -1,0 +1,68 @@
+# US-019 discovery (feature-discovery, 2026-10-18)
+
+Story: `docs/story/2-rbac/US-019.md`. Branch `feature/US-019`, from `main` at `2962b0e` (US-018 merged). Bounded contexts: `rbac` (most of Group B), `identity` (the user directory), frontend `core`/`shared`/`features`, test and CI infrastructure.
+
+**Risk tier: high-risk** (EPIC-002; adds PII-bearing endpoints, a live authorization profile, an atomic permission write path and a change to denial disclosure). Full-weight Gate 2 threat model and Phase 7 audit.
+
+## Story-text corrections found by the survey
+
+- `requireActiveTenantAdmin` and `RbacDangerousPermissions` no longer exist (retired by US-018 M3; `HexagonalArchitectureTest` `RETIRED_SYMBOLS` forbids them). The admin predicate is `RbacAdministrators.isAdministrator(held, catalogueIds)` (a user is an administrator iff one active role holds the whole catalogue). The only reusable wrapper is the package-private `RoleAssignmentService.isCallerAdministrator` (`:451`).
+- There is no per-permission "sensitive" concept any more. B5 cannot "derive from the backend's single source (today RbacDangerousPermissions)". What exists is per-role: admin-defining (holds the whole catalogue) and the `RBAC_010` provenance rule.
+- `STATUS.md` rows for M3, M8, M9 are stale, but `main` has them. B9 is answered: role PATCH/DELETE, pagination, holders and effective-permissions exist.
+- US-018 A5 (typed permission catalogue) and A6 (403 redirect with opt-out) are already delivered on the frontend (`shared/types/permission.ts`, `core/http/skip-access-denied-redirect.ts`, `api-error.interceptor.ts`, documented in `DEVELOPMENT_GUIDE.md`). Remaining for A5: `PERMISSION_LABELS`, resource grouping, label-completeness test. Remaining for A6: confirm spec coverage of both branches.
+- "dev/test profiles" for C1: `DevDataInitializer` is `@Profile("dev & !break-glass")`; the `test` profile is only for ITs and never runs it.
+- No tenants table exists (V5 comment). A second tenant is just another UUID, but the system roles and `role_permissions` are seeded by migration only for the bootstrap tenant, so a second tenant's roles must be created in code.
+
+## Reuse findings by item
+
+| Item | Status | Evidence and notes |
+|---|---|---|
+| A1 cold-start misroute | EXTEND, **confirmed** | `permissionGuard` is a synchronous read of `authStore.permissions()`. Angular runs guards of one `canActivate` array concurrently (`combineLatest`), so `[authGuard, permissionGuard]` returns the UrlTree before refresh completes. `canActivate` per route level is sequential (`concatMap`), so option (b) works: `authGuard` on a shell/parent, `permissionGuard` on children. Option (a) is risky: `AuthService.refresh()` has no in-flight dedupe (it lives privately in `auth.interceptor.ts`), and a second refresh risks refresh-token reuse/theft detection. Fix wrong "sequentially" comments in `permission.guard.ts` and `DEVELOPMENT_GUIDE.md`; tighten `permission-guard-contract.spec.ts`; add a real-Router delayed-refresh test. |
+| A2 shell | CREATE | Routes are flat, no layout route, no nav config. `app.html` already renders a root header (wordmark and theme toggle) above the outlet; shell must reconcile. `DashboardComponent` holds logout; keep test ids `logout-button`, `dashboard-root` (used by e2e and specs). |
+| A3 wrappers | CREATE (9) | Present: NxBadge, Button, Card, Input, Select, Table, Dialog, Toast, EmptyState, ErrorState. None of the 9 listed exist. ADR 0004: only `shared/ui` imports Material, `--nx-*` tokens, CVA for form controls. ESLint does not enforce the Material-import rule. No axe in unit tests (only e2e, critical only today). Style budget 4 kB warn / 8 kB error per component. |
+| A4 NxTable | EXTEND | `CellType = 'text'\|'badge'\|'mono'`; an empty slot already exists. Needs custom cell template, sticky header, caption. |
+| A5/A6 | mostly EXISTS | see corrections |
+| A7-A10 | CREATE/EXTEND | No wildcard route, no `TitleStrategy`, no focus management (only AccessDenied does its own). Access Denied has `TODO(PM)` mailto; `AppConfig` has no contact field. `authGuard` has no `returnUrl`; login always goes to `/dashboard`. |
+| A11 typed contract | CREATE | springdoc 3.0.3 is runtime only (disabled in prod), no export step, no frontend generator, no RBAC DTO types. Option (b) (hand-written types plus contract test) is cheaper; option (a) needs a dump step, generator and CI diff. |
+| B1/B2 user directory | CREATE (identity) | `UserProfileController` serves only `/users/me`. `JpaUserRepository.findByTenantIdAndEmailHmac` exists; `EmailBlindIndexService.blindIndex` normalizes (trim, NFC, lowercase) then HMAC; ADR-0006 forbids re-implementing it. `idx_users_tenant_id_status` covers status filter. Layer rules: `rbac` must not depend on `identity` (identity may use rbac); every `@RestController` handler needs exactly one access marker; tenant-entity repo methods need "Tenant" in the name or `@Param("tenantId")`. `PageParams`/`PageMetadata`/`PageLinks` live in `rbac.interfaces.rest` (move to `common.web` if identity needs them). **Blocking risk:** V5 grants the system MEMBER role `user:read`, so every member would see every user's email and `?email=` is an existence oracle. |
+| B3 single role | EXTEND (small) | `resolveRoleInTenant` already gives the cross-tenant 404 `ROLE_NOT_FOUND` with WARN and counter. Add service and controller method; `RoleResponse` is `(id, name, description, isSystemRole, createdAt)`. Unverified: `findRole` filters soft-deleted. |
+| B4 own authorization | CREATE (rbac) | Reusable live reads: `UserRoleQueryPort.findActiveRoleNames/findActivePermissionNames`, plus M13/M15 admin predicate. Do not use `/users/me` (JWT claims) or `RoleResolutionService` (cache). ArchUnit: `@AuthenticatedEndpoint` handlers may take no `@PathVariable`, UUID or `HttpServletRequest`. Controller must live in `rbac` (identity cannot be called from rbac). Open: which feature flag (rbac controllers sit under us015). |
+| B5 isSensitive | CREATE, **definition needed** | See decisions. `PermissionResponse(id, name, description)`; `Permissions` is a name catalogue of 8 entries mirrored by hand in frontend `permission.ts`. |
+| B6 role counts | EXTEND (new queries) | Nothing counts today. One grouped query per page: `role_permissions` by `role_id IN (...)`, `user_roles` by `role_id IN (...) AND tenant_id=? AND revoked_at IS NULL` (uses `fk_user_roles_role_tenant`). Prefer a new summary projection over widening `RoleView`. Residual: `memberCount=1` on an admin-defining role reveals "single administrator" (low; note in threat model). |
+| B7 denial reason | EXTEND | `GlobalExceptionHandler` returns `RBAC_001` with `requiredPermission` but no `reason`. `DenialReason` has no `THROTTLED`; throttle currently surfaces as `NOT_TENANT_ADMIN` (so a returned reason would mislead). 429 plumbing exists (`RateLimitException`) but the throttle port returns a boolean with no retry-after. Allow-list only `GRANT_EXCEEDS_CALLER`, `SELF_ASSIGNMENT`, `NOT_TENANT_ADMIN`; cross-tenant, malformed-auth and missing-tenant stay opaque. |
+| B8 atomic replace | CREATE (compose) | Attach/detach rules: system-role 409, grant-subset, `RBAC_010` provenance, duplicate `RBAC_005`, inline audit per change, post-commit cache evict and epoch bump. Attach/detach take no set lock (RES-28 accepted); only soft delete of an admin-defining role takes the set lock. A replace that both adds and removes is a new race shape; whether to take the set lock when before or after state is admin-defining is a design decision. Idempotent no-op writes no audit and no bump. Check column grant on `role_permissions` (`RolePermissionsPrivilegeIT`). |
+| B10 OpenAPI errors | EXTEND | Per-operation `@ApiResponse` prose exists for some codes; no `ProblemDetail` schema anywhere; `OpenApiConfig` sets only title and version. |
+| C1 personas | EXTEND | `DevDataInitializer` seeds one user (`test@example.com` / `TestPass99!`, TENANT_ADMIN) idempotently via `UserRegistrationPort` and `UserRoleAssignmentPort.assign`. No role-creation port found; locked and pending states need domain methods or setters (unverified). |
+| C2/C4 e2e | CREATE | Playwright has no persona fixture, no `storageState`, no shared axe helper; login is by UI against hardcoded `http://localhost:1000`; backend-dependent specs `skip` when `/actuator/health` is down. CI `e2e` job has no backend, MySQL or Redis. `performance-smoke.yml` already starts compose mysql and redis plus the jar under the dev profile: a reusable pattern. Whether e2e is a required check is not visible from the repo. |
+| C3 flags | EXTEND | Flags in `application.yml:280-291` (all false), true in dev/test yml, absent in prod. New `feature.nexus-us019-user-directory.enabled`. Controller annotated `@ConditionalOnProperty`; a missing controller falls through to 404 `RESOURCE_NOT_FOUND`. `docs/deployment-process.md` assumes percentage rollout the boolean flag cannot do. Prod values cannot be confirmed from the repo (no environment). |
+| D6 dev guide | EXTEND | Add shell/nav, guard composition rule, personas; fix `:149` and `:158-163`. |
+
+## Design benchmark (reputable vendors; claims tagged unverified where the egress proxy blocked first-party pages)
+
+Full detail with URLs: `/tmp/claude-0/-home-user-nexus/03ad35e1-08cd-5f2e-b90b-c6d2776a6251/scratchpad/us019-benchmark.md`. Recommended defaults, to adopt unless Gate 1 objects:
+
+1. **Editor layout**: native table grouped by resource, labelled checkbox per row, tri-state group checkbox, staged edits, diff dialog before save (WAI-ARIA APG checkbox; Auth0 and GitHub precedents; pre-save diff is a Nexus differentiator).
+2. **Sensitive permissions**: badge (icon, text, tooltip); danger-variant review dialog; no typed confirmation for sensitive grants. Permissions the caller does not hold are shown **disabled with visible reason text** (`aria-disabled`, focusable), not hidden (precedents: Stripe IAM Admin ceiling, AWS permission boundaries).
+3. **Assigning roles**: both entry points (user page with role picker, role Members tab with exact-email lookup), with a "what this adds" preview and pre-emptive visible reasons.
+4. **Destructive actions**: tiered. Ordinary revoke gets a danger confirm with impact summary; delete role or revoke own admin gets typed confirmation; block delete up front while the role has members; no undo toast (propagation delay).
+5. **Propagation text**: one constant, "within about 30 minutes, or as soon as they sign in again" (Google "up to 7 minutes or longer", Azure "up to 10 minutes", AWS eventual consistency; none promise a ceiling).
+6. **Access review MVP**: two read-only lookups (a user's effective permissions with a "via role" column; who holds permission X), gated by `audit:read`.
+7. **Navigation**: left secondary nav under the shell, breadcrumbs on detail pages, skeleton/empty/error states with retry and trace id; hide nav entries a user can never use, disabled-with-reason for blocked actions in a page.
+8. **Denial messaging**: in-tenant callers get an allow-listed `reason` code plus plain message and trace id; cross-tenant, unknown id and malformed auth stay opaque and identical; throttling is 429 with `Retry-After`.
+9. **Directory privacy**: emails only to `user:read` holders, exact-match blind-index lookup only, page size ≤ 100, no emails in logs; CSV export gated by `audit:read`, formula-injection escaping (prefix cells starting `= + - @` tab CR with `'`), retention note, log the export event only.
+10. **API**: `PUT /roles/{id}/permissions` (full set) as the editor's primary call; strong `ETag` with `If-Match` (428 missing, 412 stale, 403 grant-subset, 409 only for business conflicts); keep attach/detach.
+
+## Open questions for Gate 1 (each needs a decision)
+
+1. **`user:read` held by MEMBER (blocking).** Options: (a) introduce a new permission `user:directory:read` for the directory and keep `user:read` as is; (b) keep `user:read`, accept every member seeing all emails, record in D5. Recommendation: (a).
+2. **Meaning of `isSensitive` (B5).** Options: (a) a static set in `Permissions`, kept in step by `PermissionsCatalogueIT`; (b) a DB column (migration); (c) "a permission whose grant can create an administrator" derived from the catalogue. Recommendation: (a), the smallest change, with the reason documented.
+3. **B7**: ship `reason` (allow-list) now or defer? Recommendation: ship, with `THROTTLED` as a real 429 and not a 403 reason.
+4. **B8 concurrency**: ETag/`If-Match` now, or last-write-wins (the story's G3)? Recommendation: ETag, because the editor is a read-modify-write and the benchmark supports it.
+5. **B8 lock**: take the set lock when the before or after state of the role is admin-defining? Needs the Gate 2 threat model.
+6. **B4 placement and flag**: rbac controller, flag us019 or us015?
+7. **A1 fix**: option (b) (parent `authGuard`, child `permissionGuard`). Confirm.
+8. **A11**: option (b) (hand-written DTOs plus contract test). Confirm.
+9. **C4**: new CI job running Playwright against a compose backend (copying `performance-smoke.yml`), required for `e2e/access-management/`? Is e2e a required status check today?
+10. **Split**: the story is expected to split. Recommendation: US-019a backend P0 (B1, B3, B4, B5), US-019b frontend foundations (A1-A6), US-019c backend P1 (B2, B6-B8, B10), US-019d environments and docs (C1-C4, D6), with D2 (UX), D3 (content), D5 (privacy sign-off) tracked as human decisions.
+11. **D2/D3/D5 are human deliverables** (UX designs, content deck, privacy and security sign-off). The benchmark above can seed them; they still need PM, UX and Security approval.
+12. **Shell vs `app.html` header**: move the root header into the shell, or keep for public pages?

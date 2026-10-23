@@ -705,6 +705,33 @@ class RbacAuthEventAdapterTest {
     assertThat(metadata.get("grantedBy").asString()).isEqualTo(ACTOR_USER_ID.toString());
     assertThat(metadata.has("revokedBy")).isFalse();
     assertThat(metadata.has("createdBy")).isFalse();
+    assertThat(metadata.has("operation")).isFalse();
+    assertThat(metadata.has("replaceId")).isFalse();
+  }
+
+  /** US-019 §10.6: a replace's rows carry operation=REPLACE and the PUT's server replaceId. */
+  @Test
+  void should_writeOperationAndReplaceId_when_aReplaceRevokesAPermission() {
+    UUID replaceId = UUID.fromString("019f6839-2000-7000-8000-0000000000aa");
+    RoleAuditEvent event =
+        new RoleAuditEvent(
+            TENANT_ID,
+            ROLE_ID,
+            "Billing Manager",
+            PERMISSION_ID,
+            "user:read",
+            ACTOR_USER_ID,
+            new RequestContext("127.0.0.1", "trace-replace", "test-agent"),
+            null,
+            "REPLACE",
+            replaceId);
+
+    adapter.recordRolePermissionRevoked(event);
+
+    JsonNode metadata = objectMapper.readTree(captureRecordedEventInCurrentTransaction().getMetadata());
+    assertThat(metadata.get("operation").asString()).isEqualTo("REPLACE");
+    assertThat(metadata.get("replaceId").asString()).isEqualTo(replaceId.toString());
+    assertThat(metadata.get("revokedBy").asString()).isEqualTo(ACTOR_USER_ID.toString());
   }
 
   /**

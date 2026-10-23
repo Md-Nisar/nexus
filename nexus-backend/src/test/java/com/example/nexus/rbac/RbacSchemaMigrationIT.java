@@ -50,13 +50,16 @@ class RbacSchemaMigrationIT {
   private static final String MEMBER_ID = "019f6839-1811-7000-8000-00000000000b";
   private static final String USER_ROLE_ASSIGN_ID = "019f6839-1807-7000-8000-000000000008";
   private static final String AUDIT_READ_ID = "019f6839-1806-7000-8000-000000000007";
+  private static final String USER_DIRECTORY_READ_ID = "019f6839-1808-7000-8000-000000000009";
 
   private static final String SEEDED_PERMISSION_NAMES_SQL =
       "('tenant:read','tenant:write','user:read','user:write',"
-          + "'role:read','role:write','audit:read','user:role:assign')";
+          + "'role:read','role:write','audit:read','user:role:assign','user:directory:read')";
 
   private static final String V6_LOCATION =
       "db/migration/V6__rbac_user_role_assign_permission.sql";
+  private static final String V11_LOCATION =
+      "db/migration/V11__rbac_user_directory_read_permission.sql";
   private static final String FOOTER_BEGIN = "-- B7-FOOTER-BEGIN";
   private static final String FOOTER_END = "-- B7-FOOTER-END";
 
@@ -167,7 +170,7 @@ class RbacSchemaMigrationIT {
                 + "WHERE CAST(success AS UNSIGNED) = 1 ORDER BY installed_rank",
             String.class);
 
-    assertThat(versions).contains("1", "2", "3", "4", "5", "6", "7", "8", "9");
+    assertThat(versions).contains("1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11");
   }
 
   /**
@@ -244,7 +247,8 @@ class RbacSchemaMigrationIT {
   }
 
   /**
-   * Scoped to the 8 known migration-seeded names (V5's 7 plus V6's {@code user:role:assign}),
+   * Scoped to the 9 known migration-seeded names (V5's 7, V6's {@code user:role:assign} and V11's
+   * {@code user:directory:read}),
    * not a raw {@code COUNT(*)}: {@code
    * RbacRepositoryRoundTripIT} legitimately inserts its own fixture {@code Permission} rows into
    * this same shared Testcontainers schema, so an unscoped count is order-dependent across the
@@ -252,12 +256,12 @@ class RbacSchemaMigrationIT {
    * is_system_role}) and {@code role_permissions} (via the known role IDs) below.
    */
   @Test
-  void should_seedExactly8Permissions_when_migrationApplied() {
+  void should_seedExactly9Permissions_when_migrationApplied() {
     Integer count =
         jdbc.queryForObject(
             "SELECT COUNT(*) FROM permissions WHERE name IN " + SEEDED_PERMISSION_NAMES_SQL,
             Integer.class);
-    assertThat(count).isEqualTo(8);
+    assertThat(count).isEqualTo(9);
   }
 
   @Test
@@ -269,18 +273,18 @@ class RbacSchemaMigrationIT {
   }
 
   @Test
-  void should_seedExactly9SystemRolePermissions_when_migrationApplied() {
+  void should_seedExactly10SystemRolePermissions_when_migrationApplied() {
     Integer count =
         jdbc.queryForObject(
             "SELECT COUNT(*) FROM role_permissions WHERE role_id IN (UUID_TO_BIN(?), UUID_TO_BIN(?))",
             Integer.class,
             TENANT_ADMIN_ID,
             MEMBER_ID);
-    assertThat(count).isEqualTo(9);
+    assertThat(count).isEqualTo(10);
   }
 
   @Test
-  void should_grantTenantAdminAllEightPermissions_when_joinQueried() {
+  void should_grantTenantAdminAllNinePermissions_when_joinQueried() {
     List<String> permissionNames =
         jdbc.queryForList(
             "SELECT p.name FROM permissions p "
@@ -292,7 +296,7 @@ class RbacSchemaMigrationIT {
     assertThat(permissionNames)
         .containsExactlyInAnyOrder(
             "tenant:read", "tenant:write", "user:read", "user:write", "role:read", "role:write",
-            "audit:read", "user:role:assign");
+            "audit:read", "user:role:assign", "user:directory:read");
   }
 
   @Test
@@ -318,8 +322,8 @@ class RbacSchemaMigrationIT {
    */
   @Test
   void should_grantTenantAdminEveryPermissionRow_when_migrationApplied() {
-    // Scoped to the 8 known migration-seeded names, not a raw COUNT(*) -- see the comment on
-    // should_seedExactly8Permissions_when_migrationApplied for why an unscoped count is unsafe in
+    // Scoped to the 9 known migration-seeded names, not a raw COUNT(*) -- see the comment on
+    // should_seedExactly9Permissions_when_migrationApplied for why an unscoped count is unsafe in
     // this shared-schema `*IT` suite. This test's intent (T-E6) is "TENANT_ADMIN holds every
     // migration-seeded permission," not "every row that happens to exist in the table right now."
     Integer totalPermissions =
@@ -421,6 +425,106 @@ class RbacSchemaMigrationIT {
         .isEqualTo(afterFirstRun);
   }
 
+  // ---------------------------------------------------------------------------------------
+  // US-019 T-001: V11's B7 footer, A-V9 variant (03-design.md §3.1, §3.4). Copied from the V6
+  // block above; the pre-V11 catalogue is "every live permission except user:directory:read", and
+  // the A-V9 variant must also skip soft-deleted roles. Same @Transactional rollback.
+  // ---------------------------------------------------------------------------------------
+
+  @Test
+  @Transactional
+  void should_grantEverySystemTenantAdminEveryPermission_when_v11FooterReRun()
+      throws IOException {
+    UUID secondTenantAdmin = insertRole(UUID.randomUUID(), "TENANT_ADMIN", true);
+
+    runV11Footer();
+
+    Integer totalPermissions =
+        jdbc.queryForObject("SELECT COUNT(*) FROM permissions", Integer.class);
+    assertThat(permissionCount(secondTenantAdmin)).isEqualTo(totalPermissions);
+  }
+
+  @Test
+  @Transactional
+  void should_attachDirectoryRead_when_liveCustomRoleCarriesFullPreV11Catalogue()
+      throws IOException {
+    UUID customAdmin = insertRole(UUID.randomUUID(), "V11_FULL_" + UUID.randomUUID(), false);
+    jdbc.update(
+        "INSERT INTO role_permissions (role_id, permission_id) "
+            + "SELECT UUID_TO_BIN(?), id FROM permissions WHERE id <> UUID_TO_BIN(?)",
+        customAdmin.toString(),
+        USER_DIRECTORY_READ_ID);
+
+    runV11Footer();
+
+    assertThat(holds(customAdmin, USER_DIRECTORY_READ_ID)).isTrue();
+  }
+
+  @Test
+  @Transactional
+  void should_attachNothing_when_customRoleOnePermissionShortOfPreV11Catalogue()
+      throws IOException {
+    UUID oneShort = insertRole(UUID.randomUUID(), "V11_SHORT_" + UUID.randomUUID(), false);
+    jdbc.update(
+        "INSERT INTO role_permissions (role_id, permission_id) "
+            + "SELECT UUID_TO_BIN(?), id FROM permissions "
+            + "WHERE id NOT IN (UUID_TO_BIN(?), UUID_TO_BIN(?))",
+        oneShort.toString(),
+        USER_DIRECTORY_READ_ID,
+        AUDIT_READ_ID);
+    int before = permissionCount(oneShort);
+
+    runV11Footer();
+
+    assertThat(permissionCount(oneShort)).isEqualTo(before);
+  }
+
+  @Test
+  @Transactional
+  void should_attachNothing_when_fullPreV11CatalogueRoleIsSoftDeleted() throws IOException {
+    UUID deleted = insertRole(UUID.randomUUID(), "V11_DELETED_" + UUID.randomUUID(), false);
+    jdbc.update(
+        "INSERT INTO role_permissions (role_id, permission_id) "
+            + "SELECT UUID_TO_BIN(?), id FROM permissions WHERE id <> UUID_TO_BIN(?)",
+        deleted.toString(),
+        USER_DIRECTORY_READ_ID);
+    jdbc.update(
+        "UPDATE roles SET deleted_at = CURRENT_TIMESTAMP(6) WHERE id = UUID_TO_BIN(?)",
+        deleted.toString());
+
+    runV11Footer();
+
+    assertThat(holds(deleted, USER_DIRECTORY_READ_ID)).isFalse();
+  }
+
+  @Test
+  @Transactional
+  void should_notGrantDirectoryReadToMember_when_v11FooterReRun() throws IOException {
+    runV11Footer();
+
+    assertThat(holds(UUID.fromString(MEMBER_ID), USER_DIRECTORY_READ_ID)).isFalse();
+  }
+
+  @Test
+  @Transactional
+  void should_changeNothing_when_v11FooterRunTwice() throws IOException {
+    insertRole(UUID.randomUUID(), "TENANT_ADMIN", true);
+    UUID customAdmin = insertRole(UUID.randomUUID(), "V11_TWICE_" + UUID.randomUUID(), false);
+    jdbc.update(
+        "INSERT INTO role_permissions (role_id, permission_id) "
+            + "SELECT UUID_TO_BIN(?), id FROM permissions WHERE id <> UUID_TO_BIN(?)",
+        customAdmin.toString(),
+        USER_DIRECTORY_READ_ID);
+    runV11Footer();
+    Integer afterFirstRun =
+        jdbc.queryForObject("SELECT COUNT(*) FROM role_permissions", Integer.class);
+
+    runV11Footer();
+
+    assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM role_permissions", Integer.class))
+        .isEqualTo(afterFirstRun);
+  }
+
   private UUID insertRole(UUID tenantId, String name, boolean systemRole) {
     UUID roleId = UUID.randomUUID();
     jdbc.update(
@@ -454,13 +558,20 @@ class RbacSchemaMigrationIT {
     return count != null && count == 1;
   }
 
-  /** Executes the statements between V6's footer markers, exactly as the migration ran them. */
   private void runV6Footer() throws IOException {
-    String migration =
-        new ClassPathResource(V6_LOCATION).getContentAsString(StandardCharsets.UTF_8);
+    runFooter(V6_LOCATION);
+  }
+
+  private void runV11Footer() throws IOException {
+    runFooter(V11_LOCATION);
+  }
+
+  /** Executes the statements between a migration's footer markers, exactly as it ran them. */
+  private void runFooter(String location) throws IOException {
+    String migration = new ClassPathResource(location).getContentAsString(StandardCharsets.UTF_8);
     int begin = migration.indexOf(FOOTER_BEGIN);
     int end = migration.indexOf(FOOTER_END);
-    assertThat(begin).as("V6 footer markers present and ordered").isNotNegative().isLessThan(end);
+    assertThat(begin).as("footer markers present and ordered").isNotNegative().isLessThan(end);
     String footerSql =
         migration
             .substring(begin + FOOTER_BEGIN.length(), end)
@@ -469,7 +580,7 @@ class RbacSchemaMigrationIT {
             .collect(Collectors.joining("\n"));
     List<String> statements =
         Arrays.stream(footerSql.split(";")).map(String::strip).filter(s -> !s.isEmpty()).toList();
-    assertThat(statements).as("V6 footer statements (a) and (b)").hasSize(2);
+    assertThat(statements).as("footer statements (a) and (b)").hasSize(2);
     statements.forEach(jdbc::execute);
   }
 }

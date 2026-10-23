@@ -117,9 +117,9 @@ class TokenFreshnessIT {
 
   private static final UUID TENANT_ID = UUID.fromString("00000000-0000-7000-8000-000000000001");
   /** {@code role:read}, seeded by V5; guards {@code GET /api/v1/roles}. */
-  private static final UUID ROLE_READ = UUID.fromString("019f6839-1804-7000-8000-000000000005");
+  private static final UUID ROLE_READ = RbacSeededPermissionIds.ROLE_READ;
   /** {@code audit:read}, seeded by V5; not dangerous, so any holder of it may attach it (A3). */
-  private static final UUID AUDIT_READ = UUID.fromString("019f6839-1806-7000-8000-000000000007");
+  private static final UUID AUDIT_READ = RbacSeededPermissionIds.AUDIT_READ;
   private static final long LATCH_TIMEOUT_SECONDS = 30;
   private static final String PASSWORD = "ValidPassphrase_99!";
   private static final String GUARDED = "/api/v1/roles";

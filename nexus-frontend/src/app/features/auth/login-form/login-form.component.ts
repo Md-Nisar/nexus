@@ -3,6 +3,7 @@ import { FormGroup, FormControl, Validators, ReactiveFormsModule } from '@angula
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { NxButton, NxInput } from '../../../shared/ui';
 import { AuthService } from '../auth.service';
+import { safeReturnUrl } from '../../../core/routing/safe-return-url';
 import { AppError } from '../../../shared/types/app-error';
 
 /**
@@ -112,7 +113,7 @@ import { AppError } from '../../../shared/types/app-error';
         padding: var(--nx-space-3) var(--nx-space-4);
         border-radius: var(--nx-radius-sm);
         background: var(--nx-color-success-surface);
-        color: var(--nx-color-success);
+        color: var(--nx-color-success-text);
         font-size: var(--nx-text-base);
       }
 
@@ -120,7 +121,7 @@ import { AppError } from '../../../shared/types/app-error';
         padding: var(--nx-space-3) var(--nx-space-4);
         border-radius: var(--nx-radius-sm);
         background: var(--nx-color-error-surface);
-        color: var(--nx-color-error);
+        color: var(--nx-color-error-text);
         font-size: var(--nx-text-base);
       }
 
@@ -131,7 +132,7 @@ import { AppError } from '../../../shared/types/app-error';
 
         a {
           font-size: var(--nx-text-sm);
-          color: var(--nx-color-primary);
+          color: var(--nx-color-primary-text);
           text-decoration: none;
 
           &:hover {
@@ -148,7 +149,7 @@ import { AppError } from '../../../shared/types/app-error';
         text-align: center;
 
         a {
-          color: var(--nx-color-primary);
+          color: var(--nx-color-primary-text);
           text-decoration: none;
 
           &:hover {
@@ -227,7 +228,7 @@ export class LoginFormComponent implements OnInit {
    * Submits the login form.
    *
    * Marks fields as touched, validates form, and calls AuthService.login().
-   * On success, navigates to /dashboard. On error, displays error-code-specific messages:
+   * On success, navigates to the validated `returnUrl` (see `safeReturnUrl`), else /dashboard. On error, displays error-code-specific messages:
    * - AUTH_001: Invalid credentials
    * - AUTH_002: Email not verified
    * - RATE_001: Rate limited
@@ -246,7 +247,9 @@ export class LoginFormComponent implements OnInit {
     this.authService.login(email, password).subscribe({
       next: () => {
         this.loading.set(false);
-        this.router.navigate(['/dashboard']);
+        void this.router.navigateByUrl(
+          safeReturnUrl(this.route.snapshot.queryParamMap.get('returnUrl')),
+        );
       },
       error: (err: AppError) => {
         this.loading.set(false);

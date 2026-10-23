@@ -57,7 +57,13 @@ class TenantIsolationArchitectureTest {
             // grant anywhere, so the replay lookup must see every tenant); needs security-reviewer
             // sign-off. Containment: ArchitectureRules.BREAK_GLASS_GRANT_LOOKUP_PORT_IS_CONTAINED and
             // ...GLOBAL_BREAK_GLASS_REPLAY_QUERY_IS_CALLED_ONLY_BY_ITS_ADAPTER (security review L-3).
-            "JpaAuthEventRepository#existsSuccessfulBreakGlassGrantWithChangeRef");
+            "JpaAuthEventRepository#existsSuccessfulBreakGlassGrantWithChangeRef",
+            // US-019 T-004, RC-61.2 (design §4.2, SD-30): cross-tenant parity of a directory batch;
+            // Security sign-off on three conditions, each enforced: count only (return type pinned by
+            // DirectoryUserCountContainmentRuleTest); called only by JpaUserDirectoryQueryAdapter
+            // (ArchitectureRules.UNSCOPED_USER_COUNT_IS_CALLED_ONLY_BY_THE_DIRECTORY_ADAPTER); never
+            // feeds the response (UserDirectoryServiceTest, UserDirectoryIT).
+            "JpaUserRepository#countByIdIn");
 
     @ArchTest
     static final ArchRule tenant_scoped_repository_methods_must_filter_by_tenant =

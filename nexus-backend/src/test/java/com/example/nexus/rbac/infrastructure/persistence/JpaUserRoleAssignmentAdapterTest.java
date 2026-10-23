@@ -2,6 +2,7 @@ package com.example.nexus.rbac.infrastructure.persistence;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.AdditionalMatchers.aryEq;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -140,12 +141,43 @@ class JpaUserRoleAssignmentAdapterTest {
     when(row.getId()).thenReturn(assignmentId);
     when(row.getUserId()).thenReturn(userId);
     when(row.getRoleId()).thenReturn(roleId);
+    when(row.getAssignedBy()).thenReturn(assignedBy);
     when(userRoleRepository.lockActiveAssignmentHoldersByRoles(any(), any(byte[].class)))
         .thenReturn(List.of(row));
 
     List<ActiveAssignmentHolder> result = adapter.lockActiveAssignmentHolders(tenantId, roleIds);
 
-    assertThat(result).containsExactly(new ActiveAssignmentHolder(assignmentId, userId, roleId));
+    assertThat(result)
+        .containsExactly(new ActiveAssignmentHolder(assignmentId, userId, roleId, assignedBy));
+  }
+
+  /**
+   * US-019 T-019 (RC-57.1): the set-lock verbs' current read of the locked roles' permissions is
+   * native, so the adapter converts the role ids to bytes and maps each (role_id, permission_id)
+   * row back to ids.
+   */
+  @Test
+  void should_mapByteRowsToRolePermissionRefs_when_lockingRolePermissionsForRoles() {
+    UUID otherRoleId = UUID.randomUUID();
+    UUID p1 = UUID.randomUUID();
+    UUID p2 = UUID.randomUUID();
+    when(userRoleRepository.lockRolePermissionsByRoleIds(any(), aryEq(toBytes(tenantId))))
+        .thenReturn(
+            List.of(
+                new Object[] {toBytes(roleId), toBytes(p1)},
+                new Object[] {toBytes(otherRoleId), toBytes(p2)}));
+
+    List<RolePermissionRef> result =
+        adapter.lockRolePermissionsForRoles(tenantId, List.of(roleId, otherRoleId));
+
+    assertThat(result)
+        .containsExactly(new RolePermissionRef(roleId, p1), new RolePermissionRef(otherRoleId, p2));
+  }
+
+  @Test
+  void should_returnEmptyWithoutAQuery_when_lockingRolePermissionsForNoRole() {
+    assertThat(adapter.lockRolePermissionsForRoles(tenantId, List.of())).isEmpty();
+    verify(userRoleRepository, never()).lockRolePermissionsByRoleIds(any(), any());
   }
 
   @Test

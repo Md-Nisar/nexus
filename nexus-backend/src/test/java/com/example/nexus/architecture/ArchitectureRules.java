@@ -4,13 +4,20 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
 import com.example.nexus.common.Profiles;
+import com.example.nexus.common.security.Permissions;
+import com.example.nexus.identity.application.UserDirectoryService;
+import com.example.nexus.identity.application.port.out.UserDirectoryQueryPort;
 import com.example.nexus.identity.infrastructure.persistence.BreakGlassGrantLookupAdapter;
 import com.example.nexus.identity.infrastructure.persistence.JpaAuthEventRepository;
+import com.example.nexus.identity.infrastructure.persistence.JpaUserDirectoryQueryAdapter;
+import com.example.nexus.identity.infrastructure.persistence.JpaUserRepository;
 import com.example.nexus.rbac.application.BootstrapAdminService;
 import com.example.nexus.rbac.application.RoleAssignmentService;
 import com.example.nexus.rbac.application.port.out.BreakGlassGrantLookupPort;
+import com.example.nexus.rbac.interfaces.rest.PermissionController;
 import com.tngtech.archunit.base.DescribedPredicate;
 import com.tngtech.archunit.core.domain.JavaClass;
+import com.tngtech.archunit.core.domain.JavaFieldAccess;
 import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.lang.ArchCondition;
 import com.tngtech.archunit.lang.ArchRule;
@@ -135,6 +142,87 @@ public final class ArchitectureRules {
           .because(
               "US-018 M5 L-3: the query is unscoped by tenant by design; a second caller would"
                   + " turn it into a cross-tenant existence oracle.")
+          .allowEmptyShould(true);
+
+  /**
+   * US-019 RC-61.2 (design §4.2, Security sign-off condition 2): the unscoped, count-only {@code
+   * JpaUserRepository#countByIdIn} is allowlisted in {@code TenantIsolationArchitectureTest} only
+   * while {@link JpaUserDirectoryQueryAdapter} is its one caller.
+   */
+  public static final ArchRule UNSCOPED_USER_COUNT_IS_CALLED_ONLY_BY_THE_DIRECTORY_ADAPTER =
+      noClasses()
+          .that()
+          .doNotBelongToAnyOf(JpaUserDirectoryQueryAdapter.class)
+          .should()
+          .callMethodWhere(
+              DescribedPredicate.describe(
+                  "target is JpaUserRepository.countByIdIn",
+                  (JavaMethodCall call) ->
+                      call.getTargetOwner().isEquivalentTo(JpaUserRepository.class)
+                          && "countByIdIn".equals(call.getName())))
+          .because(
+              "US-019 RC-61.2: the count is unscoped by tenant by design; a second caller could turn"
+                  + " it into a cross-tenant existence oracle.")
+          .allowEmptyShould(true);
+
+  /**
+   * US-019 review R2-3: the directory port's {@code existsById} probes users of any tenant. Only
+   * {@link UserDirectoryService} may call it (a by-id miss: it decides a WARN, never the response).
+   */
+  public static final ArchRule UNSCOPED_USER_EXISTENCE_PROBE_IS_CALLED_ONLY_BY_THE_DIRECTORY_SERVICE =
+      noClasses()
+          .that()
+          .doNotBelongToAnyOf(UserDirectoryService.class)
+          .should()
+          .callMethodWhere(
+              DescribedPredicate.describe(
+                  "target is UserDirectoryQueryPort.existsById",
+                  (JavaMethodCall call) ->
+                      call.getTargetOwner().isEquivalentTo(UserDirectoryQueryPort.class)
+                          && "existsById".equals(call.getName())))
+          .because(
+              "US-019 R2-3: the probe is unscoped by tenant by design; a second caller could turn"
+                  + " it into a cross-tenant existence oracle.")
+          .allowEmptyShould(true);
+
+  /**
+   * US-019 review R2-3: the repository's inherited {@code existsById} on users is keyed by id alone.
+   * Only {@link JpaUserDirectoryQueryAdapter} may call it, behind the port rule above.
+   */
+  public static final ArchRule UNSCOPED_USER_EXISTS_BY_ID_IS_CALLED_ONLY_BY_THE_DIRECTORY_ADAPTER =
+      noClasses()
+          .that()
+          .doNotBelongToAnyOf(JpaUserDirectoryQueryAdapter.class)
+          .should()
+          .callMethodWhere(
+              DescribedPredicate.describe(
+                  "target is JpaUserRepository.existsById",
+                  (JavaMethodCall call) ->
+                      call.getTargetOwner().isEquivalentTo(JpaUserRepository.class)
+                          && "existsById".equals(call.getName())))
+          .because(
+              "US-019 R2-3: existsById on users is unscoped by tenant; a second caller could turn it"
+                  + " into a cross-tenant existence oracle.")
+          .allowEmptyShould(true);
+
+  /**
+   * US-019 RC-63(k): {@code isSensitive} is UX only. Only the response mapper may read the
+   * sensitivity sets, so no server-side authorization decision can ever depend on them.
+   */
+  public static final ArchRule SENSITIVITY_SETS_ARE_READ_ONLY_BY_THE_RESPONSE_MAPPER =
+      noClasses()
+          .that()
+          .doNotBelongToAnyOf(PermissionController.class, Permissions.class)
+          .should()
+          .accessFieldWhere(
+              DescribedPredicate.describe(
+                  "target is Permissions.SENSITIVE or Permissions.NON_SENSITIVE",
+                  (JavaFieldAccess access) ->
+                      access.getTargetOwner().isEquivalentTo(Permissions.class)
+                          && Set.of("SENSITIVE", "NON_SENSITIVE").contains(access.getName())))
+          .because(
+              "US-019 RC-63(k): isSensitive is a display hint; a server rule that read it would"
+                  + " turn a UX classification into an authorization decision.")
           .allowEmptyShould(true);
 
   private static ArchCondition<JavaClass> carryExactlyTheBreakGlassProfile() {
