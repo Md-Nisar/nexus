@@ -235,3 +235,20 @@ Full read of every shared/ui wrapper spec (checkbox, chip, menu, search-field, s
 | R3-8 | Low | Fixed | `10e2d61`: the signed-out cold-start e2e requires the backend. The design-system a11y spec needs none by design |
 | R3-9 | Nit | Accepted | Token aliasing in dark mode is intended. The darker `--nx-color-error` has had no visual review: P-25 |
 | R3-10 | Nit | Deferred | P-13 (three grandfathered Material imports, exempted in ESLint with a removal comment) |
+
+## Final delta review (2026-10-23)
+
+Scope: the 17 commits after the last independent review (`35ad60b..bd25a44`: follow-ups P-13, P-17, P-22, P-30, P-31, P-33, CI fixes and the Sonar clean-up). Reviewer: a fresh read-only agent (report: scratchpad `review-final-delta.md`). Verdict on that range: **CHANGES REQUESTED**, 0 Blocker, 0 High, 3 Medium, 3 Low, 5 Nit. Nothing was executed by the reviewer; the author ran the gates.
+
+| ID | Finding | Disposition |
+|---|---|---|
+| M1 | The scan's new diagnostic could print another persona address, a blind index or a registrant address next to a match | **Fixed** (`cd0e397`): every needle is masked in the printed text, the window is widened by the longest needle first; a self-test fails on the old code and passes on the new |
+| M2 | "I agree to theterms and conditions": no space between the label and projected link | **Fixed** (`cd0e397`): `{{ label() }} <ng-content />`; the projection spec asserts the normalised text |
+| M3 | The consent checkbox lost its `aria-describedby` link to the error text | **Fixed** (`cd0e397`): `NxCheckbox.describedBy`, bound by the registration form while an error shows; tested |
+| L1 | `AttachPermissionsStatementCountIT` reads global Hibernate statistics and leaves an admin-defining role behind | Open, P-34 |
+| L2 | No ArchUnit rule confines `findBatchByTenant` (the cross-tenant count) to the directory service | Open, P-35 |
+| L3 | `enterAddress` keeps the address out of step titles, not out of traces | Docstring corrected; the scan still catches traces, so a retry fails closed |
+| N1, N5 | Constant placement; no `NxIcon` preview card | N1 fixed; N5 open (decorative icon) |
+| N2-N4 | Stale comment in `RegistrationControllerIT`, over-long lines, copied header in `UserDirectoryLogScanIT` | Open, cosmetic |
+
+Verified by the reviewer on the range: the two Sonar-driven method extractions are byte-equivalent to the code they replaced and keep lock order RC-46 and 403 before 412 before no-op; every new constant equals the literal it replaced; `RolePermission` as `Persistable` has no silent merge or lost update; `DirectoryBatch` keeps tenant scoping and reads rows and count in one transaction.
