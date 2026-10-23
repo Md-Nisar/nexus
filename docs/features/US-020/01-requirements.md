@@ -1,8 +1,8 @@
 # US-020 — RBAC Access Management console (tenant administrators): Requirements
 
-**Status:** Draft for Gate 1 · **Owner:** Business Analyst · **Approver:** the story owner (Md Nisar Ahmed)
+**Status:** Gate 1 approved · **Owner:** Business Analyst · **Approver:** the story owner (Md Nisar Ahmed)
 
-**Gate 1:** pending
+**Gate 1:** approved 2026-10-23 by Md Nisar Ahmed (all open questions resolved by Claude under his delegation, section 12a; none is a Legal, DPO, UX, PM or Ops sign-off)
 **Date:** 2026-10-23 · **Base:** `main` @ `adda702` (US-019 merged, PR #93), branch `feature/US-020`
 **Risk tier (from discovery):** high-risk (permission gates, the lockout logic the UI predicts, PII shown to directory holders, user-authored text rendered in a page). Full Gate 2 threat model and Phase 7 audit apply. The tier is for the story owner to confirm (Q27).
 
@@ -466,6 +466,44 @@ All are questions; none is assumed. Each has an owner, a **recommended default (
 **Q28 [Architect, Security]: Which limits and rules may the client hard-code?** Reserved names, name pattern, description length, 500-role cap, 100-id cap, `Retry-After` cap. *Recommended default (not approved):* hard-code only the validation that mirrors `CreateRoleRequest`/`UpdateRoleRequest`, and derive everything else from server responses; no "500" in copy. *Trade-off:* a few more error paths versus drift when config changes.
 
 **Q29 [PM, Ops]: Telemetry.** Is any client telemetry or product analytics (e.g. which errors users hit) wanted? None is in the story. *Recommended default (not approved):* none beyond error logging with ids and codes. *Trade-off:* no adoption data versus no privacy review.
+
+## 12a. Gate 1 decisions (2026-10-23)
+
+**Delegated by:** Md Nisar Ahmed (story owner and approver): "Resolve all by yourself ... Name of approver Md Nisar Ahmed". **Taken by:** Claude. These are the recommended defaults of section 12, confirmed or adjusted below. They are not sign-offs by UX, PM, Legal, DPO, Security or Ops; the owner named in each can overturn one, and the effect is stated. Research was limited: web search returned usable vendor material only for CSV injection (OWASP) and the general least-privilege model (AWS IAM Access Analyzer, Okta custom admin roles). It returned nothing usable on Entra propagation limits or GitHub's last-owner rule, so Q3 and Q16 rest on this repo's code, not on a vendor benchmark. WCAG 2.2 criteria are cited from knowledge.
+
+| Q | Decision | Why | If overturned |
+|---|---|---|---|
+| Q1 | MVP = S0 to S3 with FR-D4 (server paging) as P0. S4 (rename/delete) is the first follow-up; S5, S6 later | The story's own P0 set; paging is already shipped | Re-slice 04-tasks only |
+| Q2 | D2 and D3 are produced by Claude as **provisional** artefacts at Gate 2 (annotated page and dialog specs in text, and a content deck in one copy file), marked "not UX/PM approved". Build may proceed on them; all copy lives in one module so approved text swaps in. UX and PM review stays an open release item | Blocking S1 on a human deliverable with no owner or date stalls the story; one copy module bounds the rework | Replace the copy module and revisit layouts |
+| Q3 | Option (b), one constant keyed by action. Grant or add: "takes effect within about 15 minutes, or when the person signs in again". Revoke or remove: "takes effect on the person's next request, and in every case within about 30 minutes". Values derive from `permission-cache-ttl-seconds` and `access-token-ttl-seconds`. The Gate 2 threat model must confirm the revoke claim (AS7 is inferred) | Accurate in the healthy case, with the old 30-minute bound kept as the ceiling for a control that must not be overstated | Edit the constant |
+| Q4 | Full-page "unavailable, retry" view inside the signed-in layout with a Retry action and the `traceId`. `authGuard` navigates to it on a cold-start 503 `AUTH_005` or network error instead of cancelling; a mid-session 503 uses the same view for page loads and a toast for actions. Gate 2 designs it | The console is the first gated route, so a blank page is a worse failure than before | Revert the guard change (US-019 behaviour) |
+| Q5 | (a): fetch all pages of roles up front, then search, filter and sort client-side (system roles first); show a loading count. No backend change | Keeps the story's UX; at most 5 requests at the default cap | Add a server filter as a backend story |
+| Q6 | (a): Users routes gate on `user:directory:read`; a user's page also needs `user:read` for the assignments table and degrades without it | Matches the US-019 design; without the directory permission there is no way to find a user | Gate on `user:read` |
+| Q7 | (a): the shell supports any-of permissions. The console entry and the dashboard card show for `role:read` or `user:directory:read` | One entry point as the story wants, using the permission that actually opens the Users area | Per-area nav items |
+| Q8 | (b): with the profile unreadable, read-only pages work and every mutating control is disabled under a banner | More useful in a partial outage; the server stays the authority | Block the console |
+| Q9 | Only "all three flags on" is a supported release. Partial states show a per-area "isn't enabled" message and are for QA and staging only | Simple and safe; boolean flags cannot do a percentage rollout anyway | Add supported combinations |
+| Q10 | (a) for Q16 to Q19: the MVP stays frontend-only with degraded behaviour, and each gap gets a named follow-up backend item in `14-pending-items.md`: F-1 distinct administrator count or per-role `isAdminDefining`; F-2 role fields on a user's assignments; F-3 audited export | Keeps scope and risk low | Amend the story to allow backend work |
+| Q11 | No: Groups D and E stay after the MVP, S4 first | The MVP is already large | Pull S4 forward |
+| Q12 | Add dev-only personas: an auditor (`audit:read`, optionally `user:directory:read`) and a role-reader user manager (`role:read`, `user:read`, `user:role:assign`, not an administrator). Seeding stays dev-only | Gating for D, E and C3 is untestable end to end otherwise | Cover at unit level only |
+| Q13 | Yes to both: the full-stack e2e job (P-9, P-11) must have run green once before the first console PR merges, and a skipped console spec fails the job | A green build with no assertions run protects nothing | None |
+| Q14 | Accept RES-53: retry `RBAC_012` exactly once, for permission replace and assign only; never retry a 403, 412 or 429 | The one case the server says is retryable | Show the error and let the user retry |
+| Q15 | Specific text for `GRANT_EXCEEDS_CALLER`, `SELF_ASSIGNMENT` and `ADMINISTRATOR_REQUIRED`; generic text plus `traceId` for `UNSPECIFIED` | Matches the disclosure the threat model accepted (RES-47) | Use generic text throughout |
+| Q16 | (a) for the MVP: no up-front last-administrator block. The revoke dialog always warns about administrator roles and the console handles 409 `RBAC_002` inline. The exact block waits for F-1. `memberCount == 1` is never used as the predictor | It would be wrong in both directions (N1); never showing a false "safe" or false "blocked" is the honest option | Add the follow-up first |
+| Q17 | The server is the authority (`ADMINISTRATOR_REQUIRED`). The client may show a hint inferred from `permissionCount` equal to the catalogue total, worded as a hint, never as a block | Avoids duplicating `RbacAdministrators` logic as a gate | Remove the hint |
+| Q18 | Mirror the server exactly: hold-it rule for every permission, administrator-only for `user:directory:read` and for admin-defining role changes. The Sensitive badge stays informational only; the story's "sensitive means administrator-only" rule is dropped | The story's rule misstates the model and would teach administrators the wrong rule | Stricter UI rule |
+| Q19 | (a): join `GET /users/{id}/roles` with `GET /roles` for the System badge, and fetch role permissions on demand; parts that need `role:read` degrade visibly without it; document that user-manager roles should carry `role:read` | No backend change | Backend fields (F-2) |
+| Q20 | Defer E3 (CSV export). Keep the neutralisation rule ready: prefix `'` to any cell starting with `=`, `+`, `-`, `@`, tab or CR (OWASP CSV Injection), as defence in depth since OWASP notes no universal sanitiser exists | An unaudited bulk PII extract is worse than a missing P2 feature | Ship with an audit mechanism (F-3) |
+| Q21 | Allow assigning to PENDING users with an "unverified email" marker and a warning | The server permits it; refusing needs a rule it does not enforce | Refuse in the UI |
+| Q22 | Keep the US-019 delegated rule (administrator-granted permission, own tenant, audited reads, retention follows the audit log). DPO acknowledgement stays a release-checklist item and **blocks enabling us019 in production**. Claude cannot supply that sign-off | A legal basis is not Claude's to decide | Narrow the grant or hide the email |
+| Q23 | Keep `supportContact` null; the 503 and denial views show no link | A wrong contact is worse than none | Set the value in `environment.ts` |
+| Q24 | Refresh re-reads the role and its permission set (and ETag) together; the profile is re-read only after own-access events (G6) | Fewer calls | Re-read the profile too |
+| Q25 | Defer the G11 "Learn more" link until a guide exists; show the one-line explainers without a link | A dead link harms trust | Link a placeholder |
+| Q26 | WCAG 2.2 AA, as US-019 adopted (adds target size 2.5.8 and focus-not-obscured 2.4.11 for the sticky review footer). Axe covers part of it; the rest is a manual checklist in the test plan | Consistency with US-019 | 2.1 AA |
+| Q27 | High-risk tier confirmed: full Gate 2 threat model and Phase 7 audit | PII, authorization prediction, stored-XSS surface | None |
+| Q28 | Hard-code only validation mirroring `CreateRoleRequest` and `UpdateRoleRequest`; derive caps and limits from server responses; no "500" in copy | Avoids drift when config changes | Hard-code more |
+| Q29 | No product analytics; error logging with ids, codes and `traceId` only | No privacy review exists | Add after a review |
+
+Still open by nature: UX and PM approval of D2 and D3; DPO acknowledgement (Q22); first green run of the full-stack e2e job (P-11); the three backend follow-ups F-1 to F-3.
 
 ## 13. Gaps (missing from the source entirely)
 
