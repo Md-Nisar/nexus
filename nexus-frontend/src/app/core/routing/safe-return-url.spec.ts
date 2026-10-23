@@ -47,4 +47,41 @@ describe('safeReturnUrl', () => {
   it('accepts the root path', () => {
     expect(safeReturnUrl('/')).toBe('/');
   });
+
+  /**
+   * RC-70 as D-2 (US-020): the first segment of the primary outlet, as the router's serializer
+   * parses it, must not be `unavailable` or `auth`, and no segment may be `.` or `..`.
+   */
+  describe('segment rule (US-020 RC-70, D-2)', () => {
+    it.each([
+      ['the unavailable view', '/unavailable'],
+      ['the unavailable view with its own returnUrl', '/unavailable?returnUrl=%2Fadmin'],
+      ['an encoded first segment that decodes to unavailable', '/%75navailable'],
+      ['an encoded first segment that decodes to auth', '/%61uth/login'],
+      ['matrix parameters on unavailable', '/unavailable;x=1'],
+      ['matrix parameters on auth', '/auth;x=1/login'],
+      ['a parenthesised primary group', '/(unavailable)'],
+      ['a dot-dot segment before unavailable', '/x/../unavailable'],
+      ['an encoded dot-dot segment', '/%2e%2e/unavailable'],
+      ['a dot segment', '/./unavailable'],
+      ['a dot-dot segment in a nested primary group', '/admin/(..)'],
+      ['a parse failure (unbalanced group)', '/(admin'],
+      ['a parse failure (malformed percent sequence)', '/%E0%A4%A'],
+    ])('falls back to /dashboard for %s', (_name, raw) => {
+      expect(safeReturnUrl(raw)).toBe(FALLBACK);
+    });
+
+    it('does not decode twice: a double-encoded first segment is returned unchanged', () => {
+      expect(safeReturnUrl('/%2575navailable')).toBe('/%2575navailable');
+    });
+
+    it('returns an allowed console path unchanged', () => {
+      expect(safeReturnUrl('/admin/access/roles')).toBe('/admin/access/roles');
+    });
+
+    it('allows a path that only starts with the letters of a rejected segment', () => {
+      expect(safeReturnUrl('/authors')).toBe('/authors');
+      expect(safeReturnUrl('/unavailable-reports')).toBe('/unavailable-reports');
+    });
+  });
 });
