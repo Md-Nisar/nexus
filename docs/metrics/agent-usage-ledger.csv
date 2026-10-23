@@ -80,3 +80,4 @@ date,story,task,agent_type,model,agent_id,calls,tool_uses,cache_read,cache_write
 2026-10-23,US-020,,architect,claude-opus-5-5,a46b2df,33,72,2284250,101019,30577,101021,507650
 2026-10-23,US-020,,security-reviewer,claude-opus-5-5,adbfa6a,15,21,687971,81657,20347,81659,272633
 2026-10-23,US-020,T-001,architect,claude-opus-5-5,aeb1c9b,20,40,2201882,418683,73918,233064,1113172
+2026-10-23,US-020,T-001,frontend-engineer,claude-opus-5-5,a073175,26,35,2091906,126600,27837,126602,506678
