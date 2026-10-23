@@ -1,0 +1,7 @@
+{
+  "detail" : "This request requires an If-Match header with exactly one strong entity tag.",
+  "status" : 428,
+  "title" : "Precondition Required",
+  "code" : "PRECONDITION_REQUIRED",
+  "traceId" : "0190a000-0000-7000-8000-0000000000ff"
+}
