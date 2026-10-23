@@ -22,7 +22,8 @@ const LEVEL_ORDER: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, erro
 /**
  * Regular expression to identify sensitive keys that should be redacted.
  */
-const SENSITIVE_KEYS = /password|token|secret|authorization|cookie|apiKey|session/i;
+const SENSITIVE_KEYS =
+  /password|token|secret|authorization|cookie|apiKey|session|email|query|search|description/i;
 
 /**
  * Checks if a value is a plain object to avoid recursing on DOM elements or class instances.
