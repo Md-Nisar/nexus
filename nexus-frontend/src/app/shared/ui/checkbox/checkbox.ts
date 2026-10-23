@@ -26,10 +26,10 @@ let nextId = 0;
       [disabled]="isDisabled()"
       [disabledInteractive]="!!disabledReason()"
       [required]="required()"
-      [aria-describedby]="reasonId()"
+      [aria-describedby]="describedByIds()"
       (change)="onToggle($event)"
       (blur)="onTouched()"
-      >{{ label() }}<ng-content
+      >{{ label() }} <ng-content
     /></mat-checkbox>
     @if (disabledReason()) {
       <span class="nx-checkbox__reason" data-testid="nx-checkbox-reason" [id]="reasonIdValue">{{
@@ -46,6 +46,8 @@ export class NxCheckbox implements ControlValueAccessor {
   /** Visible explanation for a disabled checkbox; keeps it focusable and announced. */
   readonly disabledReason = input('');
   readonly required = input(false);
+  /** Id of an element that describes this checkbox, such as a validation message. */
+  readonly describedBy = input('');
   readonly testId = input('nx-checkbox');
 
   /** Emits the new checked state after a user toggle. */
@@ -56,6 +58,9 @@ export class NxCheckbox implements ControlValueAccessor {
   protected readonly isDisabled = computed(() => this.disabled() || this.cvaDisabled());
   protected readonly reasonIdValue = `nx-checkbox-reason-${nextId++}`;
   protected readonly reasonId = computed(() => (this.disabledReason() ? this.reasonIdValue : ''));
+  protected readonly describedByIds = computed(() =>
+    [this.reasonId(), this.describedBy()].filter(Boolean).join(' '),
+  );
 
   private onChange: (value: boolean) => void = () => undefined;
   protected onTouched: () => void = () => undefined;

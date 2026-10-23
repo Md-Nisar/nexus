@@ -55,10 +55,11 @@
         formControlName="consentAccepted"
         label="I agree to the"
         testId="reg-consent-checkbox"
+        [describedBy]="consentError() ? 'reg-consent-error' : ''"
       >
         <a routerLink="/legal/terms" class="reg-form__terms-link">terms and conditions</a>
       </nx-checkbox>
-      <!-- Consent error: shown only if validation fails; aria-describedby links to checkbox -->
+      <!-- Consent error: shown only if validation fails; the checkbox points at it with aria-describedby -->
       @if (consentError()) {
         <p id="reg-consent-error" class="reg-form__field-error" role="alert">
           {{ consentError() }}

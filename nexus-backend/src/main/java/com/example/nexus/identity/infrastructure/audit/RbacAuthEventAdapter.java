@@ -66,8 +66,9 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
 
   private static final Logger log = LoggerFactory.getLogger(RbacAuthEventAdapter.class);
 
-  /** US-018 A7 (03-design.md §7.2): the fixed {@code actorType} of every break-glass row. */
   private static final String KEY_OPERATION = "operation";
+
+  /** US-018 A7 (03-design.md §7.2): the fixed {@code actorType} of every break-glass row. */
   private static final String BREAK_GLASS_ACTOR_TYPE = "BREAK_GLASS_CLI";
   private static final String OPERATION_BREAK_GLASS_GRANT = "breakGlassGrant";
   private static final String OPERATION_BREAK_GLASS_REFUSAL = "breakGlassRefusal";

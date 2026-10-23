@@ -77,6 +77,18 @@ function* files(path) {
 
 const IMAGE = /\.(png|jpe?g)$/i;
 
+/** Replaces every needle (plain values case-insensitively, patterns as written) in `text`. */
+export function redactNeedles(text, needles) {
+  return needles.reduce(
+    (acc, { value, pattern }) =>
+      acc.replace(
+        value ? new RegExp(escapeRegExp(value), 'gi') : new RegExp(pattern.source, 'gi'),
+        '<redacted>',
+      ),
+    text,
+  );
+}
+
 /**
  * `onHit({ label, kind, before, after })` is optional and receives the text around a plain-value
  * match (the match itself is never passed on) so a failing CI run says where the address is.
@@ -93,11 +105,19 @@ export function scan(paths, needles, onHit) {
             hits.push(`${kind} found in ${label}`);
             const at = value ? lower.indexOf(value) : -1;
             if (onHit && at >= 0) {
+              // Other needles near the match (a second persona, the blind index of the same
+              // address) are masked too, and the window is widened by the longest needle first so
+              // one cut at the window edge is still recognised.
+              const reach = Math.max(...needles.map((n) => n.value?.length ?? 64));
+              const mask = (chunk) => redactNeedles(chunk, needles);
               onHit({
                 label,
                 kind,
-                before: text.slice(Math.max(0, at - 80), at),
-                after: text.slice(at + value.length, at + value.length + 20),
+                before: mask(text.slice(Math.max(0, at - 80 - reach), at)).slice(-80),
+                after: mask(text.slice(at + value.length, at + value.length + 20 + reach)).slice(
+                  0,
+                  20,
+                ),
               });
             }
           }

@@ -25,6 +25,7 @@ describe('NxCheckbox content projection', () => {
     await fixture.whenStable();
     const label: HTMLElement = fixture.nativeElement.querySelector('label');
     expect(label.querySelector('a')?.textContent).toBe('terms');
+    expect(label.textContent?.replace(/\s+/g, ' ').trim()).toBe('I agree to the terms');
   });
 });
 
@@ -50,6 +51,12 @@ describe('NxCheckbox', () => {
     fixture.componentRef.setInput('testId', 'terms');
     await fixture.whenStable();
     expect(fixture.nativeElement.querySelector('[data-testid="terms"]')).not.toBeNull();
+  });
+
+  it('points aria-describedby at an element that describes it', async () => {
+    fixture.componentRef.setInput('describedBy', 'consent-error');
+    await fixture.whenStable();
+    expect(input().getAttribute('aria-describedby')).toBe('consent-error');
   });
 
   it('is unchecked, then checked after writeValue(true)', async () => {

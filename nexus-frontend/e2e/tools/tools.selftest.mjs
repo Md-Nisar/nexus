@@ -59,7 +59,9 @@ function write(name, content) {
 
 test('a log containing a blind index fails', () => {
   const dir = write('backend.log', `lookup key=${blindIndex('person@example.test', KEY)}\n`);
-  assert.deepEqual(scan([dir], needles), [`email blind index found in ${join(dir, 'backend.log')}`]);
+  assert.deepEqual(scan([dir], needles), [
+    `email blind index found in ${join(dir, 'backend.log')}`,
+  ]);
 });
 
 test('a log containing an address fails, whatever its case', () => {
@@ -96,7 +98,10 @@ test('a URL-encoded, JSON-escaped or entity-encoded address fails', () => {
 test('a generated registrant address fails in raw and encoded form', () => {
   for (const form of ['e2e-1730000000000@example.com', 'e2e-1730000000000%40example.com']) {
     const dir = write('trace.network', `{"email":"${form}"}`);
-    assert.ok(scan([dir], needles).some((hit) => hit.startsWith('generated registrant')), form);
+    assert.ok(
+      scan([dir], needles).some((hit) => hit.startsWith('generated registrant')),
+      form,
+    );
   }
 });
 
@@ -115,12 +120,30 @@ test('every embedded report zip is scanned, not only the first', () => {
 
 test('a clean embedded report passes', () => {
   const clean = stored('ok.txt', Buffer.from('nothing here')).toString('base64');
-  assert.deepEqual(scan([write('index.html', `data:application/zip;base64,${clean}`)], needles), []);
+  assert.deepEqual(
+    scan([write('index.html', `data:application/zip;base64,${clean}`)], needles),
+    [],
+  );
 });
 
 test('a screenshot in the scanned set fails', () => {
   for (const name of ['test-failed-1.png', 'frame.JPEG']) {
     const dir = write(name, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     assert.deepEqual(scan([dir], needles), [`screenshot found in ${join(dir, name)}`]);
+  }
+});
+
+test('the text printed around a match never contains another needle', () => {
+  const other = blindIndex('person@example.test', KEY);
+  const content = `"email":"person@example.test","hmac":"${other}","registrant":"e2e-1700000000000@example.com"`;
+  const printed = [];
+  const hits = scan([write('trace.json', content)], needles, (context) => printed.push(context));
+  assert.ok(hits.length > 0);
+  assert.ok(printed.length > 0);
+  for (const { before, after } of printed) {
+    const text = `${before}${after}`;
+    assert.ok(!text.includes('person@example.test'), text);
+    assert.ok(!text.includes(other), text);
+    assert.ok(!/e2e-\d+@example\.com/.test(text), text);
   }
 });
