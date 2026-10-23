@@ -3,9 +3,24 @@
 **Epic:** EPIC-002 (RBAC Foundation)
 **Phase:** 3 (Solution Design), Gate 2 Step A
 **Author:** Principal Architect
-**Status:** Draft 1 (2026-10-23), for the Gate 2 threat model (`03b-threat-model.md`, to be written) and Gate 2 review.
+**Status:** Draft 2 (revised for RC-68..RC-77), 2026-10-23. Draft 1 went to the Gate 2 threat model (`03b-threat-model.md`, verdict: conditional pass); this draft is for Gate 2 review.
 
 **Gate 2:** pending
+
+**Revision 1 (threat model `03b-threat-model.md` §6, §7, §9).** No Gate 1 decision is reopened.
+
+| RC | Threat | Sections changed |
+|---|---|---|
+| RC-68 | T-S15 hidden characters in emails | §6.1 (`UserText` email mode), §12.7, §12.8, §12.9, §12.10 (identity line in dialogs), §14.2, §15.3, §19.1, §19.3, §21 SD-7, §23 (F-5) |
+| RC-69 | T-E55 PENDING targets | §8.3 (PENDING rows), §12.9, §14.2, §23 (H-2 decided, F-4), §20.2 item 10 |
+| RC-70 | T-T26 return URL | §0.1 item 9, §4.7, §19.1, §21 SD-5 |
+| RC-71 | T-R19 lost refresh response | §4.5, §17 (triage step), §19.1, ADR-0028 |
+| RC-72 | T-R20 edge smoke | §17 (alert note), §19.6, §20.2 item 3, §23 (H-4) |
+| RC-73 | T-I27 global error logging | §1.2 (S1e), §19.1 |
+| RC-74 | T-I28, T-E56 draft hygiene | §1.2 (S2), §19.1 |
+| RC-75 | T-D31 unavailable cool-down | §1.2 (S1b), §4.5, §19.1 |
+| RC-76 | T-E57 `canMatch` wording | §1.2 (S1a), §18, §19.1, ADR-0028 |
+| RC-77 | T-E58 persona exposure | §1.2 (S3a), §19.4, §20.2 |
 
 **Inputs (binding, not reopened):**
 - `01-requirements.md` §12a, **Gate 1 decisions (2026-10-23)**, Q1 to Q29, with the amendments the story owner delegated for this design (§0.2): Q12 personas corrected; Q4 placement of the "unavailable, retry" view; impact risk 1 (ETag weakened by the proxy) designed here.
@@ -41,7 +56,7 @@ Each line is a decision this design makes. Gate 2 may override any of them. Sect
 6. **Kill switch:** `AppConfig.accessConsoleEnabled` (build-time). It is `false` in `environment.ts` (production) until the release checklist passes, and `true` in development. When it is false, the nav item and dashboard card are hidden **and** `canMatch` rejects the console route, so deep links fall through to Not Found (§18).
 7. **Unavailable view (Q4, amended):** a new route `/unavailable` under `PublicLayout`, outside the shell. `authGuard` returns a `UrlTree` to it when the cold-start refresh fails with `NETWORK_ERROR`, `HTTP_ERROR` (a response that is not a problem document, so an intermediary answered) or `AUTH_005`. The view makes no HTTP call on render. The `traceId` is held in memory, never in the URL. Retry is user-initiated after a cool-down and re-enters through the shell exactly once. The public-route pin goes from 3 to 4 paths. **Flagged for the threat model** (§4.5, §21 SD-2).
 8. **Mid-session 503 `AUTH_005`:** a console page load renders the same `UnavailableNotice` inline. An action keeps the existing toast and shows an inline "nothing was changed" line (§4.5, §12.0).
-9. **`safeReturnUrl`** also rejects values starting with `/unavailable` (§4.7).
+9. **`safeReturnUrl`** also rejects values whose first path segment, as the router parses it, is `unavailable` (as well as `auth`) (§4.7, RC-70).
 10. **Affordances** come from a route-scoped `AuthorizationProfileStore` over `GET /users/me/authorization`. It is loaded once per console entry and re-read after own-access events and after any 403 on an action it predicted allowed. Nav and guards keep `AuthStore`. If the profile cannot be read, the console is read-only under a banner (Q8) (§6.3).
 11. **The console never calls `AuthService.refresh()`.** After a self-revoke it re-reads the profile. That request returns 401 on the stale epoch, so the interceptor's shared refresh runs once and replays it. This replaces FR-G6/FR-C6 "refresh the session", which would reintroduce RC-65's double refresh (§6.3, §0.2).
 12. **State:** API clients are stateless `@Service()` singletons returning `Observable`s. Stores are `@Injectable()` route-level providers that own `signal`s with a `LoadState<T>` union. Components are OnPush, smart pages over dumb presenters (§6).
@@ -212,14 +227,14 @@ graph LR
 | Slice | Contents | Exit gate (all green) |
 |---|---|---|
 | **S0** | UX/PM review of §12 to §14; Ops confirmation of the production edge (§23); P-7 flag plan; P-9 required check; P-11 first green full-stack run; DPO acknowledgement (Q22) | Records exist. **None blocks the build.** P-11 blocks the first console PR merge (Q13). Edge confirmation and DPO block **enabling** in production (§20) |
-| **S1a** | `NavItem.anyOf`, `visibleNavItems`, `NAV_ITEMS` entry, `anyPermissionGuard` with contract specs, `accessConsoleEnabledGuard`, `AppConfig.accessConsoleEnabled` (both environments and every test stub), dashboard card, `DEVELOPMENT_GUIDE` "add a nav item" rule | `npm run test:ci`, `lint`, `format:check`, `build`; `nav.config.spec`, `shell.spec`, `app.routes.spec` pass with the new any-of cases |
-| **S1b** | `/unavailable` route and page, `UnavailableNotice`, `UnavailableState`, `authGuard` change, `safeReturnUrl` rule, the pin change | Frontend gates; real-Router cold-start spec (exactly one refresh per attempt, §19.1); adversarial `safeReturnUrl` table extended; threat-model sign-off on the pin |
+| **S1a** | `NavItem.anyOf`, `visibleNavItems`, `NAV_ITEMS` entry, `anyPermissionGuard` with contract specs, `accessConsoleEnabledGuard`, `AppConfig.accessConsoleEnabled` (both environments and every test stub), dashboard card, `DEVELOPMENT_GUIDE` "add a nav item" rule; **RC-76:** `canMatch` allow-list contract spec and the release-control wording (§18, ADR-0028) | `npm run test:ci`, `lint`, `format:check`, `build`; `nav.config.spec`, `shell.spec`, `app.routes.spec` pass with the new any-of cases; RC-76 contract spec green |
+| **S1b** | `/unavailable` route and page, `UnavailableNotice`, `UnavailableState`, `authGuard` change, segment-based `safeReturnUrl` rule (RC-70), the pin change; **RC-75:** cool-down `min(retryAfterSeconds ?? 10, 60)` plus 0–5 s jitter, 10 s with no `UnavailableState`; **RC-71 item 3:** the `AUTH_004`-on-Retry spec | Frontend gates; real-Router cold-start spec (exactly one refresh per attempt, §19.1); adversarial `safeReturnUrl` table extended (RC-70); RC-71 and RC-75 specs green; threat-model sign-off on the pin (H-1) |
 | **S1c** | Wire types and the error unions (§7.4); new fixtures in `ApiContractFixturesTest` and `api-contract.spec.ts` in **one PR** | `./mvnw verify -DskipITs` (backend contract test) and `npm run test:ci` |
-| **S1d** | `gzip off` for `/api/`; the static nginx test; the `edge-etag-smoke` job; ESLint `DomSanitizer` ban with a `lint-rules.spec.ts` case; logger redaction with a spec; `nx-banner` (spec, preview card, unit axe) | Frontend gates; the smoke job green, including its negative control |
-| **S1e** | Feature folder, console layout, profile store, catalogue store, roles store, roles list, role detail (read mode, Permissions tab), catalogue page, copy module for read errors, F6 per-area states, read-only mode, inline 503; P-27 e2e | Frontend gates; unit request-budget tests; e2e for nav per persona, P-27, read pages, axe in both themes |
-| **S2** | `nx-textarea`; editor with matrix in edit mode, Review dialog, ETag handling, retry-once, 412 rebase, drafts, unsaved-changes guard, create, clone; propagation copy | Frontend gates; e2e create, edit, review, save, 412 (provoked by an API write), XSS payload as text (scenario 24); **S2 does not ship to production before the Ops edge confirmation** |
-| **S3a** | Dev personas and targets (`DevDataInitializer`, `DevUserSeeder`, tests); `personas.ts`; shell e2e `NAV_LABELS` | `./mvnw verify` (Docker: `DevPersonaSeedIT`); e2e shell spec |
-| **S3b** | Users list and lookup, user page and join, assign dialog, revoke, typed self-revoke, own-access handling | Frontend gates; e2e assign, revoke against dedicated targets, self-assignment block, 409 `RBAC_002` inline, lookup with `enterAddress`, trace off; PII scan clean |
+| **S1d** | `gzip off` for `/api/`; the static nginx test; the `edge-etag-smoke` job; ESLint `DomSanitizer` ban with a `lint-rules.spec.ts` case; logger redaction with a spec; `nx-banner` (spec, preview card, unit axe) | Frontend gates; the smoke job green, including its negative control (CI only, `--negative-control`, RC-72) |
+| **S1e** | Feature folder, console layout, profile store, catalogue store, roles store, roles list, role detail (read mode, Permissions tab), catalogue page, copy module for read errors, F6 per-area states, read-only mode, inline 503; P-27 e2e; **RC-73:** `GlobalErrorHandler` logs an `AppError`-shaped value as `code`, `correlationId`, `traceId` context keys only, never stringified into the message | Frontend gates; unit request-budget tests; RC-73 specs (§19.1); e2e for nav per persona, P-27, read pages, axe in both themes |
+| **S2** | `nx-textarea`; editor with matrix in edit mode, Review dialog, ETag handling, retry-once, 412 rebase, drafts, unsaved-changes guard, create, clone; propagation copy; **RC-74:** foreign-owner draft keys removed on session establishment in `AuthService`; `clearSessionScopedStorage()` in the logout `finalize`; future `savedAt` rejected; restore and rebase drop entries whose row is disabled and list them | Frontend gates; RC-74 specs (§19.1); e2e create, edit, review, save, 412 (provoked by an API write), XSS payload as text (scenario 24); **S2 does not ship to production before the Ops edge confirmation** |
+| **S3a** | Dev personas and targets (`DevDataInitializer`, `DevUserSeeder`, tests); `personas.ts`; shell e2e `NAV_LABELS`; **RC-77:** "no `dev` profile where real user data lives" checklist line (§19.4, §20.2) | `./mvnw verify` (Docker: `DevPersonaSeedIT`, extended for RC-77); e2e shell spec |
+| **S3b** | Users list and lookup, user page and join, assign dialog, revoke, typed self-revoke, own-access handling; **RC-68** email mode of `UserText` and the identity line in dialogs; **RC-69** PENDING copy, confirm variant and the admin-role block | Frontend gates; RC-68 and RC-69 unit specs (§19.1); e2e assign, revoke against dedicated targets, self-assignment block, hidden-character target (RC-68), 409 `RBAC_002` inline, lookup with `enterAddress`, trace off; PII scan clean |
 | S4 to S6 | Outlined in §12.13. Designed in full in a delta to this document before they start | — |
 
 **MVP = S0 to S3** (Q1). S1a to S1d run in parallel. S1e needs S1a to S1c. S2 needs S1d, because the edge fix must be in before the editor can save behind nginx.
@@ -384,9 +399,10 @@ graph TD
 **`UnavailablePage`** (`shared/pages/unavailable/unavailable.page.ts`, lazy, route `unavailable` under `PublicLayout`, `data: { selfManagedFocus: true }`):
 - On render it makes **no HTTP call** and injects no `HttpClient`; a spec asserts both. It reads `returnUrl` from the query map and passes it through `safeReturnUrl` once.
 - It shows `UnavailableNotice` with the reference (when known), a Retry button, a "Go to sign-in" link (`/auth/login` with the same validated `returnUrl`), and `supportContact` only if configured (Q23: `null` today, so no link).
-- **Cool-down:** Retry is `aria-disabled` with a visible countdown for `min(retryAfterSeconds ?? 5, 60)` seconds from `recordedAt`. This avoids hammering nginx's auth zone (10 r/min per IP, `nginx.conf:9, 35-37`) and honours a `Retry-After` the way the interceptor does (`auth.interceptor.ts:42-57`).
+- **Cool-down (RC-75):** Retry is `aria-disabled` with a visible countdown for `min(retryAfterSeconds ?? 10, 60)` seconds plus 0–5 s of jitter from `recordedAt`. With no `UnavailableState` (a reload or a direct visit), the countdown is 10 s from render. This avoids hammering nginx's auth zone (10 r/min per IP, `nginx.conf:9, 35-37`) and honours a `Retry-After` the way the interceptor does (`auth.interceptor.ts:42-57`).
 - **Retry:** `router.navigateByUrl(safeReturnUrl(returnUrl))`. The button shows `loading` while the navigation runs and cannot be pressed twice. A second failure records a new state, so the countdown restarts from the new `recordedAt` signal even when the router ignores a same-URL navigation. No automatic retry.
 - **Focus:** the page focuses its `h1` on load (`selfManagedFocus`).
+- **Lost refresh response (RC-71, T-R19; accepted as fail-closed, RES-55).** If the backend committed a rotation but the response was lost (gateway 504, giving `HTTP_ERROR`; connection reset, giving `NETWORK_ERROR`), the browser never stored the new cookie, so Retry presents the old one. That is a refresh-token reuse: `RefreshTokenUseCase` revokes the family, writes `TOKEN_REFRESH_REUSE`, and the refresh returns 401 `AUTH_004`. The guard sends that problem document to `/auth/login` (not `/unavailable`), so the user signs in again; there is no loop. Side effects accepted: a surprise logout and a false theft signal during an outage, handled by the triage step in §17. No mechanism change: the console still never refreshes on its own (ADR-0028). Cross-tab concurrent cold starts are the same pre-existing class.
 
 **`UnavailableNotice`** (dumb, `shared/pages/unavailable/unavailable-notice.ts`): inputs `reference`, `retryAfterSeconds`, `recordedAt`, `retrying`; output `retry`. Both the route page and console pages use it. Inside the console it renders in the page region under the page header, never as a second `h1`.
 
@@ -418,7 +434,9 @@ flowchart TD
 
 ### 4.7 `safeReturnUrl`
 
-`core/routing/safe-return-url.ts:24` gains one rule: a value starting with `/unavailable` falls back to `/dashboard`, as `/auth/` does. The adversarial table gains `/unavailable`, `/unavailable?returnUrl=%2Fadmin`, and `/%75navailable` (no second decode, RC-63(i)).
+`core/routing/safe-return-url.ts:24` gains one rule, and the existing `/auth` rule moves onto it (RC-70, T-T26): after today's checks, the value is parsed with `router.parseUrl(raw)`; if the **first segment of the primary outlet**, as the router decodes it, equals `unavailable` or `auth`, the value falls back to `/dashboard`. A literal prefix test is not enough because the router decodes path segments before matching, so `/%75navailable` would land on the view and `/%61uth/login` on login. The check reads the parsed tree only; the string navigated stays the string validated, so there is still no second decode of the value itself (RC-63(i)). A parse failure falls back to `/dashboard`.
+
+Adversarial table additions, each expecting **`/dashboard`**: `/unavailable`, `/unavailable?returnUrl=%2Fadmin`, `/%75navailable`, `/%61uth/login`, `/unavailable;x=1`. A control case `/admin/access/roles` is returned unchanged.
 
 ### 4.8 `unsavedChangesGuard`
 
@@ -443,7 +461,7 @@ flowchart TD
 | `catalogue/` | `CataloguePage` |
 | `users/` | `UsersListPage`, `UsersListStore` |
 | `user-detail/` | `UserDetailPage`, `UserRolesTab`, `UserDetailStore`; the Assign dialog template lives in `UserRolesTab` |
-| `dialogs/` | `revoke-dialogs.ts` (opens `NxDialog.open` or `confirmTyped` with copy) |
+| `dialogs/` | `revoke-dialogs.ts` (opens the standard revoke template through `NxDialog.openTemplate`, or `confirmTyped`, with copy; RC-68) |
 
 Specs are colocated. Pure functions in `copy/` and `util/` have no Angular imports.
 
@@ -468,7 +486,8 @@ Specs are colocated. Pure functions in `copy/` and `util/` have no Angular impor
 | `PermissionMatrix` | Dumb | Native `<table>`, group header rows, read or edit mode | in: `groups`, `mode`, `granted: ReadonlySet<string>`, `staged`, `affordances: ReadonlyMap<string, Affordance>`, `caption`; out: `toggle: { permissionId, next }`, `toggleGroup: { resource, next }` |
 | `ConsoleErrorPanel` | Dumb | `NxErrorState` plus the reference line and an optional countdown | in: `view: ConsoleErrorView`; out: `retry` |
 | `UserStatusBadge`, `SystemRoleBadge`, `SensitiveBadge` | Dumb | Icon plus text, never colour alone | in: value |
-| `UserText` | Dumb | Renders a user-authored string inside `<bdi>`, with truncation and full text exposed (G8) | in: `text`, `truncate` |
+| `UserText` | Dumb | Renders a user-authored string inside `<bdi>`, with truncation and full text exposed (G8). In `email` mode every `\p{Cf}` code point is shown as a visible token and the "Contains hidden characters" badge is rendered; in `text` mode only the badge is added (RC-68, §15.3) | in: `text`, `truncate`, `mode: 'text' \| 'email'` (default `text`) |
+| `TargetIdentity` | Dumb | The identity line used in the Assign and Revoke dialogs: email (`UserText` `email` mode, or the `{person}` fallback), `UserStatusBadge`, Verified badge, hidden-character badge (RC-68) | in: `email: string \| null`, `status`, `emailVerified` |
 
 ### 6.2 Stores and `LoadState`
 
@@ -611,6 +630,8 @@ Assign dialog (`roleAssignAffordance(role, ctx)`):
 | PII rule: the role carries `user:directory:read` and the caller is not an administrator | Confirm disabled, `admin-only-directory` |
 | (c) Hinted admin-defining (`permissionCount === catalogue.total`) and the caller is not an administrator | **Hint only** (Q17): "This looks like an administrator role. Only an administrator can assign it." Not disabled: the server's `ADMINISTRATOR_REQUIRED` decides. This matters because a non-administrator can hold every permission through several roles (administrator is per role, never the union) |
 | Self-target and not an administrator (FR-C4) | "Assign role" button disabled with the reason |
+| PENDING target (RC-69, Q21) | Never disabled for that reason alone. The `role=alert` risk warning shows, and the confirm becomes "Assign to unverified account" (`danger`) |
+| PENDING target **and** hinted admin-defining role (H-2 decision, until F-4 lands) | **Disabled** with the reason `pending-admin-role`: "Administrator roles can't be given to an unverified account. Ask the person to verify and sign in first." This is a hint-based block (Q17 hint), so the server stays authoritative: a role the hint misses is not blocked and goes through the PENDING confirm. When F-4 lands, this row is removed and the role falls back to the PENDING confirm with `confirmTyped` (the role name), already specified in §12.9 |
 
 `isAdminDefiningHint(role: RoleResponse, catalogueTotal: number): boolean` lives in `admin-defining-hint.ts` with a comment naming ADR-0021 D3 and stating that it is a hint. **Never** `memberCount`-based (Q16, impact risk 5): a unit test asserts the module does not read `memberCount`.
 
@@ -634,7 +655,7 @@ The console renders copy-module text only; `AppError.message` (backend `detail`)
 
 - `copy/propagation.ts`: `ACCESS_TOKEN_TTL_SECONDS = 900` (comment: mirrors `nexus.jwt.access-token-ttl-seconds`, `application.yml:269`) and `PERMISSION_CACHE_TTL_SECONDS = 900` (comment: mirrors `nexus.rbac.permission-cache-ttl-seconds`, `application.yml:157`, environment-overridable). `type PropagationAction = 'grant' | 'revoke'`. `PROPAGATION_COPY: Readonly<Record<PropagationAction, string>>` is built from them: grant "within about {⌈900/60⌉ = 15} minutes", revoke ceiling "about {⌈(900+900)/60⌉ = 30} minutes".
 - `propagationFor(change: { added: number; removed: number } | 'assign' | 'revoke'): readonly string[]` returns the grant line for an assign or a replace with adds, and the revoke line for a revoke or a replace with removes. A replace with both shows both lines.
-- A spec asserts the minutes come from the constants. A review-checklist line in the PR template says: "If either TTL changes in `application.yml` or an environment, update `propagation.ts`." The revoke claim rests on AS7 (inferred) and **must be confirmed by the Gate 2 threat model** (Q3).
+- A spec asserts the minutes come from the constants. A review-checklist line in the PR template says: "If either TTL changes in `application.yml` or an environment, update `propagation.ts`." The revoke claim rested on AS7 (inferred); the Gate 2 threat model **confirmed it** (threat model §4.3), on the condition that the constants are compared with each environment's TTLs (§20.2 item 8).
 
 ### 9.4 Labels
 
@@ -898,13 +919,13 @@ Every page and dialog implements the states below. Breakpoints are CSS only (no 
 
 - **Header** "Users" with the explainer.
 - **Toolbar:** status filter (`nx-select`: All, Active, Pending, Locked, Disabled; bound to `status`); exact-email lookup (`nx-search-field` `mode="submit"`, label "Find by email", hint "Enter a full email address"). The lookup text is **not** in the URL; Clear returns to the list.
-- **Table** (`nx-table`, server paging, `pageable`, `totalCount`): Email (`UserText`, truncated with the full text exposed; "(you)" suffix as text when `userId` equals the profile's `userId`); Status (`UserStatusBadge`, icon plus text); Verified ("Verified" or "Unverified email" with icon); Joined (date). A row click opens the user page.
+- **Table** (`nx-table`, server paging, `pageable`, `totalCount`): Email (`UserText` in `email` mode, truncated with the full text exposed; hidden characters shown as tokens and the "Contains hidden characters" badge on the row, RC-68; "(you)" suffix as text when `userId` equals the profile's `userId`); Status (`UserStatusBadge`, icon plus text); Verified ("Verified" or "Unverified email" with icon); Joined (date). A row click opens the user page.
 - **States:** loading; empty ("No users match this filter"); lookup miss ("No one in your organisation has this email address."); lookup hit (one row with a "Lookup result" caption); beyond the 10,000 offset ("This page is past the end of the list. Use the status filter to narrow it."); 429 countdown on the lookup button; error; 503; flag off (users area).
 - **320 px:** card per row: email first (wraps), then the badges, then the date.
 
 ### 12.8 User page (`/admin/access/users/:userId/roles`)
 
-- **Header:** `h1` email (`UserText`) with "(you)"; status and verified badges; "Joined {date}". An info `nx-banner` for LOCKED ("This person is locked out and can't sign in until the lock ends."), DISABLED ("This account is disabled.") and PENDING ("This person hasn't verified their email address yet.").
+- **Header:** `h1` email (`UserText` in `email` mode, RC-68) with "(you)"; status, verified and (when present) hidden-character badges; "Joined {date}". An info `nx-banner` for LOCKED ("This person is locked out and can't sign in until the lock ends."), DISABLED ("This account is disabled.") and PENDING ("This person hasn't verified their email address yet.").
 - **Roles tab:** "Assign role" (`primary`, `user:role:assign`; disabled with a reason for a self-target non-administrator). Table: Role (link when `role:read`; `UserText`); Type (System badge from the join, or "—" with the note when `role:read` is absent); Assigned (date); Assigned by (shown only when non-null; an id, or an email when held in the directory page cache); Revoke action (`danger` ghost button, `user:role:assign`).
 - **Degraded:** without `user:read`: `nx-empty-state` "You need permission to read users' roles to see this." Without `role:read`: the table works and a note says "Role details are hidden because you can't read roles." (Q19).
 - **States:** `USER_NOT_FOUND`; zero roles ("No roles assigned"); error; 503; flag off (assignments area when us012 is off).
@@ -912,19 +933,20 @@ Every page and dialog implements the states below. Breakpoints are CSS only (no 
 
 ### 12.9 Assign dialog
 
-- `openTemplate`, title "Assign a role to {email or 'this person'}".
-- **PENDING warning** (status): "This person hasn't verified their email address. Make sure it's the right person." (Q21).
-- **Picker:** a search field, then a radio list of candidate roles (name, System badge, permission count). Each disabled option keeps its visible reason (§8.3).
+- `openTemplate`, title "Assign a role to {email or 'this person'}" (the email through `UserText` `email` mode).
+- **Identity line** (RC-68): `TargetIdentity` directly under the title: status badge, Verified or "Unverified email" badge, and the "Contains hidden characters" badge with its one-line explanation (§14.2) when present. The admin sees these at the moment of choice, not only in the list and header.
+- **PENDING warning** (RC-69, T-E55; `nx-banner` `warning`, `role=alert`): "This account hasn't been verified. Until it is, it may have been created by someone other than the owner of this address, and they would get this role when it's verified. Prefer assigning after the person has signed in." Q21 (allow with a warning) is kept.
+- **Picker:** a search field, then a radio list of candidate roles (name, System badge, permission count). Each disabled option keeps its visible reason (§8.3). For a PENDING target, roles hinted admin-defining are disabled with the `pending-admin-role` reason (H-2 decision, §8.3, §23) until F-4 lands.
 - **Selected role panel:** a loading skeleton, then "Grants: {labels}"; the missing-permission reason, the PII reason, or the admin hint.
-- **Actions:** Cancel; "Assign role" (`primary`; disabled until a valid selection).
+- **Actions:** Cancel; "Assign role" (`primary`; disabled until a valid selection). For a PENDING target the confirm reads **"Assign to unverified account"** (`danger`); it is never disabled because the target is PENDING. If the selected role is hinted admin-defining, the confirm opens `NxDialog.confirmTyped` with `expectedText` = the role name. While the H-2 block is in force that combination cannot be selected, so the typed confirm becomes reachable only when F-4 lands and the block is removed; it is specified and unit-tested now so that removal is a one-row change.
 - **After success:** close, toast "Role assigned.", grant propagation line inline on the tab, list re-read. `RBAC_004` is treated the same, with "This person already had this role."
 - **Errors:** inline in the dialog, which stays open: 403 reason copy, `RBAC_010`, final `RBAC_012`, 429 countdown on the confirm button.
 - **320 px:** a full-width list; the selected-role panel below the list.
 
 ### 12.10 Revoke dialogs
 
-- **Standard** (`NxDialog.open`, `danger`): title "Remove {role} from {email or 'this person'}?"; body "They will lose: {labels}" (or "They will lose the access this role grants." without `role:read`); the admin warning when hinted ("This role grants every permission. If no other administrator would remain, Nexus will refuse this change."); confirm "Remove role".
-- **Self-revoke of a hinted admin-defining role** (`NxDialog.confirmTyped`): title "Remove your own {role} role?"; message "You will lose access to this page."; `expectedText` = the role name; confirm "Remove my role". On success: profile reload (§6.3), toast "Your own access has changed.", navigate to `/dashboard`.
+- **Standard** (`NxDialog.openTemplate`, `danger` confirm; moved from `NxDialog.open` so that the dialog can render the badge components): title "Remove {role} from {email or 'this person'}?"; the `TargetIdentity` line (status, Verified and hidden-character badges, RC-68) under the title; body "They will lose: {labels}" (or "They will lose the access this role grants." without `role:read`); the admin warning when hinted ("This role grants every permission. If no other administrator would remain, Nexus will refuse this change."); confirm "Remove role".
+- **Self-revoke of a hinted admin-defining role** (`NxDialog.confirmTyped`): title "Remove your own {role} role?"; message "You will lose access to this page."; `expectedText` = the role name; confirm "Remove my role". On success: profile reload (§6.3), toast "Your own access has changed.", navigate to `/dashboard`. No identity line: the target is the caller, so there is no one to mistake.
 - **Results:** as §11.4.
 
 ### 12.11 Unavailable view (`/unavailable`)
@@ -1026,6 +1048,9 @@ All strings live in `copy/console-copy.ts`, `copy/propagation.ts` and `copy/perm
 | Loading count | Loading roles: {loaded} of {total} |
 | Truncated list | Only the first {n} roles are loaded; search covers those only. |
 | Badge: System / Custom / Sensitive / Unlabelled / Unverified email / (you) | System / Custom / Sensitive / Unlabelled / Unverified email / (you) |
+| Badge: hidden characters (RC-68) | Contains hidden characters |
+| Hidden characters explanation (RC-68) | This address contains characters that are invisible or change text direction. Check it carefully before giving access. |
+| Hidden character token, accessible name (RC-68) | Token text `⟨U+{hex}⟩`; accessible name "hidden character U+{hex}" |
 | Sensitive definition | Sensitive permissions control users, roles, role assignment or tenant settings, or let someone read personal data or the audit trail. |
 | Status labels | Active / Pending / Locked / Disabled |
 | Status notes | Locked: This person is locked out and can't sign in until the lock ends. Disabled: This account is disabled. Pending: This person hasn't verified their email address yet. |
@@ -1049,7 +1074,9 @@ All strings live in `copy/console-copy.ts`, `copy/propagation.ts` and `copy/perm
 | Review sections | Adding ({n}) / Removing ({m}) / Who is affected |
 | Members affected | {n} people hold this role. / No one holds this role yet. |
 | Empty result warning | This role will grant no access. |
-| Confirm labels | Save changes / Grant sensitive access / Assign role / Remove role / Remove my role / Create role |
+| Confirm labels | Save changes / Grant sensitive access / Assign role / Assign to unverified account / Remove role / Remove my role / Create role |
+| Typed confirm: admin role to PENDING (RC-69; reachable after F-4) | Assign {role} to an unverified account? / Type {role} to confirm |
+| Disabled: admin role to PENDING (H-2) | Administrator roles can't be given to an unverified account. Ask the person to verify and sign in first. |
 | Propagation: grant | This takes effect within about 15 minutes, or when the person signs in again. |
 | Propagation: revoke | This takes effect on the person's next request, and in every case within about 30 minutes. |
 | Success: save | Role updated: {n} added, {m} removed. |
@@ -1067,7 +1094,7 @@ All strings live in `copy/console-copy.ts`, `copy/propagation.ts` and `copy/perm
 | Revoke title / body | Remove {role} from {person}? / They will lose: {labels}. |
 | Revoke admin warning | This role grants every permission. If no other administrator would remain, Nexus will refuse this change. |
 | Self-revoke | Remove your own {role} role? / You will lose access to this page. / Type {role} to confirm |
-| Assign title / pending warning | Assign a role to {person} / This person hasn't verified their email address. Make sure it's the right person. |
+| Assign title / pending warning (RC-69, `role=alert`) | Assign a role to {person} / This account hasn't been verified. Until it is, it may have been created by someone other than the owner of this address, and they would get this role when it's verified. Prefer assigning after the person has signed in. |
 | Unavailable view | Nexus is temporarily unavailable / We couldn't confirm your sign-in because Nexus isn't responding. Your session may still be valid. / Retry in {n} s / You can retry now. / Go to sign-in |
 | Dashboard card | Access management / Manage roles, permissions and who has access. / Open access management |
 | `{person}` fallback | this person (used when the caller has no directory permission) |
@@ -1094,6 +1121,11 @@ Feature dialogs use `NxDialog.openTemplate<R>(tpl, { ariaLabelledBy, disableClos
 ### 15.3 Rendering user text, lint and logging
 
 - **`UserText`** renders `<bdi>{{ text() }}</bdi>` (inline). Block descriptions use `dir="auto"` with `unicode-bidi: isolate`. Interpolation only. Truncated text keeps the full value in the accessible name and a `title`.
+- **Hidden characters (RC-68, T-S15).** `<bdi>` isolates a string from its neighbours but does not neutralise an override or a zero-width character **inside** it. `UserText` therefore splits the string at every `\p{Cf}` code point (at least U+202A–202E, U+2066–2069, U+200B–200F, U+2060–2064, U+FEFF):
+  - **`email` mode:** each such code point is replaced by a separate `<span>` whose text is the token `⟨U+{hex}⟩` and whose accessible name is "hidden character U+{hex}" (§14.2). The segments and tokens are rendered by interpolation in an `@for`, never as HTML. A pure function `splitHiddenCharacters(text): readonly Segment[]` does the splitting, so the rendering is testable without a DOM.
+  - **`text` mode** (role names, descriptions): `<bdi>` or `dir="auto"` isolation as today, no token substitution.
+  - **Both modes:** when any `\p{Cf}` is present, the "Contains hidden characters" badge (`nx-badge` `warning`, icon plus text, never colour alone) renders next to the value, with the explanation (§14.2) as its description. In a truncated cell the badge sits outside the truncated span so it is never cut off.
+  - Cross-script look-alikes (for example Cyrillic letters) are **not** detected; they remain visible-but-similar (RES-54). The backend fix is F-5 (§23).
 - **Scenario 24:** a unit render test with the description `<img src=x onerror=alert(1)>` plus U+202E asserts the `textContent` equals the input and no `img` element exists. An e2e test does the same against the real backend (§19.3).
 - **ESLint:** `no-restricted-imports` bans `DomSanitizer` (from `@angular/platform-browser`) in `src/app/features/**`, with a `lint-rules.spec.ts` case. The existing sink bans stay (`eslint.config.js:44-103, 125-139`).
 - **`LoggerService`:** `SENSITIVE_KEYS` becomes `/password|token|secret|authorization|cookie|apiKey|session|email|query|search|description/i` (`logger.service.ts:25`), with a spec for each new key. This is defence in depth; the rule stays "never put them in a context" (§2.4).
@@ -1150,6 +1182,10 @@ The existing interceptor log (`api-error.interceptor.ts:42-71`) already records 
 |---|---|---|---|
 | Permission replace precondition required | `nexus.rbac.permission_replace{outcome="precondition_required"}` > 0 over 15 min in staging or production | Ticket | The console never sends a weak or missing tag, so a 428 means an edge stripped or rewrote `If-Match`, or a client defect |
 
+**Alert note (RC-72):** the edge smoke's weak-tag negative control (§19.6 step 5) produces exactly one 428 per run, and it runs **only in CI** (`--negative-control`). CI is not a scraped environment, so the release check never trips this alert. Any 428 in staging or production is therefore real.
+
+**Runbook triage step for `TOKEN_REFRESH_REUSE` (RC-71, T-R19):** before treating the event as token theft, check the same window for gateway 5xx on `POST /api/v1/auth/refresh` and for client `auth_guard_unavailable` reports from the user. A lost refresh response (§4.5) followed by Retry, or two tabs cold-starting at once, produces the same event; the session is already revoked either way (fail-closed). Treat it as theft only when neither explanation fits.
+
 **Traces:** the existing `X-Correlation-Id` is the key; the console shows `traceId` (or the request's `correlationId`) as "Reference", which support can search in backend logs.
 
 **Dashboard sketch** (additions to US-019's "Access management" dashboard): row "Console outcomes": `permission_replace` by outcome (`replaced`, `noop`, `precondition_failed`, `precondition_required`, `denied`, `conflict`), `role_classification_changed` by operation, `permission_denied` by reason, `RBAC_002` conflicts, `RBAC_011` and directory throttles, 503 `AUTH_005` count.
@@ -1165,6 +1201,7 @@ The existing interceptor log (`api-error.interceptor.ts:42-71`) already records 
 | Directory and profile | backend `feature.nexus-us019-user-directory.enabled` | same | Users "isn't enabled"; profile 404 → read-only | Shipped |
 | Console UI | **`AppConfig.accessConsoleEnabled`** (new) | `false` in `environment.ts`, `true` in `environment.development.ts` | Nav item and card hidden; `canMatch` false → Not Found | Q9: only "all three on" is a supported release; production values are not in the repo (P-7) |
 
+- **Release control, not authorization (RC-76, T-E57):** `accessConsoleEnabled` and its `canMatch` guard decide whether the console UI ships, nothing more. `canMatch` runs before the shell's `authGuard`, so it must never read auth state; a contract spec pins that (§19.1). The off switch for the APIs is the three backend flags above, and the server remains the authorization decision (ADR-0028).
 - **Kill switch nature:** it is build-time (environment file). Turning the console off needs a frontend build and deploy, or a revert. A runtime config endpoint is not added: it would be a new mechanism with its own failure modes, for a switch expected to flip once. **[Needs a human decision, §23]**
 - **Rollout:** boolean flags cannot do percentage rollout. The switch flips per environment once the checklist (§20.2) passes.
 - **Cleanup:** the switch is removed in the story that takes the console GA in production, together with us012, us015 and us019 (US-019 §15 G10).
@@ -1178,7 +1215,12 @@ The existing interceptor log (`api-error.interceptor.ts:42-71`) already records 
 | Subject | Cases |
 |---|---|
 | `diffPermissions`, `toggle`, `toggleGroup`, `rebase` | Invariants; group toggle skips disabled rows; rebase drops no-ops and reports upstream changes; empty result; whole-catalogue flag |
-| Affordances | Every rule in §8.3, including union-of-roles non-administrator (hint, not block), PII rule, role-subset spill-over, pigeonhole pre-check; `admin-defining-hint` never reads `memberCount` |
+| Affordances | Every rule in §8.3, including union-of-roles non-administrator (hint, not block), PII rule, role-subset spill-over, pigeonhole pre-check; `admin-defining-hint` never reads `memberCount`. **RC-69:** a PENDING target is never disabled for that reason alone and gets the "Assign to unverified account" confirm; PENDING plus hinted admin-defining is disabled with `pending-admin-role`; PENDING plus a non-hinted role is allowed (server authoritative) |
+| Hidden characters (RC-68) | `splitHiddenCharacters` and `UserText` render tests with an RLO email, a zero-width-joined email and a clean email: token rendered, badge present (absent for the clean one), and `textContent` with the tokens removed equals the input; a description with U+202E gets the badge and no tokens; `TargetIdentity` shows status, Verified and hidden-character badges in the Assign and standard Revoke dialogs |
+| Assign dialog, PENDING (RC-69) | Warning has `role=alert` and the risk copy; confirm label and `danger` variant for PENDING; `confirmTyped` with the role name when an admin-hinted role is selected for a PENDING target with the H-2 block switched off (pins the post-F-4 path) |
+| `GlobalErrorHandler` (RC-73) | An `AppError` with `message`, `details` and `requiredPermission` produces a log line containing none of them, only `code`, `correlationId`, `traceId` as context keys; each console store's load and action errors never reach `ErrorHandler` |
+| Draft hygiene (RC-74) | Session established for a different user id removes that user's `nexus.session.access-draft.v1.*` keys (in `AuthService`, not `clearSession`); `clearSessionScopedStorage()` runs when the logout POST fails; a future `savedAt` is rejected; restore and rebase drop entries whose row is disabled and list them in the banner, never showing a disabled row as staged |
+| Unavailable view cool-down (RC-75) | Countdown `min(retryAfterSeconds ?? 10, 60)` plus 0–5 s jitter (seeded random in the spec); with no `UnavailableState`, a 10 s countdown from render |
 | `RbacErrorMessages` / `resolveConsoleError` | Exhaustive over every code and reason; unknown code → generic + reference; no copy contains `500`; `AppError.message` never used |
 | Propagation | Minutes derive from the two constants; replace with adds and removes yields both lines |
 | `classifyEtag`, `RbacApi` | Strong, weak, missing; `If-Match` echoed verbatim; retry-once (one retry, second `RBAC_012` surfaces, 403/412/429/503 never retried); every request carries `SKIP_ACCESS_DENIED_REDIRECT` |
@@ -1186,10 +1228,11 @@ The existing interceptor log (`api-error.interceptor.ts:42-71`) already records 
 | `AuthorizationProfileStore` | Load once per entry; coalescing; reload triggers; user change reset; failure → read-only; never calls `AuthService.refresh` (spy) |
 | Stores and pages | **Request-budget tests** per row of §6.5; every state of §12.0 per page; XSS and U+202E render test; query-param round trip (FR-G1) with the lookup text never in the URL |
 | Guards | `anyPermissionGuard` allow/deny/misconfigured (fail-closed); its contract spec; `accessConsoleEnabledGuard`; `authGuard` → `/unavailable` for `NETWORK_ERROR`, `HTTP_ERROR`, `AUTH_005`, and login for `AUTH_004`, `RATE_001`, `INTERNAL_ERROR`; `unsavedChangesGuard` |
-| Routing (real Router, `cold-start-routing.spec.ts`) | Cold-start network error lands on `/unavailable?returnUrl=…`; **exactly one** `POST /refresh` per attempt; Retry produces exactly one more and never two concurrent; the view makes no HTTP request; the `UnavailablePage` injects no `HttpClient` |
+| Routing (real Router, `cold-start-routing.spec.ts`) | Cold-start network error lands on `/unavailable?returnUrl=…`; **exactly one** `POST /refresh` per attempt; Retry produces exactly one more and never two concurrent; the view makes no HTTP request; the `UnavailablePage` injects no `HttpClient`. **RC-71:** first refresh fails with `NETWORK_ERROR`, Retry's refresh returns 401 `AUTH_004` (the reuse case): lands on `/auth/login` with the validated `returnUrl`, not `/unavailable`, with no further refresh and no loop |
 | Route contracts (`app.routes.spec.ts`) | Public children pinned to the four paths; console titles present; `roles/new` before `roles/:roleId`; no `canActivateChild` |
 | Nav | `nav.config.spec` any-of pin; `visibleNavItems` cases; `shell.spec` any-of persona cases; kill switch hides the item |
-| `safeReturnUrl` | Adversarial table plus the `/unavailable` cases |
+| `canMatch` contract (RC-76) | Every `canMatch` guard on a shell descendant is in the allow-list of config-only guards (initially `accessConsoleEnabledGuard`); its spec asserts it injects neither `AuthStore`, `AuthService` nor `HttpClient` |
+| `safeReturnUrl` (RC-70) | Adversarial table; `/unavailable`, `/unavailable?returnUrl=%2Fadmin`, `/%75navailable`, `/%61uth/login`, `/unavailable;x=1` each return `/dashboard`; an allowed path is returned unchanged |
 | Wrappers | `nx-banner`, `nx-textarea` specs and unit axe (`expectNoAxeViolations`) |
 | Lint and logger | `lint-rules.spec.ts` `DomSanitizer` case; redaction spec per new key |
 | nginx static | `node --test` case (added to the existing `tools.selftest.mjs` run in `frontend-ci`): the `location /api/` block of `nginx.conf` contains `gzip off;` |
@@ -1212,6 +1255,7 @@ Both sides in one PR (§7.5): `ApiContractFixturesTest` (backend `@JsonTest`, no
 | Role manager on a role carrying `user:directory:read` | `roleManager` | Removals disabled with the reason; a forced API attempt returns 403 (copy check in unit tests) |
 | Users list, lookup, user page | `roleReaderUserManager` | `test.use({ trace: 'off' })`; lookup through `enterAddress`; rows asserted by test id and count, never by email text |
 | Assign and revoke against target A; C3(b) disabled; PII rule; self-assign block | `roleReaderUserManager`, `userManager` | Roles assigned are per-worker roles, so workers never collide on `RBAC_004` |
+| Hidden-character email (RC-68) | `roleReaderUserManager` | A synthetic `example.test` target containing U+202E is registered through the API in the dev tenant in `beforeAll`; found with `enterAddress`; the row's hidden-character badge, the token span and the dialog identity line are asserted by test id, never by email text; trace off |
 | 409 `RBAC_002` inline | — (not e2e) | Producing it needs a tenant with a single administrator, which means revoking the seeded administrators that other workers sign in as. It is covered by the unit test of the revoke flow (fixture `problem-rbac-002`) and the backend's `LastAdminLockoutIT`. This deviates from impact §7.4, which listed it as an e2e flow |
 | Axe on every page and dialog, light and dark | as above | `expectNoSeriousA11yViolations` with `colorScheme` |
 
@@ -1228,6 +1272,8 @@ Both sides in one PR (§7.5): `ApiContractFixturesTest` (backend `@JsonTest`, no
 
 Seeded through the existing `rbacSeeder.ensureRole` and `persona(...)` helpers (`DevDataInitializer.java:79-105`), with `assigned_by` = the seeded administrator (RC-63(g)). Profile guard unchanged (`dev & !break-glass & !prod`). `DevDataInitializerTest`, `DevPersonaSeedIT` (Docker; asserts each persona's permission set and that the targets are ACTIVE) and `personas.ts` are updated together. The targets are not in `SIGN_IN_PERSONAS`, but their addresses are in `PERSONAS`, so `scan-pii.mjs` scans for them.
 
+**Persona exposure (RC-77, T-E58).** The new personas carry directory access with a public dev password. Checklist line (also §20.2 item 11): an environment holding real user data must not run the `dev` profile; there, the `DEV_SEED_ACTIVE` WARN is an alertable signal. `DevPersonaSeedIT` asserts the new personas are absent under `dev,prod`, extending `DevSeedProfileGuardTest`'s `dev,prod` context to the new rows.
+
 ### 19.5 Axe in both themes
 
 Unit axe for the new wrappers (jsdom, contrast disabled). Playwright axe on every console page and dialog with `colorScheme: 'light'` and `'dark'`; zero critical or serious violations (FR-F1). The manual WCAG 2.2 checklist is in §13.
@@ -1235,12 +1281,16 @@ Unit axe for the new wrappers (jsdom, contrast disabled). Playwright axe on ever
 ### 19.6 Edge ETag smoke (DQ-5 verification)
 
 - **Job** `edge-etag-smoke` in `e2e-full-stack.yml`, separate from the Playwright job (so it needs no port juggling with the dev server on 2000). It starts `backend` **and `frontend` (nginx)** through compose and waits for readiness through `http://localhost:2000/api/...`.
-- **Script** `e2e/tools/etag-edge-smoke.mjs --base <url>` (the base URL is a parameter, so Ops can run it against staging and production edges). It reads persona credentials the way `scan-pii.mjs` reads `PERSONAS` and prints only status codes and tag classes, never an address.
-  1. Log in as the e2e administrator through the base URL (one request; well within nginx's 10 r/min).
+- **Script** `e2e/tools/etag-edge-smoke.mjs --base <url> [--negative-control]` (the base URL is a parameter, so Ops can run it against staging and production edges). It prints only status codes and tag classes, never an address or a credential.
+- **Identity (RC-72, T-R20):**
+  - **In CI:** the e2e administrator persona, read the way `scan-pii.mjs` reads `PERSONAS` (dev profile, CI-only data).
+  - **Outside CI** (staging, production): a dedicated **non-administrator smoke identity** holding only `role:read` and `role:write`. That is enough because `RBAC_003` is decided before every 403 path that matters here (B-3), so step 4 still answers 409 without a write. Personas do not exist under `!prod`, and an administrator credential must never be used. Credentials come from environment variables only (`NEXUS_SMOKE_USER`, `NEXUS_SMOKE_PASSWORD`), never argv; the script never prints them and logs out at the end. Provisioning the identity per environment is an Ops item (§23, H-4).
+  1. Log in as that identity through the base URL (one request; well within nginx's 10 r/min).
   2. `GET /api/v1/roles?size=100` and pick the system role whose `permissionCount` equals the catalogue total.
   3. `GET /api/v1/roles/{id}/permissions` with `Accept-Encoding: gzip`. Assert `ETag` is present and does **not** start with `W/`. Assert the decoded body is ≥ 1024 bytes (`gzip_min_length`); otherwise **fail** with "smoke not meaningful".
   4. `PUT` the same ids with that `If-Match`: expect **409 `RBAC_003`**. 428 is checked before the service (B-2) and `RBAC_003` before any write (B-3), so this proves the strong tag survived the edge **without mutating anything**.
-  5. Negative control: `PUT` with `If-Match: W/<tag>`: expect **428**. This proves the check can fail.
+  5. Negative control, **only with `--negative-control`** (RC-72): `PUT` with `If-Match: W/<tag>`: expect **428**. This proves the check can fail. The CI job passes the flag; Ops runs against staging or production omit it, so the release check never increments `precondition_required` there (§17).
+  6. `POST /api/v1/auth/logout`.
 - **Why it does not depend on CI lacking nginx:** it runs nginx deliberately, and the same script verifies any real edge.
 
 ---
@@ -1262,14 +1312,16 @@ Unit axe for the new wrappers (jsdom, contrast disabled). Playwright axe on ever
 
 1. **P-7:** us012, us015 and us019 confirmed on in the target environment, with the date recorded (Q9).
 2. **P-10:** `nexus.rbac.throttle.require-shared-store` set, so `RBAC_011` is not per instance.
-3. **Edge:** Ops confirms no CDN, load balancer or proxy in front of `/api/` compresses or rewrites responses or strips `If-Match`, **and** `etag-edge-smoke.mjs --base <env>` is green against that environment's real edge (ADR-0029).
+3. **Edge:** Ops confirms no CDN, load balancer or proxy in front of `/api/` compresses or rewrites responses or strips `If-Match`, **and** `etag-edge-smoke.mjs --base <env>` (without `--negative-control`) is green against that environment's real edge, run as the environment's non-administrator smoke identity with credentials from environment variables (§19.6, RC-72; ADR-0029).
 4. **DPO acknowledgement** (Q22) before us019 is on in production.
 5. **UX/PM approval** of §12 to §14, or an explicit acceptance of the provisional copy.
 6. **P-9:** the full-stack e2e job (including `edge-etag-smoke`) is a required check.
 7. `npm audit --omit=dev` has no high or critical finding (US-019 RC-62 standing rule).
 8. The Q3 revoke claim is confirmed by the threat model; the propagation constants match the environment's TTLs.
 9. `E2E_MIN_TESTS` matches the new spec count.
-10. Follow-ups F-1 to F-3 are recorded in `docs/features/US-020/14-pending-items.md`.
+10. Follow-ups F-1 to F-5 are recorded in `docs/features/US-020/14-pending-items.md` (F-4 and F-5 from the threat model, H-3).
+11. **RC-77:** the target environment does not run the `dev` profile if it holds real user data, and `DEV_SEED_ACTIVE` is alertable there (§19.4).
+12. **H-2:** PM and the Platform Security Owner have confirmed the PENDING decision (§23), or the admin-role block for PENDING targets stays in place.
 
 ---
 
@@ -1281,9 +1333,9 @@ Unit axe for the new wrappers (jsdom, contrast disabled). Playwright axe on ever
 | SD-2 | **`/unavailable` is a new unguarded public route**; the public-children pin goes from 3 to 4 (RC-63(i)) | §4.5, §0.2 | No HTTP on render; no `traceId` in the URL; content is static; it cannot be used to trigger an action |
 | SD-3 | `authGuard` sends `NETWORK_ERROR`, `HTTP_ERROR` and `AUTH_005` to the view instead of cancelling; backend problem documents still go to login | §4.5 | Fail-closed in every branch (no branch grants access); an intermediary that answers 4xx HTML now shows "unavailable" instead of login |
 | SD-4 | Retry from the view is user-initiated, after a cool-down, and re-enters through the shell's `canActivate` only; no `canActivateChild`; the console never calls `AuthService.refresh()` | §4.5, §6.3 | RC-65: exactly one refresh per attempt; no concurrent refresh with `refreshInFlight` |
-| SD-5 | `returnUrl` accepted only through `safeReturnUrl`, which now also rejects `/unavailable` | §4.7 | Open redirect (US-019 SD-21, SD-33); the adversarial table |
+| SD-5 | `returnUrl` accepted only through `safeReturnUrl`, which now rejects a first segment of `unavailable` or `auth` as the router parses it (RC-70) | §4.7 | Open redirect (US-019 SD-21, SD-33); the adversarial table |
 | SD-6 | **Stored XSS:** user text rendered only by interpolation; ESLint bans sinks and now `DomSanitizer` in features; copy never renders `AppError.message`; no names or emails in titles or toasts | §9.2, §15.3 | The scenario-24 unit and e2e tests; lint config |
-| SD-7 | **Bidi spoofing:** user text isolated with `<bdi>` and `dir="auto"` | §15.3 | Descriptions with U+202E cannot reorder surrounding UI text |
+| SD-7 | **Bidi spoofing:** user text isolated with `<bdi>` and `dir="auto"`; inside emails, `\p{Cf}` is shown as visible tokens with a "Contains hidden characters" badge, also in the Assign and Revoke dialogs (RC-68) | §15.3, §12.9, §12.10 | Descriptions with U+202E cannot reorder surrounding UI text; an email with an override or zero-width character cannot render the same as a clean one. Cross-script look-alikes remain (RES-54) |
 | SD-8 | **ETag:** strong tags only, echoed verbatim; weak or missing disables saving before work is staged; 428 is a defect with an alert; `gzip off` for `/api/`; edge smoke | §7.2, §15.4, §19.6 | A weakened or stripped tag cannot silently become a blind overwrite (the server refuses it anyway, B-2) |
 | SD-9 | **412:** never resubmitted automatically; re-read and rebase; a new explicit Save | §7.2, §8.2 | No lost-update path through the client |
 | SD-10 | **Retry-once:** only on `RBAC_012`, only assign and PUT, one retry with the same body and `If-Match`; never on 403, 412, 429, 503; the PUT case is unreachable today | §7.3, §0.4 | RES-53 acceptance; a retry that becomes 403 is shown, not repeated |
@@ -1298,7 +1350,7 @@ Unit axe for the new wrappers (jsdom, contrast disabled). Playwright axe on ever
 | SD-19 | **Grant-rule mirroring:** hold-it rule and administrator-only `user:directory:read` mirrored exactly; the administrator-only rule mirrors server config `pii-grant-requires-administrator` (default true) | §8.3 | If Ops turns the server rule off, the UI over-blocks (safe direction) |
 | SD-20 | **Enumeration:** missing and cross-tenant ids render the same "not found" | §14.1 | Same copy for both |
 | SD-21 | **Kill switch** removes the route (`canMatch`), not only the nav item | §18 | No live deep link when off |
-| SD-22 | **Propagation copy** claims "next request" for revokes (AS7, inferred) | §9.3 | Q3 requires the threat model to confirm or correct it |
+| SD-22 | **Propagation copy** claims "next request" for revokes (AS7, inferred) | §9.3 | Confirmed by the threat model §4.3, with the per-environment TTL condition |
 | SD-23 | Personas and targets exist only under `dev & !break-glass & !prod`; targets never sign in | §19.4 | Profile guard tests unchanged |
 
 ---
@@ -1327,15 +1379,20 @@ Unit axe for the new wrappers (jsdom, contrast disabled). Playwright axe on ever
 |---|---|---|
 | UX/PM approval of the provisional D2 (§12), a11y annotations (§13) and D3 deck (§14), including permission labels | UX, PM | Build on the provisional text; approval is a release item |
 | **Production edge:** is there a CDN, load balancer or other proxy in front of `/api/`? Does it compress, transform or strip `ETag`/`If-Match`? Is uncompressed `/api/` traffic acceptable? | Ops | Unknown to the repo; enabling blocked until confirmed and the smoke passes against that edge (§20.2 item 3) |
-| Threat-model sign-off on the public-route pin widening, the guard classification change and the `/unavailable` view (SD-2 to SD-5) | Platform Security Owner (Gate 2) | As designed |
-| Q3 revoke propagation claim ("next request") | Security (Gate 2 threat model) | Provisional copy as §14 |
-| RES-53 retry-once also on the PUT, where it is unreachable today | Security | Kept, defensive |
-| Kill switch is build-time; is a redeploy acceptable as the off path? | Tech lead, Ops | Yes; runtime config not added |
+| **H-1** Formal Gate 2 acceptance of the public-route pin widening, the guard classification change and the `/unavailable` view (SD-2 to SD-5). The threat model grants security sign-off conditional on RC-70, RC-71 and the §19.1 specs (threat model §4.2) | Platform Security Owner (Gate 2) | As designed; **open** |
+| **H-2** PENDING targets (Q21, T-E55, RES-56) | PM (Q21 owner) + Platform Security Owner | **Decided** by the Principal Architect under delegation from the story owner, **pending PM and Platform Security Owner confirmation**: keep Q21 (assign to PENDING with the RC-69 warning and confirm) **and** refuse roles hinted admin-defining to PENDING targets in the UI until F-4 lands (§8.3, §12.9). The block is hint-based; the server stays authoritative and is not changed |
+| **H-3** Backend follow-ups F-4 and F-5 (below) | Identity owner | Record in `14-pending-items.md`; **open** |
+| **H-4** Production edge topology (row above) **and** a non-administrator smoke identity (`role:read`, `role:write` only) provisioned for staging and production (RC-72) | Ops | **Open**; release item §20.2 item 3 |
+| **H-5** Kill switch is build-time; is a redeploy acceptable as the off path? | Tech lead, Ops | Yes; runtime config not added. Acceptable from a security standpoint (threat model, RES-58); **open** for Tech Lead and Ops |
+| ~~Q3 revoke propagation claim ("next request")~~ | Security (Gate 2 threat model) | **Closed by the threat model (§4.3): confirmed, no copy change.** Condition: `NEXUS_RBAC_PERMISSION_CACHE_TTL_SECONDS` is environment-overridable, so §20.2 item 8 compares the propagation constants with each environment's TTLs. Optional wording "usually on the person's next request" not adopted |
+| ~~RES-53 retry-once also on the PUT, where it is unreachable today~~ | Security | **Closed by the threat model (§4.4): accepted, including the defensive PUT case**, on the stated basis that a 409 applied nothing and the retry carries the same strong `If-Match`, so a changed set yields 412 and the explicit rebase. Kept as designed (§7.3) |
 | P-7 flag values per environment; P-9 required check; P-10 shared throttle store; P-11 first green run | Ops | Unknown in repo; release items |
-| DPO acknowledgement for showing emails (Q22) | Legal/DPO | Blocks us019 in production |
+| **H-6** DPO acknowledgement for showing emails (Q22) | Legal/DPO | Blocks us019 in production; **open** |
 | Support contact on the unavailable view (Q23) | PM | `null`, no link |
 | Backend doc fix: the PUT's OpenAPI lists `RBAC_012`, which the code cannot return (§0.4 #2) | Backend owner | Report only; no change in this story |
 | Follow-ups F-1 (admin-defining signal or distinct-admin count), F-2 (role fields on assignments), F-3 (audited export) | Backend owner, PM | Recorded in `14-pending-items.md` |
+| **F-4** (RC-69, T-E55): on verification of an account that has never signed in, require the verifier to set a new password, or invalidate the registrant's password (pre-account-hijack defence). Lowers RES-56 from Medium to Low; its landing removes the H-2 UI block | Identity owner | Not in this story; recorded in `14-pending-items.md` (H-3) |
+| **F-5** (RC-68, T-S15): reject `\p{Cf}` in emails at registration and invitation, and report existing rows that contain them. RES-54 (cross-script look-alikes) is revisited with it | Identity owner | Not in this story; recorded in `14-pending-items.md` (H-3) |
 
 ---
 
@@ -1343,7 +1400,7 @@ Unit axe for the new wrappers (jsdom, contrast disabled). Playwright axe on ever
 
 | Deviation or new pattern | Justification | ADR |
 |---|---|---|
-| Live profile for affordances, JWT for nav and guards, server final; the console never starts a refresh | Grants do not bump the epoch, so the JWT lags; RC-65 forbids a second refresh path | ADR-0028 (Proposed) |
+| Live profile for affordances, JWT for nav and guards, server final; the console never starts a refresh; a lost refresh response followed by Retry is an accepted fail-closed reuse (RC-71); the kill switch is a release control (RC-76) | Grants do not bump the epoch, so the JWT lags; RC-65 forbids a second refresh path | ADR-0028 (Proposed) |
 | New `anyPermissionGuard` **fails closed**, unlike `permissionGuard` (fail-open pinned by RES-39) | A new guard has no legacy callers; misconfiguration should deny | ADR-0028 |
 | `authGuard` navigates on unavailability (supersedes US-019 §12.10 for the guard; amends its Amendment 8) | A blank shell is the worst failure for the first gated route (Q4) | ADR-0028 |
 | The edge must not weaken or strip `ETag`/`If-Match`; `gzip off` for `/api/` | ADR-0027 is accepted and cannot be edited; this is a deployment constraint on it | ADR-0029 (Proposed) |
