@@ -1,4 +1,4 @@
-import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClient, withInterceptors } from '@angular/common/http';
 import {
   HttpTestingController,
   TestRequest,
@@ -13,6 +13,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { routes } from '../../app.routes';
 import { APP_CONFIG } from '../config/app-config';
 import { permissionGuard } from '../guards/permission.guard';
+import { apiErrorInterceptor } from '../http/api-error.interceptor';
+import { authInterceptor } from '../http/auth.interceptor';
+import { correlationIdInterceptor } from '../http/correlation-id.interceptor';
 
 const API = 'http://localhost:1000/api';
 const REFRESH_DELAY_MS = 500;
@@ -53,21 +56,58 @@ async function coldNavigate(
   url: string,
   http: HttpTestingController,
   answer: (refresh: TestRequest) => void,
-): Promise<{ refreshCount: number }> {
+): Promise<{ refreshCount: number; harness: RouterTestingHarness }> {
   const harness = await RouterTestingHarness.create();
   const navigation = harness.navigateByUrl(url);
+  const refreshCount = await answerRefresh(http, answer);
+  await navigation;
+  return { refreshCount, harness };
+}
 
+/**
+ * Waits for the refresh(es) in flight, answers each after {@link REFRESH_DELAY_MS}, and returns
+ * how many there were. Every pending refresh is counted, so a second concurrent one would show.
+ */
+async function answerRefresh(
+  http: HttpTestingController,
+  answer: (refresh: TestRequest) => void,
+): Promise<number> {
   let pending: TestRequest[] = [];
   for (let i = 0; i < 200 && pending.length === 0; i++) {
     await vi.advanceTimersByTimeAsync(10);
     pending = refreshRequests(http);
   }
-  const refreshCount = pending.length;
   await vi.advanceTimersByTimeAsync(REFRESH_DELAY_MS);
+  pending.push(...refreshRequests(http));
   for (const refresh of pending) answer(refresh);
   await vi.advanceTimersByTimeAsync(0);
-  await navigation;
-  return { refreshCount };
+  return pending.length;
+}
+
+/** Fails the refresh at the transport level (connection refused or reset): `NETWORK_ERROR`. */
+function dropConnection(refresh: TestRequest): void {
+  refresh.error(new ProgressEvent('error'), { status: 0, statusText: '' });
+}
+
+/** A backend problem document: the refresh cookie was rejected (a reuse, an expiry, a revocation). */
+function rejectRefresh(refresh: TestRequest): void {
+  refresh.flush(
+    { code: 'AUTH_004', detail: 'Refresh token is invalid.', traceId: 'trace-auth-004' },
+    { status: 401, statusText: 'Unauthorized' },
+  );
+}
+
+function retryButton(harness: RouterTestingHarness): HTMLButtonElement {
+  const root = harness.routeNativeElement as HTMLElement;
+  return root.querySelector('[data-testid="unavailable-retry"]') as HTMLButtonElement;
+}
+
+/** Waits out the longest cool-down (10 s + 5 s jitter with no Retry-After), then presses Retry. */
+async function pressRetryAfterCoolDown(harness: RouterTestingHarness, presses = 1): Promise<void> {
+  await vi.advanceTimersByTimeAsync(15_000);
+  harness.detectChanges();
+  expect(retryButton(harness).getAttribute('aria-disabled')).toBeNull();
+  for (let i = 0; i < presses; i++) retryButton(harness).click();
 }
 
 function flushSession(
@@ -110,7 +150,11 @@ describe('cold start routing (real router, real shell and guards)', () => {
           },
         },
         provideAnimationsAsync(),
-        provideHttpClient(),
+        // The production interceptor chain (app.config.ts), so a refresh failure reaches the guard
+        // as the same AppError it would in the app.
+        provideHttpClient(
+          withInterceptors([correlationIdInterceptor, apiErrorInterceptor, authInterceptor]),
+        ),
         provideHttpClientTesting(),
         provideRouter([...buildRoutes()]),
       ],
@@ -147,11 +191,10 @@ describe('cold start routing (real router, real shell and guards)', () => {
     expect(url()).toBe('/access-denied');
   });
 
-  it('sends a user whose refresh fails to the login page', async () => {
-    await coldNavigate('/role-test', http, (refresh) =>
-      refresh.flush({ message: 'expired' }, { status: 401, statusText: 'Unauthorized' }),
-    );
+  it('sends a user whose refresh is rejected by the backend to the login page', async () => {
+    const { refreshCount } = await coldNavigate('/role-test', http, rejectRefresh);
 
+    expect(refreshCount).toBe(1);
     expect(url()).toBe('/auth/login?returnUrl=%2Frole-test');
   });
 
@@ -162,5 +205,76 @@ describe('cold start routing (real router, real shell and guards)', () => {
     expect(refreshRequests(http)).toEqual([]);
     http.expectOne(`${API}/v1/users/me`).flush({});
     http.verify();
+  });
+
+  describe('nobody authoritative answers (US-020 T-002, design §4.5)', () => {
+    it('lands a dropped connection on /unavailable with the returnUrl, after exactly one refresh', async () => {
+      const { refreshCount, harness } = await coldNavigate('/role-test', http, dropConnection);
+
+      expect(refreshCount).toBe(1);
+      expect(url()).toBe('/unavailable?returnUrl=%2Frole-test');
+      expect(retryButton(harness)).not.toBeNull();
+    });
+
+    it('lands a gateway answer that is not a problem document (HTTP_ERROR) on /unavailable', async () => {
+      await coldNavigate('/role-test', http, (refresh) =>
+        refresh.flush('<html>502 Bad Gateway</html>', { status: 502, statusText: 'Bad Gateway' }),
+      );
+
+      expect(url()).toBe('/unavailable?returnUrl=%2Frole-test');
+    });
+
+    it('makes zero requests while the view is shown, through the whole cool-down', async () => {
+      await coldNavigate('/role-test', http, dropConnection);
+
+      await vi.advanceTimersByTimeAsync(120_000);
+
+      http.verify();
+      expect(url()).toBe('/unavailable?returnUrl=%2Frole-test');
+    });
+
+    it('re-enters through the shell with exactly one more refresh, never two concurrent', async () => {
+      const { harness } = await coldNavigate('/role-test', http, dropConnection);
+
+      await pressRetryAfterCoolDown(harness, 3);
+      const refreshCount = await answerRefresh(http, (refresh) =>
+        flushSession(http, refresh, ['role:read']),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(refreshCount).toBe(1);
+      expect(url()).toBe('/role-test');
+      expect(refreshRequests(http)).toEqual([]);
+    });
+
+    it('restarts the cool-down when the retried refresh fails the same way again', async () => {
+      const { harness } = await coldNavigate('/role-test', http, dropConnection);
+
+      await pressRetryAfterCoolDown(harness);
+      const refreshCount = await answerRefresh(http, dropConnection);
+      harness.detectChanges();
+
+      expect(refreshCount).toBe(1);
+      expect(url()).toBe('/unavailable?returnUrl=%2Frole-test');
+      expect(retryButton(harness).getAttribute('aria-disabled')).toBe('true');
+      expect(retryButton(harness).getAttribute('aria-busy')).toBeNull();
+      await vi.advanceTimersByTimeAsync(60_000);
+      http.verify();
+    });
+
+    it('RC-71: a lost refresh response then Retry (a reuse, 401 AUTH_004) lands on login, no loop', async () => {
+      const { harness } = await coldNavigate('/role-test', http, dropConnection);
+      expect(url()).toBe('/unavailable?returnUrl=%2Frole-test');
+
+      await pressRetryAfterCoolDown(harness);
+      const refreshCount = await answerRefresh(http, rejectRefresh);
+
+      expect(refreshCount).toBe(1);
+      expect(url()).toBe('/auth/login?returnUrl=%2Frole-test');
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(refreshRequests(http)).toEqual([]);
+      expect(url()).toBe('/auth/login?returnUrl=%2Frole-test');
+    });
   });
 });

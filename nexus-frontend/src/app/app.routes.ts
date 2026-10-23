@@ -12,7 +12,7 @@ import { ACCESS_CONSOLE_ANY_OF } from './core/layout/nav.config';
  *
  * Route architecture:
  * - Each feature (auth, dashboard) is loaded only when its route is activated
- * - Public pages (auth, access-denied, design-system) render inside PublicLayout
+ * - Public pages (auth, access-denied, design-system, unavailable) render inside PublicLayout
  * - Signed-in pages render inside the lazy Shell, which carries authGuard
  * - Child routes within features are defined in feature-specific route modules
  *   (e.g., features/auth/auth.routes.ts)
@@ -98,6 +98,26 @@ export const routes: Routes = [
           import('./shared/pages/access-denied/access-denied.component').then(
             (m) => m.AccessDeniedComponent,
           ),
+      },
+
+      /**
+       * "Nexus is temporarily unavailable" (US-020 design §4.5, Q4 amended).
+       *
+       * Destination of {@link authGuard} when the cold-start refresh gets no authoritative answer
+       * (`NETWORK_ERROR`, `HTTP_ERROR`, `AUTH_005`). Its Retry re-enters through the shell.
+       *
+       * Constraints (public-route pin, TM §4.2, H-1):
+       * - MUST stay here, outside the shell: as a shell child it would re-run the failing
+       *   `authGuard`, and a refresh of its own would be a refresh-token reuse (RC-65).
+       * - No guard, and `data` is `selfManagedFocus` only. The page makes no HTTP call.
+       * - `safeReturnUrl` rejects `/unavailable` as a return URL, so it cannot loop on itself.
+       */
+      {
+        path: 'unavailable',
+        title: 'Service unavailable',
+        data: { selfManagedFocus: true },
+        loadComponent: () =>
+          import('./shared/pages/unavailable/unavailable.page').then((m) => m.UnavailablePage),
       },
     ],
   },

@@ -107,7 +107,7 @@ describe('route table permissionGuard contract', () => {
 });
 
 describe('route tree shape (US-019 A2)', () => {
-  const PUBLIC_PATHS = ['auth', 'access-denied', 'design-system'];
+  const PUBLIC_PATHS = ['auth', 'access-denied', 'design-system', 'unavailable'];
 
   it('declares the public layout before the guarded shell', () => {
     const publicIndex = routes.findIndex((r) => r.children?.some((c) => c.path === 'auth'));
@@ -117,16 +117,39 @@ describe('route tree shape (US-019 A2)', () => {
     expect(routes[0]).toMatchObject({ path: '', redirectTo: 'dashboard' });
   });
 
-  it('keeps auth, access-denied and design-system under an unguarded, data-free public layout', () => {
+  it('keeps the public pages under an unguarded, data-free public layout', () => {
     const layout = routes.find((r) => r.children?.some((c) => c.path === 'auth')) as Route;
     expect(layout.canActivate).toBeUndefined();
     expect(layout.data).toBeUndefined();
     expect(layout.children?.map((c) => c.path)).toEqual(expect.arrayContaining(PUBLIC_PATHS));
   });
 
-  it('pins the public layout children to exactly auth, access-denied and design-system', () => {
+  it('pins the public layout children to exactly auth, access-denied, design-system and unavailable (US-020 TM §4.2)', () => {
+    // An exact set, deliberately widened from three to four paths for the unavailable view
+    // (RC-63(i), H-1). A fifth public path must fail this spec and go through security review.
     const layout = routes.find((r) => r.children?.some((c) => c.path === 'auth')) as Route;
-    expect((layout.children ?? []).map((c) => c.path).sort()).toEqual([...PUBLIC_PATHS].sort());
+    const paths = (layout.children ?? []).map((c) => c.path);
+    expect(paths).toHaveLength(4);
+    expect([...paths].sort()).toEqual(
+      ['access-denied', 'auth', 'design-system', 'unavailable'].sort(),
+    );
+  });
+
+  it('declares unavailable with no guard of any kind and only selfManagedFocus as data', () => {
+    const layout = routes.find((r) => r.children?.some((c) => c.path === 'auth')) as Route;
+    const unavailable = layout.children?.find((c) => c.path === 'unavailable') as Route;
+    expect(unavailable).toBeDefined();
+    expect(unavailable.canActivate).toBeUndefined();
+    expect(unavailable.canActivateChild).toBeUndefined();
+    expect(unavailable.canMatch).toBeUndefined();
+    expect(unavailable.canDeactivate).toBeUndefined();
+    expect(unavailable.resolve).toBeUndefined();
+    expect(unavailable.providers).toBeUndefined();
+    expect(unavailable.children).toBeUndefined();
+    expect(unavailable.loadChildren).toBeUndefined();
+    expect(unavailable.data).toEqual({ selfManagedFocus: true });
+    expect(unavailable.title).toBe('Service unavailable');
+    expect(typeof unavailable.loadComponent).toBe('function');
   });
 
   it('declares canActivateChild with authGuard on no route (RC-65: refresh-reuse logout)', async () => {
@@ -141,6 +164,19 @@ describe('route tree shape (US-019 A2)', () => {
       return found;
     }
     expect(await offenders(routes)).toEqual([]);
+  });
+
+  it('declares canActivateChild on no route at all, lazy children included (US-020 RC-65)', async () => {
+    async function withChildGuards(table: Routes, prefix = ''): Promise<string[]> {
+      const found: string[] = [];
+      for (const route of table) {
+        const path = `${prefix}/${route.path ?? ''}`.replace(/\/+/g, '/');
+        if (route.canActivateChild !== undefined) found.push(path);
+        found.push(...(await withChildGuards(await childrenOf(route), path)));
+      }
+      return found;
+    }
+    expect(await withChildGuards(routes)).toEqual([]);
   });
 
   it('does not place any public path inside the shell', () => {
@@ -189,6 +225,12 @@ describe('route titles (US-019 A8)', () => {
     const layout = routes.find((r) => r.children?.some((c) => c.path === 'auth')) as Route;
     const denied = layout.children?.find((c) => c.path === 'access-denied');
     expect(denied?.data?.['selfManagedFocus']).toBe(true);
+  });
+
+  it('marks unavailable as self-managing its focus', () => {
+    const layout = routes.find((r) => r.children?.some((c) => c.path === 'auth')) as Route;
+    const unavailable = layout.children?.find((c) => c.path === 'unavailable');
+    expect(unavailable?.data?.['selfManagedFocus']).toBe(true);
   });
 });
 

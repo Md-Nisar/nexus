@@ -1,0 +1,79 @@
+:host {
+  display: block;
+}
+
+.unavailable-notice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nx-space-4);
+}
+
+.unavailable-notice__reference {
+  margin: 0;
+  color: var(--nx-color-on-surface-muted);
+  font-size: var(--nx-text-sm);
+}
+
+.unavailable-notice__id {
+  font-family: var(--nx-font-family-mono);
+  color: var(--nx-color-on-surface);
+  overflow-wrap: anywhere;
+}
+
+.unavailable-notice__retry-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nx-space-3);
+}
+
+/* Native button: NxButton offers only native `disabled`, which would drop Retry from the tab
+   order; the cool-down needs a focusable `aria-disabled` control (design §12.11, §13). */
+.unavailable-notice__retry {
+  min-height: var(--nx-space-10);
+  min-width: var(--nx-space-24);
+  padding: 0 var(--nx-space-4);
+  border: none;
+  border-radius: var(--nx-radius-md);
+  background-color: var(--nx-color-primary);
+  color: var(--nx-color-on-primary);
+  font-family: var(--nx-font-family);
+  font-size: var(--nx-text-base);
+  font-weight: var(--nx-weight-medium);
+  cursor: pointer;
+  transition: background-color var(--nx-duration-base) var(--nx-easing-standard);
+
+  &:hover:not([aria-disabled='true']) {
+    background-color: var(--nx-color-primary-hover);
+  }
+
+  /* Full-contrast text on a neutral surface instead of dimming: the label stays readable. */
+  &[aria-disabled='true'] {
+    background-color: var(--nx-color-surface-3);
+    color: var(--nx-color-on-surface);
+    cursor: not-allowed;
+  }
+
+  &[aria-busy='true'] {
+    cursor: progress;
+  }
+}
+
+.unavailable-notice__countdown {
+  margin: 0;
+  color: var(--nx-color-on-surface-muted);
+  font-size: var(--nx-text-sm);
+}
+
+/* Narrow screens (320 px reflow, design §12.11): a single column with a full-width Retry. */
+@media (max-width: 30em) {
+  .unavailable-notice__retry-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .unavailable-notice__retry {
+    width: 100%;
+    min-height: var(--nx-space-12);
+  }
+}
