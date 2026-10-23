@@ -1,9 +1,10 @@
-import { Component, computed, inject } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { ThemeService } from '../../core/theme.service';
 import {
   NxAnnouncer,
   NxBadge,
+  NxBanner,
   NxButton,
   NxBreadcrumb,
   NxCard,
@@ -37,6 +38,7 @@ import {
   imports: [
     ReactiveFormsModule,
     NxBadge,
+    NxBanner,
     NxButton,
     NxBreadcrumb,
     NxCard,
@@ -76,6 +78,9 @@ export class DesignSystemPreviewComponent {
     { id: 'delete', label: 'Delete', danger: true },
   ];
   lastMenuSelection = '';
+
+  /** The dismissible banner preview; the host owns its visibility. */
+  readonly bannerDismissed = signal(false);
 
   // Interactive form controls
   readonly previewTabs: readonly NavTab[] = [

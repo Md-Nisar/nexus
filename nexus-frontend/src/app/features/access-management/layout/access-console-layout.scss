@@ -1,0 +1,48 @@
+:host {
+  display: block;
+}
+
+.console {
+  padding: var(--nx-space-4);
+}
+
+/* 320 px (design §12.1, WCAG 1.4.10): the tab bar paginates inside its own container, the page
+   itself never scrolls sideways. */
+.console__areas {
+  min-width: 0;
+}
+
+.console__banner {
+  margin-block-end: var(--nx-space-4);
+}
+
+.console__banner-text {
+  margin: 0;
+}
+
+.console__reference {
+  font-family: var(--nx-font-family-mono);
+  overflow-wrap: anywhere;
+}
+
+.console__unavailable {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nx-space-3);
+}
+
+.console__unavailable-title {
+  margin: 0;
+  font-size: var(--nx-text-3xl);
+  font-weight: var(--nx-weight-semibold);
+  color: var(--nx-color-on-surface);
+
+  &:focus {
+    outline: none;
+  }
+}
+
+.console__unavailable-body {
+  margin: 0;
+  color: var(--nx-color-on-surface-muted);
+}

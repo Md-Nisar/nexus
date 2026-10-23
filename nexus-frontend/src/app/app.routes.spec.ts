@@ -312,24 +312,26 @@ describe('access console entry route (US-020 T-001)', () => {
       expect(root.querySelector('[data-testid="access-denied-root"]')).not.toBeNull();
     });
 
-    it('lets /admin/access/roles fall through to Not Found until the console routes exist', async () => {
+    it('lets /admin/access/roles fall through to Not Found until the roles page exists (T-007)', async () => {
       setup(true, ['role:read']);
       const { root, url } = await visit('/admin/access/roles');
       expect(url).toBe('/admin/access/roles');
       expect(heading(root)).toBe('Page not found');
+      expect(TestBed.inject(Title).getTitle()).toBe('Page not found');
     });
 
-    it('pins what an entitled /admin/access renders while ACCESS_MANAGEMENT_ROUTES is empty', async () => {
-      // C-1: the gated parent matches with no child, so the shell renders with an empty main
-      // and the parent's own title. T-006 replaces this with the console layout.
-      setup(true, ['role:read']);
-      const { root, url } = await visit('/admin/access');
-      expect(url).toBe('/admin/access');
-      expect(root.querySelector('main')).not.toBeNull();
-      expect(root.querySelector('main')?.children.length).toBe(1);
-      expect(root.querySelector('main router-outlet')).not.toBeNull();
-      expect(heading(root)).toBeUndefined();
-      expect(TestBed.inject(Title).getTitle()).toBe('Access management');
+    it('sends an entitled /admin/access to its first area: roles for a role reader (T-006)', async () => {
+      // The console layout's empty path never renders on its own: firstAreaRedirect moves the
+      // user to the first area they hold. Replaces T-001's empty-main pin (C-1).
+      setup(true, ['role:read', 'user:directory:read']);
+      const { url } = await visit('/admin/access');
+      expect(url).toBe('/admin/access/roles');
+    });
+
+    it('sends a directory-only reader on /admin/access to users (T-006)', async () => {
+      setup(true, ['user:directory:read']);
+      const { url } = await visit('/admin/access');
+      expect(url).toBe('/admin/access/users');
     });
   });
 });

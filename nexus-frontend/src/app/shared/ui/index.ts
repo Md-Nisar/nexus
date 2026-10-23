@@ -115,6 +115,9 @@ export type { AnnouncerPoliteness } from './announcer/announcer';
 export { NxBadge } from './badge/badge';
 export type { BadgeVariant } from './badge/badge';
 
+export { NxBanner } from './banner/banner';
+export type { BannerVariant, BannerLive } from './banner/banner';
+
 export { NxButton } from './button/button';
 export type { ButtonVariant, ButtonSize } from './button/button';
 
