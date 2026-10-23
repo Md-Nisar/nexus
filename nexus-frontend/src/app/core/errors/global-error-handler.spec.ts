@@ -16,7 +16,15 @@ describe('GlobalErrorHandler', () => {
       providers: [
         GlobalErrorHandler,
         { provide: LoggerService, useValue: loggerSpy },
-        { provide: APP_CONFIG, useValue: { production, apiBaseUrl: '/api', logLevel: 'debug' } },
+        {
+          provide: APP_CONFIG,
+          useValue: {
+            production,
+            apiBaseUrl: '/api',
+            logLevel: 'debug',
+            accessConsoleEnabled: false,
+          },
+        },
       ],
     });
 

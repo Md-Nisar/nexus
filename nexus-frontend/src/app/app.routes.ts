@@ -1,5 +1,8 @@
 import { Routes } from '@angular/router';
+import { accessConsoleEnabledGuard } from './core/guards/access-console-enabled.guard';
+import { anyPermissionGuard } from './core/guards/any-permission.guard';
 import { authGuard } from './core/guards/auth.guard';
+import { ACCESS_CONSOLE_ANY_OF } from './core/layout/nav.config';
 
 /**
  * Application route definitions.
@@ -119,6 +122,27 @@ export const routes: Routes = [
         title: 'Dashboard',
         loadComponent: () =>
           import('./features/dashboard/dashboard.component').then((m) => m.DashboardComponent),
+      },
+
+      /**
+       * Access management console (US-020 design §4.2).
+       *
+       * - `canMatch: [accessConsoleEnabledGuard]` is a release control, not an access control
+       *   (RC-76): when the console is switched off the URL falls through to Not Found below.
+       * - `canActivate: [anyPermissionGuard]` admits a user holding any of `data.anyOf`; it fails
+       *   closed on a malformed value. `authGuard` stays on the shell (never in this array).
+       * - No `canActivateChild` (RC-65).
+       */
+      {
+        path: 'admin/access',
+        title: 'Access management',
+        canMatch: [accessConsoleEnabledGuard],
+        canActivate: [anyPermissionGuard],
+        data: { anyOf: ACCESS_CONSOLE_ANY_OF },
+        loadChildren: () =>
+          import('./features/access-management/access-management.routes').then(
+            (m) => m.ACCESS_MANAGEMENT_ROUTES,
+          ),
       },
       {
         path: '**',

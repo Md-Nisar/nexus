@@ -3,16 +3,17 @@ import { SIGN_IN_PERSONAS, PersonaKey } from '../fixtures/personas';
 import { expect, test } from '../fixtures/test';
 
 /**
- * Nav labels each persona sees. Only the ungated Dashboard exists until the console ships, so this
- * cannot catch a filtering bug; the permission filtering itself is proved by the gated-nav cases in
+ * Nav labels each persona sees against the dev build (console switched on). "Access management"
+ * is shown to a persona holding role:read or user:directory:read; the member holds neither. The
+ * filtering rules themselves are proved by the gated-nav cases in
  * src/app/core/layout/shell/shell.spec.ts.
  */
 const NAV_LABELS: Readonly<Record<PersonaKey, readonly string[]>> = {
-  admin: ['Dashboard'],
-  admin2: ['Dashboard'],
+  admin: ['Dashboard', 'Access management'],
+  admin2: ['Dashboard', 'Access management'],
   member: ['Dashboard'],
-  roleManager: ['Dashboard'],
-  userManager: ['Dashboard'],
+  roleManager: ['Dashboard', 'Access management'],
+  userManager: ['Dashboard', 'Access management'],
   locked: [],
   pending: [],
   otherTenantAdmin: [],

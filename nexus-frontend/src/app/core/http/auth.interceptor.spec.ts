@@ -60,7 +60,12 @@ describe('authInterceptor', () => {
         // file the unit-test build happens to wire up.
         {
           provide: APP_CONFIG,
-          useValue: { production: false, apiBaseUrl: '/api', logLevel: 'debug' },
+          useValue: {
+            production: false,
+            apiBaseUrl: '/api',
+            logLevel: 'debug',
+            accessConsoleEnabled: false,
+          },
         },
       ],
     });

@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import { environment as development } from '../../../environments/environment.development';
 import { SupportContact, parseSupportContact } from './app-config';
+
+describe('accessConsoleEnabled (US-020 design §18)', () => {
+  // environment.ts (false) is not asserted here: the unit-test build applies the development
+  // `fileReplacements`, so any import of `environments/environment` yields the development file.
+  it('ships true in environment.development.ts', () => {
+    expect(development.accessConsoleEnabled).toBe(true);
+  });
+});
 
 describe('parseSupportContact', () => {
   it('accepts mailto and https contacts', () => {

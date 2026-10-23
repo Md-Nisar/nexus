@@ -102,7 +102,12 @@ describe('cold start routing (real router, real shell and guards)', () => {
       providers: [
         {
           provide: APP_CONFIG,
-          useValue: { production: false, apiBaseUrl: API, logLevel: 'debug' },
+          useValue: {
+            production: false,
+            apiBaseUrl: API,
+            logLevel: 'debug',
+            accessConsoleEnabled: false,
+          },
         },
         provideAnimationsAsync(),
         provideHttpClient(),

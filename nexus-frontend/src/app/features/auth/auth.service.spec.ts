@@ -9,7 +9,12 @@ import { AppError } from '../../shared/types/app-error';
 import { AuthStore } from '../../core/auth/auth.store';
 import { AuthSession } from '../../shared/types/auth';
 
-const TEST_CONFIG = { production: false, apiBaseUrl: '/api', logLevel: 'debug' } as const;
+const TEST_CONFIG = {
+  production: false,
+  apiBaseUrl: '/api',
+  logLevel: 'debug',
+  accessConsoleEnabled: false,
+} as const;
 
 const VALID_TOKEN = 'a'.repeat(64);
 const USER_PASS = 'Passphrase99!'; // EXAMPLE — not a real credential
