@@ -1,0 +1,7 @@
+{
+  "detail" : "Resource not found.",
+  "status" : 404,
+  "title" : "Not Found",
+  "code" : "RESOURCE_NOT_FOUND",
+  "traceId" : "0190a000-0000-7000-8000-0000000000ff"
+}

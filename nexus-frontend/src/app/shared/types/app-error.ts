@@ -99,8 +99,9 @@ export interface AppError {
    * header (e.g. 429 `RBAC_011`, 503 `AUTH_005`). Absent when the header is missing or not a
    * positive integer.
    *
-   * Informational only: nothing retries a request on the strength of this value
-   * (`RBAC_011` is never auto-retried, RC-63(l)).
+   * Informational only: the interceptor never retries a request, and nothing retries one on the
+   * strength of this value (`RBAC_011` is never auto-retried, RC-63(l)); the console's write
+   * client retries once, only on `RBAC_012`.
    */
   readonly retryAfterSeconds?: number;
 }
