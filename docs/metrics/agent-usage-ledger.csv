@@ -75,3 +75,4 @@ date,story,task,agent_type,model,agent_id,calls,tool_uses,cache_read,cache_write
 2026-10-22,US-019,,frontend-engineer,claude-sonnet-5-5,af62bcf,8,9,138367,24288,3662,24290,62523
 2026-10-22,US-019,,backend-engineer,claude-sonnet-5-5,a74757d,21,23,561384,216077,9305,45175,372802
 2026-10-23,US-020,,business-analyst,claude-sonnet-5-5,a42c144,37,87,5406384,252421,67620,252423,1194339
+2026-10-23,US-020,,architect,claude-opus-5-5,a7e976f,52,97,7254781,223797,60073,223799,1305693
