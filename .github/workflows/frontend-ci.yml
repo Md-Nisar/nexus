@@ -38,6 +38,11 @@ jobs:
       - name: Install Dependencies
         run: npm ci --ignore-scripts
 
+      # US-020 T-004 (A-7, ADR-0029): the CI-guard and edge-smoke self-tests, including the static
+      # check that nginx.conf turns gzip off for /api/. Plain node, no Docker.
+      - name: Self-Test CI Guards And Edge Config
+        run: node --test e2e/tools/tools.selftest.mjs
+
       - name: Check Formatting
         run: npm run format:check
 
