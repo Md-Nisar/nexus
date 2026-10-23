@@ -663,3 +663,130 @@ These design §23 rows are **decided here** and can be closed:
 - **S3a:** RC-77.
 - **S3b:** RC-68, RC-69, and H-2 recorded (either decision).
 - **All slices:** re-run `./mvnw dependency:tree` and `npm audit` at each Phase 7. Today's baseline: no manifest delta; the production npm graph is clean; the full graph has 2 findings (toolchain `vite`, RES-60).
+
+---
+
+## 12. Delta review: design Draft 2 (2026-10-23)
+
+**Scope.** This is a delta, not a fresh STRIDE pass. It covers `03-design.md` Draft 2 (commit `f43d806`; its Revision 1 table and the sections that table lists), ADR-0028 and ADR-0029, checked against §3, §6 and §7 above. It reopens no Gate 1 decision. Code re-checked: `safe-return-url.ts:1-40` and its one caller (`login-form.component.ts:251`), and `CreateRoleRequest.java:24-33` (role names are restricted to ASCII `[A-Za-z0-9 ._-]`, so typed confirms on role names cannot carry hidden characters). There is no manifest delta, so the §11 dependency baseline still holds; scans are re-run at Phase 7.
+
+### 12.1 Verdict per RC
+
+| RC | Verdict | Notes |
+|---|---|---|
+| RC-68 | **Landed** (items 1 to 5). Hardening D-1 and D-5 to follow | `UserText` `email` mode, `splitHiddenCharacters`, the badge in both modes, `TargetIdentity` in Assign and standard Revoke, copy, unit and e2e tests, F-5. The self-revoke dialog without an identity line is **acceptable**: its target is the caller, so there is no third party to mistake, and role names are ASCII (above). The condition is D-5 |
+| RC-69 | **Landed**, with the H-2 decision applied on top | Alert copy, the `danger` "Assign to unverified account" confirm, the §8.3 rows, F-4 and H-2 are all in. The typed confirm is specified and unit-tested behind the block. See §12.2 |
+| RC-70 | **Landed.** Implementation detail D-2 to follow | Parsed first segment of the primary outlet, `auth` moved onto the rule, the table expects `/dashboard`, and parse failure falls back. See §12.3 |
+| RC-71 | **Landed** (items 1 to 3) | §4.5, ADR-0028 decision 7, the §17 triage step, and the `NETWORK_ERROR` then `AUTH_004` real-Router spec. See §12.4 |
+| RC-72 | **Landed** (items 1 to 4). Hardening D-3 to follow | The flag, the identity split, env-only credentials, logout, the §17 alert note, §20.2 item 3, ADR-0029 decisions 4 and 5, H-4. See §12.5 |
+| RC-73 | **Landed** as an S1e task with §19.1 specs | Matches §7 |
+| RC-74 | **Landed** as an S2 task with §19.1 specs. Consistency nit D-6 | §10's body text was not updated to match |
+| RC-75 | **Landed** | The formula is exactly as specified in §7, and so is the no-state case of 10 s from render |
+| RC-76 | **Landed** | §18 wording, the allow-list contract spec, ADR-0028 decision 8 |
+| RC-77 | **Landed** | §19.4, §20.2 item 11, the `DevPersonaSeedIT` `dev,prod` extension |
+
+### 12.2 H-2 and RC-69 item 2: coherent, not a contradiction
+
+- RC-69 item 2 ("adds no client block") describes the baseline **within Q21 alone**. §9 H-2 put the block option to a human, and the block was this threat model's recommendation. The H-2 decision replaces item 2's "no block" clause for exactly one cell: a PENDING target with a hinted admin-defining role. It leaves the rest of item 2 in force.
+- So the typed confirm being unreachable while the block is in force is expected. Specifying and testing it now, so that F-4 removes one row, is the right shape.
+- **Adequacy.** The block is a UX hint, not a control. The server is unchanged, so RES-56 stays **Medium until F-4** whatever the UI does. As an interim measure it is adequate: it removes the worst case a hint can see, and everything the hint misses still gets the `role=alert` warning and the `danger` confirm, the same as RC-69 required. A role the hint misses is, for example, all permissions but one, or admin power assembled from several roles.
+- Advisory, not required: while the block is in force, a PENDING target with a role carrying any Sensitive permission could use `confirmTyped`. This would give near-admin roles the friction RC-69 item 2 intended for admin roles.
+- The fail-open edge and the test switch are D-4.
+
+### 12.3 RC-70 bypass check
+
+Today's checks (`safe-return-url.ts:26-31`) already reject `//`, `/\`, any `\`, controls, any `:` in the path (and so named-outlet syntax `(x:y)`), and `%2f`, `%5c` and encoded controls. The new rule then reads the parsed tree, and the value navigated is the value validated.
+
+| Input | Result under Draft 2 | Verdict |
+|---|---|---|
+| `/%2575navailable` (double encoding) | Router decodes once, giving `%75navailable` ≠ `unavailable`; the value is returned and lands on Not Found | No bypass. The router decodes once, consistent with the check |
+| `/unavailable;x=1`, `/auth;x=1/login` | Matrix params are separated from `segment.path`, so both are rejected | Closed. Today `/auth;x=1/login` passes the literal rule; add it to the table |
+| `/unavailable#f`, `/unavailable?x` | Path part is `/unavailable`, so rejected | Closed |
+| `/#/unavailable` | The fragment is ignored by path-location routing; lands on `/` | No bypass (path location strategy; no hash strategy in `src/`) |
+| `/(unavailable)` | Parens without `:` parse as the primary outlet; rejected only if the check reads `root.children[PRIMARY_OUTLET]` | Holds if implemented as worded; add it to the table |
+| `/x/../unavailable`, `/%2e%2e/unavailable`, `/./unavailable` | First segment is `x`, `..` or `.`, so it passes. The router treats dot segments literally (Not Found), but `pushState` normalises the address bar to `/unavailable`, so a reload lands on the view without `returnUrl` (Retry then goes to `/dashboard`) | Not a redirect and not a loop. Router and address bar disagree, though: D-2 |
+
+### 12.4 RC-71 and RC-75: no loop, no second refresh path
+
+- `AUTH_004` on Retry goes to `/auth/login`, not `/unavailable`. That is a terminal branch, so there is no loop. The spec pins "no further refresh".
+- Retry re-enters only through the shell's `canActivate`. The button is `loading` and cannot be pressed twice, and there is no automatic retry. The console never calls `refresh()` (ADR-0028 decisions 5 and 7). No second refresh path remains. Cross-tab concurrent cold starts are pre-existing (RES-55).
+- The cool-down is a client courtesy. A hostile client can skip it, but nginx's auth zone is the real limit. A `Retry-After: 0` from the backend gives only the 0 to 5 s jitter. That is the server's choice and acceptable. Non-cryptographic randomness for the jitter is fine.
+
+### 12.5 RC-72: identity and credentials
+
+- Credentials come from env vars only (`NEXUS_SMOKE_USER`, `NEXUS_SMOKE_PASSWORD`), never argv and never printed. The names have no security impact.
+- The negative control is CI-only, and the identity is non-administrator. The blast radius of a leaked credential is bounded by the grant-subset and role-subset rules: the identity can create roles, or alter roles, only within {`role:read`, `role:write`}.
+- Nothing yet **enforces** either rule. An operator can still export an administrator credential into those variables, or pass `--negative-control` against production: D-3.
+
+### 12.6 New provisional names and copy
+
+- **Disabled reason `pending-admin-role` and its text:** this reveals only that a role looks like an administrator role, which the Q17 hint already shows. No impact.
+- **Token `⟨U+{hex}⟩` and its accessible name "hidden character U+{hex}":** this is rendered as interpolated text and attributes, never HTML (§15.3).
+  - A registrant could type literal `⟨U+202E⟩` look-alike text into an address. That makes their address look suspicious and adds no badge. It cannot make a hidden character disappear, so it is not a spoofing aid.
+  - The accessible name must be bound as an attribute value, not built into markup. §15.3 already requires interpolation.
+- **Typed-confirm copy for PENDING:** it embeds `{role}`, and role names are ASCII. No impact.
+- **Smoke env var names:** no impact (§12.5).
+
+### 12.7 New findings (all Low; none blocks Gate 2; each lands in its slice's merge gate)
+
+```
+[LOW] Hidden-character set is narrower than "invisible"
+File: docs/features/US-020/03-design.md §15.3 (also §23 F-5)
+Issue: D-1. RC-68 and §15.3 tokenise \p{Cf} only. Invisible or blank code points outside Cf still render as nothing or as a space and get no badge: U+115F, U+1160, U+3164, U+FFA0 (Hangul fillers, Lo), U+034F and U+FE00–FE0F (Mn), U+E0100–E01EF, and non-ASCII spaces (Zs, for example U+00A0, U+2000–U+200A, U+3000). The local part admits non-ASCII [INFERENCE: Hibernate Validator pattern, as T-S15].
+Risk: Two addresses still render the same in the list and dialogs, which is T-S15's attack (OWASP A04).
+Fix: In splitHiddenCharacters, match [\p{Cf}\p{Default_Ignorable_Code_Point}\p{Zs}\p{Zl}\p{Zp}] except U+0020. JS supports these property escapes with the u or v flag. Add a Hangul-filler email and an NBSP email to the §19.1 rows. Widen F-5 to the same set. Slice S3b.
+```
+
+```
+[LOW] RC-70 implementation underspecified for a pure function; dot segments
+File: docs/features/US-020/03-design.md §4.7, §19.1 (safe-return-url.ts:24 is DI-free)
+Issue: D-2. "router.parseUrl(raw)" needs DI that safeReturnUrl does not have, and an implementer may move the check to a place that sees a different string. Dot segments pass, and the address bar then diverges from router state (§12.3).
+Risk: A future refactor validates one string and navigates another (OWASP A01). Today the impact is only cosmetic or a reload oddity.
+Fix: In §4.7, state that the function stays pure and parses with `new DefaultUrlSerializer().parse(raw)`. The app registers no custom UrlSerializer; if one is ever added, inject it instead. Read `tree.root.children[PRIMARY_OUTLET]?.segments[0]?.path`. Also reject a value in which any primary segment path is `.` or `..`. Add these table rows: `/auth;x=1/login`, `/(unavailable)`, `/x/../unavailable` and `/%2e%2e/unavailable`, each expecting /dashboard; and `/%2575navailable`, returned unchanged (pins "no second decode"). Slice S1b.
+```
+
+```
+[LOW] Edge smoke does not enforce its own identity and flag rules
+File: docs/features/US-020/03-design.md §19.6, §23 H-4; ADR-0029 decision 5
+Issue: D-3. The rules are prose only. An administrator credential in NEXUS_SMOKE_* works. `--negative-control` against production works and trips the §17 alert. Logout is "step 6", so it is skipped on early failure (for example "smoke not meaningful").
+Risk: An administrator credential sits in an operator's shell environment, and the alert is trained into noise again (OWASP A07, A09).
+Fix (§19.6):
+(a) After login, GET /api/v1/users/me/authorization. If the identity is an administrator, or holds anything outside {role:read, role:write}, abort with a non-zero exit, logging out first. Skip this check only in the CI persona mode.
+(b) Refuse `--negative-control` unless CI is set, or the base host is loopback or the compose service.
+(c) Log out in a finally block on every exit path.
+(d) H-4: the credential lives in the Ops secret store, and any successful write by the smoke identity (anything other than the expected 409) is alertable in the audit log. Slice S1d.
+```
+
+```
+[LOW] H-2 block fails open when the catalogue total is unknown; test switch must not be runtime
+File: docs/features/US-020/03-design.md §8.3 (PENDING rows), §19.1 (Assign dialog, PENDING)
+Issue: D-4. isAdminDefiningHint needs catalogue.total, and §8.3 does not say what the block does if the catalogue failed to load. §19.1 tests the typed confirm "with the H-2 block switched off", but nothing says what that switch is.
+Risk: An admin-defining role is offered to a PENDING target, or a runtime toggle (config, query or storage) disables the block (OWASP A04). The server stays authoritative, so the residual is unchanged (RES-56).
+Fix: In §8.3, state that a PENDING target with an unknown catalogue total treats every role as hinted, so the block applies. Also state that the block is a code constant or a pure-function parameter, set only in specs, with no environment, AppConfig, URL or storage input. Slice S3b.
+```
+
+```
+[LOW] Self-revoke variant selection criterion not stated
+File: docs/features/US-020/03-design.md §12.10
+Issue: D-5. Omitting the identity line is safe only if the self-revoke variant is chosen by id equality. §6.3 and §12.7 use userId, but §12.10 does not say so.
+Risk: If the variant were chosen by comparing emails, an implementer could show the no-identity dialog for someone else (OWASP A04).
+Fix: In §12.10, add: "Chosen when the route userId equals the profile's userId; never by email comparison." Slice S3b.
+```
+
+```
+[LOW] RC-74 not reflected in the §10 body
+File: docs/features/US-020/03-design.md §10 (Read validation and Clear rows), §14.2
+Issue: D-6. §10 still says only "savedAt within the last 12 h" and "logout gains a call", with no future-savedAt rejection and no finalize. §14.2 lacks the "Not restored because you can't grant them: {labels}" string. §1.2 S2 and §19.1 carry these, so the section an implementer reads first is stale.
+Risk: Partial implementation of RC-74 (hygiene).
+Fix: Update the two §10 rows, add the §14.2 row, and add §10 and §14.2 to the Revision 1 RC-74 entry. Slice S2.
+```
+
+### 12.8 Delta verdict
+
+RC-68 to RC-72 are folded in correctly and completely, and RC-73 to RC-77 are present as slice tasks. The delta found no regression. D-1 to D-6 are Low hygiene and hardening items. They go to S1b, S1d, S2 and S3b as tasks, and §11 gains them as follows:
+- S1b: D-2.
+- S1d: D-3.
+- S2: D-6.
+- S3b: D-1, D-4, D-5.
+
+On the security side, Gate 2 can close **subject only to the human items**: H-1, H-2 confirmation by PM and the Platform Security Owner, H-3, H-4 (now including D-3(d)), H-5 and H-6. This section records review only. It is not an approval.

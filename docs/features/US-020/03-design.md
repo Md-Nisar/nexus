@@ -7,6 +7,14 @@
 
 **Gate 2:** pending
 
+**Delta-review items D-1 to D-6** (`03b-threat-model.md` §12, all Low, none blocks Gate 2). They are **binding on the named slice's merge gate** and are carried into `04-tasks.md`; where they conflict with the sections below, §12 of the threat model wins until this document is next revised:
+- **D-1 (S3b, §15.3, F-5):** hidden-character detection matches `[\p{Cf}\p{Default_Ignorable_Code_Point}\p{Zs}\p{Zl}\p{Zp}]` except U+0020, with test cases for Hangul fillers, variation selectors and non-ASCII spaces.
+- **D-2 (S1b, §4.7, §19.1):** `safeReturnUrl` stays pure and parses with `new DefaultUrlSerializer().parse(raw)` (not `router.parseUrl`); read the first segment of the primary outlet; reject `.` and `..` segments. Table rows: `/auth;x=1/login`, `/(unavailable)`, `/x/../unavailable`, `/%2e%2e/unavailable` give `/dashboard`; `/%2575navailable` is returned unchanged.
+- **D-3 (S1d, §19.6, H-4):** the smoke script enforces its own rules: after login read its own profile and abort (logging out first) if it is an administrator or holds anything beyond `role:read` and `role:write`; refuse `--negative-control` unless in CI or against a local base URL; log out on every exit path; the credential lives in the Ops secret store with an alert on any write by this identity.
+- **D-4 (S3b, §8.3, §19.1):** if the catalogue total is unknown, the PENDING block treats every role as admin-looking (fail closed). The "block off" switch used in tests is a code constant or function parameter, never runtime input.
+- **D-5 (S3b, §12.10):** the self-revoke variant is chosen by user-id equality, never by email.
+- **D-6 (S2, §10, §14.2):** §10 gains the RC-74 rules (reject a future save time; clear storage in logout's cleanup step even when the request fails); §14.2 gains the string "Not restored because you can't grant them".
+
 **Revision 1 (threat model `03b-threat-model.md` §6, §7, §9).** No Gate 1 decision is reopened.
 
 | RC | Threat | Sections changed |
