@@ -132,6 +132,29 @@ export const m = A11yModule;
     expect(await ruleIds(FEATURE, source)).toContain('no-restricted-imports');
   });
 
+  it('rejects DomSanitizer imports from a feature', async () => {
+    const source = `import { DomSanitizer } from '@angular/platform-browser';
+export const d = DomSanitizer;
+`;
+    expect(await ruleIds(FEATURE, source)).toContain('no-restricted-imports');
+  });
+
+  it('still rejects Material imports from a feature after the DomSanitizer ban', async () => {
+    const source = `import { MatButtonModule } from '@angular/material/button';
+export const m = MatButtonModule;
+`;
+    expect(await ruleIds(FEATURE, source)).toContain('no-restricted-imports');
+  });
+
+  it('allows DomSanitizer imports outside features', async () => {
+    const source = `import { DomSanitizer } from '@angular/platform-browser';
+export const d = DomSanitizer;
+`;
+    expect(await ruleIds('src/app/shared/lint-fixture/lint-fixture.ts', source)).not.toContain(
+      'no-restricted-imports',
+    );
+  });
+
   it('allows Material imports inside shared/ui', async () => {
     const source = `import { MatButtonModule } from '@angular/material/button';
 export const m = MatButtonModule;

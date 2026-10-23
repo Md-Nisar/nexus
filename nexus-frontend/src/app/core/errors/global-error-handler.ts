@@ -17,6 +17,22 @@ export class GlobalErrorHandler implements ErrorHandler {
    * @param error - The unhandled error object/exception.
    */
   handleError(error: unknown): void {
+    // An AppError carries server text (message, details, requiredPermission) that must never reach
+    // the log or the console (RC-73): log its code and correlation ids only.
+    if (this.isAppErrorShaped(error)) {
+      this.logger.error('Unhandled application error', {
+        event: 'unhandled_exception',
+        outcome: 'FAILURE',
+        errorType: 'AppError',
+        context: {
+          code: error.code,
+          correlationId: error.correlationId,
+          traceId: error.traceId,
+        },
+      });
+      return;
+    }
+
     const errorType = this.getErrorType(error);
     const message = this.getErrorMessage(error);
     const stack = this.getErrorStack(error);
@@ -36,6 +52,20 @@ export class GlobalErrorHandler implements ErrorHandler {
         stack: stack || undefined,
       },
     });
+  }
+
+  /**
+   * An object (not an Error instance) with a string `code`: the shape of the normalized AppError.
+   */
+  private isAppErrorShaped(
+    error: unknown,
+  ): error is { code: string; correlationId?: unknown; traceId?: unknown } {
+    return (
+      typeof error === 'object' &&
+      error !== null &&
+      !(error instanceof Error) &&
+      typeof (error as { code?: unknown }).code === 'string'
+    );
   }
 
   /**
