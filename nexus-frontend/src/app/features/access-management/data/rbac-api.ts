@@ -2,7 +2,7 @@ import { HttpClient } from '@angular/common/http';
 import { Service, inject } from '@angular/core';
 import { Observable } from 'rxjs';
 import { APP_CONFIG } from '../../../core/config/app-config';
-import type { CallerAuthorizationResponse } from '../../../shared/types/api/rbac';
+import type { CallerAuthorizationResponse, RoleListResponse } from '../../../shared/types/api/rbac';
 import { consoleHttpContext } from './console-http';
 
 /**
@@ -24,6 +24,17 @@ export class RbacApi {
    */
   getMyAuthorization(): Observable<CallerAuthorizationResponse> {
     return this.http.get<CallerAuthorizationResponse>(`${this.base}/users/me/authorization`, {
+      context: consoleHttpContext(),
+    });
+  }
+
+  /**
+   * `GET /roles?page&size`: one page of the tenant's roles in `(name, id)` order (`role:read`,
+   * us015 flag). `page` is zero-based.
+   */
+  listRoles(page: number, size: number): Observable<RoleListResponse> {
+    return this.http.get<RoleListResponse>(`${this.base}/roles`, {
+      params: { page, size },
       context: consoleHttpContext(),
     });
   }

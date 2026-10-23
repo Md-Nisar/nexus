@@ -64,7 +64,7 @@ function consoleRoutes(): Routes {
         {
           ...layout,
           children: [
-            ...(layout.children ?? []),
+            ...(layout.children ?? []).filter((child) => child.path !== 'roles'),
             { path: 'roles', title: 'Roles', component: FixturePage },
             { path: 'permissions', title: 'Permissions', component: FixturePage },
             { path: 'users', title: 'Users', component: FixturePage },

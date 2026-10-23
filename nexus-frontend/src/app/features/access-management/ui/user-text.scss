@@ -1,0 +1,37 @@
+:host {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--nx-space-2);
+  max-width: 100%;
+  min-width: 0;
+}
+
+.user-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+
+  &--clamped {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: var(--user-text-lines);
+    line-clamp: var(--user-text-lines);
+    overflow: hidden;
+  }
+}
+
+.user-text__badge {
+  flex: none;
+}
+
+/* The badge's description for assistive technology; the badge itself is the visible cue. */
+.user-text__explanation {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}

@@ -312,12 +312,18 @@ describe('access console entry route (US-020 T-001)', () => {
       expect(root.querySelector('[data-testid="access-denied-root"]')).not.toBeNull();
     });
 
-    it('lets /admin/access/roles fall through to Not Found until the roles page exists (T-007)', async () => {
+    it('renders the roles page at /admin/access/roles for a role reader (T-007)', async () => {
       setup(true, ['role:read']);
       const { root, url } = await visit('/admin/access/roles');
       expect(url).toBe('/admin/access/roles');
-      expect(heading(root)).toBe('Page not found');
-      expect(TestBed.inject(Title).getTitle()).toBe('Page not found');
+      expect(heading(root)).toBe('Roles');
+      expect(TestBed.inject(Title).getTitle()).toBe('Roles');
+    });
+
+    it('sends a member without role:read from /admin/access/roles to /access-denied (T-007)', async () => {
+      setup(true, ['user:directory:read']);
+      const { url } = await visit('/admin/access/roles');
+      expect(url).toBe('/access-denied');
     });
 
     it('sends an entitled /admin/access to its first area: roles for a role reader (T-006)', async () => {
