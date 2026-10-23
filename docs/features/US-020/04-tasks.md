@@ -2,7 +2,7 @@
 
 **Phase:** 4 (Task Breakdown), Gate 3
 
-**Gate 3:** pending
+**Gate 3:** approved 2026-10-23 by Md Nisar Ahmed (recorded when the story owner ran `/implement US-020 T-001`; the open human items of design §23 remain open)
 
 **Epic:** EPIC-002 (RBAC Foundation)
 
