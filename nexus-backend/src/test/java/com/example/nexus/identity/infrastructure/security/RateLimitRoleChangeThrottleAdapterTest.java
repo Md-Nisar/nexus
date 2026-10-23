@@ -14,6 +14,7 @@ import static org.mockito.Mockito.when;
 
 import com.example.nexus.identity.application.port.out.RateLimitResult;
 import com.example.nexus.identity.application.port.out.RateLimitStore;
+import com.example.nexus.rbac.application.port.out.ThrottleStatus;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -53,7 +54,7 @@ class RateLimitRoleChangeThrottleAdapterTest {
 
   @Test
   void should_returnFalse_when_actorHasNoDenials() {
-    assertThat(adapter.isThrottled(TENANT_ID, ACTOR_USER_ID)).isFalse();
+    assertThat(adapter.throttleStatus(TENANT_ID, ACTOR_USER_ID).throttled()).isFalse();
     verify(rateLimitStore, never()).tryConsume(any(), anyInt(), anyInt());
   }
 
@@ -99,13 +100,13 @@ class RateLimitRoleChangeThrottleAdapterTest {
   }
 
   @Test
-  void should_returnTrue_when_isThrottledCalledWithinWindowAfterTransition() {
+  void should_returnTrue_when_throttleStatusCalledWithinWindowAfterTransition() {
     when(rateLimitStore.tryConsume(eq(EXPECTED_KEY), eq(WINDOW_SECONDS), eq(MAX_DENIALS)))
         .thenReturn(RateLimitResult.reject(WINDOW_SECONDS));
 
     adapter.recordDenial(TENANT_ID, ACTOR_USER_ID);
 
-    assertThat(adapter.isThrottled(TENANT_ID, ACTOR_USER_ID)).isTrue();
+    assertThat(adapter.throttleStatus(TENANT_ID, ACTOR_USER_ID).throttled()).isTrue();
   }
 
   @Test
@@ -114,13 +115,62 @@ class RateLimitRoleChangeThrottleAdapterTest {
         .thenReturn(RateLimitResult.reject(10));
 
     adapter.recordDenial(TENANT_ID, ACTOR_USER_ID);
-    assertThat(adapter.isThrottled(TENANT_ID, ACTOR_USER_ID)).isTrue();
+    assertThat(adapter.throttleStatus(TENANT_ID, ACTOR_USER_ID).throttled()).isTrue();
 
     clock.advance(Duration.ofSeconds(11));
 
-    assertThat(adapter.isThrottled(TENANT_ID, ACTOR_USER_ID))
+    assertThat(adapter.throttleStatus(TENANT_ID, ACTOR_USER_ID).throttled())
         .as("throttle must self-clear once the throttled-until instant has passed")
         .isFalse();
+  }
+
+  // US-019 B7 (design §9.3): the retry-after comes from the local throttled-until map.
+
+  @Test
+  void should_reportNotThrottledWithNoRetryAfter_when_actorHasNoDenials() {
+    assertThat(adapter.throttleStatus(TENANT_ID, ACTOR_USER_ID)).isEqualTo(ThrottleStatus.NOT_THROTTLED);
+  }
+
+  @Test
+  void should_reportTheWholeRemainingWindow_when_justThrottled() {
+    when(rateLimitStore.tryConsume(eq(EXPECTED_KEY), eq(WINDOW_SECONDS), eq(MAX_DENIALS)))
+        .thenReturn(RateLimitResult.reject(10));
+    adapter.recordDenial(TENANT_ID, ACTOR_USER_ID);
+
+    assertThat(adapter.throttleStatus(TENANT_ID, ACTOR_USER_ID)).isEqualTo(new ThrottleStatus(true, 10));
+  }
+
+  @Test
+  void should_roundTheRemainingTimeUp_when_partWayThroughTheThrottle() {
+    when(rateLimitStore.tryConsume(eq(EXPECTED_KEY), eq(WINDOW_SECONDS), eq(MAX_DENIALS)))
+        .thenReturn(RateLimitResult.reject(10));
+    adapter.recordDenial(TENANT_ID, ACTOR_USER_ID);
+
+    clock.advance(Duration.ofMillis(2_500));
+
+    assertThat(adapter.throttleStatus(TENANT_ID, ACTOR_USER_ID).retryAfterSeconds()).isEqualTo(8);
+  }
+
+  @Test
+  void should_reportAtLeastOneSecond_when_lessThanASecondRemains() {
+    when(rateLimitStore.tryConsume(eq(EXPECTED_KEY), eq(WINDOW_SECONDS), eq(MAX_DENIALS)))
+        .thenReturn(RateLimitResult.reject(10));
+    adapter.recordDenial(TENANT_ID, ACTOR_USER_ID);
+
+    clock.advance(Duration.ofMillis(9_999));
+
+    assertThat(adapter.throttleStatus(TENANT_ID, ACTOR_USER_ID)).isEqualTo(new ThrottleStatus(true, 1));
+  }
+
+  @Test
+  void should_reportNotThrottled_when_theThrottledUntilInstantIsReachedExactly() {
+    when(rateLimitStore.tryConsume(eq(EXPECTED_KEY), eq(WINDOW_SECONDS), eq(MAX_DENIALS)))
+        .thenReturn(RateLimitResult.reject(10));
+    adapter.recordDenial(TENANT_ID, ACTOR_USER_ID);
+
+    clock.advance(Duration.ofSeconds(10));
+
+    assertThat(adapter.throttleStatus(TENANT_ID, ACTOR_USER_ID)).isEqualTo(ThrottleStatus.NOT_THROTTLED);
   }
 
   @Test
@@ -140,7 +190,7 @@ class RateLimitRoleChangeThrottleAdapterTest {
     adapter.recordSuppressedDenial(TENANT_ID, ACTOR_USER_ID);
     adapter.recordSuppressedDenial(TENANT_ID, ACTOR_USER_ID);
     clock.advance(Duration.ofSeconds(11));
-    assertThat(adapter.isThrottled(TENANT_ID, ACTOR_USER_ID)).isFalse(); // episode 1 over
+    assertThat(adapter.throttleStatus(TENANT_ID, ACTOR_USER_ID).throttled()).isFalse(); // episode 1 over
 
     adapter.recordDenial(TENANT_ID, ACTOR_USER_ID); // episode 2 begins
 
@@ -150,7 +200,7 @@ class RateLimitRoleChangeThrottleAdapterTest {
   }
 
   @Test
-  void should_evictExpiredEntry_when_isThrottledCalledAfterWindowExpires() {
+  void should_evictExpiredEntry_when_throttleStatusCalledAfterWindowExpires() {
     when(rateLimitStore.tryConsume(eq(EXPECTED_KEY), eq(WINDOW_SECONDS), eq(MAX_DENIALS)))
         .thenReturn(RateLimitResult.reject(10));
 
@@ -158,7 +208,7 @@ class RateLimitRoleChangeThrottleAdapterTest {
     assertThat(adapter.mapSize()).isEqualTo(1);
 
     clock.advance(Duration.ofSeconds(11));
-    adapter.isThrottled(TENANT_ID, ACTOR_USER_ID);
+    adapter.throttleStatus(TENANT_ID, ACTOR_USER_ID);
 
     assertThat(adapter.mapSize())
         .as("an expired throttled-until entry must be evicted on read, not merely ignored")
@@ -172,21 +222,21 @@ class RateLimitRoleChangeThrottleAdapterTest {
 
     assertThatCode(() -> adapter.recordDenial(TENANT_ID, ACTOR_USER_ID)).doesNotThrowAnyException();
     assertThat(adapter.recordDenial(TENANT_ID, ACTOR_USER_ID)).isFalse();
-    assertThat(adapter.isThrottled(TENANT_ID, ACTOR_USER_ID))
+    assertThat(adapter.throttleStatus(TENANT_ID, ACTOR_USER_ID).throttled())
         .as("a store failure must never leave the actor throttled")
         .isFalse();
   }
 
   @Test
-  void should_returnFalseAndNotThrow_when_clockThrowsOnIsThrottled() {
+  void should_returnFalseAndNotThrow_when_clockThrowsOnThrottleStatus() {
     Clock throwingClock = mock(Clock.class);
     when(throwingClock.instant()).thenThrow(new IllegalStateException("clock unavailable"));
     RateLimitRoleChangeThrottleAdapter faultyAdapter =
         new RateLimitRoleChangeThrottleAdapter(rateLimitStore, throwingClock, MAX_DENIALS, WINDOW_SECONDS);
 
-    assertThatCode(() -> faultyAdapter.isThrottled(TENANT_ID, ACTOR_USER_ID))
+    assertThatCode(() -> faultyAdapter.throttleStatus(TENANT_ID, ACTOR_USER_ID).throttled())
         .doesNotThrowAnyException();
-    assertThat(faultyAdapter.isThrottled(TENANT_ID, ACTOR_USER_ID)).isFalse();
+    assertThat(faultyAdapter.throttleStatus(TENANT_ID, ACTOR_USER_ID).throttled()).isFalse();
     verify(rateLimitStore, never()).tryConsume(any(), anyInt(), anyInt());
   }
 
@@ -200,14 +250,14 @@ class RateLimitRoleChangeThrottleAdapterTest {
   }
 
   @Test
-  void should_neverCallTryConsume_when_isThrottledInvoked() {
+  void should_neverCallTryConsume_when_throttleStatusInvoked() {
     when(rateLimitStore.tryConsume(eq(EXPECTED_KEY), eq(WINDOW_SECONDS), eq(MAX_DENIALS)))
         .thenReturn(RateLimitResult.reject(WINDOW_SECONDS));
     adapter.recordDenial(TENANT_ID, ACTOR_USER_ID);
 
-    adapter.isThrottled(TENANT_ID, ACTOR_USER_ID);
-    adapter.isThrottled(TENANT_ID, ACTOR_USER_ID);
-    adapter.isThrottled(TENANT_ID, ACTOR_USER_ID);
+    adapter.throttleStatus(TENANT_ID, ACTOR_USER_ID);
+    adapter.throttleStatus(TENANT_ID, ACTOR_USER_ID);
+    adapter.throttleStatus(TENANT_ID, ACTOR_USER_ID);
 
     verify(rateLimitStore, times(1)).tryConsume(any(), anyInt(), anyInt());
   }

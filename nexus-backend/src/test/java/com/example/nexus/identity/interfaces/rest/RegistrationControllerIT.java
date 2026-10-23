@@ -337,6 +337,7 @@ class RegistrationControllerIT {
   // which would otherwise start a MySQL container and override ddl-auto to "validate" via
   // DynamicPropertyRegistrar, breaking the H2 + create-drop setup below.
   @NestedTestConfiguration(EnclosingConfiguration.OVERRIDE)
+  @ActiveProfiles("test")
   @SpringBootTest(
       webEnvironment = WebEnvironment.MOCK,
       properties = {

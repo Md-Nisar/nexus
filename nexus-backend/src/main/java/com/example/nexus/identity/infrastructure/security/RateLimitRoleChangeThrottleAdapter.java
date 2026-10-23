@@ -3,9 +3,11 @@ package com.example.nexus.identity.infrastructure.security;
 import com.example.nexus.identity.application.port.out.RateLimitResult;
 import com.example.nexus.identity.application.port.out.RateLimitStore;
 import com.example.nexus.rbac.application.port.out.RoleChangeThrottlePort;
+import com.example.nexus.rbac.application.port.out.ThrottleStatus;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -28,11 +30,11 @@ import org.springframework.stereotype.Component;
  *
  * <p><b>A-2 — why this adapter owns its own "throttled-until" map.</b> {@link RateLimitStore}
  * exposes only {@link RateLimitStore#tryConsume}, a consume-and-report operation with no
- * non-destructive read. {@link #isThrottled} is specified as a pure query, so implementing it as
+ * non-destructive read. {@link #throttleStatus} is specified as a pure query, so implementing it as
  * a {@code tryConsume} call would consume a slot on <b>every</b> role-change request rather than
  * only on denials, corrupting the count. Instead: {@link #recordDenial} calls {@code tryConsume};
  * when the store reports the bound crossed, this adapter records {@code now + retryAfterSeconds}
- * for that key in a local map. {@link #isThrottled} only ever compares {@code now} against that
+ * for that key in a local map. {@link #throttleStatus} only ever compares {@code now} against that
  * map — it <b>never</b> calls {@code tryConsume}. {@link RateLimitStore} and both its
  * implementations are unchanged by this story.
  *
@@ -43,7 +45,7 @@ import org.springframework.stereotype.Component;
  * the Redis-backed store: each replica tracks its own transition state, even though the
  * underlying denial count is shared. This is accepted collateral (RES-11), not a defect.
  *
- * <p>Bounded map: evicted on read (an expired entry is removed the moment {@link #isThrottled}
+ * <p>Bounded map: evicted on read (an expired entry is removed the moment {@link #throttleStatus}
  * observes it) and by a periodic background sweep for keys that are never read again, following
  * {@link InMemoryRateLimitStore}'s own eviction pattern.
  *
@@ -109,24 +111,29 @@ public class RateLimitRoleChangeThrottleAdapter implements RoleChangeThrottlePor
     }
   }
 
+  /**
+   * Reads the local throttled-until map (US-019 B7, design §9.3): the retry-after is the time left,
+   * rounded up to whole seconds, at least 1. Evict-on-read is unchanged.
+   */
   @Override
-  public boolean isThrottled(UUID tenantId, UUID actorUserId) {
+  public ThrottleStatus throttleStatus(UUID tenantId, UUID actorUserId) {
     try {
       String key = key(tenantId, actorUserId);
       Instant now = clock.instant();
-      boolean[] throttled = {false};
+      ThrottleStatus[] status = {ThrottleStatus.NOT_THROTTLED};
       throttledUntil.computeIfPresent(key, (k, until) -> {
         if (now.isBefore(until)) {
-          throttled[0] = true;
+          long remainingMillis = Duration.between(now, until).toMillis();
+          status[0] = new ThrottleStatus(true, Math.max(1L, Math.ceilDiv(remainingMillis, 1000L)));
           return until;
         }
         suppressed.remove(k);
         return null; // window has passed - evict on read
       });
-      return throttled[0];
+      return status[0];
     } catch (RuntimeException e) {
-      log.warn("rbac denial-throttle isThrottled check failed, failing safe (not throttled)", e);
-      return false;
+      log.warn("rbac denial-throttle throttleStatus check failed, failing safe (not throttled)", e);
+      return ThrottleStatus.NOT_THROTTLED;
     }
   }
 

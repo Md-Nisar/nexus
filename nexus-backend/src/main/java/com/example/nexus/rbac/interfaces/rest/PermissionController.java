@@ -2,7 +2,9 @@ package com.example.nexus.rbac.interfaces.rest;
 
 import static com.example.nexus.common.security.Permissions.ROLE_READ;
 
+import com.example.nexus.common.security.Permissions;
 import com.example.nexus.common.security.RequiresPermission;
+import com.example.nexus.common.web.ProblemResponse;
 import com.example.nexus.rbac.application.RoleManagementService;
 import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.PermissionView;
@@ -55,8 +57,16 @@ public class PermissionController {
   @RequiresPermission(ROLE_READ)
   @Operation(summary = "List the permission catalogue, one page at a time")
   @ApiResponse(responseCode = "200", description = "A page of the permission catalogue")
-  @ApiResponse(responseCode = "400", description = "page or size out of range, or not an integer")
-  @ApiResponse(responseCode = "403", description = "Missing role:read")
+  @ProblemResponse(
+      status = 400,
+      codes = {"VALIDATION_FAILED"},
+      description =
+          "page or size out of range, or not an integer")
+  @ProblemResponse(
+      status = 403,
+      codes = {"RBAC_001"},
+      description =
+          "Missing role:read")
   public PermissionPageResponse listPermissions(
       @RequestParam(name = "page", required = false) String page,
       @RequestParam(name = "size", required = false) String size) {
@@ -71,6 +81,10 @@ public class PermissionController {
   }
 
   static PermissionResponse toResponse(PermissionView view) {
-    return new PermissionResponse(view.id().toString(), view.name(), view.description());
+    return new PermissionResponse(
+        view.id().toString(),
+        view.name(),
+        view.description(),
+        Permissions.SENSITIVE.contains(view.name()));
   }
 }

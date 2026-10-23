@@ -36,6 +36,8 @@
   --nx-color-primary-focus: #5e69d1;
   --nx-color-primary-surface: rgba(94, 106, 210, 0.12);
   --nx-color-on-primary: #ffffff;
+  /* Text-safe primary (>= 4.5:1 on every surface); --nx-color-primary stays for fills and rings */
+  --nx-color-primary-text: #8b95ee;
 
   /* ─────────────────────────────────────────────────────────────────────
      COLOR: SEMANTIC
@@ -44,8 +46,12 @@
 
   --nx-color-success: #27a644;
   --nx-color-success-surface: rgba(39, 166, 68, 0.12);
-  --nx-color-error: #e5484d;
+  --nx-color-error: #d03a3f;
   --nx-color-error-surface: rgba(229, 72, 77, 0.12);
+  /* Text-safe semantic variants (>= 4.5:1 on their tinted surface); the base colours are for fills */
+  --nx-color-error-text: #ff6369;
+  --nx-color-success-text: #27a644;
+  --nx-color-warning-text: #f76b15;
   --nx-color-warning: #f76b15;
   --nx-color-warning-surface: rgba(247, 107, 21, 0.12);
   --nx-color-info: #5e6ad2;
@@ -59,7 +65,7 @@
   --nx-color-on-surface: #f7f8f8;
   --nx-color-on-surface-muted: #d0d6e0;
   --nx-color-on-surface-faint: #8a8f98;
-  --nx-color-on-surface-dim: #62666d;
+  --nx-color-on-surface-dim: #83888f;
   --nx-color-on-error: #ffffff;
 
   /* ─────────────────────────────────────────────────────────────────────
@@ -225,8 +231,12 @@
     /* Ink inverts: light text on white becomes dark text */
     --nx-color-on-surface: #111113;
     --nx-color-on-surface-muted: #3b3d40;
-    --nx-color-on-surface-faint: #6f7178;
-    --nx-color-on-surface-dim: #9b9da2;
+    --nx-color-on-surface-faint: #62646a;
+    --nx-color-on-surface-dim: #6b6e75;
+    --nx-color-primary-text: #4a56c0;
+    --nx-color-error-text: #c4262b;
+    --nx-color-success-text: #1b7032;
+    --nx-color-warning-text: #8f4000;
 
     /* Primary surface tint becomes 8% opacity for less prominence on light surfaces */
     --nx-color-primary-surface: rgba(94, 106, 210, 0.08);
@@ -259,8 +269,12 @@ html[data-theme='light'] {
 
   --nx-color-on-surface: #111113;
   --nx-color-on-surface-muted: #3b3d40;
-  --nx-color-on-surface-faint: #6f7178;
-  --nx-color-on-surface-dim: #9b9da2;
+  --nx-color-on-surface-faint: #62646a;
+  --nx-color-on-surface-dim: #6b6e75;
+  --nx-color-primary-text: #4a56c0;
+  --nx-color-error-text: #c4262b;
+  --nx-color-success-text: #1b7032;
+  --nx-color-warning-text: #8f4000;
 
   --nx-color-primary-surface: rgba(94, 106, 210, 0.08);
 
@@ -285,7 +299,11 @@ html[data-theme='dark'] {
   --nx-color-on-surface: #f7f8f8;
   --nx-color-on-surface-muted: #d0d6e0;
   --nx-color-on-surface-faint: #8a8f98;
-  --nx-color-on-surface-dim: #62666d;
+  --nx-color-on-surface-dim: #83888f;
+  --nx-color-primary-text: #8b95ee;
+  --nx-color-error-text: #ff6369;
+  --nx-color-success-text: #27a644;
+  --nx-color-warning-text: #f76b15;
 
   --nx-color-primary-surface: rgba(94, 106, 210, 0.12);
 

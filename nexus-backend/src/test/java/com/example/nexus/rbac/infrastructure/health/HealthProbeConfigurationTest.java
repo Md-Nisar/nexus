@@ -11,6 +11,7 @@ import org.springframework.boot.health.actuate.endpoint.HealthEndpointGroup;
 import org.springframework.boot.health.actuate.endpoint.HealthEndpointGroups;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.core.env.Environment;
+import org.springframework.test.context.ActiveProfiles;
 
 /**
  * US-017 T-006(h): MC-J (design §11.2, §8.2 "Protected property 1" / "Protected property 2") --
@@ -57,6 +58,7 @@ import org.springframework.core.env.Environment;
       // No SMTP server on localhost -- disable mail health indicator to keep /actuator/health UP
       "management.health.mail.enabled=false"
     })
+@ActiveProfiles("test")
 @Tag("WebSliceTest")
 class HealthProbeConfigurationTest {
 

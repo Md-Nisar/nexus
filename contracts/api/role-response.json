@@ -1,0 +1,9 @@
+{
+  "id" : "0190a000-0000-7000-8000-00000000000a",
+  "name" : "Support",
+  "description" : "Read-only support staff",
+  "isSystemRole" : false,
+  "createdAt" : "2026-01-01T00:00:00Z",
+  "memberCount" : 3,
+  "permissionCount" : 2
+}

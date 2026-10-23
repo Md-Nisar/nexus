@@ -1,14 +1,28 @@
 import { Component, computed, inject } from '@angular/core';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
-import { MatIconModule } from '@angular/material/icon';
 import { ThemeService } from '../../core/theme.service';
 import {
+  NxAnnouncer,
   NxBadge,
   NxButton,
+  NxBreadcrumb,
   NxCard,
+  NxCheckbox,
+  NxChip,
+  NxDialog,
+  MenuItem,
   NxInput,
+  NxMenu,
+  NxPageHeader,
+  NxSearchField,
   NxSelect,
+  NxSkeleton,
   NxTable,
+  NxTableCellDef,
+  NxTabs,
+  NxTooltip,
+  BreadcrumbItem,
+  NavTab,
   NxEmptyState,
   NxErrorState,
   NxToast,
@@ -22,13 +36,22 @@ import {
   selector: 'app-design-system-preview',
   imports: [
     ReactiveFormsModule,
-    MatIconModule,
     NxBadge,
     NxButton,
+    NxBreadcrumb,
     NxCard,
+    NxCheckbox,
+    NxChip,
     NxInput,
+    NxMenu,
+    NxPageHeader,
+    NxSearchField,
     NxSelect,
+    NxSkeleton,
     NxTable,
+    NxTableCellDef,
+    NxTabs,
+    NxTooltip,
     NxEmptyState,
     NxErrorState,
   ],
@@ -37,6 +60,8 @@ import {
 })
 export class DesignSystemPreviewComponent {
   private readonly toast = inject(NxToast);
+  private readonly dialog = inject(NxDialog);
+  private readonly announcer = inject(NxAnnouncer);
   readonly themeService = inject(ThemeService);
   readonly themeIcon = computed(() =>
     this.themeService.theme() === 'dark' ? 'light_mode' : 'dark_mode',
@@ -45,7 +70,24 @@ export class DesignSystemPreviewComponent {
     this.themeService.theme() === 'dark' ? 'Switch to light mode' : 'Switch to dark mode',
   );
 
+  readonly menuItems: readonly MenuItem[] = [
+    { id: 'edit', label: 'Edit', icon: 'edit' },
+    { id: 'archive', label: 'Archive', disabled: true, disabledReason: 'Already archived' },
+    { id: 'delete', label: 'Delete', danger: true },
+  ];
+  lastMenuSelection = '';
+
   // Interactive form controls
+  readonly previewTabs: readonly NavTab[] = [
+    { label: 'Design system', path: '/design-system' },
+    { label: 'Dashboard', path: '/dashboard' },
+  ];
+  readonly breadcrumbItems: readonly BreadcrumbItem[] = [
+    { label: 'Home', path: '/dashboard' },
+    { label: 'Design system', path: '/design-system' },
+    { label: 'Navigation' },
+  ];
+  readonly checkedControl = new FormControl(true);
   readonly titleControl = new FormControl('');
   readonly emailControl = new FormControl('you@company.com');
   readonly errorControl = new FormControl('NXS-???');
@@ -98,6 +140,7 @@ export class DesignSystemPreviewComponent {
         return map[v as string] ?? 'neutral';
       },
     },
+    { key: 'actions', header: 'Actions', type: 'custom', width: '88px' },
   ];
 
   readonly tableRows = [
@@ -171,6 +214,19 @@ export class DesignSystemPreviewComponent {
       info: 'Email verification link has been re-sent.',
     };
     this.toast.show({ message: messages[variant], variant, action: 'Dismiss' });
+  }
+
+  confirmDelete(): void {
+    this.dialog.confirmTyped({
+      title: 'Delete role',
+      message: 'This removes the role from every user. It cannot be undone.',
+      expectedText: 'DELETE',
+      confirmLabel: 'Delete role',
+    });
+  }
+
+  announce(): void {
+    void this.announcer.announce('Preview announcement');
   }
 
   retryAction(): void {

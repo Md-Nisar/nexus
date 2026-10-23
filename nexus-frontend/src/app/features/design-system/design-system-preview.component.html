@@ -15,6 +15,10 @@
       <li><a class="ds-nav__link" href="#empty">Empty State</a></li>
       <li><a class="ds-nav__link" href="#error">Error State</a></li>
       <li><a class="ds-nav__link" href="#toast">Toast</a></li>
+      <li><a class="ds-nav__link" href="#menu">Menu</a></li>
+      <li><a class="ds-nav__link" href="#selection">Selection</a></li>
+      <li><a class="ds-nav__link" href="#navigation">Navigation</a></li>
+      <li><a class="ds-nav__link" href="#confirm">Confirm &amp; announce</a></li>
     </ul>
   </nav>
 
@@ -23,7 +27,9 @@
     <!-- Page header: title, theme toggle, and description -->
     <header class="ds-header">
       <div class="ds-header__top">
-        <h1 class="ds-header__title">Design System</h1>
+        <nx-page-header title="Design System">
+          <nx-breadcrumb slot="breadcrumb" [items]="breadcrumbItems" />
+        </nx-page-header>
         <!-- Theme toggle: switches between light and dark mode; icon changes with theme -->
         <nx-button
           variant="ghost"
@@ -364,6 +370,8 @@
         [columns]="tableColumns"
         [rows]="tableRows"
         [clickable]="true"
+        [stickyHeader]="true"
+        caption="Recent issues"
         style="
           display: block;
           background: var(--nx-color-surface);
@@ -371,7 +379,11 @@
           border-radius: var(--nx-radius-lg);
           overflow: hidden;
         "
-      />
+      >
+        <ng-template nxTableCell="actions">
+          <nx-menu triggerLabel="Row actions" [items]="menuItems" />
+        </ng-template>
+      </nx-table>
     </section>
 
     <!-- Empty state section: nx-empty-state component for zero-data and no-results conditions -->
@@ -454,6 +466,74 @@
           <!-- Error toast: error or failure feedback (e.g., "Failed to save") -->
           <nx-button variant="danger" (clicked)="showToast('error')"> Error toast </nx-button>
         </div>
+      </div>
+    </section>
+
+    <!-- Menu section: nx-menu icon-triggered action menu -->
+    <section id="menu" class="ds-section">
+      <h2 class="ds-section__heading">Menu — nx-menu</h2>
+      <div class="ds-row">
+        <nx-menu
+          triggerLabel="Row actions"
+          [items]="menuItems"
+          (selected)="lastMenuSelection = $event"
+        />
+        <span data-testid="menu-selection">Last selected: {{ lastMenuSelection || 'none' }}</span>
+      </div>
+    </section>
+
+    <!-- Selection section: nx-checkbox, nx-search-field and nx-chip -->
+    <section id="selection" class="ds-section">
+      <h2 class="ds-section__heading">Selection — nx-checkbox, nx-search-field, nx-chip</h2>
+      <div class="ds-row">
+        <nx-checkbox label="Checked" [formControl]="checkedControl" />
+        <nx-checkbox label="Partially selected" [indeterminate]="true" />
+        <nx-checkbox
+          label="Locked"
+          [disabled]="true"
+          disabledReason="Requires the admin role"
+          testId="preview-checkbox-locked"
+        />
+      </div>
+      <div class="ds-row">
+        <nx-search-field label="Search issues" placeholder="Search issues" />
+        <nx-search-field label="Find by email" placeholder="Find by email" mode="submit" />
+      </div>
+      <div class="ds-row">
+        <nx-chip label="Admins" />
+        <nx-chip label="Active" variant="success" />
+        <nx-chip label="Billing" variant="warning" [removable]="true" />
+        <nx-chip label="Suspended" variant="error" [removable]="true" />
+      </div>
+    </section>
+
+    <!-- Navigation section: nx-tabs, nx-skeleton, nxTooltip (nx-breadcrumb and nx-page-header: page title above) -->
+    <section id="navigation" class="ds-section">
+      <h2 class="ds-section__heading">
+        Navigation — nx-tabs, nx-skeleton, nxTooltip (nx-breadcrumb and nx-page-header: page title
+        above)
+      </h2>
+      <nx-tabs [tabs]="previewTabs" ariaLabel="Preview sections" />
+      <div class="ds-row">
+        <a class="ds-nav__link" href="#navigation" nxTooltip="Supplementary hint only">
+          Hover or focus me
+        </a>
+      </div>
+      <div class="ds-row" aria-busy="true">
+        <nx-skeleton variant="circle" />
+        <nx-skeleton [lines]="3" width="240px" />
+        <nx-skeleton variant="rect" width="160px" />
+      </div>
+    </section>
+
+    <!-- Confirm section: NxDialog.confirmTyped and NxAnnouncer -->
+    <section id="confirm" class="ds-section">
+      <h2 class="ds-section__heading">
+        Confirm &amp; announce — NxDialog.confirmTyped, NxAnnouncer
+      </h2>
+      <div class="ds-row">
+        <nx-button variant="danger" (clicked)="confirmDelete()">Delete role…</nx-button>
+        <nx-button variant="secondary" (clicked)="announce()">Announce politely</nx-button>
       </div>
     </section>
   </main>

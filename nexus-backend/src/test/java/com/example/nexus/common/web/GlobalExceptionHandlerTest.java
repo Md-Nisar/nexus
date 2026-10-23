@@ -14,12 +14,15 @@ import com.example.nexus.common.domain.AuthenticationException;
 import com.example.nexus.common.domain.ConflictException;
 import com.example.nexus.common.domain.DomainException;
 import com.example.nexus.common.domain.FieldValidationException;
+import com.example.nexus.common.domain.PreconditionFailedException;
+import com.example.nexus.common.domain.PreconditionRequiredException;
 import com.example.nexus.common.domain.RateLimitException;
 import com.example.nexus.common.domain.RefreshThrottledException;
 import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.common.domain.TokenExpiredException;
 import com.example.nexus.common.security.DenialReason;
 import com.example.nexus.common.security.InsufficientPermissionException;
+import com.example.nexus.rbac.domain.RoleChangeThrottledException;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.validation.ConstraintViolationException;
 import java.lang.reflect.Method;
@@ -30,6 +33,18 @@ import java.util.Set;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.core.MethodParameter;
+import org.springframework.http.HttpInputMessage;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.http.HttpMethod;
@@ -44,6 +59,7 @@ import org.springframework.web.method.annotation.ExceptionHandlerMethodResolver;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 @Tag("UnitTest")
+@ExtendWith(OutputCaptureExtension.class)
 class GlobalExceptionHandlerTest {
 
     private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
@@ -52,6 +68,27 @@ class GlobalExceptionHandlerTest {
     @AfterEach
     void clearMdc() {
         MDC.clear();
+    }
+
+    /** US-019 T-018 (RC-58.2): a stale If-Match is 412 and the body carries no state. */
+    @Test
+    void should_return412WithOnlyStandardFields_when_preconditionFailed() {
+        ProblemDetail problem = handler.handlePreconditionFailed(new PreconditionFailedException());
+
+        assertThat(problem.getStatus()).isEqualTo(412);
+        assertThat(problem.getProperties()).containsOnlyKeys("code", "traceId");
+        assertThat(problem.getProperties()).containsEntry("code", "PRECONDITION_FAILED");
+    }
+
+    /** US-019 T-018 (RC-55.2): a missing or unusable If-Match is 428 and the body carries no state. */
+    @Test
+    void should_return428WithOnlyStandardFields_when_preconditionRequired() {
+        ProblemDetail problem =
+                handler.handlePreconditionRequired(new PreconditionRequiredException());
+
+        assertThat(problem.getStatus()).isEqualTo(428);
+        assertThat(problem.getProperties()).containsOnlyKeys("code", "traceId");
+        assertThat(problem.getProperties()).containsEntry("code", "PRECONDITION_REQUIRED");
     }
 
     @Test
@@ -202,6 +239,72 @@ class GlobalExceptionHandlerTest {
                         new InsufficientPermissionException("tenant:write", DenialReason.PERMISSION_ABSENT));
 
         assertThat(resolved.getName()).isEqualTo("handleInsufficientPermission");
+    }
+
+    // US-019 B7 (design §9.2, RC-63(l)): RBAC_001 always carries the caller-facing reason.
+
+    @ParameterizedTest
+    @CsvSource({
+        "GRANT_EXCEEDS_CALLER, GRANT_EXCEEDS_CALLER",
+        "SELF_ASSIGNMENT, SELF_ASSIGNMENT",
+        "NOT_TENANT_ADMIN, ADMINISTRATOR_REQUIRED",
+        "PERMISSION_ABSENT, UNSPECIFIED",
+        "MALFORMED_AUTHENTICATION, UNSPECIFIED",
+        "MISSING_TENANT, UNSPECIFIED",
+        "CROSS_TENANT_TARGET, UNSPECIFIED"
+    })
+    void should_writeTheCallerFacingReason_when_insufficientPermissionThrown(
+            DenialReason internal, String wire) {
+        ProblemDetail problem = handler.handleInsufficientPermission(
+                new InsufficientPermissionException("user:role:assign", internal));
+
+        assertThat(problem.getProperties()).containsEntry("reason", wire);
+    }
+
+    @ParameterizedTest
+    @EnumSource(DenialReason.class)
+    void should_alwaysWriteReasonAndKeepRequiredPermission_when_insufficientPermissionThrown(
+            DenialReason internal) {
+        ProblemDetail problem = handler.handleInsufficientPermission(
+                new InsufficientPermissionException("user:role:assign", internal));
+
+        assertThat(problem.getProperties())
+                .containsKey("reason")
+                .containsEntry("requiredPermission", "user:role:assign")
+                .containsEntry("code", "RBAC_001");
+    }
+
+    @Test
+    void should_notWriteAReason_when_genericAccessDenied() {
+        ProblemDetail problem = handler.handleAccessDenied(new AccessDeniedException("denied"));
+
+        assertThat(problem.getProperties()).doesNotContainKey("reason");
+    }
+
+    @Test
+    void should_return429Rbac011WithRetryAfterAndNoWarn_when_roleChangeThrottled() {
+        Logger logger = (Logger) LoggerFactory.getLogger(GlobalExceptionHandler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.WARN);
+        try {
+            ResponseEntity<ProblemDetail> response =
+                    handler.handleRateLimit(new RoleChangeThrottledException(42L));
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+            assertThat(response.getHeaders().getFirst("Retry-After")).isEqualTo("42");
+            assertThat(response.getBody().getProperties())
+                    .containsEntry("code", "RBAC_011")
+                    .doesNotContainKey("reason");
+            assertThat(response.getBody().getDetail())
+                    .isEqualTo("Too many denied role changes; try again later");
+            assertThat(appender.list).as("selfReported: no WARN per throttled request").isEmpty();
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+            logger.setLevel(Level.OFF);
+        }
     }
 
     @Test
@@ -410,6 +513,114 @@ class GlobalExceptionHandlerTest {
                     .containsEntry("tenantId", "t-1")
                     .containsEntry("requiredPermission", "tenant:write")
                     .containsEntry("correlationId", "corr-1");
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+            logger.setLevel(Level.OFF);
+        }
+    }
+
+    @Test
+    void should_return400ValidationFailed_when_bodyNotReadable() {
+        ProblemDetail problem = handler.handleBodyNotReadable(
+                new HttpMessageNotReadableException("boom", mock(HttpInputMessage.class)));
+
+        assertThat(problem.getStatus()).isEqualTo(400);
+        assertThat(problem.getProperties()).containsEntry("code", "VALIDATION_FAILED");
+        assertThat(problem.getDetail()).isEqualTo("Request body is not valid JSON.");
+    }
+
+    @Test
+    void should_return415UnsupportedMediaType_when_contentTypeNotSupported() {
+        ProblemDetail problem = handler.handleMediaTypeNotSupported(
+                new HttpMediaTypeNotSupportedException("text/plain"));
+
+        assertThat(problem.getStatus()).isEqualTo(415);
+        assertThat(problem.getProperties()).containsEntry("code", "UNSUPPORTED_MEDIA_TYPE");
+    }
+
+    @Test
+    void should_return405WithAllowHeader_when_methodNotSupported() {
+        ResponseEntity<ProblemDetail> response = handler.handleMethodNotSupported(
+                new HttpRequestMethodNotSupportedException("DELETE", List.of("GET", "PUT")));
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
+        assertThat(response.getHeaders().getFirst("Allow")).isEqualTo("GET,PUT");
+        assertThat(response.getBody().getProperties()).containsEntry("code", "METHOD_NOT_ALLOWED");
+    }
+
+    @Test
+    void should_return400WithHeaderNameOnly_when_requiredHeaderMissing() {
+        MethodParameter parameter = mock(MethodParameter.class);
+        ProblemDetail problem = handler.handleMissingHeader(
+                new MissingRequestHeaderException("If-Match", parameter));
+
+        assertThat(problem.getStatus()).isEqualTo(400);
+        assertThat(problem.getProperties()).containsEntry("code", "VALIDATION_FAILED");
+        assertThat(problem.getProperties().get("details"))
+                .isEqualTo(List.of(Map.of("field", "If-Match", "message", "Header is required.")));
+    }
+
+    @Test
+    void should_neverLogExceptionText_when_bodyNotReadableCarriesSentinelToken(CapturedOutput output) {
+        Logger logger = (Logger) LoggerFactory.getLogger(GlobalExceptionHandler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.DEBUG);
+        try {
+            String sentinel = "sentinel.local-part";
+            RuntimeException cause = new RuntimeException("Unrecognized token '" + sentinel + "'");
+            handler.handleBodyNotReadable(new HttpMessageNotReadableException(
+                    "JSON parse error: Unrecognized token '" + sentinel + "'",
+                    cause,
+                    mock(HttpInputMessage.class)));
+
+            assertThat(appender.list).isNotEmpty();
+            assertThat(appender.list).allSatisfy(event -> {
+                assertThat(event.getFormattedMessage()).doesNotContain(sentinel);
+                assertThat(keyValueMap(event).values().toString()).doesNotContain(sentinel);
+                assertThat(event.getThrowableProxy()).isNull();
+            });
+            assertThat(output.getAll()).doesNotContain(sentinel);
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+            logger.setLevel(Level.OFF);
+        }
+    }
+
+    @Test
+    void should_logAtDebugAndNotWarn_when_selfReportedRateLimit() {
+        assertThat(new RefreshThrottledException(5L).selfReported()).isTrue();
+        assertThat(new RateLimitException("X", "m", 5L).selfReported()).isFalse();
+        Logger logger = (Logger) LoggerFactory.getLogger(GlobalExceptionHandler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.DEBUG);
+        try {
+            handler.handleRateLimit(new RefreshThrottledException(5L));
+
+            assertThat(appender.list).extracting(ILoggingEvent::getLevel).containsOnly(Level.DEBUG);
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+            logger.setLevel(Level.OFF);
+        }
+    }
+
+    @Test
+    void should_logAtWarn_when_plainRateLimit() {
+        Logger logger = (Logger) LoggerFactory.getLogger(GlobalExceptionHandler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.DEBUG);
+        try {
+            handler.handleRateLimit(new RateLimitException("X", "m", 5L));
+
+            assertThat(appender.list).extracting(ILoggingEvent::getLevel).containsOnly(Level.WARN);
         } finally {
             logger.detachAppender(appender);
             appender.stop();

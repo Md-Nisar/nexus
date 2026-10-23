@@ -136,11 +136,11 @@ import { PasswordStrengthMeterComponent } from '../registration-form/password-st
         padding: var(--nx-space-3) var(--nx-space-4);
         border-radius: var(--nx-radius-sm);
         background: var(--nx-color-error-surface);
-        color: var(--nx-color-error);
+        color: var(--nx-color-error-text);
         font-size: var(--nx-text-base);
 
         a {
-          color: var(--nx-color-error);
+          color: var(--nx-color-error-text);
           font-weight: var(--nx-weight-medium);
         }
       }
@@ -152,7 +152,7 @@ import { PasswordStrengthMeterComponent } from '../registration-form/password-st
         text-align: center;
 
         a {
-          color: var(--nx-color-primary);
+          color: var(--nx-color-primary-text);
           text-decoration: none;
 
           &:hover {

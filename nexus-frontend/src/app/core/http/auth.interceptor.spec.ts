@@ -774,6 +774,24 @@ describe('authInterceptor', () => {
       expect(mockAuthStore.clearSession).not.toHaveBeenCalled();
     });
 
+    it('429 RBAC_011 on a role change is surfaced once and never auto-retried (US-019 B7)', () => {
+      let error: unknown;
+      http.post('/api/v1/users/u-1/roles', {}).subscribe({ error: (e: unknown) => (error = e) });
+
+      controller
+        .expectOne('/api/v1/users/u-1/roles')
+        .flush(
+          { code: 'RBAC_011' },
+          { status: 429, statusText: 'Too Many Requests', headers: { 'Retry-After': '1' } },
+        );
+      vi.advanceTimersByTime(120_000);
+
+      expect((error as HttpErrorResponse).status).toBe(429);
+      controller.expectNone('/api/v1/users/u-1/roles');
+      expect(mockAuthService.refresh).not.toHaveBeenCalled();
+      expect(mockRouter.navigate).not.toHaveBeenCalled();
+    });
+
     it.each([
       ['exactly 1 s', '1', 1_000],
       ['exactly 60 s', '60', 60_000],

@@ -1,0 +1,9 @@
+{
+  "detail" : "Access denied",
+  "status" : 403,
+  "title" : "Forbidden",
+  "code" : "RBAC_001",
+  "traceId" : "0190a000-0000-7000-8000-0000000000ff",
+  "requiredPermission" : "role:write",
+  "reason" : "GRANT_EXCEEDS_CALLER"
+}

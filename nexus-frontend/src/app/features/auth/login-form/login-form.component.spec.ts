@@ -36,7 +36,7 @@ function setup(
   const fixture = TestBed.createComponent(LoginFormComponent);
   fixture.detectChanges();
   const router = TestBed.inject(Router);
-  const navigateSpy = vi.spyOn(router, 'navigate').mockResolvedValue(true);
+  const navigateSpy = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
   return { fixture, component: fixture.componentInstance, mockAuthService, navigateSpy };
 }
 
@@ -103,14 +103,37 @@ describe('LoginFormComponent', () => {
     expect(component.loading()).toBe(false);
   });
 
-  it('success navigates to /dashboard', () => {
+  it('success navigates to /dashboard when there is no returnUrl', () => {
     const loginFn = vi.fn(() => of(undefined));
     const { fixture, component, navigateSpy } = setup(loginFn);
     fillForm(fixture);
     component.submit();
     fixture.detectChanges();
-    expect(navigateSpy).toHaveBeenCalledWith(['/dashboard']);
+    expect(navigateSpy).toHaveBeenCalledWith('/dashboard');
   });
+
+  it('success navigates to a safe returnUrl', () => {
+    const { fixture, component, navigateSpy } = setup(
+      vi.fn(() => of(undefined)),
+      { returnUrl: '/role-test?tab=x' },
+    );
+    fillForm(fixture);
+    component.submit();
+    expect(navigateSpy).toHaveBeenCalledWith('/role-test?tab=x');
+  });
+
+  it.each(['//evil.example', 'https://evil.example', '/\\evil.example', 'javascript:alert(1)'])(
+    'success ignores the unsafe returnUrl %s',
+    (returnUrl) => {
+      const { fixture, component, navigateSpy } = setup(
+        vi.fn(() => of(undefined)),
+        { returnUrl },
+      );
+      fillForm(fixture);
+      component.submit();
+      expect(navigateSpy).toHaveBeenCalledWith('/dashboard');
+    },
+  );
 
   it('shows reset-success banner when ?reset=true query param is present', () => {
     const { fixture, component } = setup(

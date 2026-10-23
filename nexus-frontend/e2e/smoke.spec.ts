@@ -9,7 +9,9 @@ test.describe('application shell', () => {
       }
     });
 
-    await page.goto('/');
+    // The sign-in page makes no API call, so the check holds with or without a backend; `/` would
+    // try a session refresh first.
+    await page.goto('/auth/login');
 
     await expect(page.locator('app-root')).toBeAttached();
     expect(consoleErrors).toEqual([]);

@@ -5,10 +5,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.nexus.TestcontainersConfiguration;
 import com.example.nexus.identity.domain.UuidGenerator;
+import com.example.nexus.rbac.domain.RbacSeededPermissionIds;
 import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermission;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRolePermissionRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
+import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import java.nio.ByteBuffer;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -17,6 +19,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -27,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.jpa.repository.Query;
 import org.testcontainers.containers.MySQLContainer;
 
 /**
@@ -204,6 +208,110 @@ class RolePermissionsPrivilegeIT {
         g -> assertThat(g.toUpperCase(Locale.ROOT)).as(g).doesNotContain("UPDATE"));
   }
 
+  // ── US-019 B8 (design §10.4): the replace's current reads, as nexus_app ────────────────
+
+  /** The production step-9 read: {@code FOR SHARE} needs SELECT plus DELETE, which nexus_app has. */
+  @Test
+  void should_readTheCurrentSetForShare_when_lockingOneRolesPermissionsAsNexusApp()
+      throws Exception {
+    Role role = seedRole("for-share");
+    rolePermissionRepository.save(new RolePermission(role.getId(), RbacSeededPermissionIds.ROLE_READ));
+    String sql =
+        JpaRolePermissionRepository.class
+            .getMethod("lockPermissionIdsByRoleId", byte[].class)
+            .getAnnotation(Query.class)
+            .value()
+            .replace(":roleId", "?");
+
+    List<byte[]> ids = new ArrayList<>();
+    nexusAppConnection.setAutoCommit(false);
+    try (PreparedStatement select = nexusAppConnection.prepareStatement(sql)) {
+      select.setBytes(1, toBytes(role.getId()));
+      try (ResultSet rs = select.executeQuery()) {
+        while (rs.next()) {
+          ids.add(rs.getBytes(1));
+        }
+      }
+    }
+    nexusAppConnection.rollback();
+
+    assertThat(ids).singleElement().isEqualTo(toBytes(RbacSeededPermissionIds.ROLE_READ));
+  }
+
+  /**
+   * RC-57.1: the multi-role current read the set-lock verbs use (the production statement of
+   * {@code JpaUserRoleRepository#lockRolePermissionsByRoleIds}) is allowed as nexus_app, returns
+   * only the tenant's rows, and locks {@code role_permissions} rows only: its tenant join takes no
+   * lock on {@code roles} ({@code FOR SHARE OF rp}), so it adds nothing outside RC-46's order.
+   */
+  @Test
+  void should_readSeveralRolesForShareWithoutLockingRoles_when_lockingWithAnInListAsNexusApp()
+      throws Exception {
+    UUID tenantId = uuidGenerator.newId();
+    Role first = seedRole("for-share-in-1", tenantId);
+    Role second = seedRole("for-share-in-2", tenantId);
+    Role foreign = seedRole("for-share-in-foreign");
+    rolePermissionRepository.save(new RolePermission(first.getId(), RbacSeededPermissionIds.ROLE_READ));
+    rolePermissionRepository.save(new RolePermission(second.getId(), RbacSeededPermissionIds.ROLE_WRITE));
+    rolePermissionRepository.save(new RolePermission(foreign.getId(), RbacSeededPermissionIds.ROLE_READ));
+    String sql =
+        JpaUserRoleRepository.class
+            .getMethod("lockRolePermissionsByRoleIds", Collection.class, byte[].class)
+            .getAnnotation(Query.class)
+            .value()
+            .replace(":roleIds", "?, ?, ?")
+            .replace(":tenantId", "?");
+    assertThat(sql).contains("FOR SHARE OF rp");
+
+    int rows = 0;
+    List<String> lockedTables;
+    nexusAppConnection.setAutoCommit(false);
+    try (PreparedStatement select = nexusAppConnection.prepareStatement(sql)) {
+      select.setBytes(1, toBytes(first.getId()));
+      select.setBytes(2, toBytes(second.getId()));
+      select.setBytes(3, toBytes(foreign.getId()));
+      select.setBytes(4, toBytes(tenantId));
+      try (ResultSet rs = select.executeQuery()) {
+        while (rs.next()) {
+          rows++;
+        }
+      }
+      lockedTables = tablesLockedByNexusAppTransaction();
+    } finally {
+      nexusAppConnection.rollback();
+    }
+
+    assertThat(rows).as("the foreign tenant's row is excluded").isEqualTo(2);
+    assertThat(lockedTables).contains("role_permissions").doesNotContain("roles");
+  }
+
+  /** Tables on which the nexus_app connection's open transaction holds a row lock (read as root). */
+  private List<String> tablesLockedByNexusAppTransaction() throws SQLException {
+    long threadId;
+    try (Statement statement = nexusAppConnection.createStatement();
+        ResultSet rs = statement.executeQuery("SELECT CONNECTION_ID()")) {
+      rs.next();
+      threadId = rs.getLong(1);
+    }
+    List<String> tables = new ArrayList<>();
+    try (Connection observer =
+            DriverManager.getConnection(
+                mysqlContainer.getJdbcUrl(), "root", mysqlContainer.getPassword());
+        PreparedStatement locks =
+            observer.prepareStatement(
+                "SELECT DISTINCT l.OBJECT_NAME FROM performance_schema.data_locks l"
+                    + " JOIN performance_schema.threads t ON t.THREAD_ID = l.THREAD_ID"
+                    + " WHERE t.PROCESSLIST_ID = ? AND l.LOCK_TYPE = 'RECORD'")) {
+      locks.setLong(1, threadId);
+      try (ResultSet rs = locks.executeQuery()) {
+        while (rs.next()) {
+          tables.add(rs.getString(1));
+        }
+      }
+    }
+    return tables;
+  }
+
   private static void assertCommandDenied(Throwable ex) {
     SQLException sqlEx = (SQLException) ex;
     assertThat(sqlEx.getSQLState()).isEqualTo("42000");
@@ -211,18 +319,17 @@ class RolePermissionsPrivilegeIT {
   }
 
   private Role seedRole(String tag) {
+    return seedRole(tag, uuidGenerator.newId());
+  }
+
+  private Role seedRole(String tag, UUID tenantId) {
     return roleRepository.save(
-        new Role(
-            uuidGenerator.newId(),
-            uuidGenerator.newId(),
-            "RPP-" + tag + "-" + UUID.randomUUID(),
-            null,
-            false));
+        new Role(uuidGenerator.newId(), tenantId, "RPP-" + tag + "-" + UUID.randomUUID(), null, false));
   }
 
   /** {@code role:write}, per V5__rbac_schema.sql's header comment seeded literals. */
   private UUID anySeededPermissionId() {
-    return UUID.fromString("019f6839-1805-7000-8000-000000000006");
+    return RbacSeededPermissionIds.ROLE_WRITE;
   }
 
   private static byte[] toBytes(UUID uuid) {

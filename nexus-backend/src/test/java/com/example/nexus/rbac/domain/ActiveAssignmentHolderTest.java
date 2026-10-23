@@ -10,15 +10,18 @@ import org.junit.jupiter.api.Test;
 class ActiveAssignmentHolderTest {
 
   @Test
-  void should_exposeAssignmentIdUserIdAndRoleId_when_constructed() {
+  void should_exposeAssignmentIdUserIdRoleIdAndAssignedBy_when_constructed() {
     UUID assignmentId = UUID.randomUUID();
     UUID userId = UUID.randomUUID();
     UUID roleId = UUID.randomUUID();
+    UUID assignedBy = UUID.randomUUID();
 
-    ActiveAssignmentHolder holder = new ActiveAssignmentHolder(assignmentId, userId, roleId);
+    ActiveAssignmentHolder holder =
+        new ActiveAssignmentHolder(assignmentId, userId, roleId, assignedBy);
 
     assertThat(holder.assignmentId()).isEqualTo(assignmentId);
     assertThat(holder.userId()).isEqualTo(userId);
     assertThat(holder.roleId()).isEqualTo(roleId);
+    assertThat(holder.assignedBy()).isEqualTo(assignedBy);
   }
 }

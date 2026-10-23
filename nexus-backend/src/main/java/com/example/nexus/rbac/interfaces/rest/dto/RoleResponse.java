@@ -16,6 +16,15 @@ import java.time.Instant;
  * tenant), {@code updatedAt} (nothing in this story can update a role — {@code roles} has no
  * {@code UPDATE} grant), and any permission list (that is the separate {@code GET
  * /roles/{roleId}/permissions} endpoint).
+ *
+ * <p>{@code memberCount} (active assignments of the role) and {@code permissionCount} (attached
+ * permissions) are US-019 B6; a freshly created role reports 0 and 0.
  */
 public record RoleResponse(
-    String id, String name, String description, boolean isSystemRole, Instant createdAt) {}
+    String id,
+    String name,
+    String description,
+    boolean isSystemRole,
+    Instant createdAt,
+    long memberCount,
+    int permissionCount) {}

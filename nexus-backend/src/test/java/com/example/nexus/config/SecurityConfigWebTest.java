@@ -35,6 +35,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -83,6 +84,7 @@ import org.springframework.web.context.WebApplicationContext;
         // No SMTP server on localhost — disable mail health indicator to keep /actuator/health UP
         "management.health.mail.enabled=false"
     })
+@ActiveProfiles("test")
 @Tag("WebSliceTest")
 class SecurityConfigWebTest {
 
@@ -209,6 +211,28 @@ class SecurityConfigWebTest {
             .header("Access-Control-Request-Headers", "Content-Type,Authorization"))
         .andExpect(status().isOk())
         .andExpect(header().string("Access-Control-Allow-Methods", containsString("PATCH")));
+  }
+
+  /** US-019 T-018 (design §10.7): the SPA's replace sends If-Match cross-origin in dev. */
+  @Test
+  void cors_preflight_allows_if_match_on_put() throws Exception {
+    mvc.perform(options("/api/v1/roles/00000000-0000-7000-8000-000000000001/permissions")
+            .header("Origin", "http://localhost:2000")
+            .header("Access-Control-Request-Method", "PUT")
+            .header("Access-Control-Request-Headers", "Content-Type,Authorization,If-Match"))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Access-Control-Allow-Headers", containsString("If-Match")));
+  }
+
+  /** US-019 T-018 (design §10.7): the SPA reads the ETag it must send back in If-Match. */
+  @Test
+  void cors_exposes_etag() throws Exception {
+    mvc.perform(options("/api/v1/roles/00000000-0000-7000-8000-000000000001/permissions")
+            .header("Origin", "http://localhost:2000")
+            .header("Access-Control-Request-Method", "GET")
+            .header("Access-Control-Request-Headers", "Authorization"))
+        .andExpect(status().isOk())
+        .andExpect(header().string("Access-Control-Expose-Headers", containsString("ETag")));
   }
 
   // ── Expired / invalid JWT must produce 401, not 500 (T-3.5) ──────────────

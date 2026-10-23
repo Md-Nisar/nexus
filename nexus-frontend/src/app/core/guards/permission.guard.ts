@@ -12,18 +12,27 @@ import { Permission } from '../../shared/types/permission';
  * guard never performs I/O and never returns an Observable.
  *
  * ## Usage contract (mandatory)
- * `permissionGuard` MUST be composed **after** `authGuard`, or sit under a route whose
- * ancestor already carries `authGuard`:
+ * `authGuard` MUST sit on an **ancestor** route of every route that uses `permissionGuard`,
+ * and the two guards MUST NOT share a `canActivate` array:
  *
  * ```typescript
- * { path: 'roles', canActivate: [authGuard, permissionGuard], data: { permission: 'role:read' }, ... }
+ * {
+ *   path: '',
+ *   canActivate: [authGuard],
+ *   children: [
+ *     { path: 'roles', canActivate: [permissionGuard], data: { permission: 'role:read' }, ... },
+ *   ],
+ * }
  * ```
  *
- * Angular evaluates a `canActivate` array sequentially and short-circuits on the first
- * non-`true` result, so `authGuard` completes its silent refresh (populating the session)
- * before this guard reads the store. Used **alone**, on a cold start (page reload, session
- * `null`) this guard would see an empty permission list and misroute an entitled but
- * not-yet-restored user to `/access-denied` instead of `/auth/login`.
+ * Guards inside one `canActivate` array run **concurrently** (the router combines their
+ * results), so `permissionGuard` would read the store while `authGuard` is still refreshing the
+ * session. Route **levels** run in sequence: an ancestor's guards complete before a child's
+ * start, so by the time this guard runs the silent refresh has populated the session. Used
+ * without an `authGuard` ancestor, on a cold start (page reload, session `null`) this guard
+ * would see an empty permission list and misroute an entitled but not-yet-restored user to
+ * `/access-denied` instead of `/auth/login`. `permission-guard-contract.spec.ts` enforces both
+ * rules on the real route table.
  *
  * ## Fail-open
  * A route that reaches this guard without a non-empty string `data.permission` is a

@@ -70,7 +70,13 @@ public enum AuthEventType {
   // the grant transaction and a refusal's FAILURE row commits in its own transaction, both through
   // AuthEventPort#recordOrThrow, so a failed write propagates (rolling the grant back, or logged as
   // RBAC_AUDIT_WRITE_LOST for a refusal) and is never enqueued to the retry buffer.
-  ROLE_BREAK_GLASS_GRANT("ROLE_BREAK_GLASS_GRANT");
+  ROLE_BREAK_GLASS_GRANT("ROLE_BREAK_GLASS_GRANT"),
+
+  // US-019 B1 (03-design.md §4.5): one best-effort row per directory read (list, batch, by id,
+  // lookup). Not PRIORITY: a holder can mint one per request, so lane admission would hand them the
+  // pager trigger the priority lane exists to protect. Metadata never holds an email, a blind
+  // index or an id list.
+  USER_DIRECTORY_READ("USER_DIRECTORY_READ");
 
   // ROLE_ASSIGNED/ROLE_REVOKED are PRIORITY (T-R4, reversing the original US-012 D10 decision):
   // role-change audit events must not share the drop-newest STANDARD lane with high-volume

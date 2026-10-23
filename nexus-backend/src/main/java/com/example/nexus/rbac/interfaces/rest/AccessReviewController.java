@@ -3,6 +3,7 @@ package com.example.nexus.rbac.interfaces.rest;
 import static com.example.nexus.common.security.Permissions.AUDIT_READ;
 
 import com.example.nexus.common.security.RequiresPermission;
+import com.example.nexus.common.web.ProblemResponse;
 import com.example.nexus.rbac.application.AccessReviewService;
 import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.PermissionHolder;
@@ -66,13 +67,21 @@ public class AccessReviewController {
   @RequiresPermission(AUDIT_READ)
   @Operation(summary = "List the active holders of a role in the caller's tenant (ids only)")
   @ApiResponse(responseCode = "200", description = "A page of holders")
-  @ApiResponse(
-      responseCode = "400",
-      description = "Malformed path UUID, or page or size out of range or not an integer")
-  @ApiResponse(responseCode = "403", description = "Missing audit:read")
-  @ApiResponse(
-      responseCode = "404",
-      description = "Role not found, deleted, or in another tenant (indistinguishable)")
+  @ProblemResponse(
+      status = 400,
+      codes = {"VALIDATION_FAILED"},
+      description =
+          "Malformed path UUID, or page or size out of range or not an integer")
+  @ProblemResponse(
+      status = 403,
+      codes = {"RBAC_001"},
+      description =
+          "Missing audit:read")
+  @ProblemResponse(
+      status = 404,
+      codes = {"ROLE_NOT_FOUND"},
+      description =
+          "Role not found, deleted, or in another tenant (indistinguishable)")
   public RoleHolderListResponse listRoleHolders(
       @PathVariable String roleId,
       @RequestParam(name = "page", required = false) String page,
@@ -103,11 +112,21 @@ public class AccessReviewController {
   @RequiresPermission(AUDIT_READ)
   @Operation(summary = "List the users holding a permission in the caller's tenant (ids only)")
   @ApiResponse(responseCode = "200", description = "A page of holders, each with the granting roles")
-  @ApiResponse(
-      responseCode = "400",
-      description = "Malformed path UUID, or page or size out of range or not an integer")
-  @ApiResponse(responseCode = "403", description = "Missing audit:read")
-  @ApiResponse(responseCode = "404", description = "No such permission")
+  @ProblemResponse(
+      status = 400,
+      codes = {"VALIDATION_FAILED"},
+      description =
+          "Malformed path UUID, or page or size out of range or not an integer")
+  @ProblemResponse(
+      status = 403,
+      codes = {"RBAC_001"},
+      description =
+          "Missing audit:read")
+  @ProblemResponse(
+      status = 404,
+      codes = {"PERMISSION_NOT_FOUND"},
+      description =
+          "No such permission")
   public PermissionHolderListResponse listPermissionHolders(
       @PathVariable String permissionId,
       @RequestParam(name = "page", required = false) String page,
@@ -136,11 +155,21 @@ public class AccessReviewController {
   @RequiresPermission(AUDIT_READ)
   @Operation(summary = "List the effective permissions of a user in the caller's tenant")
   @ApiResponse(responseCode = "200", description = "Effective permissions (empty for a user with no role)")
-  @ApiResponse(responseCode = "400", description = "Malformed path UUID")
-  @ApiResponse(responseCode = "403", description = "Missing audit:read")
-  @ApiResponse(
-      responseCode = "404",
-      description = "User not found, or in another tenant (indistinguishable)")
+  @ProblemResponse(
+      status = 400,
+      codes = {"VALIDATION_FAILED"},
+      description =
+          "Malformed path UUID")
+  @ProblemResponse(
+      status = 403,
+      codes = {"RBAC_001"},
+      description =
+          "Missing audit:read")
+  @ProblemResponse(
+      status = 404,
+      codes = {"USER_NOT_FOUND"},
+      description =
+          "User not found, or in another tenant (indistinguishable)")
   public EffectivePermissionsResponse getEffectivePermissions(
       @PathVariable String userId, Authentication authentication) {
     RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, AUDIT_READ);

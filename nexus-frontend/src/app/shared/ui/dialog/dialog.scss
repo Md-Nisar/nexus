@@ -50,5 +50,14 @@
   &__confirm--danger {
     background-color: var(--nx-color-error) !important;
     color: var(--nx-color-on-error) !important;
+
+    &[aria-disabled='true'] {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+  }
+
+  &__message {
+    margin: 0 0 var(--nx-space-4);
   }
 }

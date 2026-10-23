@@ -14,6 +14,35 @@
   border: 1px solid var(--nx-color-outline-variant);
 }
 
+/* Sticky header — the wrapper scrolls vertically; scroll-padding keeps focused rows clear of the
+   header (WCAG 2.4.11) */
+.nx-table-wrapper--sticky {
+  --nx-table-header-height: var(--nx-space-12);
+  --mat-table-header-container-height: var(--nx-table-header-height);
+  max-height: var(--nx-table-max-height, 70vh);
+  overflow-y: auto;
+  scroll-padding-top: var(--nx-table-header-height);
+}
+
+/* Caption — visible by default; the hidden variant stays readable by assistive technology */
+.nx-table__caption {
+  padding: var(--nx-space-3) var(--nx-space-4);
+  text-align: start;
+  font-size: var(--nx-text-sm);
+  color: var(--nx-color-on-surface-muted);
+
+  &--hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
 /* Base table styles */
 .nx-table {
   width: 100%;
@@ -77,6 +106,6 @@
   &__mono {
     font-family: var(--nx-font-family-mono);
     font-size: var(--nx-text-sm);
-    color: var(--nx-color-primary);
+    color: var(--nx-color-primary-text);
   }
 }

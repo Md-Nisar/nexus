@@ -3,11 +3,13 @@ import { Routes } from '@angular/router';
 export const AUTH_ROUTES: Routes = [
   {
     path: 'login',
+    title: 'Sign in',
     loadComponent: () =>
       import('./login-form/login-form.component').then((m) => m.LoginFormComponent),
   },
   {
     path: 'register',
+    title: 'Create account',
     loadComponent: () =>
       import('./registration-form/registration-form.component').then(
         (m) => m.RegistrationFormComponent,
@@ -15,6 +17,7 @@ export const AUTH_ROUTES: Routes = [
   },
   {
     path: 'verify-email',
+    title: 'Verify email',
     loadComponent: () =>
       import('./verification-landing/verification-landing.component').then(
         (m) => m.VerificationLandingComponent,
@@ -22,11 +25,13 @@ export const AUTH_ROUTES: Routes = [
   },
   {
     path: 'forgot-password',
+    title: 'Forgot password',
     loadComponent: () =>
       import('./forgot-password/forgot-password.component').then((m) => m.ForgotPasswordComponent),
   },
   {
     path: 'reset-password',
+    title: 'Reset password',
     loadComponent: () =>
       import('./reset-password/reset-password.component').then((m) => m.ResetPasswordComponent),
   },

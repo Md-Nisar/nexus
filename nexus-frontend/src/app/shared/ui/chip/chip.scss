@@ -1,0 +1,38 @@
+:host {
+  display: inline-flex;
+}
+
+.nx-chip {
+  --mdc-chip-container-height: var(--nx-space-6);
+  --mdc-chip-label-text-font: var(--nx-font-family);
+  --mdc-chip-label-text-size: var(--nx-text-xs);
+  --mdc-chip-container-shape-radius: var(--nx-radius-full);
+  --mdc-chip-label-text-color: var(--nx-color-on-surface-muted);
+  --mdc-chip-elevated-container-color: var(--nx-color-surface-3);
+
+  &--success {
+    --mdc-chip-elevated-container-color: var(--nx-color-success-surface);
+    --mdc-chip-label-text-color: var(--nx-color-success-text);
+  }
+
+  &--error {
+    --mdc-chip-elevated-container-color: var(--nx-color-error-surface);
+    --mdc-chip-label-text-color: var(--nx-color-error-text);
+  }
+
+  &--warning {
+    --mdc-chip-elevated-container-color: var(--nx-color-warning-surface);
+    --mdc-chip-label-text-color: var(--nx-color-warning-text);
+  }
+
+  &--primary {
+    --mdc-chip-elevated-container-color: var(--nx-color-primary-surface);
+    --mdc-chip-label-text-color: var(--nx-color-primary-text);
+  }
+}
+
+.nx-chip__remove {
+  min-width: var(--nx-space-6);
+  min-height: var(--nx-space-6);
+  color: inherit;
+}

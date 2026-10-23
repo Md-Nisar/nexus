@@ -112,8 +112,8 @@ class AuthEventTypeTest {
   }
 
   @Test
-  void should_defineAllTwentyNineConstants_when_valuesCalled() {
-    assertThat(AuthEventType.values()).hasSize(29);
+  void should_defineAllThirtyConstants_when_valuesCalled() {
+    assertThat(AuthEventType.values()).hasSize(30);
     assertThat(Arrays.stream(AuthEventType.values()).map(Enum::name))
         .containsExactlyInAnyOrder(
             "LOGIN_SUCCESS",
@@ -144,7 +144,8 @@ class AuthEventTypeTest {
             "ROLE_PERMISSION_REVOKED",
             "ROLE_DELETED",
             "ROLE_UPDATED",
-            "ROLE_BREAK_GLASS_GRANT");
+            "ROLE_BREAK_GLASS_GRANT",
+            "USER_DIRECTORY_READ");
   }
 
   /**
@@ -202,6 +203,12 @@ class AuthEventTypeTest {
   @Test
   void should_returnRoleBreakGlassGrant_when_wireNameCalledOnRoleBreakGlassGrant() {
     assertThat(AuthEventType.ROLE_BREAK_GLASS_GRANT.wireName()).isEqualTo("ROLE_BREAK_GLASS_GRANT");
+  }
+
+  @Test
+  void should_notBePriorityAndKeepItsWireName_when_userDirectoryRead() {
+    assertThat(AuthEventType.USER_DIRECTORY_READ.isPriority()).isFalse();
+    assertThat(AuthEventType.USER_DIRECTORY_READ.wireName()).isEqualTo("USER_DIRECTORY_READ");
   }
 
   @Test

@@ -1,0 +1,19 @@
+{
+  "data" : [ {
+    "userId" : "0190a000-0000-7000-8000-000000000108",
+    "email" : "ada@example.test",
+    "status" : "ACTIVE",
+    "emailVerified" : true,
+    "createdAt" : "2026-01-01T00:00:00Z"
+  } ],
+  "page" : {
+    "size" : 20,
+    "number" : 0,
+    "totalElements" : 1,
+    "totalPages" : 1
+  },
+  "links" : {
+    "next" : null,
+    "prev" : null
+  }
+}

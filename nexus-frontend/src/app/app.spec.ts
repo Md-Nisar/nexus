@@ -22,4 +22,10 @@ describe('App', () => {
     const compiled = fixture.nativeElement as HTMLElement;
     expect(compiled.querySelector('router-outlet')).toBeTruthy();
   });
+
+  it('renders no header of its own (layouts are route components)', async () => {
+    const fixture = TestBed.createComponent(App);
+    await fixture.whenStable();
+    expect((fixture.nativeElement as HTMLElement).querySelector('header')).toBeNull();
+  });
 });

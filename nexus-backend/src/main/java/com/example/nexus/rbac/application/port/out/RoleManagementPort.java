@@ -4,8 +4,11 @@ import com.example.nexus.rbac.domain.PageResult;
 import com.example.nexus.rbac.domain.PermissionView;
 import com.example.nexus.rbac.domain.RoleView;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -78,6 +81,21 @@ public interface RoleManagementPort {
    */
   long countRolesInTenant(UUID tenantId);
 
+  /**
+   * US-019 B6 — active (non-revoked) assignments per LIVE role of {@code tenantId}, one {@code
+   * GROUP BY role_id} statement for the whole {@code roleIds} page. The user's status is ignored.
+   * Roles with no holder are absent from the map. An empty {@code roleIds} issues no statement.
+   */
+  Map<UUID, Long> countActiveHoldersByRole(UUID tenantId, Collection<UUID> roleIds);
+
+  /**
+   * US-019 B6 — attached permissions per LIVE role of {@code tenantId}, one {@code GROUP BY
+   * role_id} statement for the whole {@code roleIds} page. {@code role_permissions} has no tenant
+   * column, so the statement joins {@code roles} for the tenant predicate. Roles with no permission
+   * are absent from the map. An empty {@code roleIds} issues no statement.
+   */
+  Map<UUID, Long> countPermissionsByRole(UUID tenantId, Collection<UUID> roleIds);
+
   // --- permissions (read-only, ADR-0013 D1) --------------------------------
 
   /** Q4 — AC4's 404 and AC11's name lookup, served by one PK read. */
@@ -116,4 +134,35 @@ public interface RoleManagementPort {
    * has no {@code @Version}, so this int count IS the concurrency guard.
    */
   int detachPermission(UUID roleId, UUID permissionId);
+
+  // --- US-019 B8 permission-set replace (design §10.4) ------------------------
+  //
+  // The two locking reads are new, named lock... methods so MC-A (no lock on M13-M15, M10') stays
+  // untouched. A replace takes the role row first, then role_permissions, and never asks for a lock
+  // on roles or user_roles while it holds a role_permissions lock (RC-46). Attach uses the same two
+  // in the same order (RC-64): the role row before its insert, the current read after it.
+
+  /**
+   * Step 8: {@code SELECT id FROM roles WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL FOR
+   * UPDATE}, an X lock on the live role row (allowed for {@code nexus_app} by its column-scoped
+   * {@code UPDATE} grant, proven in {@code RolesPrivilegeIT}). {@code false} means the role is gone
+   * (deleted by a concurrent DELETE, missing or in another tenant); the caller maps it to 404.
+   */
+  boolean lockRoleRow(UUID roleId, UUID tenantId);
+
+  /**
+   * Step 9: the CURRENT permission ids of the role, {@code SELECT permission_id FROM
+   * role_permissions WHERE role_id = ? FOR SHARE}. A locking read sees the latest committed rows,
+   * not the transaction's snapshot, and waits for an uncommitted detach or attach of the role.
+   */
+  Set<UUID> lockPermissionIdsForRole(UUID roleId);
+
+  /**
+   * Step 12: one bulk {@code DELETE} of {@code permissionIds} from the role. Returns the
+   * affected-row count, which the caller asserts equals {@code permissionIds.size()}.
+   */
+  int detachPermissions(UUID roleId, Collection<UUID> permissionIds);
+
+  /** Step 12: inserts one {@code role_permissions} row per id, flushed before returning. */
+  void attachPermissions(UUID roleId, Collection<UUID> permissionIds);
 }

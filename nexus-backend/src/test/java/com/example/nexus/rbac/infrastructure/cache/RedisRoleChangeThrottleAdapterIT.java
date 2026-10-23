@@ -2,11 +2,15 @@ package com.example.nexus.rbac.infrastructure.cache;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.example.nexus.rbac.application.port.out.ThrottleStatus;
+import java.time.Duration;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
+import org.springframework.data.redis.connection.lettuce.LettuceClientConfiguration;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.testcontainers.containers.GenericContainer;
@@ -60,7 +64,7 @@ class RedisRoleChangeThrottleAdapterIT {
 
   @Test
   void should_notBeThrottled_when_noDenialWasRecorded() {
-    assertThat(newReplica().isThrottled(UUID.randomUUID(), UUID.randomUUID())).isFalse();
+    assertThat(newReplica().throttleStatus(UUID.randomUUID(), UUID.randomUUID()).throttled()).isFalse();
   }
 
   @Test
@@ -71,7 +75,7 @@ class RedisRoleChangeThrottleAdapterIT {
 
     denyTimes(replica, tenantId, actorId, MAX_DENIALS);
 
-    assertThat(replica.isThrottled(tenantId, actorId)).isFalse();
+    assertThat(replica.throttleStatus(tenantId, actorId).throttled()).isFalse();
   }
 
   @Test
@@ -86,7 +90,7 @@ class RedisRoleChangeThrottleAdapterIT {
 
     assertThat(first).as("the denial that crosses the bound").isTrue();
     assertThat(second).as("a denial while already throttled").isFalse();
-    assertThat(replica.isThrottled(tenantId, actorId)).isTrue();
+    assertThat(replica.throttleStatus(tenantId, actorId).throttled()).isTrue();
   }
 
   @Test
@@ -98,7 +102,7 @@ class RedisRoleChangeThrottleAdapterIT {
 
     denyTimes(replicaA, tenantId, actorId, MAX_DENIALS + 1);
 
-    assertThat(replicaB.isThrottled(tenantId, actorId))
+    assertThat(replicaB.throttleStatus(tenantId, actorId).throttled())
         .as("tripped on replica A, blocked on replica B")
         .isTrue();
   }
@@ -116,7 +120,7 @@ class RedisRoleChangeThrottleAdapterIT {
     boolean crossed = replicaB.recordDenial(tenantId, actorId);
 
     assertThat(crossed).as("the 4th denial overall crosses a bound of 3, whichever replica").isTrue();
-    assertThat(replicaA.isThrottled(tenantId, actorId)).isTrue();
+    assertThat(replicaA.throttleStatus(tenantId, actorId).throttled()).isTrue();
   }
 
   @Test
@@ -127,8 +131,8 @@ class RedisRoleChangeThrottleAdapterIT {
 
     denyTimes(replica, tenantId, actorId, MAX_DENIALS + 1);
 
-    assertThat(replica.isThrottled(tenantId, UUID.randomUUID())).isFalse();
-    assertThat(replica.isThrottled(UUID.randomUUID(), actorId)).isFalse();
+    assertThat(replica.throttleStatus(tenantId, UUID.randomUUID()).throttled()).isFalse();
+    assertThat(replica.throttleStatus(UUID.randomUUID(), actorId).throttled()).isFalse();
   }
 
   @Test
@@ -159,5 +163,72 @@ class RedisRoleChangeThrottleAdapterIT {
         .isEqualTo(2);
     assertThat(redisTemplate.getExpire("nexus-test:rbac:throttle:" + tenantId + ":" + actorId + ":suppressed"))
         .isBetween(1L, (long) WINDOW_SECONDS);
+  }
+
+  // US-019 B7 (design §9.3): one PTTL on the throttled-until marker answers both questions.
+
+  private static String untilKey(UUID tenantId, UUID actorId) {
+    return KEY_PREFIX + ":rbac:throttle:" + tenantId + ":" + actorId + ":until";
+  }
+
+  @Test
+  void should_reportNotThrottled_when_theMarkerIsAbsent() {
+    assertThat(newReplica().throttleStatus(UUID.randomUUID(), UUID.randomUUID()))
+        .isEqualTo(ThrottleStatus.NOT_THROTTLED);
+  }
+
+  @Test
+  void should_reportARetryAfterWithinOneSecondAndTheWindow_when_throttled() {
+    UUID tenantId = UUID.randomUUID();
+    UUID actorId = UUID.randomUUID();
+    RedisRoleChangeThrottleAdapter replica = newReplica();
+    denyTimes(replica, tenantId, actorId, MAX_DENIALS + 1);
+
+    ThrottleStatus status = replica.throttleStatus(tenantId, actorId);
+
+    assertThat(status.throttled()).isTrue();
+    assertThat(status.retryAfterSeconds()).isBetween(1L, (long) WINDOW_SECONDS);
+  }
+
+  @Test
+  void should_roundThePttlUp_when_theMarkerHasAFractionalSecondLeft() {
+    UUID tenantId = UUID.randomUUID();
+    UUID actorId = UUID.randomUUID();
+    redisTemplate.opsForValue().set(untilKey(tenantId, actorId), "1", Duration.ofMillis(12_900));
+
+    ThrottleStatus status = newReplica().throttleStatus(tenantId, actorId);
+
+    assertThat(status.throttled()).isTrue();
+    assertThat(status.retryAfterSeconds()).isEqualTo(13L);
+  }
+
+  @Test
+  void should_reportTheWholeWindow_when_theMarkerHasNoExpiry() {
+    UUID tenantId = UUID.randomUUID();
+    UUID actorId = UUID.randomUUID();
+    redisTemplate.opsForValue().set(untilKey(tenantId, actorId), "1");
+
+    assertThat(newReplica().throttleStatus(tenantId, actorId))
+        .isEqualTo(new ThrottleStatus(true, WINDOW_SECONDS));
+  }
+
+  @Test
+  void should_failSafeToNotThrottledWithoutThrowing_when_redisIsUnreachable() {
+    LettuceConnectionFactory deadFactory =
+        new LettuceConnectionFactory(
+            new RedisStandaloneConfiguration("127.0.0.1", 1),
+            LettuceClientConfiguration.builder().commandTimeout(Duration.ofMillis(500)).build());
+    deadFactory.afterPropertiesSet();
+    try {
+      StringRedisTemplate deadTemplate = new StringRedisTemplate(deadFactory);
+      deadTemplate.afterPropertiesSet();
+      RedisRoleChangeThrottleAdapter replica =
+          new RedisRoleChangeThrottleAdapter(deadTemplate, KEY_PREFIX, MAX_DENIALS, WINDOW_SECONDS);
+
+      assertThat(replica.throttleStatus(UUID.randomUUID(), UUID.randomUUID()))
+          .isEqualTo(ThrottleStatus.NOT_THROTTLED);
+    } finally {
+      deadFactory.destroy();
+    }
   }
 }

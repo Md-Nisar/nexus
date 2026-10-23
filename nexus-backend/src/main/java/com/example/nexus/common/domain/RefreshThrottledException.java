@@ -16,4 +16,9 @@ public class RefreshThrottledException extends RateLimitException {
   public RefreshThrottledException(long retryAfterSeconds) {
     super(CODE, MESSAGE, retryAfterSeconds);
   }
+
+  @Override
+  public boolean selfReported() {
+    return true;
+  }
 }

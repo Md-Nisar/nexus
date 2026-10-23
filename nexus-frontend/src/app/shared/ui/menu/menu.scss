@@ -1,0 +1,28 @@
+:host {
+  display: inline-flex;
+}
+
+.nx-menu__trigger {
+  color: var(--nx-color-on-surface-faint);
+
+  &:hover {
+    color: var(--nx-color-on-surface);
+  }
+}
+
+.nx-menu__item {
+  gap: var(--nx-space-2);
+  font-family: var(--nx-font-family);
+  font-size: var(--nx-text-base);
+  color: var(--nx-color-on-surface);
+
+  &--danger {
+    color: var(--nx-color-error-text);
+  }
+}
+
+.nx-menu__reason {
+  display: block;
+  font-size: var(--nx-text-xs);
+  color: var(--nx-color-on-surface-faint);
+}

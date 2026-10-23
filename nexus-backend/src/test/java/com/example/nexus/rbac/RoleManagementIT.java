@@ -63,8 +63,7 @@ class RoleManagementIT {
   // plain-CRUD scope. AC11 itself is RoleManagementAdminGateIT's job. US-018 A3 still requires
   // the attaching caller to hold the permission, so attach scenarios use seedActorHolding.
   private static final String SAFE_PERMISSION_NAME = "role:read";
-  private static final UUID SAFE_PERMISSION_ID =
-      UUID.fromString("019f6839-1804-7000-8000-000000000005");
+  private static final UUID SAFE_PERMISSION_ID = RbacSeededPermissionIds.ROLE_READ;
 
   @Autowired private RoleManagementService roleManagementService;
   @Autowired private JpaRoleRepository roleRepository;

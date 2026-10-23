@@ -7,5 +7,9 @@ package com.example.nexus.rbac.interfaces.rest.dto;
  *
  * <p>No {@code createdAt}: {@code permissions} is migration-seeded and read-only at runtime
  * (ADR-0013 D1); its creation timestamp is a schema artifact with no client meaning.
+ *
+ * <p>{@code isSensitive} is a display hint (US-019 B5); no server rule reads it. The serialised
+ * key is the literal {@code isSensitive}, as for {@code RoleResponse.isSystemRole}.
  */
-public record PermissionResponse(String id, String name, String description) {}
+public record PermissionResponse(
+    String id, String name, String description, boolean isSensitive) {}

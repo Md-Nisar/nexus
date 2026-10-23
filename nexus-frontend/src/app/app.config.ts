@@ -1,12 +1,23 @@
-import { ApplicationConfig, provideBrowserGlobalErrorListeners, ErrorHandler } from '@angular/core';
+import { DOCUMENT } from '@angular/common';
+import {
+  ApplicationConfig,
+  ErrorHandler,
+  inject,
+  provideAppInitializer,
+  provideBrowserGlobalErrorListeners,
+} from '@angular/core';
 import { provideHttpClient, withInterceptors, withXhr } from '@angular/common/http';
-import { provideRouter, withComponentInputBinding } from '@angular/router';
+import { Router, TitleStrategy, provideRouter, withComponentInputBinding } from '@angular/router';
 
 import { routes } from './app.routes';
 import { correlationIdInterceptor } from './core/http/correlation-id.interceptor';
 import { apiErrorInterceptor } from './core/http/api-error.interceptor';
 import { authInterceptor } from './core/http/auth.interceptor';
 import { GlobalErrorHandler } from './core/errors/global-error-handler';
+import { APP_CONFIG, parseSupportContact } from './core/config/app-config';
+import { LoggerService } from './core/logging/logger.service';
+import { NexusTitleStrategy } from './core/routing/nexus-title-strategy';
+import { startRouteFocus } from './core/routing/route-focus';
 
 /**
  * Application-wide dependency injection and feature configuration.
@@ -64,6 +75,20 @@ export const appConfig: ApplicationConfig = {
      * Feature routes are lazy-loaded to reduce initial bundle size.
      */
     provideRouter(routes, withComponentInputBinding()),
+
+    /** Document titles as "{title} · Nexus". */
+    { provide: TitleStrategy, useClass: NexusTitleStrategy },
+
+    /** Moves focus to the page heading after each navigation but the first. */
+    provideAppInitializer(() => startRouteFocus(inject(Router), inject(DOCUMENT))),
+
+    /** Startup check: a configured support contact that is not mailto:/https:// is ignored. */
+    provideAppInitializer(() => {
+      const { supportContact } = inject(APP_CONFIG);
+      if (supportContact !== null && parseSupportContact(supportContact) === null) {
+        inject(LoggerService).warn('Ignoring supportContact: href must be mailto: or https://');
+      }
+    }),
 
     /**
      * HTTP client configuration with interceptors.

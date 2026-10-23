@@ -59,10 +59,8 @@ class RoleManagementAuditIT {
   // (role:write) is used by the denial negative test below, where the caller does not hold it.
   // US-018 A3: the attaching caller must hold the permission, so the success paths use
   // seedActorHolding.
-  private static final UUID SAFE_PERMISSION_ID =
-      UUID.fromString("019f6839-1804-7000-8000-000000000005");
-  private static final UUID DANGEROUS_PERMISSION_ID =
-      UUID.fromString("019f6839-1805-7000-8000-000000000006");
+  private static final UUID SAFE_PERMISSION_ID = RbacSeededPermissionIds.ROLE_READ;
+  private static final UUID DANGEROUS_PERMISSION_ID = RbacSeededPermissionIds.ROLE_WRITE;
 
   @Autowired private RoleManagementService roleManagementService;
   @Autowired private JpaRoleRepository roleRepository;

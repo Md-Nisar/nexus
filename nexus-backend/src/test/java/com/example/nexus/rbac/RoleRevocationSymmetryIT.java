@@ -69,12 +69,9 @@ class RoleRevocationSymmetryIT {
 
   // Seeded literals — V5__rbac_schema.sql header comment (same constants used elsewhere in this
   // package, e.g. RoleAssignmentSecurityIT/RoleAssignmentEscalationIT).
-  private static final UUID USER_WRITE_PERMISSION_ID =
-      UUID.fromString("019f6839-1803-7000-8000-000000000004");
-  private static final UUID ROLE_WRITE_PERMISSION_ID =
-      UUID.fromString("019f6839-1805-7000-8000-000000000006");
-  private static final UUID USER_READ_PERMISSION_ID =
-      UUID.fromString("019f6839-1802-7000-8000-000000000003");
+  private static final UUID USER_WRITE_PERMISSION_ID = RbacSeededPermissionIds.USER_WRITE;
+  private static final UUID ROLE_WRITE_PERMISSION_ID = RbacSeededPermissionIds.ROLE_WRITE;
+  private static final UUID USER_READ_PERMISSION_ID = RbacSeededPermissionIds.USER_READ;
 
   @Autowired private RoleAssignmentService roleAssignmentService;
   @Autowired private JpaUserRepository userRepository;

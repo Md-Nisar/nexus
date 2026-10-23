@@ -6,11 +6,13 @@ import com.example.nexus.common.domain.AuthenticationException;
 import com.example.nexus.common.domain.ConflictException;
 import com.example.nexus.common.domain.DomainException;
 import com.example.nexus.common.domain.FieldValidationException;
+import com.example.nexus.common.domain.PreconditionFailedException;
+import com.example.nexus.common.domain.PreconditionRequiredException;
 import com.example.nexus.common.domain.RateLimitException;
-import com.example.nexus.common.domain.RefreshThrottledException;
 import com.example.nexus.common.domain.ResourceNotFoundException;
 import com.example.nexus.common.domain.TokenExpiredException;
 import com.example.nexus.common.security.AuthenticationDetailKeys;
+import com.example.nexus.common.security.CallerFacingDenialReason;
 import com.example.nexus.common.security.InsufficientPermissionException;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -18,15 +20,21 @@ import jakarta.validation.ConstraintViolationException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
@@ -55,6 +63,8 @@ public class GlobalExceptionHandler {
   private static final String KEY_ERROR_TYPE = "errorType";
   private static final String KEY_DETAILS = "details";
   private static final String KEY_MESSAGE = "message";
+  private static final String MESSAGE_VALIDATION_FAILED = "Request validation failed.";
+  private static final String KEY_REASON = "reason";
   private static final String KEY_FIELD = "field";
 
   private final MeterRegistry meterRegistry;
@@ -76,6 +86,23 @@ public class GlobalExceptionHandler {
     return problem(HttpStatus.CONFLICT, e.code(), e.getMessage());
   }
 
+  /**
+   * US-019 RC-58.2: the body is the standard problem fields only, never the current ETag, ids or a
+   * count. The replace counter is incremented by the service, keeping this class context-free.
+   */
+  @ExceptionHandler(PreconditionFailedException.class)
+  ProblemDetail handlePreconditionFailed(PreconditionFailedException e) {
+    logHandledException(e, LEVEL_DEBUG, e.code());
+    return problem(HttpStatus.PRECONDITION_FAILED, e.code(), e.getMessage());
+  }
+
+  /** US-019 RC-55.2: as {@link #handlePreconditionFailed}; the header is never echoed. */
+  @ExceptionHandler(PreconditionRequiredException.class)
+  ProblemDetail handlePreconditionRequired(PreconditionRequiredException e) {
+    logHandledException(e, LEVEL_DEBUG, e.code());
+    return problem(HttpStatus.PRECONDITION_REQUIRED, e.code(), e.getMessage());
+  }
+
   @ExceptionHandler(FieldValidationException.class)
   ProblemDetail handleFieldValidation(FieldValidationException e) {
     logHandledException(e, LEVEL_DEBUG, e.code());
@@ -92,8 +119,8 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler(RateLimitException.class)
   ResponseEntity<ProblemDetail> handleRateLimit(RateLimitException e) {
-    // RefreshThrottledException: the use case emits its own one-per-window WARN (US-018 T-013).
-    logHandledException(e, e instanceof RefreshThrottledException ? LEVEL_DEBUG : "WARN", e.code());
+    // Self-reported throttles (refresh, RBAC_011) emit their own once-per-window WARN (RC-33.1).
+    logHandledException(e, e.selfReported() ? LEVEL_DEBUG : "WARN", e.code());
     ProblemDetail problem = problem(HttpStatus.TOO_MANY_REQUESTS, e.code(), e.getMessage());
     HttpHeaders headers = new HttpHeaders();
     headers.set(HttpHeaders.RETRY_AFTER, String.valueOf(e.retryAfterSeconds()));
@@ -133,7 +160,7 @@ public class GlobalExceptionHandler {
   ProblemDetail handleBodyValidation(MethodArgumentNotValidException e) {
     logHandledException(e, LEVEL_DEBUG, CODE_VALIDATION_FAILED);
     ProblemDetail problem =
-        problem(HttpStatus.BAD_REQUEST, CODE_VALIDATION_FAILED, "Request validation failed.");
+        problem(HttpStatus.BAD_REQUEST, CODE_VALIDATION_FAILED, MESSAGE_VALIDATION_FAILED);
     problem.setProperty(
         KEY_DETAILS,
         e.getBindingResult().getFieldErrors().stream()
@@ -148,7 +175,7 @@ public class GlobalExceptionHandler {
   ProblemDetail handleParamValidation(ConstraintViolationException e) {
     logHandledException(e, LEVEL_DEBUG, CODE_VALIDATION_FAILED);
     ProblemDetail problem =
-        problem(HttpStatus.BAD_REQUEST, CODE_VALIDATION_FAILED, "Request validation failed.");
+        problem(HttpStatus.BAD_REQUEST, CODE_VALIDATION_FAILED, MESSAGE_VALIDATION_FAILED);
     List<Map<String, String>> details = e.getConstraintViolations().stream()
         .map(v -> Map.of(
             KEY_FIELD, String.valueOf(v.getPropertyPath()),
@@ -161,19 +188,20 @@ public class GlobalExceptionHandler {
   @ExceptionHandler(InsufficientPermissionException.class)
   ProblemDetail handleInsufficientPermission(InsufficientPermissionException e) {
     Map<String, Object> extraFields = new LinkedHashMap<>();
-    extraFields.put("reason", e.getReason().name());
+    extraFields.put(KEY_REASON, e.getReason().name());
     extraFields.put("requiredPermission", e.getRequiredPermission());
     extraFields.put("userId", MDC.get(AuthenticationDetailKeys.MDC_USER_ID));
     extraFields.put("tenantId", MDC.get(AuthenticationDetailKeys.MDC_TENANT_ID));
     logHandledException(e, "WARN", "RBAC_001", extraFields);
     Counter.builder("nexus.rbac.permission_denied")
         .tag("permission", e.getRequiredPermission())
-        .tag("reason", e.getReason().name())
+        .tag(KEY_REASON, e.getReason().name())
         .register(meterRegistry)
         .increment();
     ProblemDetail problem =
         problem(HttpStatus.FORBIDDEN, "RBAC_001", "You do not have permission to perform this action");
     problem.setProperty("requiredPermission", e.getRequiredPermission());
+    problem.setProperty(KEY_REASON, CallerFacingDenialReason.of(e.getReason()).name());
     return problem;
   }
 
@@ -188,6 +216,51 @@ public class GlobalExceptionHandler {
   ProblemDetail handleNoResource(NoResourceFoundException e) {
     logHandledException(e, LEVEL_DEBUG, "RESOURCE_NOT_FOUND");
     return problem(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", "Resource not found.");
+  }
+
+  /*
+   * Protocol and body handlers (RC-59.1). Their exceptions carry parser or request text that can
+   * hold PII (a Jackson error quotes request tokens), so they log errorType and errorCode only,
+   * through logHandledException, and never getMessage() or the cause.
+   */
+  @ExceptionHandler(HttpMessageNotReadableException.class)
+  ProblemDetail handleBodyNotReadable(HttpMessageNotReadableException e) {
+    logHandledException(e, LEVEL_DEBUG, CODE_VALIDATION_FAILED);
+    return problem(HttpStatus.BAD_REQUEST, CODE_VALIDATION_FAILED, "Request body is not valid JSON.");
+  }
+
+  @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+  ProblemDetail handleMediaTypeNotSupported(HttpMediaTypeNotSupportedException e) {
+    logHandledException(e, LEVEL_DEBUG, "UNSUPPORTED_MEDIA_TYPE");
+    return problem(
+        HttpStatus.UNSUPPORTED_MEDIA_TYPE,
+        "UNSUPPORTED_MEDIA_TYPE",
+        "Content type is not supported.");
+  }
+
+  @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+  ResponseEntity<ProblemDetail> handleMethodNotSupported(
+      HttpRequestMethodNotSupportedException e) {
+    logHandledException(e, LEVEL_DEBUG, "METHOD_NOT_ALLOWED");
+    ProblemDetail problem = problem(
+        HttpStatus.METHOD_NOT_ALLOWED, "METHOD_NOT_ALLOWED", "Request method is not supported.");
+    HttpHeaders headers = new HttpHeaders();
+    Set<HttpMethod> allowed = e.getSupportedHttpMethods();
+    if (allowed != null && !allowed.isEmpty()) {
+      headers.setAllow(allowed);
+    }
+    return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).headers(headers).body(problem);
+  }
+
+  @ExceptionHandler(MissingRequestHeaderException.class)
+  ProblemDetail handleMissingHeader(MissingRequestHeaderException e) {
+    logHandledException(e, LEVEL_DEBUG, CODE_VALIDATION_FAILED);
+    ProblemDetail problem =
+        problem(HttpStatus.BAD_REQUEST, CODE_VALIDATION_FAILED, MESSAGE_VALIDATION_FAILED);
+    problem.setProperty(
+        KEY_DETAILS,
+        List.of(Map.of(KEY_FIELD, e.getHeaderName(), KEY_MESSAGE, "Header is required.")));
+    return problem;
   }
 
   @ExceptionHandler(Exception.class)

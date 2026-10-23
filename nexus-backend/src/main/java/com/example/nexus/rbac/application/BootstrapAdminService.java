@@ -10,6 +10,7 @@ import com.example.nexus.rbac.application.port.out.RbacAuditPort;
 import com.example.nexus.rbac.application.port.out.UserDirectoryPort;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.domain.ActiveAssignmentHolder;
+import com.example.nexus.rbac.domain.RbacAdministrators;
 import com.example.nexus.rbac.domain.RbacRoleNames;
 import com.example.nexus.rbac.domain.Role;
 import java.util.HashSet;
@@ -45,13 +46,15 @@ import org.springframework.transaction.support.TransactionTemplate;
  * ({@link RoleAssignmentService#resolveAdminDefiningRoleIds} and {@link
  * RoleAssignmentService#buildAscendingLockSet}), and decides "zero administrators" with the revoke
  * guard's own predicate ({@link RoleAssignmentService#wouldLeaveTenantWithoutAdministrator}).
- * After the set lock, one statement takes shared ({@code FOR SHARE}) locks on the {@code users}
- * rows of the target and of every administrator holder, in ascending id order ({@link
- * UserDirectoryPort#lockUserStatuses}), so the statuses the decision uses are current, not a
- * snapshot, and cannot change before the commit. That is the only lock added to ADR-0018's set
- * lock, and only on this path: the insert's foreign-key check already takes a shared lock on the
- * target's {@code users} row after the set lock, in the same order. Nothing is retried (ADR-0018
- * D6).
+ * Right after the set lock, a {@code FOR SHARE} read of the lock set's {@code role_permissions}
+ * ({@link UserRoleAssignmentPort#lockRolePermissionsForRoles}) decides which locked roles are
+ * admin-defining now, as revoke and role deletion do (US-019 RC-57.2), so a demotion that
+ * committed while this grant waited is seen. Then one statement takes shared ({@code FOR SHARE})
+ * locks on the {@code users} rows of the target and of every administrator holder, in ascending
+ * id order ({@link UserDirectoryPort#lockUserStatuses}), so the statuses the decision uses are
+ * current, not a snapshot, and cannot change before the commit. The status lock is added only on
+ * this path: the insert's foreign-key check already takes a shared lock on the target's {@code
+ * users} row after the set lock, in the same order. Nothing is retried (ADR-0018 D6).
  *
  * <p><b>Who counts as an administrator (A-6, O-7).</b> A holder of an admin-defining role (the one
  * definition, ADR-0021 D3: a role carrying every permission of the catalogue), whatever its name.
@@ -199,13 +202,20 @@ public class BootstrapAdminService {
       return new BreakGlassOutcome.Refused(BreakGlassRefusalReason.NO_SYSTEM_ADMIN_ROLE);
     }
 
-    Set<UUID> adminDefiningRoleIds =
-        RoleAssignmentService.resolveAdminDefiningRoleIds(
-            userRoleAssignmentPort, tenantId, userRoleAssignmentPort.findCatalogueIds());
+    Set<UUID> catalogueIds = userRoleAssignmentPort.findCatalogueIds();
     List<UUID> lockSet =
-        RoleAssignmentService.buildAscendingLockSet(adminDefiningRoleIds, tenantAdminRoleId.get());
+        RoleAssignmentService.buildAscendingLockSet(
+            RoleAssignmentService.resolveAdminDefiningRoleIds(
+                userRoleAssignmentPort, tenantId, catalogueIds),
+            tenantAdminRoleId.get());
     List<ActiveAssignmentHolder> lockedHolders =
         userRoleAssignmentPort.lockActiveAssignmentHolders(tenantId, lockSet);
+    // RC-57.2 (ADR-0021 Revision 3 follow-on rule): which locked roles are admin-defining comes
+    // from a current FOR SHARE read under the set lock, as for revoke, deletion and a replace,
+    // never from the pre-lock M10' read. After the set lock, before the status lock.
+    Set<UUID> adminDefiningRoleIds =
+        RbacAdministrators.adminDefiningRoleIds(
+            userRoleAssignmentPort.lockRolePermissionsForRoles(tenantId, lockSet), catalogueIds);
 
     // O-7 and L-2: one locking read of the target's and every administrator holder's status, after
     // the set lock, so neither can be a stale snapshot.

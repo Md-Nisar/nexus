@@ -4,6 +4,7 @@ import com.example.nexus.rbac.domain.Role;
 import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.RoleView;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -112,6 +113,40 @@ public interface JpaRoleRepository extends JpaRepository<Role, UUID> {
       WHERE rp.id.roleId = r.id AND r.tenantId = :tenantId AND r.deletedAt IS NULL
       """)
   List<RolePermissionRef> findRolePermissionIdsByTenantRoles(@Param("tenantId") UUID tenantId);
+
+  /**
+   * US-019 B6 — {@code (role id, attached permission count)} for the live roles of one tenant among
+   * {@code roleIds}, one statement. {@code role_permissions} has no tenant column, so the join to
+   * {@code roles} is what carries the tenant predicate (TenantIsolationArchitectureTest cannot
+   * police it). Non-locking.
+   */
+  @Query(
+      """
+      SELECT rp.id.roleId, COUNT(rp) FROM RolePermission rp, Role r
+      WHERE rp.id.roleId = r.id AND r.tenantId = :tenantId AND r.deletedAt IS NULL
+        AND r.id IN :roleIds
+      GROUP BY rp.id.roleId
+      """)
+  List<Object[]> countPermissionsByRole(
+      @Param("tenantId") UUID tenantId, @Param("roleIds") Collection<UUID> roleIds);
+
+  /**
+   * US-019 B8 step 8 (design §10.4): X-locks the live role row. Native, because Spring Data does
+   * not combine {@code @Lock} with a native query and the bind values must be {@code byte[]}
+   * (native queries bypass {@code UuidV7Converter}), the M11 precedent. {@code nexus_app} may run
+   * it on the strength of its column-scoped {@code UPDATE} grant ({@code RolesPrivilegeIT}). An
+   * empty result means the role is deleted, missing or in another tenant. Never used for a snapshot
+   * read (MC-A).
+   */
+  @Query(
+      value =
+          """
+          SELECT id FROM roles
+          WHERE id = :roleId AND tenant_id = :tenantId AND deleted_at IS NULL
+          FOR UPDATE
+          """,
+      nativeQuery = true)
+  List<byte[]> lockLiveRoleRow(@Param("roleId") byte[] roleId, @Param("tenantId") byte[] tenantId);
 
   /**
    * C1 DELETE's write (US-018 T-025): a bulk single-column {@code UPDATE}, never {@code

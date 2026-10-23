@@ -5,6 +5,7 @@ import com.example.nexus.rbac.domain.HolderProvenance;
 import com.example.nexus.rbac.domain.PermissionViaRole;
 import com.example.nexus.rbac.domain.RoleHolder;
 import com.example.nexus.rbac.domain.RolePermissionRef;
+import com.example.nexus.rbac.domain.RoleRef;
 import com.example.nexus.rbac.domain.UserViaRole;
 import com.example.nexus.rbac.domain.UserRole;
 import java.util.Collection;
@@ -51,6 +52,25 @@ public interface JpaUserRoleRepository
         AND ur.revokedAt IS NULL
       """)
   List<String> findActiveRoleNames(@Param("userId") UUID userId, @Param("tenantId") UUID tenantId);
+
+  /**
+   * US-019 B4 — the live roles a user actively holds within a tenant, as {@code (id, name)},
+   * ordered by name then id. Same predicates as {@link #findActiveRoleNames}, including the {@code
+   * r.tenantId} cross-check. Non-locking.
+   */
+  @Query(
+      """
+      SELECT new com.example.nexus.rbac.domain.RoleRef(r.id, r.name)
+      FROM UserRole ur, Role r
+      WHERE ur.roleId = r.id
+        AND ur.userId = :userId
+        AND ur.tenantId = :tenantId
+        AND r.tenantId = :tenantId
+        AND r.deletedAt IS NULL
+        AND ur.revokedAt IS NULL
+      ORDER BY r.name, r.id
+      """)
+  List<RoleRef> findActiveRoles(@Param("userId") UUID userId, @Param("tenantId") UUID tenantId);
 
   /**
    * Deduplicated names of every permission granted (transitively, via {@code role_permissions})
@@ -114,6 +134,35 @@ public interface JpaUserRoleRepository
           """,
       nativeQuery = true)
   List<UserRole> lockActiveAssignmentHoldersByRoles(
+      @Param("roleIds") Collection<byte[]> roleIds, @Param("tenantId") byte[] tenantId);
+
+  /**
+   * US-019 RC-57.1 (design §10.3 step 10): the CURRENT {@code (role_id, permission_id)} rows of
+   * {@code roleIds}, {@code FOR SHARE}, driven by {@code pk_role_permissions}'s leading {@code
+   * role_id}. Taken only after the set lock (and, on a replace, the role row), or by assign's
+   * non-admin-defining path after its conditional insert (RC-56.2), never as a snapshot read
+   * (MC-A). The join to {@code roles} is the tenant predicate (T-S1, defense in depth: the
+   * role ids are tenant-derived by the caller); {@code FOR SHARE OF rp} locks only {@code
+   * role_permissions} rows, never a {@code roles} row, so the statement adds no lock outside
+   * RC-46's order (proven by {@code RolePermissionsPrivilegeIT}). Native for the same reason as {@link
+   * #lockActiveAssignmentHoldersByRoles}: Spring Data cannot combine {@code @Lock} with a
+   * projection here. {@code nexus_app} holds {@code SELECT} plus {@code DELETE} on {@code
+   * role_permissions}, which a locking read needs, and only {@code SELECT} is needed on the
+   * unlocked {@code roles}. Hosted on
+   * this read-and-revoke repository so {@link JpaUserRoleAssignmentAdapter} still gains no write
+   * capability over {@code role_permissions}. Each row is {@code [role_id, permission_id]} as
+   * {@code BINARY(16)} bytes.
+   */
+  @Query(
+      value =
+          """
+          SELECT rp.role_id, rp.permission_id
+          FROM role_permissions rp JOIN roles r ON r.id = rp.role_id
+          WHERE rp.role_id IN (:roleIds) AND r.tenant_id = :tenantId
+          FOR SHARE OF rp
+          """,
+      nativeQuery = true)
+  List<Object[]> lockRolePermissionsByRoleIds(
       @Param("roleIds") Collection<byte[]> roleIds, @Param("tenantId") byte[] tenantId);
 
   /**
@@ -364,6 +413,23 @@ public interface JpaUserRoleRepository
       """)
   List<PermissionViaRole> findActivePermissionsViaRoles(
       @Param("userId") UUID userId, @Param("tenantId") UUID tenantId);
+
+  /**
+   * US-019 B6 — {@code (role id, active holder count)} for the live roles of one tenant among {@code
+   * roleIds}, one statement. A holder is an active assignment; the user's status is ignored (no
+   * join to {@code users}: {@code rbac} must not read {@code identity}). Tenant predicate on both
+   * tables. Non-locking.
+   */
+  @Query(
+      """
+      SELECT ur.roleId, COUNT(ur) FROM UserRole ur, Role r
+      WHERE ur.roleId = r.id AND ur.roleId IN :roleIds
+        AND ur.tenantId = :tenantId AND r.tenantId = :tenantId
+        AND r.deletedAt IS NULL AND ur.revokedAt IS NULL
+      GROUP BY ur.roleId
+      """)
+  List<Object[]> countActiveHoldersByRole(
+      @Param("tenantId") UUID tenantId, @Param("roleIds") Collection<UUID> roleIds);
 
   /**
    * RC-6 — every user id holding an ACTIVE (non-revoked) assignment of {@code roleId}. Backs
