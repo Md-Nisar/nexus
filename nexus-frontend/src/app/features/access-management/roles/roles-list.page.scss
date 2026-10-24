@@ -77,6 +77,11 @@
   font-weight: var(--nx-weight-medium);
 }
 
+.roles__link {
+  color: var(--nx-color-primary-text);
+  text-decoration: underline;
+}
+
 /* 320 px (design §12.2, WCAG 1.4.10): one card per row, no sideways scroll. nx-table renders
    Material table cells and has no card mode, so the card layout reaches into its cells. */
 @media (max-width: 599px) {

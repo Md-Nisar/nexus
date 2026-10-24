@@ -2,7 +2,7 @@ import { DatePipe } from '@angular/common';
 import { Component, OnInit, computed, inject } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
-import { ActivatedRoute, Router } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { AuthStore } from '../../../core/auth/auth.store';
 import {
   NxBanner,
@@ -52,7 +52,7 @@ function pageIndexFromParam(raw: string | null): number {
  *   live in the query string, so Back, Forward and reload restore the view. The page derives
  *   everything from the URL; the controls only navigate.
  * - **User text:** names and descriptions render through {@link UserText}, by interpolation only.
- *   Names are plain text until the role-detail route exists (T-009).
+ *   Each name links to its role detail page.
  * - **Create role** is shown from the live profile (`role:write`), not the JWT. When the profile
  *   could not be read it stays visible, off, with the reason. The server decides.
  * - **Logging:** this page logs nothing; search text and role names never leave the page.
@@ -62,6 +62,7 @@ function pageIndexFromParam(raw: string | null): number {
   imports: [
     DatePipe,
     FormsModule,
+    RouterLink,
     NxBanner,
     NxButton,
     NxEmptyState,

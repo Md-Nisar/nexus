@@ -44,6 +44,8 @@ export const CONSOLE_COPY = {
   /** Visible reasons next to disabled controls (§14.2). */
   disabledReason: {
     profileUnavailable: "Changes are off because we couldn't confirm your access.",
+    etagUnusable:
+      'Saving is unavailable because a network component changed the version information Nexus needs.',
   },
 
   /** 503 `AUTH_005` on a page load (§14.1). */
@@ -107,6 +109,50 @@ export const CONSOLE_COPY = {
     sensitiveSummary: 'What does Sensitive mean?',
     sensitiveDefinition:
       'Sensitive permissions control users, roles, role assignment or tenant settings, or let someone read personal data or the audit trail.',
+  },
+
+  /** The role detail page (§12.3, §14.1, §14.2). `{time}` is a relative time, `{n}` a count. */
+  roleDetail: {
+    breadcrumbRoot: 'Access management',
+    breadcrumbRoles: 'Roles',
+    /** The `h1` while the role is on its way; the name replaces it. */
+    loadingTitle: 'Loading role',
+    /** The `h1` when the role could not be read for a reason other than "not found". */
+    fallbackTitle: 'Role',
+    loading: 'Loading role',
+    permissionCount: '{n} permissions',
+    permissionCountOne: '1 permission',
+    memberCount: '{n} members',
+    memberCountOne: '1 member',
+    countSeparator: ' · ',
+    updated: 'Updated {time}',
+    refresh: 'Refresh',
+    edit: 'Edit permissions',
+    clone: 'Clone',
+    systemBanner:
+      "This is a system role. Its permissions can't be changed. You can clone it to make a custom role.",
+    etagUnusable: {
+      title: 'Saving is unavailable',
+      body: 'A network component changed the version information Nexus needs to save safely. You can still view this role.',
+    },
+    backToRoles: 'Back to Roles',
+    tabsLabel: 'Role sections',
+    tabPermissions: 'Permissions',
+    emptyPermissions: 'This role grants no access yet',
+    loadingPermissions: 'Loading permissions',
+  },
+
+  /** The permission matrix (§12.3, §13). `{role}` is the role name, rendered isolated. */
+  matrix: {
+    caption: 'Permissions granted by {role}',
+    columns: {
+      permission: 'Permission',
+      code: 'Code',
+      description: 'Description',
+      status: 'Status',
+    },
+    granted: 'Granted',
+    notGranted: 'Not granted',
   },
 } as const;
 

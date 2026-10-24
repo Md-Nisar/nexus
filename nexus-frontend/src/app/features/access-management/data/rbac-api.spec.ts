@@ -6,10 +6,13 @@ import { APP_CONFIG, AppConfig } from '../../../core/config/app-config';
 import { SKIP_ACCESS_DENIED_REDIRECT } from '../../../core/http/skip-access-denied-redirect';
 import type {
   CallerAuthorizationResponse,
+  PermissionListResponse,
   PermissionPageResponse,
   RoleListResponse,
+  RoleResponse,
 } from '../../../shared/types/api/rbac';
-import { RbacApi } from './rbac-api';
+import type { AppError } from '../../../shared/types/app-error';
+import { RbacApi, VersionedPermissionSet } from './rbac-api';
 
 const API = 'http://localhost:1000/api';
 
@@ -131,6 +134,111 @@ describe('RbacApi', () => {
       const req = http.expectOne(`${API}/v1/permissions?page=0&size=100`);
       expect(req.request.context.get(SKIP_ACCESS_DENIED_REDIRECT)).toBe(true);
       req.flush(PAGE);
+    });
+  });
+  describe('getRole', () => {
+    const ROLE_ID = '0190a000-0000-7000-8000-0000000000b1';
+    const ROLE: RoleResponse = {
+      id: ROLE_ID,
+      name: 'Support',
+      description: 'Handles tickets',
+      isSystemRole: false,
+      createdAt: '2026-01-01T00:00:00Z',
+      memberCount: 2,
+      permissionCount: 1,
+    };
+
+    it('GETs /v1/roles/{id} and emits the typed body', () => {
+      let received: RoleResponse | undefined;
+      api.getRole(ROLE_ID).subscribe((body) => (received = body));
+
+      const req = http.expectOne(`${API}/v1/roles/${ROLE_ID}`);
+      expect(req.request.method).toBe('GET');
+      expect(req.request.body).toBeNull();
+      expect(req.request.context.get(SKIP_ACCESS_DENIED_REDIRECT)).toBe(true);
+      req.flush(ROLE);
+
+      expect(received).toEqual(ROLE);
+    });
+
+    it('encodes the id as one path segment, so a crafted route parameter cannot change the path', () => {
+      api.getRole('../users/me').subscribe();
+
+      http.expectOne(`${API}/v1/roles/%2E%2E%2Fusers%2Fme`).flush(ROLE);
+    });
+
+    it('encodes a dot-dot id, so it cannot resolve to the parent path', () => {
+      api.getRole('..').subscribe();
+
+      http.expectOne(`${API}/v1/roles/%2E%2E`).flush(ROLE);
+    });
+  });
+
+  describe('getRolePermissions (design §7.1, §7.2)', () => {
+    const ROLE_ID = '0190a000-0000-7000-8000-0000000000b1';
+    const URL = `${API}/v1/roles/${ROLE_ID}/permissions`;
+    const BODY: PermissionListResponse = {
+      data: [{ id: 'p-1', name: 'role:read', description: 'Read roles', isSensitive: false }],
+    };
+
+    function read(headers: Record<string, string>, body: PermissionListResponse | null = BODY) {
+      let received: VersionedPermissionSet | undefined;
+      let failure: unknown;
+      api.getRolePermissions(ROLE_ID).subscribe({
+        next: (set) => (received = set),
+        error: (error: unknown) => (failure = error),
+      });
+      const req = http.expectOne(URL);
+      req.flush(body, { headers });
+      return { req, received, failure };
+    }
+
+    it('GETs the set with the console context and emits the permissions', () => {
+      const { req, received } = read({ ETag: '"v1"' });
+
+      expect(req.request.method).toBe('GET');
+      expect(req.request.body).toBeNull();
+      expect(req.request.context.get(SKIP_ACCESS_DENIED_REDIRECT)).toBe(true);
+      expect(received?.permissions).toEqual(BODY.data);
+    });
+
+    it('keeps a strong ETag verbatim, quotes included', () => {
+      expect(read({ ETag: '"0123abcd"' }).received?.etag).toEqual({
+        kind: 'strong',
+        value: '"0123abcd"',
+      });
+    });
+
+    it('classifies a weak ETag as weak and keeps no value to send back', () => {
+      expect(read({ ETag: 'W/"0123abcd"' }).received?.etag).toEqual({ kind: 'weak' });
+    });
+
+    it('classifies a response without an ETag as missing', () => {
+      expect(read({}).received?.etag).toEqual({ kind: 'missing' });
+    });
+
+    it('carries the correlation id the server echoed, or null without one', () => {
+      expect(read({ ETag: '"v1"', 'X-Correlation-Id': 'corr-1' }).received?.correlationId).toBe(
+        'corr-1',
+      );
+      expect(read({ ETag: '"v1"' }).received?.correlationId).toBeNull();
+    });
+
+    it('treats an empty set as a valid answer', () => {
+      expect(read({ ETag: '"v0"' }, { data: [] }).received?.permissions).toEqual([]);
+    });
+
+    it('fails a 200 without a body rather than showing an empty set', () => {
+      const { received, failure } = read({ ETag: '"v1"' }, null);
+
+      expect(received).toBeUndefined();
+      expect((failure as AppError).code).toBe('UNEXPECTED_ERROR');
+    });
+
+    it('encodes the id as one path segment', () => {
+      api.getRolePermissions('a/b').subscribe();
+
+      http.expectOne(`${API}/v1/roles/a%2Fb/permissions`).flush(BODY);
     });
   });
 });

@@ -215,7 +215,7 @@ describe('RolesListPage (US-020 design §12.2)', () => {
       expect(byTestId(el(), 'roles-count')?.textContent?.trim()).toBe('1 role');
     });
 
-    it('shows type, description, counts and created date; names are plain text, not links', async () => {
+    it('shows type, description, counts and created date', async () => {
       const { el, settle } = await open(ctx);
       ctx.http.expectOne(PAGE_URL(0)).flush(
         pageOf([
@@ -241,8 +241,24 @@ describe('RolesListPage (US-020 design §12.2)', () => {
       expect(custom).toContain('7');
       expect(custom).toContain('3');
       expect(custom).toContain('Mar 4, 2026');
-      // The role-detail route arrives in T-009; until then a name is not a link.
-      expect(el().querySelector('tbody a')).toBeNull();
+    });
+
+    it('links each name to the role detail page, the name isolated inside the link (T-009)', async () => {
+      const { el, settle } = await open(ctx);
+      ctx.http
+        .expectOne(PAGE_URL(0))
+        .flush(
+          pageOf([role(1, { name: 'MEMBER', isSystemRole: true }), role(2, { name: 'Support' })]),
+        );
+      await settle();
+
+      const links = Array.from(el().querySelectorAll<HTMLAnchorElement>('tbody a'));
+      expect(links.map((a) => a.getAttribute('href'))).toEqual([
+        '/admin/access/roles/role-001',
+        '/admin/access/roles/role-002',
+      ]);
+      expect(links.map((a) => a.querySelector('bdi')?.textContent)).toEqual(['MEMBER', 'Support']);
+      expect(links.every((a) => a.closest('[data-testid="role-name"]') !== null)).toBe(true);
     });
 
     it('puts system roles first and keeps the server order within each group', async () => {

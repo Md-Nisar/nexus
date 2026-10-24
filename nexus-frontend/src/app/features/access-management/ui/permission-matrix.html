@@ -1,0 +1,106 @@
+<div class="permission-matrix" data-testid="permission-matrix">
+  <!-- Context-free, so it stays fully typed: the caption, shared by the table and the sections. -->
+  <ng-template #caption>
+    {{ captionBefore }}<app-user-text [text]="roleName()" />{{ captionAfter }}
+  </ng-template>
+
+  <div class="permission-matrix__table-wrap">
+    <table class="permission-matrix__table">
+      <caption class="permission-matrix__caption">
+        <ng-container [ngTemplateOutlet]="caption" />
+      </caption>
+      <thead>
+        <tr>
+          <th scope="col">{{ copy.matrix.columns.permission }}</th>
+          <th scope="col">{{ copy.matrix.columns.code }}</th>
+          <th scope="col">{{ copy.matrix.columns.description }}</th>
+          <th scope="col">{{ copy.matrix.columns.status }}</th>
+        </tr>
+      </thead>
+      @for (group of view(); track group.resource) {
+        <tbody>
+          <tr class="permission-matrix__group" [attr.data-group]="group.resource">
+            <th scope="row" [attr.colspan]="columnCount">{{ group.label }}</th>
+          </tr>
+          @for (row of group.rows; track row.id) {
+            <tr class="permission-matrix__row" [attr.data-permission]="row.code">
+              <th scope="row" class="permission-matrix__row-header">
+                <span class="permission-matrix__name">
+                  <span class="permission-matrix__label">{{ row.label ?? row.code }}</span>
+                  @if (row.label === null) {
+                    <nx-badge variant="neutral" data-testid="unlabelled-badge">{{
+                      copy.badges.unlabelled
+                    }}</nx-badge>
+                  }
+                  @if (row.isSensitive) {
+                    <app-sensitive-badge />
+                  }
+                </span>
+              </th>
+              <td>
+                <code class="permission-matrix__code">{{ row.code }}</code>
+              </td>
+              <td class="permission-matrix__description">{{ row.description }}</td>
+              <td>
+                <span
+                  class="permission-matrix__status"
+                  [class.permission-matrix__status--granted]="row.granted"
+                  [attr.data-granted]="row.granted"
+                  data-testid="matrix-status"
+                >
+                  <nx-icon
+                    class="permission-matrix__status-icon"
+                    [name]="row.granted ? 'check_circle' : 'remove_circle_outline'"
+                  />
+                  {{ row.granted ? copy.matrix.granted : copy.matrix.notGranted }}
+                </span>
+              </td>
+            </tr>
+          }
+        </tbody>
+      }
+    </table>
+  </div>
+
+  <div class="permission-matrix__sections">
+    <h2 class="permission-matrix__heading">
+      <ng-container [ngTemplateOutlet]="caption" />
+    </h2>
+    @for (group of view(); track group.resource) {
+      <section class="permission-matrix__section" [attr.aria-labelledby]="group.headingId">
+        <h3 class="permission-matrix__section-title" [id]="group.headingId">{{ group.label }}</h3>
+        <ul class="permission-matrix__list">
+          @for (row of group.rows; track row.id) {
+            <li class="permission-matrix__item">
+              <span class="permission-matrix__name">
+                <span class="permission-matrix__label">{{ row.label ?? row.code }}</span>
+                @if (row.label === null) {
+                  <nx-badge variant="neutral" data-testid="unlabelled-badge">{{
+                    copy.badges.unlabelled
+                  }}</nx-badge>
+                }
+                @if (row.isSensitive) {
+                  <app-sensitive-badge />
+                }
+              </span>
+              <code class="permission-matrix__code">{{ row.code }}</code>
+              <p class="permission-matrix__description">{{ row.description }}</p>
+              <span
+                class="permission-matrix__status"
+                [class.permission-matrix__status--granted]="row.granted"
+                [attr.data-granted]="row.granted"
+                data-testid="matrix-status"
+              >
+                <nx-icon
+                  class="permission-matrix__status-icon"
+                  [name]="row.granted ? 'check_circle' : 'remove_circle_outline'"
+                />
+                {{ row.granted ? copy.matrix.granted : copy.matrix.notGranted }}
+              </span>
+            </li>
+          }
+        </ul>
+      </section>
+    }
+  </div>
+</div>
