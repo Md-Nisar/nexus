@@ -14,6 +14,7 @@
       <li><a class="ds-nav__link" href="#table">Table</a></li>
       <li><a class="ds-nav__link" href="#empty">Empty State</a></li>
       <li><a class="ds-nav__link" href="#error">Error State</a></li>
+      <li><a class="ds-nav__link" href="#textarea">Textarea</a></li>
       <li><a class="ds-nav__link" href="#banner">Banner</a></li>
       <li><a class="ds-nav__link" href="#toast">Toast</a></li>
       <li><a class="ds-nav__link" href="#menu">Menu</a></li>
@@ -452,6 +453,36 @@
           >
             <nx-button variant="secondary" size="sm">Contact admin</nx-button>
           </nx-error-state>
+        </div>
+      </div>
+    </section>
+
+    <!-- Textarea section: nx-textarea with its linked counter, hint and error -->
+    <section id="textarea" class="ds-section">
+      <h2 class="ds-section__heading">Textarea — nx-textarea</h2>
+      <div class="ds-form-grid">
+        <div>
+          <p class="ds-section__label">With hint and counter</p>
+          <div class="ds-demo">
+            <nx-textarea
+              [formControl]="descriptionControl"
+              label="Description"
+              hint="Plain text only."
+              [maxLength]="255"
+              [rows]="3"
+            />
+          </div>
+        </div>
+        <div>
+          <p class="ds-section__label">Error state</p>
+          <div class="ds-demo">
+            <nx-textarea
+              label="Notes"
+              error="Remove line breaks and control characters"
+              [maxLength]="255"
+              [rows]="3"
+            />
+          </div>
         </div>
       </div>
     </section>

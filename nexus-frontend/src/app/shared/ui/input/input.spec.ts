@@ -49,6 +49,29 @@ describe('NxInput', () => {
     expect(input.disabled).toBe(true);
   });
 
+  it('appends describedBy ids to the input aria-describedby, beside the hint', async () => {
+    const fixture = TestBed.createComponent(NxInput);
+    fixture.componentRef.setInput('hint', 'Letters only');
+    fixture.componentRef.setInput('describedBy', 'name-counter name-error');
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    const input: HTMLInputElement = fixture.debugElement.query(
+      By.css('[data-testid="nx-input"]'),
+    ).nativeElement;
+    const ids = (input.getAttribute('aria-describedby') ?? '').split(' ');
+    expect(ids).toContain('name-counter');
+    expect(ids).toContain('name-error');
+    expect(ids.some((id) => id.startsWith('mat-mdc-hint'))).toBe(true);
+  });
+
+  it('focus() moves focus to the input', () => {
+    const fixture = TestBed.createComponent(NxInput);
+    fixture.detectChanges();
+    fixture.componentInstance.focus();
+    expect(document.activeElement?.getAttribute('data-testid')).toBe('nx-input');
+  });
+
   it('shows hint text when provided', () => {
     const fixture = TestBed.createComponent(NxInput);
     fixture.componentRef.setInput('hint', 'Enter your email');

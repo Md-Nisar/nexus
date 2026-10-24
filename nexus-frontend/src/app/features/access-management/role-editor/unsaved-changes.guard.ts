@@ -7,6 +7,8 @@ import { CONSOLE_COPY } from '../copy/console-copy';
 /** A page that can hold staged work the user has not saved. */
 export interface HasUnsavedChanges {
   hasUnsavedChanges(): boolean;
+  /** What the leave prompt says is kept; the editor's draft message when absent. */
+  leaveMessage?(): string;
 }
 
 /**
@@ -20,7 +22,7 @@ export const unsavedChangesGuard: CanDeactivateFn<HasUnsavedChanges> = (componen
   return inject(NxDialog)
     .open({
       title: leave.title,
-      message: leave.message,
+      message: component.leaveMessage?.() ?? leave.message,
       confirmLabel: leave.confirm,
       cancelLabel: leave.cancel,
       variant: 'default',

@@ -1,0 +1,112 @@
+:host {
+  display: block;
+  min-width: 0;
+}
+
+.role-create {
+  display: grid;
+  gap: var(--nx-space-4);
+  min-width: 0;
+}
+
+.role-create__form {
+  display: grid;
+  gap: var(--nx-space-4);
+  min-width: 0;
+  max-width: calc(var(--nx-space-24) * 8);
+}
+
+.role-create__field {
+  display: block;
+  min-width: 0;
+}
+
+.role-create__counter,
+.role-create__error {
+  margin: var(--nx-space-1) 0 0;
+  font-size: var(--nx-text-xs);
+  line-height: var(--nx-leading-normal);
+}
+
+.role-create__counter,
+.role-create__muted {
+  color: var(--nx-color-on-surface-muted);
+}
+
+.role-create__muted,
+.role-create__text {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.role-create__error {
+  color: var(--nx-color-error-text);
+}
+
+.role-create__heading {
+  margin: 0;
+  font-size: var(--nx-text-lg);
+  font-weight: var(--nx-weight-semibold);
+}
+
+.role-create__permissions,
+.role-create__notice,
+.role-create__loading {
+  display: grid;
+  gap: var(--nx-space-3);
+  min-width: 0;
+}
+
+.role-create__notice {
+  justify-items: start;
+}
+
+.role-create__skeleton {
+  display: block;
+  height: var(--nx-space-10);
+}
+
+.role-create__link {
+  color: var(--nx-color-primary);
+}
+
+.role-create__summary,
+.role-create__failure {
+  display: grid;
+  gap: var(--nx-space-2);
+  padding: var(--nx-space-3) var(--nx-space-4);
+  border: 1px solid var(--nx-color-error);
+  border-left-width: var(--nx-space-1);
+  border-radius: var(--nx-radius-md);
+  background-color: var(--nx-color-error-surface);
+  color: var(--nx-color-on-surface);
+}
+
+.role-create__summary-list,
+.role-create__list {
+  margin: 0;
+  padding-inline-start: var(--nx-space-5);
+}
+
+.role-create__failure-title {
+  margin: 0;
+  font-weight: var(--nx-weight-semibold);
+}
+
+.role-create__reference {
+  font-family: var(--nx-font-family-mono);
+  overflow-wrap: anywhere;
+}
+
+.role-create__actions,
+.role-create__banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--nx-space-2);
+}
+
+.role-create__banner-actions {
+  justify-content: flex-start;
+}

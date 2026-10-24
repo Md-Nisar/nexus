@@ -284,6 +284,19 @@
         font-size: var(--nx-text-xs);
         color: var(--nx-color-error);
       }
+      .field textarea {
+        padding: 8px 12px;
+        background: var(--nx-color-surface);
+        border: 1px solid var(--nx-color-outline);
+        border-radius: var(--nx-radius-sm);
+        font-family: var(--nx-font-family);
+        font-size: var(--nx-text-base);
+        color: var(--nx-color-on-surface);
+        resize: vertical;
+      }
+      .field textarea.has-error {
+        border-color: var(--nx-color-error);
+      }
 
       /* ── Cards ── */
       .nx-card {
@@ -818,6 +831,37 @@
             <option>Medium</option>
             <option>Low</option>
           </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Textarea ────────────────────────────────────────────────────────── -->
+    <h2>Textarea — nx-textarea</h2>
+    <div class="preview-grid">
+      <div class="card">
+        <p class="card-label">With counter</p>
+        <div class="field">
+          <label for="f-description">Description</label>
+          <textarea id="f-description" rows="3" aria-describedby="f-description-count">
+Handles support tickets</textarea>
+          <span class="hint" id="f-description-count">23 of 255</span>
+        </div>
+      </div>
+      <div class="card">
+        <p class="card-label">Error state</p>
+        <div class="field">
+          <label for="f-description-error">Description</label>
+          <textarea
+            id="f-description-error"
+            rows="3"
+            class="has-error"
+            aria-invalid="true"
+            aria-describedby="f-description-error-count f-description-error-text"
+          ></textarea>
+          <span class="hint" id="f-description-error-count">0 of 255</span>
+          <span class="error-text" id="f-description-error-text"
+            >Remove line breaks and control characters</span
+          >
         </div>
       </div>
     </div>

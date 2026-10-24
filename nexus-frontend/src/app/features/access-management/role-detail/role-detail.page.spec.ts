@@ -29,6 +29,7 @@ import type {
 import { CONSOLE_COPY } from '../copy/console-copy';
 import { AuthorizationProfileStore } from '../data/authorization-profile.store';
 import { CatalogueStore } from '../data/catalogue.store';
+import { CloneSourceCache } from '../data/clone-source';
 import { RoleDetailPage } from './role-detail.page';
 import { RoleDetailStore } from './role-detail.store';
 import { RolePermissionsTab } from './role-permissions.tab';
@@ -362,6 +363,20 @@ describe('RoleDetailPage (US-020 design §12.3)', () => {
       button(el(), 'role-clone')?.click();
       await settle();
       expect(ctx.router.url).toBe(`/admin/access/roles/new?from=${ROLE_ID}`);
+    });
+
+    it('Clone hands the role and set it shows to the create page, so they are not read again', async () => {
+      const { el, settle } = await open();
+      answer(ctx, { granted: ['role:read', 'tenant:read'] });
+      await settle();
+
+      button(el(), 'role-clone')?.click();
+      await settle();
+
+      expect(TestBed.inject(CloneSourceCache).take(ROLE_ID)).toEqual({
+        role: role(),
+        permissions: CATALOGUE.filter((p) => ['role:read', 'tenant:read'].includes(p.name)),
+      });
     });
 
     it('renders no edit control at all on a system role, only the banner and Clone (FR-B7)', async () => {

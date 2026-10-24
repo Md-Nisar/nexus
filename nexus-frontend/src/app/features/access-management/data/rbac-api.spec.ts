@@ -350,4 +350,49 @@ describe('RbacApi', () => {
         .flush(BODY, { headers: { ETag: '"v2"' } });
     });
   });
+
+  describe('createRole (design §7.1, §11.3)', () => {
+    const URL = `${API}/v1/roles`;
+    const CREATED: RoleResponse = {
+      id: '0190a000-0000-7000-8000-0000000000c9',
+      name: 'Support',
+      description: 'Handles tickets',
+      isSystemRole: false,
+      createdAt: '2026-01-01T00:00:00Z',
+      memberCount: 0,
+      permissionCount: 0,
+    };
+
+    it('POSTs exactly the name and description, with the console context, and emits the 201 body', () => {
+      let received: RoleResponse | undefined;
+      api
+        .createRole({ name: 'Support', description: 'Handles tickets' })
+        .subscribe((role) => (received = role));
+
+      const req = http.expectOne(URL);
+      expect(req.request.method).toBe('POST');
+      expect(req.request.body).toEqual({ name: 'Support', description: 'Handles tickets' });
+      expect(req.request.context.get(SKIP_ACCESS_DENIED_REDIRECT)).toBe(true);
+      req.flush(CREATED, { status: 201, statusText: 'Created' });
+
+      expect(received).toEqual(CREATED);
+    });
+
+    it.each([
+      ['RBAC_006', 409],
+      ['RBAC_012', 409],
+      ['RBAC_008', 409],
+      ['AUTH_005', 503],
+    ] as const)('surfaces %s without retrying: a create is never re-sent', (code, status) => {
+      let failure: AppError | undefined;
+      api.createRole({ name: 'Support', description: '' }).subscribe({
+        error: (error: AppError) => (failure = error),
+      });
+
+      http.expectOne(URL).flush({ code, detail: 'Server detail' }, { status, statusText: code });
+
+      http.expectNone(URL);
+      expect(failure?.code).toBe(code);
+    });
+  });
 });

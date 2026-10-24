@@ -16,6 +16,7 @@ import { CONSOLE_COPY, RbacErrorMessages, format } from '../copy/console-copy';
 import { resolveConsoleError } from '../copy/resolve-console-error';
 import { AuthorizationProfileStore } from '../data/authorization-profile.store';
 import { CatalogueStore } from '../data/catalogue.store';
+import { CloneSourceCache } from '../data/clone-source';
 import { ConsoleErrorPanel } from '../ui/console-error-panel';
 import { SystemRoleBadge } from '../ui/system-role-badge';
 import { UserText } from '../ui/user-text';
@@ -52,6 +53,8 @@ interface DisabledReason {
  *   missing, "Edit permissions" stays visible and focusable but `aria-disabled`, with the reason as
  *   visible text, and a banner explains it with the read's reference (design §7.2). The read view
  *   is never hidden.
+ * - **Clone** hands the role and set shown to the create page ({@link CloneSourceCache}), so the
+ *   copy starts without another read.
  * - **Editor:** the `edit` child renders in the same outlet, so this page and its store stay
  *   mounted and entering the editor reads nothing; "Edit permissions" is hidden while it is open.
  * - **User text:** the name and description render through {@link UserText} by interpolation
@@ -85,6 +88,7 @@ export class RoleDetailPage implements OnInit {
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   private readonly locale = inject(LOCALE_ID);
+  private readonly cloneSource = inject(CloneSourceCache);
 
   protected readonly copy = CONSOLE_COPY;
   protected readonly skeletonRows = [0, 1, 2, 3];
@@ -292,8 +296,11 @@ export class RoleDetailPage implements OnInit {
   }
 
   protected clone(): void {
+    const ready = this.data();
     const role = this.role();
-    if (role === null || this.cloneState() !== 'enabled') return;
+    if (ready === null || role === null || this.cloneState() !== 'enabled') return;
+    // The create page starts from what is shown, without reading it again (design §6.5).
+    this.cloneSource.offer(role, ready.data.permissions);
     void this.router.navigate(['/admin/access/roles/new'], { queryParams: { from: role.id } });
   }
 }

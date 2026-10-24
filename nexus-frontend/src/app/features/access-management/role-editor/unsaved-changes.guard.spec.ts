@@ -47,6 +47,14 @@ describe('unsavedChangesGuard (US-020 design §4.8)', () => {
     });
   });
 
+  it("uses the page's own leave message when it has one (a create has no draft to keep)", () => {
+    const stub = dialogStub();
+    run({ hasUnsavedChanges: () => true, leaveMessage: () => 'Nothing is kept.' }, stub.dialog);
+    expect(stub.open).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Nothing is kept.' }),
+    );
+  });
+
   it.each([
     ['Leave', true, true],
     ['Stay', false, false],

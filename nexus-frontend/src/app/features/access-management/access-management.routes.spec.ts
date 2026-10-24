@@ -162,6 +162,32 @@ describe('ACCESS_MANAGEMENT_ROUTES (US-020 design §4.2)', () => {
     });
   });
 
+  describe('create role (T-013, design §4.2, §12.5)', () => {
+    function createRoute(): Route {
+      const route = layoutRoute().children?.find((child) => child.path === 'roles/new');
+      expect(route).toBeDefined();
+      return route as Route;
+    }
+
+    it('is declared before roles/:roleId, so "new" is never read as a role id', () => {
+      const paths = layoutRoute().children?.map((child) => child.path) ?? [];
+      expect(paths.indexOf('roles/new')).toBeGreaterThan(-1);
+      expect(paths.indexOf('roles/new')).toBeLessThan(paths.indexOf('roles/:roleId'));
+    });
+
+    it('needs role:write, asks before leaving unsaved work, has a static title and is lazy', () => {
+      const route = createRoute();
+      expect(route.canActivate).toEqual([permissionGuard]);
+      expect(route.data).toEqual({ permission: 'role:write' });
+      expect(route.canDeactivate).toEqual([unsavedChangesGuard]);
+      expect(route.title).toBe('Create role');
+      expect(route.component).toBeUndefined();
+      expect(route.loadComponent).toBeTypeOf('function');
+      expect(route.providers).toBeUndefined();
+      expect(route.canActivateChild).toBeUndefined();
+    });
+  });
+
   describe('roles area (T-007)', () => {
     function rolesRoute(): Route {
       const route = layoutRoute().children?.find((child) => child.path === 'roles');

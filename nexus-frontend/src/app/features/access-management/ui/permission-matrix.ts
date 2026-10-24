@@ -58,7 +58,7 @@ interface MatrixGroup {
 }
 
 /** Visible text of each disabled reason (design §14.2). */
-const REASON_TEXT: Readonly<Record<AffordanceReason, string>> = {
+export const AFFORDANCE_REASON_TEXT: Readonly<Record<AffordanceReason, string>> = {
   'profile-unavailable': CONSOLE_COPY.disabledReason.profileUnavailable,
   'not-held': CONSOLE_COPY.disabledReason.notHeld,
   'admin-only-directory': CONSOLE_COPY.disabledReason.adminOnlyDirectory,
@@ -66,7 +66,7 @@ const REASON_TEXT: Readonly<Record<AffordanceReason, string>> = {
 };
 
 function reasonOf(affordance: Affordance | undefined): string {
-  return affordance?.kind === 'disabled' ? REASON_TEXT[affordance.reason] : '';
+  return affordance?.kind === 'disabled' ? AFFORDANCE_REASON_TEXT[affordance.reason] : '';
 }
 
 const ROLE_PLACEHOLDER = '{role}';

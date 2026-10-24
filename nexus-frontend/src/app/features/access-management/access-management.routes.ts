@@ -42,6 +42,8 @@ export const firstAreaRedirect: CanActivateFn = () => {
  * - `roles/:roleId` scopes {@link RoleDetailStore} to one role page and has its tabs and the
  *   editor (`edit`, `role:write`, `unsavedChangesGuard`) as child routes; its own route has no
  *   title (the children have static ones), so a role name never reaches `document.title`.
+ * - `roles/new` (Create and Clone, `role:write`, `unsavedChangesGuard`) is declared before
+ *   `roles/:roleId`.
  */
 export const ACCESS_MANAGEMENT_ROUTES: Routes = [
   {
@@ -63,6 +65,15 @@ export const ACCESS_MANAGEMENT_ROUTES: Routes = [
         canActivate: [permissionGuard],
         data: { permission: 'role:read' },
         loadComponent: () => import('./roles/roles-list.page').then((m) => m.RolesListPage),
+      },
+      {
+        // Before `roles/:roleId`, so "new" is never matched as a role id.
+        path: 'roles/new',
+        title: 'Create role',
+        canActivate: [permissionGuard],
+        canDeactivate: [unsavedChangesGuard],
+        data: { permission: 'role:write' },
+        loadComponent: () => import('./role-editor/role-create.page').then((m) => m.RoleCreatePage),
       },
       {
         path: 'roles/:roleId',

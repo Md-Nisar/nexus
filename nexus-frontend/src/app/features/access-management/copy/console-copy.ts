@@ -229,6 +229,45 @@ export const CONSOLE_COPY = {
     notRestored: "Not restored because you can't grant them: {labels}.",
   },
 
+  /**
+   * Create and Clone (§12.5, §14.1 `VALIDATION_FAILED`, §14.2). `{name}` is the source role's name,
+   * `{labels}` permission labels joined by `save.listSeparator`, `{n}` and `{max}` counts.
+   */
+  createRole: {
+    title: 'Create role',
+    nameLabel: 'Name',
+    nameHint: 'Letters, numbers, spaces, dots, hyphens and underscores',
+    descriptionLabel: 'Description',
+    counter: '{n} of {max}',
+    permissionsTitle: 'Permissions',
+    permissionsHint: 'Optional. You can only grant permissions you hold yourself.',
+    /** The matrix caption's role while the name is still empty. */
+    unnamedRole: 'the new role',
+    submit: 'Create role',
+    cancel: 'Cancel',
+    loading: 'Loading the form',
+    loadingSource: 'Loading the role to copy',
+    noWrite: "You can't create roles.",
+    success: 'Role created.',
+    partial: "Role created, but its permissions weren't saved.",
+    retry: 'Retry',
+    openRole: 'Open role',
+    cloneName: 'Copy of {name}',
+    notCopied: "Not copied, because you can't grant them: {labels}",
+    notCopiedItem: '{label}: {reason}',
+    summaryTitle: 'Some details need fixing',
+    leaveMessage: "The role hasn't been created yet, so nothing is kept.",
+    errors: {
+      nameRequired: 'Enter a role name',
+      nameTooLong: 'Use 64 characters or fewer',
+      namePattern:
+        'Start with a letter or number, then use letters, numbers, spaces, dots, hyphens or underscores',
+      nameReserved: 'This name is reserved',
+      descriptionTooLong: 'Use 255 characters or fewer',
+      descriptionControl: 'Remove line breaks and control characters',
+    },
+  },
+
   /** The unsaved-changes prompt (§4.8, §14.2). */
   leave: {
     title: 'Leave without saving?',

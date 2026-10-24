@@ -21,6 +21,7 @@ import {
   NxTable,
   NxTableCellDef,
   NxTabs,
+  NxTextarea,
   NxTooltip,
   BreadcrumbItem,
   NavTab,
@@ -53,6 +54,7 @@ import {
     NxTable,
     NxTableCellDef,
     NxTabs,
+    NxTextarea,
     NxTooltip,
     NxEmptyState,
     NxErrorState,
@@ -98,6 +100,7 @@ export class DesignSystemPreviewComponent {
   readonly errorControl = new FormControl('NXS-???');
   readonly selectControl = new FormControl('high');
   readonly disabledControl = new FormControl({ value: 'Disabled value', disabled: true });
+  readonly descriptionControl = new FormControl('Handles support tickets');
 
   readonly priorityOptions: SelectOption[] = [
     { label: 'High', value: 'high' },

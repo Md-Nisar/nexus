@@ -13,6 +13,7 @@
  *
  * ### Form Inputs
  * - `NxInput` — text input field with labels, errors, and validation
+ * - `NxTextarea` — multi-line text field with a linked hint, counter and error
  * - `NxSelect` — dropdown select with custom options
  *
  * ### Feedback & Data Display
@@ -134,6 +135,8 @@ export { NxChip } from './chip/chip';
 export { NxIcon } from './icon/icon';
 
 export { NxInput } from './input/input';
+
+export { NxTextarea } from './textarea/textarea';
 
 export { NxSearchField } from './search-field/search-field';
 export type { SearchMode } from './search-field/search-field';

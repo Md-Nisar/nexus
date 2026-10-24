@@ -6,6 +6,7 @@ import { CORRELATION_HEADER } from '../../../core/http/correlation-id.intercepto
 import { LoggerService } from '../../../core/logging/logger.service';
 import type {
   CallerAuthorizationResponse,
+  CreateRoleRequest,
   PermissionListResponse,
   PermissionPageResponse,
   PermissionResponse,
@@ -143,6 +144,18 @@ export class RbacApi {
       { operation: 'replace', roleId: id },
       this.logger,
     ).pipe(map(toVersionedSet));
+  }
+
+  /**
+   * `POST /roles`: creates a custom role with exactly a name and a description (`role:write`,
+   * us015 flag; design §7.1, §11.3). The 201 body is the new role. Never re-sent: a create is not
+   * idempotent, so even `RBAC_012` surfaces.
+   */
+  createRole(body: CreateRoleRequest): Observable<RoleResponse> {
+    const request: CreateRoleRequest = { name: body.name, description: body.description };
+    return this.http.post<RoleResponse>(`${this.base}/roles`, request, {
+      context: consoleHttpContext(),
+    });
   }
 
   /**
