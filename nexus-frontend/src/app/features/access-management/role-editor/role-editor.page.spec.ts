@@ -57,8 +57,21 @@ const CONFIG: AppConfig = {
   accessConsoleEnabled: true,
 };
 
+/** Canonical UUIDs, as the server sends: a draft accepts nothing else (design §10). */
+const PERMISSION_IDS: Readonly<Record<string, string>> = {
+  'tenant:read': '0190a000-0000-7000-8000-000000000101',
+  'user:read': '0190a000-0000-7000-8000-000000000102',
+  'user:directory:read': '0190a000-0000-7000-8000-000000000103',
+  'role:read': '0190a000-0000-7000-8000-000000000104',
+  'role:write': '0190a000-0000-7000-8000-000000000105',
+};
+
+function idOf(name: string): string {
+  return PERMISSION_IDS[name] ?? `id-${name}`;
+}
+
 function permission(name: string, isSensitive = false): PermissionResponse {
-  return { id: `id-${name}`, name, description: `Server description for ${name}`, isSensitive };
+  return { id: idOf(name), name, description: `Server description for ${name}`, isSensitive };
 }
 
 const CATALOGUE = [
@@ -106,13 +119,13 @@ interface SetupOptions {
 }
 
 function setup(options: SetupOptions = {}) {
-  const held = options.held ?? ['role:read', 'role:write', 'user:read'];
+  const held = signal<readonly string[]>(options.held ?? ['role:read', 'role:write', 'user:read']);
   const profileStatus = signal<ProfileStatus>(options.profile ?? 'ready');
   const ready = (): boolean => profileStatus() === 'ready';
   const profileStub = {
     state: () => ({ status: profileStatus() }),
-    can: (p: string) => ready() && held.includes(p),
-    permissions: () => new Set(ready() ? held : []),
+    can: (p: string) => ready() && held().includes(p),
+    permissions: () => new Set(ready() ? held() : []),
     isAdministrator: () => ready() && (options.isAdministrator ?? false),
     mutationsEnabled: () => ready(),
     roleIds: () => new Set(ready() ? (options.roleIds ?? []) : []),
@@ -187,6 +200,7 @@ function setup(options: SetupOptions = {}) {
     authRefresh,
     profileStub,
     profileStatus,
+    held,
     logs,
     announce,
     toast,
@@ -263,6 +277,7 @@ describe('RoleEditorPage (US-020 design §4.8, §8, §12.4)', () => {
     expect(ctx.handleError).not.toHaveBeenCalled();
     expect(ctx.authRefresh).not.toHaveBeenCalled();
     vi.restoreAllMocks();
+    sessionStorage.clear();
   });
 
   describe('as a role editor who is not an administrator', () => {
@@ -665,7 +680,7 @@ describe('RoleEditorPage (US-020 design §4.8, §8, §12.4)', () => {
 
   describe('saving (T-011, design §7.2, §7.3, §11.1, §12.4)', () => {
     const label = (code: string): string => permissionLabel(code) ?? code;
-    const ids = (...codes: readonly string[]): string[] => codes.map((code) => `id-${code}`).sort();
+    const ids = (...codes: readonly string[]): string[] => codes.map(idOf).sort();
 
     /** The set answer of a PUT or GET with the given codes and tag. */
     function setBody(codes: readonly string[]) {
@@ -1070,6 +1085,310 @@ describe('RoleEditorPage (US-020 design §4.8, §8, §12.4)', () => {
       expect(logged).toContain('access_console_conflict_rebased');
       expect(logged).not.toContain(name);
       expect(logged).not.toContain(description);
+    });
+  });
+
+  describe('drafts (T-012; design §10; RC-74; D-6)', () => {
+    const USER = 'user-1';
+    const KEY = `nexus.session.access-draft.v1.${USER}.${ROLE_ID}`;
+    const label = (code: string): string => permissionLabel(code) ?? code;
+
+    function seedDraft(
+      draft: {
+        add?: readonly string[];
+        remove?: readonly string[];
+        baseEtag?: string | null;
+        savedAt?: number;
+      } = {},
+      key = KEY,
+    ): void {
+      sessionStorage.setItem(
+        key,
+        JSON.stringify({
+          v: 1,
+          add: (draft.add ?? ['role:write']).map(idOf),
+          remove: (draft.remove ?? []).map(idOf),
+          baseEtag: draft.baseEtag === undefined ? '"v1"' : draft.baseEtag,
+          savedAt: draft.savedAt ?? Date.now() - 5 * 60_000,
+        }),
+      );
+    }
+
+    function stored(): { add: string[]; remove: string[]; baseEtag: string | null } | null {
+      const raw = sessionStorage.getItem(KEY);
+      return raw === null ? null : JSON.parse(raw);
+    }
+
+    function setBody(codes: readonly string[]) {
+      return { data: CATALOGUE.filter((p) => codes.includes(p.name)) };
+    }
+
+    function gets(): TestRequest[] {
+      return ctx.http.match((req) => req.method === 'GET' && req.url === SET_URL);
+    }
+
+    function puts(): TestRequest[] {
+      return ctx.http.match((req) => req.method === 'PUT' && req.url === SET_URL);
+    }
+
+    function offer(el: HTMLElement): HTMLElement | null {
+      return byTestId(el, 'role-editor-draft-offer');
+    }
+
+    function restored(el: HTMLElement): HTMLElement | null {
+      return byTestId(el, 'role-editor-draft-restored');
+    }
+
+    /** Opens the editor over a seeded draft, presses Restore and answers the one re-read. */
+    async function restore(
+      options: SetupOptions & { granted?: readonly string[]; reread?: readonly string[] } = {},
+      etag = '"v2"',
+    ) {
+      ctx = setup(options);
+      const page = await openEditor(ctx, { granted: options.granted });
+      button(offer(page.el()) as HTMLElement, 'role-editor-draft-restore')?.click();
+      await page.settle();
+      const reads = gets();
+      expect(reads).toHaveLength(1);
+      reads[0].flush(setBody(options.reread ?? options.granted ?? ['role:read', 'user:read']), {
+        headers: { ETag: etag },
+      });
+      await page.settle();
+      return page;
+    }
+
+    it('mirrors the staged intent as ids only, and an empty intent clears it (PII)', async () => {
+      const name = 'Secret payroll role';
+      const description = 'Secret words';
+      ctx = setup();
+      const { el, settle } = await openEditor(ctx, { role: role({ name, description }) });
+
+      box(el(), 'role:write')?.click();
+      box(el(), 'user:read')?.click();
+      await settle();
+
+      const raw = sessionStorage.getItem(KEY) as string;
+      expect(JSON.parse(raw)).toEqual({
+        v: 1,
+        add: [idOf('role:write')],
+        remove: [idOf('user:read')],
+        baseEtag: '"v1"',
+        savedAt: expect.any(Number),
+      });
+      for (const secret of [name, description, 'Server description', 'role:write']) {
+        expect(raw).not.toContain(secret);
+      }
+      expect(raw).not.toContain(label('role:write'));
+      expect(raw).not.toContain('@');
+
+      box(el(), 'role:write')?.click();
+      box(el(), 'user:read')?.click();
+      await settle();
+      expect(sessionStorage.getItem(KEY)).toBeNull();
+    });
+
+    it('makes the leave prompt true: leaving keeps the draft in this tab', async () => {
+      ctx = setup();
+      const { el, settle } = await openEditor(ctx);
+      box(el(), 'role:write')?.click();
+      await settle();
+
+      const leaving = ctx.router.navigateByUrl('/admin/access/roles');
+      const prompt = await vi.waitFor(() => {
+        const shell = document.querySelector<HTMLElement>('nx-dialog-shell');
+        expect(text(shell)).toContain('Leave without saving?');
+        return shell as HTMLElement;
+      });
+      const leave = Array.from(prompt.querySelectorAll('button')).find((b) => text(b) === 'Leave');
+      (leave as HTMLButtonElement).click();
+      await expect(leaving).resolves.toBe(true);
+
+      expect(stored()?.add).toEqual([idOf('role:write')]);
+    });
+
+    it('offers the draft on entry with no request, and does not stage it before Restore', async () => {
+      seedDraft();
+      ctx = setup();
+      const { el } = await openEditor(ctx);
+
+      expect(ctx.http.match(() => true)).toHaveLength(0);
+      const banner = offer(el());
+      expect(banner?.querySelector('[role="status"]')).not.toBeNull();
+      expect(text(banner)).toContain('You have unsaved changes to this role from 5 minutes ago.');
+      expect(text(banner)).toContain('Restore or discard?');
+      expect(text(byTestId(el(), 'role-editor-counts'))).toBe('0 to add, 0 to remove');
+      expect(box(el(), 'role:write')?.checked).toBe(false);
+      // The pending offer keeps the key.
+      expect(stored()).not.toBeNull();
+    });
+
+    it("never offers another user's draft (SD-16)", async () => {
+      seedDraft({}, `nexus.session.access-draft.v1.user-2.${ROLE_ID}`);
+      ctx = setup();
+      const { el } = await openEditor(ctx);
+
+      expect(offer(el())).toBeNull();
+    });
+
+    it('discards an invalid draft without offering it', async () => {
+      sessionStorage.setItem(
+        KEY,
+        JSON.stringify({ v: 1, add: ['id-unknown'], remove: [], baseEtag: null, savedAt: 1 }),
+      );
+      ctx = setup();
+      const { el } = await openEditor(ctx);
+
+      expect(offer(el())).toBeNull();
+      expect(sessionStorage.getItem(KEY)).toBeNull();
+    });
+
+    it('restore re-reads the set once (request budget), rebases onto it and stages the result', async () => {
+      seedDraft({ add: ['role:write'], remove: ['user:read'], baseEtag: '"v1"' });
+      const { el } = await restore({}, '"v1"');
+
+      expect(offer(el())).toBeNull();
+      expect(text(byTestId(el(), 'role-editor-counts'))).toBe('1 to add, 1 to remove');
+      expect(box(el(), 'role:write')?.checked).toBe(true);
+      expect(box(el(), 'user:read')?.checked).toBe(false);
+      const banner = restored(el());
+      expect(banner?.querySelector('[role="status"]')).not.toBeNull();
+      expect(text(banner)).not.toContain(CONSOLE_COPY.draft.outdated);
+      expect(stored()?.add).toEqual([idOf('role:write')]);
+    });
+
+    it('saves a restored draft with the current tag, never the draft base tag, and clears it', async () => {
+      seedDraft({ add: ['role:write'], baseEtag: '"v0"' });
+      const { el, settle } = await restore();
+
+      expect(text(restored(el()))).toContain(CONSOLE_COPY.draft.outdated);
+      button(el(), 'role-editor-review')?.click();
+      await settle();
+      button(review() as HTMLElement, 'role-review-confirm')?.click();
+      await settle();
+
+      const [req] = puts();
+      expect(req.request.headers.get('If-Match')).toBe('"v2"');
+      req.flush(setBody(['role:read', 'user:read', 'role:write']), {
+        headers: { ETag: '"v3"' },
+      });
+      await settle();
+      expect(sessionStorage.getItem(KEY)).toBeNull();
+    });
+
+    it('drops and lists entries the caller can no longer grant, never showing them staged (RC-74 item 3)', async () => {
+      // tenant:read is not held by this caller: its row is disabled.
+      seedDraft({ add: ['tenant:read', 'role:write'] });
+      const { el } = await restore();
+
+      expect(text(byTestId(el(), 'role-editor-counts'))).toBe('1 to add, 0 to remove');
+      expect(box(el(), 'tenant:read')?.checked).toBe(false);
+      expect(box(el(), 'tenant:read')?.getAttribute('aria-disabled')).toBe('true');
+      expect(text(restored(el()))).toContain(
+        `Not restored because you can't grant them: ${label('tenant:read')}.`,
+      );
+      expect(stored()?.add).toEqual([idOf('role:write')]);
+    });
+
+    it('says the changes are already in place when the current set has them', async () => {
+      seedDraft({ add: ['role:write'] });
+      const { el } = await restore({ reread: ['role:read', 'user:read', 'role:write'] });
+
+      expect(text(restored(el()))).toContain('Your changes are already in place.');
+      expect(text(byTestId(el(), 'role-editor-counts'))).toBe('0 to add, 0 to remove');
+      expect(sessionStorage.getItem(KEY)).toBeNull();
+    });
+
+    it('keeps the offer and shows the copy when the re-read fails', async () => {
+      seedDraft();
+      ctx = setup();
+      const { el, settle } = await openEditor(ctx);
+      button(offer(el()) as HTMLElement, 'role-editor-draft-restore')?.click();
+      await settle();
+      gets()[0].flush(
+        { code: 'SERVICE_UNAVAILABLE', traceId: 'trace-1' },
+        { status: 503, statusText: 'Service Unavailable' },
+      );
+      await settle();
+
+      expect(offer(el())).not.toBeNull();
+      expect(byTestId(el(), 'role-editor-save-error')).not.toBeNull();
+      expect(stored()).not.toBeNull();
+    });
+
+    it("the offer's Discard clears the draft without a request", async () => {
+      seedDraft();
+      ctx = setup();
+      const { el, settle } = await openEditor(ctx);
+
+      button(offer(el()) as HTMLElement, 'role-editor-draft-discard')?.click();
+      await settle();
+
+      expect(offer(el())).toBeNull();
+      expect(sessionStorage.getItem(KEY)).toBeNull();
+      expect(ctx.http.match(() => true)).toHaveLength(0);
+    });
+
+    it("the footer's Discard clears the draft", async () => {
+      ctx = setup();
+      const { el, settle } = await openEditor(ctx);
+      box(el(), 'role:write')?.click();
+      await settle();
+      expect(stored()).not.toBeNull();
+
+      button(el(), 'role-editor-discard')?.click();
+      await settle();
+
+      expect(ctx.router.url).toBe(VIEW);
+      expect(sessionStorage.getItem(KEY)).toBeNull();
+    });
+
+    it('a 412 rebase drops and lists the entries the caller can no longer change (RC-74 item 3)', async () => {
+      ctx = setup();
+      const { el, settle } = await openEditor(ctx);
+      box(el(), 'role:write')?.click();
+      box(el(), 'user:read')?.click();
+      await settle();
+      button(el(), 'role-editor-review')?.click();
+      await settle();
+      button(review() as HTMLElement, 'role-review-confirm')?.click();
+      await settle();
+
+      puts()[0].flush(
+        { code: 'PRECONDITION_FAILED', traceId: 'trace-412' },
+        { status: 412, statusText: 'Precondition Failed' },
+      );
+      // Someone else added tenant:read, which this caller does not hold: every removal is now
+      // disabled (role-subset rule), so the staged removal of user:read cannot be made.
+      gets()[0].flush(setBody(['role:read', 'user:read', 'tenant:read']), {
+        headers: { ETag: '"v3"' },
+      });
+      await settle();
+
+      const banner = byTestId(el(), 'role-editor-conflict');
+      expect(text(banner)).toContain(
+        `Not restored because you can't grant them: ${label('user:read')}.`,
+      );
+      expect(text(banner)).not.toContain('Your changes are already in place.');
+      expect(text(byTestId(el(), 'role-editor-counts'))).toBe('1 to add, 0 to remove');
+      expect(box(el(), 'user:read')?.checked).toBe(true);
+      expect(stored()).toEqual(
+        expect.objectContaining({ add: [idOf('role:write')], remove: [], baseEtag: '"v3"' }),
+      );
+    });
+
+    it('keeps working when storage is unavailable', async () => {
+      for (const method of ['getItem', 'setItem', 'removeItem', 'key'] as const) {
+        vi.spyOn(Storage.prototype, method).mockImplementation(() => {
+          throw new DOMException('denied', 'SecurityError');
+        });
+      }
+      ctx = setup();
+      const { el, settle } = await openEditor(ctx);
+      box(el(), 'role:write')?.click();
+      await settle();
+
+      expect(text(byTestId(el(), 'role-editor-counts'))).toBe('1 to add, 0 to remove');
+      expect(offer(el())).toBeNull();
     });
   });
 });

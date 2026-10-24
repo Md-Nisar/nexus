@@ -215,6 +215,20 @@ export const CONSOLE_COPY = {
     wait: 'Try again in {n} seconds.',
   },
 
+  /**
+   * Drafts of staged work (§10, §12.4, §14.2; D-6). `{time}` is a relative time, `{labels}`
+   * permission labels joined by `save.listSeparator`.
+   */
+  draft: {
+    offer: 'You have unsaved changes to this role from {time}.',
+    offerQuestion: 'Restore or discard?',
+    restore: 'Restore',
+    discard: 'Discard',
+    restoredTitle: 'Your unsaved changes are back',
+    outdated: 'This role has changed since you saved these changes. Check them before saving.',
+    notRestored: "Not restored because you can't grant them: {labels}.",
+  },
+
   /** The unsaved-changes prompt (§4.8, §14.2). */
   leave: {
     title: 'Leave without saving?',

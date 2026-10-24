@@ -148,6 +148,24 @@ export function normaliseIntent(intent: StagedIntent, base: ReadonlySet<string>)
 }
 
 /**
+ * Drops the entries whose row is no longer enabled (RC-74 item 3): after a draft restore or a 412
+ * rebase, a row the caller cannot change must never show as staged. `dropped` is sorted. Returns
+ * `intent` itself when nothing is dropped.
+ */
+export function dropDisabled(
+  intent: StagedIntent,
+  isEnabled: (id: string) => boolean,
+): { readonly intent: StagedIntent; readonly dropped: readonly string[] } {
+  const add = [...intent.add].filter(isEnabled);
+  const remove = [...intent.remove].filter(isEnabled);
+  if (add.length === intent.add.size && remove.length === intent.remove.size) {
+    return { intent, dropped: [] };
+  }
+  const dropped = [...intent.add, ...intent.remove].filter((id) => !isEnabled(id));
+  return { intent: { add: new Set(add), remove: new Set(remove) }, dropped: sorted(dropped) };
+}
+
+/**
  * Moves `intent` onto `newBase` (design §8.2): no-ops are dropped and reported, and `upstream`
  * says what changed between `oldBase` and `newBase` (`null` when `oldBase` is unknown, as for a
  * draft whose base tag differs).

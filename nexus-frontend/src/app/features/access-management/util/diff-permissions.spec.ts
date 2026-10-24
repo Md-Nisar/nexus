@@ -4,6 +4,7 @@ import {
   EMPTY_INTENT,
   StagedIntent,
   diffPermissions,
+  dropDisabled,
   normaliseIntent,
   rebase,
   toggle,
@@ -192,5 +193,32 @@ describe('rebase (design §8.2)', () => {
     const result = rebase(intent(['p-c']), set('p-a'), set('p-a'));
     expect(result.upstream).toEqual({ added: [], removed: [] });
     expect(result.droppedAsAlreadyApplied).toEqual([]);
+  });
+});
+
+describe('dropDisabled (RC-74 item 3)', () => {
+  const enabled =
+    (...ids: string[]) =>
+    (id: string) =>
+      ids.includes(id);
+
+  it('drops adds and removes whose row is disabled and lists them, sorted', () => {
+    const result = dropDisabled(intent(['p-d', 'p-c'], ['p-b', 'p-a']), enabled('p-c', 'p-a'));
+    expect([...result.intent.add]).toEqual(['p-c']);
+    expect([...result.intent.remove]).toEqual(['p-a']);
+    expect(result.dropped).toEqual(['p-b', 'p-d']);
+  });
+
+  it('returns the same intent when every entry is enabled', () => {
+    const staged = intent(['p-c'], ['p-a']);
+    const result = dropDisabled(staged, enabled('p-a', 'p-c'));
+    expect(result.intent).toBe(staged);
+    expect(result.dropped).toEqual([]);
+  });
+
+  it('can drop everything', () => {
+    const result = dropDisabled(intent(['p-c'], ['p-a']), enabled());
+    expect(result.intent).toEqual(EMPTY_INTENT);
+    expect(result.dropped).toEqual(['p-a', 'p-c']);
   });
 });

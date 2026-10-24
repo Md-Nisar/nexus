@@ -331,3 +331,22 @@ describe('CONSOLE_COPY (save strings, design §12.4, §14.2)', () => {
     expect(format(CONSOLE_COPY.save.wait, { n: 30 })).toBe('Try again in 30 seconds.');
   });
 });
+
+describe('CONSOLE_COPY (draft strings, design §10, §14.2; D-6)', () => {
+  it('has the D3 restore offer, outdated and not-restored strings', () => {
+    const { draft } = CONSOLE_COPY;
+    expect(format(draft.offer, { time: '5 minutes ago' })).toBe(
+      'You have unsaved changes to this role from 5 minutes ago.',
+    );
+    expect(draft.offerQuestion).toBe('Restore or discard?');
+    expect(draft.restore).toBe('Restore');
+    expect(draft.discard).toBe('Discard');
+    expect(draft.outdated).toBe(
+      'This role has changed since you saved these changes. Check them before saving.',
+    );
+    expect(format(draft.notRestored, { labels: 'A, B' })).toBe(
+      "Not restored because you can't grant them: A, B.",
+    );
+    expect(draft.restoredTitle.length).toBeGreaterThan(0);
+  });
+});

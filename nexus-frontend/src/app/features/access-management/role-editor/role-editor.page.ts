@@ -2,16 +2,20 @@ import { DOCUMENT } from '@angular/common';
 import {
   Component,
   DestroyRef,
+  LOCALE_ID,
   Renderer2,
   RendererStyleFlags2,
   TemplateRef,
   computed,
+  effect,
   inject,
   signal,
+  untracked,
   viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { AuthStore } from '../../../core/auth/auth.store';
 import { LoggerService } from '../../../core/logging/logger.service';
 import type { PermissionResponse } from '../../../shared/types/api/rbac';
 import { AppError, isAppError } from '../../../shared/types/app-error';
@@ -24,6 +28,7 @@ import { AuthorizationProfileStore } from '../data/authorization-profile.store';
 import { CatalogueStore, PermissionGroup } from '../data/catalogue.store';
 import { RbacApi, VersionedPermissionSet } from '../data/rbac-api';
 import { RolesStore } from '../data/roles.store';
+import { DraftStorage, RoleDraft } from '../drafts/draft-storage';
 import { RoleDetailStore } from '../role-detail/role-detail.store';
 import { ConsoleErrorPanel } from '../ui/console-error-panel';
 import { MatrixGroupToggle, MatrixToggle, PermissionMatrix } from '../ui/permission-matrix';
@@ -36,12 +41,14 @@ import {
   EMPTY_INTENT,
   StagedIntent,
   diffPermissions,
+  dropDisabled,
   normaliseIntent,
   rebase,
   toggle,
   toggleGroup,
 } from '../util/diff-permissions';
 import { withGrantedExtras } from '../util/granted-extras';
+import { formatRelativeTime } from '../util/relative-time';
 import { DEFAULT_RETRY_AFTER_SECONDS, createRetryCountdown } from '../util/retry-after';
 import { HasUnsavedChanges, beforeUnloadWhileDirty } from './unsaved-changes.guard';
 
@@ -52,8 +59,10 @@ export type ReviewOutcome = 'save' | 'cancel';
 type Blocked = 'system-role' | 'etag-unusable' | 'no-write';
 
 /**
- * What the last save left to show (design §11.1, §12.4). `deleted` and `system` end editing: the
- * server says the role is gone or is a system role, so nothing could ever be saved.
+ * What the last save or draft restore left to show (design §10, §11.1, §12.4). `deleted` and
+ * `system` end editing: the server says the role is gone or is a system role, so nothing could
+ * ever be saved. `notGranted` lists the staged entries dropped because their row is disabled
+ * (RC-74 item 3).
  */
 type SaveFeedback =
   | { readonly kind: 'error'; readonly view: ConsoleErrorView }
@@ -62,6 +71,15 @@ type SaveFeedback =
       readonly upstreamAdded: readonly string[];
       readonly upstreamRemoved: readonly string[];
       readonly inPlace: readonly string[];
+      readonly notGranted: readonly string[];
+      readonly allInPlace: boolean;
+    }
+  | {
+      readonly kind: 'restored';
+      /** The set's tag differs from the one the draft was staged on. */
+      readonly outdated: boolean;
+      readonly inPlace: readonly string[];
+      readonly notGranted: readonly string[];
       readonly allInPlace: boolean;
     }
   | { readonly kind: 'deleted'; readonly view: ConsoleErrorView }
@@ -121,8 +139,14 @@ const [REVIEW_TITLE_BEFORE, REVIEW_TITLE_AFTER = ''] = CONSOLE_COPY.review.title
  *   work: 428 shows the defect copy (error log), a 403 the reason copy and a profile re-read,
  *   `RBAC_003` and `ROLE_NOT_FOUND` end editing, and a 429 or 503 holds Review for the wait. The
  *   one retry (`RBAC_012`) is in `RbacApi`.
+ * - **Drafts** (T-012; design §10; RC-74; D-6): an `effect` mirrors the intent, as ids only, to
+ *   `sessionStorage` for the signed-in user and this role; an empty intent clears it, and so do a
+ *   successful save and Discard. On entry a valid draft of the same user is offered (no request);
+ *   Restore re-reads the set once, rebases the draft onto it, and drops and lists every entry whose
+ *   row is now disabled, so a disabled row never shows as staged. The 412 rebase applies the same
+ *   drop. `If-Match` is always the current tag; the draft's tag only says the role has changed.
  * - **Leaving:** `unsavedChangesGuard` asks while there are unsaved changes, and the browser asks on
- *   unload only while dirty.
+ *   unload only while dirty. The draft keeps the work in this tab either way.
  * - **User text:** the role name renders through {@link UserText} only. Logs carry the role id,
  *   counts and codes only; never the name or description. The session is never refreshed here
  *   (RC-65): a re-read after an own-access change renews through the interceptor.
@@ -157,6 +181,9 @@ export class RoleEditorPage implements HasUnsavedChanges {
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly auth = inject(AuthStore);
+  private readonly drafts = inject(DraftStorage);
+  private readonly locale = inject(LOCALE_ID);
 
   protected readonly copy = CONSOLE_COPY;
   protected readonly skeletonRows = [0, 1, 2, 3];
@@ -183,6 +210,20 @@ export class RoleEditorPage implements HasUnsavedChanges {
 
   /** A save (and, after a 412, its re-read) is running. */
   protected readonly saving = signal(false);
+
+  /** A valid draft offered for restore, for the role it belongs to (design §10). */
+  private readonly draftOffer = signal<{
+    readonly roleId: string;
+    readonly draft: RoleDraft;
+  } | null>(null);
+
+  /** The user and role whose draft was looked up: once per visit, before anything is written. */
+  private draftLookedUp: string | null = null;
+
+  /** Restore's re-read of the set is running. */
+  protected readonly restoring = signal(false);
+
+  private readonly userId = computed(() => this.auth.currentUser()?.userId ?? null);
 
   /** Holds Review after a 429 or 503 until the wait is over (design §7.4). */
   private readonly wait = createRetryCountdown(this.destroyRef);
@@ -268,8 +309,7 @@ export class RoleEditorPage implements HasUnsavedChanges {
     const feedback = this.saveFeedback();
     if (feedback?.kind !== 'conflict') return null;
     const { save } = CONSOLE_COPY;
-    const labels = (ids: readonly string[]): string =>
-      ids.map((id) => this.labelOf(id)).join(save.listSeparator);
+    const labels = (ids: readonly string[]): string => this.labelList(ids);
     const parts = [
       ...(feedback.upstreamAdded.length > 0
         ? [format(save.conflictAdded, { labels: labels(feedback.upstreamAdded) })]
@@ -289,6 +329,32 @@ export class RoleEditorPage implements HasUnsavedChanges {
         feedback.inPlace.length > 0
           ? format(save.conflictInPlace, { labels: labels(feedback.inPlace) })
           : null,
+      notRestored: this.notRestoredText(feedback.notGranted),
+      allInPlace: feedback.allInPlace ? save.alreadyInPlace : null,
+    };
+  });
+
+  /** The restore offer: only for the role shown, and only while something could be staged. */
+  protected readonly offer = computed(() => {
+    const offer = this.draftOffer();
+    if (offer === null || offer.roleId !== this.role()?.id) return null;
+    if (this.view() !== 'ready' || !this.profile.mutationsEnabled()) return null;
+    const time = formatRelativeTime(offer.draft.savedAt, Date.now(), this.locale);
+    return { title: format(CONSOLE_COPY.draft.offer, { time }) };
+  });
+
+  /** What a restore did to the draft (design §10, §14.2; RC-74 item 3). */
+  protected readonly restored = computed(() => {
+    const feedback = this.saveFeedback();
+    if (feedback?.kind !== 'restored') return null;
+    const { draft, save } = CONSOLE_COPY;
+    return {
+      outdated: feedback.outdated ? draft.outdated : null,
+      inPlace:
+        feedback.inPlace.length > 0
+          ? format(save.conflictInPlace, { labels: this.labelList(feedback.inPlace) })
+          : null,
+      notRestored: this.notRestoredText(feedback.notGranted),
       allInPlace: feedback.allInPlace ? save.alreadyInPlace : null,
     };
   });
@@ -417,6 +483,21 @@ export class RoleEditorPage implements HasUnsavedChanges {
   constructor() {
     beforeUnloadWhileDirty(() => this.hasUnsavedChanges());
 
+    // The draft writer: the one effect that writes state (design §6), mirroring the intent.
+    effect(() => {
+      const roleId = this.role()?.id ?? null;
+      const userId = this.userId();
+      const editable = this.view() === 'ready' && this.profile.mutationsEnabled();
+      const ended = this.ended() !== null;
+      const intent = this.intent();
+      const offered = this.draftOffer()?.roleId === roleId;
+      const etag = this.data()?.etag;
+      if (roleId === null || userId === null) return;
+      untracked(() =>
+        this.syncDraft(userId, roleId, { editable, ended, offered, intent, etag: strongTag(etag) }),
+      );
+    });
+
     const renderer = inject(Renderer2);
     const root = inject(DOCUMENT).documentElement;
     renderer.setStyle(
@@ -456,10 +537,63 @@ export class RoleEditorPage implements HasUnsavedChanges {
     );
   }
 
-  /** Drops the staged work and returns to the permissions tab; nothing is left to ask about. */
+  /** Drops the staged work and its draft and returns to the permissions tab. */
   protected discard(): void {
+    this.clearDraft();
+    this.draftOffer.set(null);
     this.staged.set({ roleId: null, intent: EMPTY_INTENT });
     void this.router.navigate(['..', 'permissions'], { relativeTo: this.route });
+  }
+
+  /**
+   * Restores the offered draft (design §10): one re-read of the set, the draft rebased onto it
+   * with no known old base, and every entry whose row is now disabled dropped and listed (RC-74
+   * item 3). The re-read's tag becomes the base, so the next save sends the current tag.
+   */
+  protected restoreDraft(): void {
+    const offer = this.draftOffer();
+    if (offer === null || this.offer() === null || this.restoring() || this.saving()) return;
+    const { roleId, draft } = offer;
+    this.restoring.set(true);
+    this.feedback.set({ roleId, value: null });
+    this.api
+      .getRolePermissions(roleId)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (set) => {
+          this.restoring.set(false);
+          this.detail.applySet(roleId, set);
+          const result = rebase(
+            { add: new Set(draft.add), remove: new Set(draft.remove) },
+            this.base(),
+            null,
+          );
+          const { intent, dropped } = this.dropUnchangeable(result.intent);
+          this.draftOffer.set(null);
+          this.staged.set({ roleId, intent });
+          this.feedback.set({
+            roleId,
+            value: {
+              kind: 'restored',
+              outdated: strongTag(set.etag) !== draft.baseEtag,
+              inPlace: result.droppedAsAlreadyApplied,
+              notGranted: dropped,
+              allInPlace: isEmptyIntent(intent) && dropped.length === 0,
+            },
+          });
+        },
+        error: (error: unknown) => {
+          this.restoring.set(false);
+          this.reportRestoreFailure(roleId, toAppError(error));
+        },
+      });
+  }
+
+  /** The offer's Discard: the draft is deleted and nothing is staged. */
+  protected discardDraft(): void {
+    if (this.restoring()) return;
+    this.clearDraft();
+    this.draftOffer.set(null);
   }
 
   /** Opens the Review dialog, at most once at a time (FR-G5). */
@@ -541,6 +675,7 @@ export class RoleEditorPage implements HasUnsavedChanges {
     const removed = [...oldBase].filter((id) => !newBase.has(id)).length;
     this.detail.applySet(roleId, set);
     this.staged.set({ roleId: null, intent: EMPTY_INTENT });
+    this.clearDraft();
     this.roles.invalidate();
     const { save } = CONSOLE_COPY;
     void this.announcer.announce(
@@ -574,7 +709,9 @@ export class RoleEditorPage implements HasUnsavedChanges {
           const result = rebase(intent, idsOf(set.permissions), oldBase);
           const upstream = result.upstream ?? { added: [], removed: [] };
           this.detail.applySet(roleId, set);
-          this.staged.set({ roleId, intent: result.intent });
+          // RC-74 item 3: against the new set, a row may now be disabled; it never stays staged.
+          const { intent: changeable, dropped } = this.dropUnchangeable(result.intent);
+          this.staged.set({ roleId, intent: changeable });
           this.logger.info('Access console save met a concurrent change; staged work rebased', {
             event: 'access_console_conflict_rebased',
             context: {
@@ -591,7 +728,8 @@ export class RoleEditorPage implements HasUnsavedChanges {
               upstreamAdded: upstream.added,
               upstreamRemoved: upstream.removed,
               inPlace: result.droppedAsAlreadyApplied,
-              allInPlace: result.intent.add.size === 0 && result.intent.remove.size === 0,
+              notGranted: dropped,
+              allInPlace: isEmptyIntent(changeable) && dropped.length === 0,
             },
           });
         },
@@ -637,6 +775,91 @@ export class RoleEditorPage implements HasUnsavedChanges {
     if (view.showsWait) this.wait.start(view.retryAfterSeconds ?? DEFAULT_RETRY_AFTER_SECONDS);
   }
 
+  /**
+   * A restore's re-read failed: the offer stays, so Restore can be tried again; a role that is
+   * gone ends editing.
+   */
+  private reportRestoreFailure(roleId: string, error: AppError): void {
+    this.logger.warn('Access console could not re-read the set to restore a draft', {
+      event: 'access_console_load_failed',
+      errorCode: error.code,
+      context: { area: 'roles', roleId, traceId: error.traceId },
+    });
+    const view = resolveConsoleError(error, { area: 'roles', action: 'load' });
+    if (error.code === 'ROLE_NOT_FOUND') {
+      this.roles.invalidate();
+      this.feedback.set({ roleId, value: { kind: 'deleted', view } });
+      return;
+    }
+    this.feedback.set({ roleId, value: { kind: 'error', view } });
+  }
+
+  /**
+   * Keeps the draft in step with the intent (design §10). The first editable moment of a visit
+   * looks the draft up and offers it instead of overwriting it; while an offer is pending the key
+   * is left alone. A role the server ended leaves nothing worth restoring.
+   */
+  private syncDraft(
+    userId: string,
+    roleId: string,
+    state: {
+      readonly editable: boolean;
+      readonly ended: boolean;
+      readonly offered: boolean;
+      readonly intent: StagedIntent;
+      readonly etag: string | null;
+    },
+  ): void {
+    if (state.ended) {
+      this.drafts.clear(userId, roleId);
+      return;
+    }
+    if (!state.editable) return;
+    const visit = `${userId}/${roleId}`;
+    if (this.draftLookedUp !== visit) {
+      this.draftLookedUp = visit;
+      const catalogueIds = new Set(this.catalogueData()?.byId.keys() ?? []);
+      const draft = this.drafts.read(userId, roleId, catalogueIds);
+      if (draft !== null && isEmptyIntent(state.intent)) {
+        this.draftOffer.set({ roleId, draft });
+        return;
+      }
+    }
+    if (state.offered) return;
+    if (isEmptyIntent(state.intent)) {
+      this.drafts.clear(userId, roleId);
+      return;
+    }
+    this.drafts.write(userId, roleId, {
+      add: [...state.intent.add],
+      remove: [...state.intent.remove],
+      baseEtag: state.etag,
+      savedAt: Date.now(),
+    });
+  }
+
+  private clearDraft(): void {
+    const userId = this.userId();
+    const roleId = this.role()?.id;
+    if (userId !== null && roleId !== undefined) this.drafts.clear(userId, roleId);
+  }
+
+  /** Drops the entries whose row is not enabled under the current affordances (RC-74 item 3). */
+  private dropUnchangeable(intent: StagedIntent): ReturnType<typeof dropDisabled> {
+    const affordances = this.affordances();
+    return dropDisabled(intent, (id) => affordances.get(id)?.kind === 'enabled');
+  }
+
+  private labelList(ids: readonly string[]): string {
+    return ids.map((id) => this.labelOf(id)).join(CONSOLE_COPY.save.listSeparator);
+  }
+
+  private notRestoredText(ids: readonly string[]): string | null {
+    return ids.length > 0
+      ? format(CONSOLE_COPY.draft.notRestored, { labels: this.labelList(ids) })
+      : null;
+  }
+
   /** The label shown for a permission id: its catalogue label, else its code, else the id. */
   private labelOf(id: string): string {
     const code = this.shown().get(id)?.name ?? id;
@@ -650,6 +873,15 @@ export class RoleEditorPage implements HasUnsavedChanges {
   protected retryCatalogue(): void {
     this.catalogue.load();
   }
+}
+
+function isEmptyIntent(intent: StagedIntent): boolean {
+  return intent.add.size === 0 && intent.remove.size === 0;
+}
+
+/** The strong tag's value, or `null` for a weak, missing or unknown tag. */
+function strongTag(etag: VersionedPermissionSet['etag'] | undefined): string | null {
+  return etag?.kind === 'strong' ? etag.value : null;
 }
 
 function idsOf(permissions: readonly PermissionResponse[]): ReadonlySet<string> {

@@ -30,7 +30,62 @@
       @if (change.inPlace; as inPlace) {
         <p class="role-editor__banner-text">{{ inPlace }}</p>
       }
+      @if (change.notRestored; as notRestored) {
+        <p class="role-editor__banner-text">{{ notRestored }}</p>
+      }
       @if (change.allInPlace; as allInPlace) {
+        <p class="role-editor__banner-text">{{ allInPlace }}</p>
+      }
+    </nx-banner>
+  }
+  @if (offer(); as draftOffer) {
+    <nx-banner
+      class="role-editor__banner"
+      variant="info"
+      live="polite"
+      [title]="draftOffer.title"
+      data-testid="role-editor-draft-offer"
+    >
+      <p class="role-editor__banner-text">{{ copy.draft.offerQuestion }}</p>
+      <div class="role-editor__banner-actions">
+        <nx-button
+          variant="primary"
+          size="sm"
+          [loading]="restoring()"
+          [ariaDisabled]="restoring()"
+          (clicked)="restoreDraft()"
+          data-testid="role-editor-draft-restore"
+          >{{ copy.draft.restore }}</nx-button
+        >
+        <nx-button
+          variant="secondary"
+          size="sm"
+          [disabled]="restoring()"
+          (clicked)="discardDraft()"
+          data-testid="role-editor-draft-discard"
+          >{{ copy.draft.discard }}</nx-button
+        >
+      </div>
+    </nx-banner>
+  }
+  @if (restored(); as back) {
+    <nx-banner
+      class="role-editor__banner"
+      variant="info"
+      live="polite"
+      [title]="copy.draft.restoredTitle"
+      data-testid="role-editor-draft-restored"
+    >
+      @if (back.outdated; as outdated) {
+        <p class="role-editor__banner-text">{{ outdated }}</p>
+      }
+      @if (back.inPlace; as inPlace) {
+        <p class="role-editor__banner-text">{{ inPlace }}</p>
+      }
+      @if (back.notRestored; as notRestored) {
+        <p class="role-editor__banner-text">{{ notRestored }}</p>
+      }
+      @if (back.allInPlace; as allInPlace) {
         <p class="role-editor__banner-text">{{ allInPlace }}</p>
       }
     </nx-banner>

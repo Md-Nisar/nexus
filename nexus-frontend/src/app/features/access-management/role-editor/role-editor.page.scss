@@ -73,6 +73,13 @@
   color: var(--nx-color-primary);
 }
 
+.role-editor__banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--nx-space-2);
+  margin-top: var(--nx-space-2);
+}
+
 /* A failed save, beside the action it refused (design §12.0 "Action failed"). */
 .role-editor__save-error {
   display: grid;
