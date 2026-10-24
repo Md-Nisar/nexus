@@ -1,0 +1,167 @@
+<div class="role-editor" data-testid="role-editor">
+  @switch (view()) {
+    @case ('blocked') {
+      <section class="role-editor__blocked" data-testid="role-editor-blocked">
+        @if (blockedReason(); as reason) {
+          <p class="role-editor__blocked-reason" data-testid="role-editor-blocked-reason">
+            {{ reason }}
+          </p>
+        }
+        <a class="role-editor__back" routerLink="../permissions" data-testid="role-editor-back">{{
+          copy.editor.backToPermissions
+        }}</a>
+      </section>
+    }
+    @case ('loading') {
+      <div class="role-editor__loading" aria-busy="true" data-testid="role-editor-loading">
+        <p class="role-editor__loading-text" role="status">{{ copy.editor.loading }}</p>
+        @for (row of skeletonRows; track row) {
+          <nx-skeleton class="role-editor__skeleton" variant="rect" />
+        }
+      </div>
+    }
+    @case ('error') {
+      @if (catalogueError(); as error) {
+        <app-console-error-panel
+          [view]="error"
+          [recordedAt]="catalogueFailedAt()"
+          (retry)="retryCatalogue()"
+          data-testid="role-editor-error"
+        />
+      }
+    }
+    @case ('ready') {
+      @if (role(); as current) {
+        @if (adminDefining()) {
+          <nx-banner
+            class="role-editor__banner"
+            variant="info"
+            [title]="copy.hints.adminDemotion"
+            data-testid="role-editor-admin-hint"
+          />
+        }
+
+        <app-permission-matrix
+          class="role-editor__matrix"
+          mode="edit"
+          [groups]="groups()"
+          [granted]="base()"
+          [staged]="intent()"
+          [affordances]="affordances()"
+          [roleName]="current.name"
+          (permissionToggle)="onToggle($event)"
+          (groupToggle)="onToggleGroup($event)"
+        />
+
+        <footer
+          class="role-editor__footer"
+          [attr.aria-label]="copy.editor.footerLabel"
+          data-testid="role-editor-footer"
+        >
+          <p
+            class="role-editor__counts"
+            [id]="countsId"
+            role="status"
+            data-testid="role-editor-counts"
+          >
+            {{ countsText() }}
+          </p>
+          <div class="role-editor__actions">
+            <nx-button
+              variant="secondary"
+              size="lg"
+              (clicked)="discard()"
+              data-testid="role-editor-discard"
+              >{{ copy.editor.discard }}</nx-button
+            >
+            <nx-button
+              variant="primary"
+              size="lg"
+              [ariaDisabled]="!canReview()"
+              [ariaDescribedBy]="canReview() ? '' : countsId"
+              (clicked)="openReview()"
+              data-testid="role-editor-review"
+              >{{ copy.editor.review }}</nx-button
+            >
+          </div>
+        </footer>
+      }
+    }
+  }
+</div>
+
+<!-- The Review dialog: host-owned state, no mat-dialog-* directives (design §15.2). -->
+<ng-template #reviewDialog>
+  <div class="role-review" data-testid="role-review">
+    <h2
+      class="role-review__title"
+      [id]="reviewTitleId"
+      tabindex="-1"
+      data-testid="role-review-title"
+    >
+      {{ reviewTitleBefore }}<app-user-text [text]="role()?.name ?? ''" />{{ reviewTitleAfter }}
+    </h2>
+
+    <div class="role-review__content">
+      @if (review().added.length > 0) {
+        <section class="role-review__section" data-testid="role-review-adding">
+          <h3 class="role-review__heading">{{ review().addingTitle }}</h3>
+          <ul class="role-review__list">
+            @for (item of review().added; track item.id) {
+              <li class="role-review__item" data-testid="role-review-added">
+                <span class="role-review__label">{{ item.label }}</span>
+                @if (item.isSensitive) {
+                  <app-sensitive-badge />
+                }
+              </li>
+            }
+          </ul>
+        </section>
+      }
+      @if (review().removed.length > 0) {
+        <section class="role-review__section" data-testid="role-review-removing">
+          <h3 class="role-review__heading">{{ review().removingTitle }}</h3>
+          <ul class="role-review__list">
+            @for (item of review().removed; track item.id) {
+              <li class="role-review__item" data-testid="role-review-removed">
+                <span class="role-review__label">{{ item.label }}</span>
+                @if (item.isSensitive) {
+                  <app-sensitive-badge />
+                }
+              </li>
+            }
+          </ul>
+        </section>
+      }
+
+      <section class="role-review__section" data-testid="role-review-affected">
+        <h3 class="role-review__heading">{{ copy.review.affected }}</h3>
+        <p class="role-review__text">{{ review().membersText }}</p>
+      </section>
+
+      @if (review().emptyResult) {
+        <p class="role-review__warning" role="alert" data-testid="role-review-empty">
+          {{ copy.review.emptyResult }}
+        </p>
+      }
+      @for (hint of review().hints; track hint) {
+        <p class="role-review__hint" data-testid="role-review-hint">{{ hint }}</p>
+      }
+    </div>
+
+    <div class="role-review__actions">
+      <nx-button
+        variant="secondary"
+        (clicked)="closeReview('cancel')"
+        data-testid="role-review-cancel"
+        >{{ copy.review.cancel }}</nx-button
+      >
+      <nx-button
+        [variant]="review().sensitive ? 'danger' : 'primary'"
+        (clicked)="closeReview('save')"
+        data-testid="role-review-confirm"
+        >{{ review().sensitive ? copy.review.grantSensitive : copy.review.save }}</nx-button
+      >
+    </div>
+  </div>
+</ng-template>

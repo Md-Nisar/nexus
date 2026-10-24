@@ -8,6 +8,7 @@ import { RolesStore } from './data/roles.store';
 import { AccessConsoleLayout } from './layout/access-console-layout';
 import { CONSOLE_AREAS } from './layout/console-areas';
 import { RoleDetailStore } from './role-detail/role-detail.store';
+import { unsavedChangesGuard } from './role-editor/unsaved-changes.guard';
 
 /** Where a user who holds none of the areas' permissions would go; the parent guard denies them first. */
 const FALLBACK_AREA = '/admin/access/users';
@@ -38,9 +39,9 @@ export const firstAreaRedirect: CanActivateFn = () => {
  *   never shown; it satisfies the "every page route has a title" contract.
  * - Every area page added below carries `permissionGuard` with its own `data.permission` and a
  *   static title (DQ-26). No `canActivateChild` anywhere (RC-65).
- * - `roles/:roleId` scopes {@link RoleDetailStore} to one role page and has its tabs as child
- *   routes; its own route has no title (the tabs have static ones), so a role name never reaches
- *   `document.title`.
+ * - `roles/:roleId` scopes {@link RoleDetailStore} to one role page and has its tabs and the
+ *   editor (`edit`, `role:write`, `unsavedChangesGuard`) as child routes; its own route has no
+ *   title (the children have static ones), so a role name never reaches `document.title`.
  */
 export const ACCESS_MANAGEMENT_ROUTES: Routes = [
   {
@@ -76,6 +77,16 @@ export const ACCESS_MANAGEMENT_ROUTES: Routes = [
             title: 'Role permissions',
             loadComponent: () =>
               import('./role-detail/role-permissions.tab').then((m) => m.RolePermissionsTab),
+          },
+          {
+            // A child, so the page and its store stay: entering the editor sends no request.
+            path: 'edit',
+            title: 'Edit role',
+            canActivate: [permissionGuard],
+            canDeactivate: [unsavedChangesGuard],
+            data: { permission: 'role:write' },
+            loadComponent: () =>
+              import('./role-editor/role-editor.page').then((m) => m.RoleEditorPage),
           },
         ],
       },

@@ -31,6 +31,7 @@ import { AuthorizationProfileStore } from './data/authorization-profile.store';
 import { CatalogueStore } from './data/catalogue.store';
 import { RolesStore } from './data/roles.store';
 import { RoleDetailStore } from './role-detail/role-detail.store';
+import { unsavedChangesGuard } from './role-editor/unsaved-changes.guard';
 import { CONSOLE_AREAS } from './layout/console-areas';
 import { AccessConsoleLayout } from './layout/access-console-layout';
 
@@ -145,6 +146,19 @@ describe('ACCESS_MANAGEMENT_ROUTES (US-020 design §4.2)', () => {
       expect(permissions.title).toBe('Role permissions');
       expect(permissions.loadComponent).toBeTypeOf('function');
       expect(permissions.canActivate).toBeUndefined();
+    });
+
+    it('has the editor as a child of the role route, so the page and its store stay (T-010)', () => {
+      const edit = detailRoute().children?.find((child) => child.path === 'edit');
+      expect(edit).toBeDefined();
+      expect(edit?.canActivate).toEqual([permissionGuard]);
+      expect(edit?.data).toEqual({ permission: 'role:write' });
+      expect(edit?.canDeactivate).toEqual([unsavedChangesGuard]);
+      // Static: the role name never reaches document.title or history (DQ-26).
+      expect(edit?.title).toBe('Edit role');
+      expect(edit?.loadComponent).toBeTypeOf('function');
+      expect(edit?.providers).toBeUndefined();
+      expect(edit?.canActivateChild).toBeUndefined();
     });
   });
 
@@ -306,6 +320,8 @@ describe('console entry with the real router', () => {
       const navigation = harness.navigateByUrl('/admin/access');
       let refreshes: TestRequest[] = [];
       for (let i = 0; i < 200 && refreshes.length === 0; i++) {
+        // Lazy route chunks load in real time, which fake timers do not advance.
+        await vi.dynamicImportSettled();
         await vi.advanceTimersByTimeAsync(10);
         refreshes = http.match((r) => r.method === 'POST' && r.url === `${API}/v1/auth/refresh`);
       }

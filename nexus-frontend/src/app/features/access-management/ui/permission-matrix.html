@@ -1,4 +1,8 @@
-<div class="permission-matrix" data-testid="permission-matrix">
+<div
+  class="permission-matrix"
+  [class.permission-matrix--edit]="editing()"
+  data-testid="permission-matrix"
+>
   <!-- Context-free, so it stays fully typed: the caption, shared by the table and the sections. -->
   <ng-template #caption>
     {{ captionBefore }}<app-user-text [text]="roleName()" />{{ captionAfter }}
@@ -14,47 +18,84 @@
           <th scope="col">{{ copy.matrix.columns.permission }}</th>
           <th scope="col">{{ copy.matrix.columns.code }}</th>
           <th scope="col">{{ copy.matrix.columns.description }}</th>
-          <th scope="col">{{ copy.matrix.columns.status }}</th>
+          @if (!editing()) {
+            <th scope="col">{{ copy.matrix.columns.status }}</th>
+          }
         </tr>
       </thead>
       @for (group of view(); track group.resource) {
         <tbody>
           <tr class="permission-matrix__group" [attr.data-group]="group.resource">
-            <th scope="row" [attr.colspan]="columnCount">{{ group.label }}</th>
+            <th scope="row" [attr.colspan]="columnCount()">
+              @if (editing() && group.hasEnabled) {
+                <nx-checkbox
+                  [label]="group.checkboxLabel"
+                  [checked]="group.checked"
+                  [indeterminate]="group.mixed"
+                  testId="matrix-group-checkbox"
+                  (changed)="onToggleGroup(group)"
+                />
+              } @else {
+                {{ group.label }}
+              }
+            </th>
           </tr>
           @for (row of group.rows; track row.id) {
             <tr class="permission-matrix__row" [attr.data-permission]="row.code">
               <th scope="row" class="permission-matrix__row-header">
-                <span class="permission-matrix__name">
-                  <span class="permission-matrix__label">{{ row.label ?? row.code }}</span>
-                  @if (row.label === null) {
-                    <nx-badge variant="neutral" data-testid="unlabelled-badge">{{
-                      copy.badges.unlabelled
-                    }}</nx-badge>
-                  }
-                  @if (row.isSensitive) {
-                    <app-sensitive-badge />
-                  }
-                </span>
+                @if (editing()) {
+                  <span class="permission-matrix__edit">
+                    <nx-checkbox
+                      [label]="row.checkboxLabel"
+                      [checked]="row.granted"
+                      [disabled]="!row.enabled"
+                      [disabledReason]="row.reason"
+                      testId="matrix-checkbox"
+                      (changed)="onToggle(row, $event)"
+                    />
+                    @if (row.label === null) {
+                      <nx-badge variant="neutral" data-testid="unlabelled-badge">{{
+                        copy.badges.unlabelled
+                      }}</nx-badge>
+                    }
+                    @if (row.isSensitive) {
+                      <app-sensitive-badge />
+                    }
+                  </span>
+                } @else {
+                  <span class="permission-matrix__name">
+                    <span class="permission-matrix__label">{{ row.label ?? row.code }}</span>
+                    @if (row.label === null) {
+                      <nx-badge variant="neutral" data-testid="unlabelled-badge">{{
+                        copy.badges.unlabelled
+                      }}</nx-badge>
+                    }
+                    @if (row.isSensitive) {
+                      <app-sensitive-badge />
+                    }
+                  </span>
+                }
               </th>
               <td>
                 <code class="permission-matrix__code">{{ row.code }}</code>
               </td>
               <td class="permission-matrix__description">{{ row.description }}</td>
-              <td>
-                <span
-                  class="permission-matrix__status"
-                  [class.permission-matrix__status--granted]="row.granted"
-                  [attr.data-granted]="row.granted"
-                  data-testid="matrix-status"
-                >
-                  <nx-icon
-                    class="permission-matrix__status-icon"
-                    [name]="row.granted ? 'check_circle' : 'remove_circle_outline'"
-                  />
-                  {{ row.granted ? copy.matrix.granted : copy.matrix.notGranted }}
-                </span>
-              </td>
+              @if (!editing()) {
+                <td>
+                  <span
+                    class="permission-matrix__status"
+                    [class.permission-matrix__status--granted]="row.granted"
+                    [attr.data-granted]="row.granted"
+                    data-testid="matrix-status"
+                  >
+                    <nx-icon
+                      class="permission-matrix__status-icon"
+                      [name]="row.granted ? 'check_circle' : 'remove_circle_outline'"
+                    />
+                    {{ row.granted ? copy.matrix.granted : copy.matrix.notGranted }}
+                  </span>
+                </td>
+              }
             </tr>
           }
         </tbody>
@@ -69,34 +110,66 @@
     @for (group of view(); track group.resource) {
       <section class="permission-matrix__section" [attr.aria-labelledby]="group.headingId">
         <h3 class="permission-matrix__section-title" [id]="group.headingId">{{ group.label }}</h3>
+        @if (editing() && group.hasEnabled) {
+          <nx-checkbox
+            [label]="group.checkboxLabel"
+            [checked]="group.checked"
+            [indeterminate]="group.mixed"
+            testId="matrix-group-checkbox"
+            (changed)="onToggleGroup(group)"
+          />
+        }
         <ul class="permission-matrix__list">
           @for (row of group.rows; track row.id) {
             <li class="permission-matrix__item">
-              <span class="permission-matrix__name">
-                <span class="permission-matrix__label">{{ row.label ?? row.code }}</span>
-                @if (row.label === null) {
-                  <nx-badge variant="neutral" data-testid="unlabelled-badge">{{
-                    copy.badges.unlabelled
-                  }}</nx-badge>
-                }
-                @if (row.isSensitive) {
-                  <app-sensitive-badge />
-                }
-              </span>
-              <code class="permission-matrix__code">{{ row.code }}</code>
+              @if (editing()) {
+                <span class="permission-matrix__edit">
+                  <nx-checkbox
+                    [label]="row.checkboxLabel"
+                    [checked]="row.granted"
+                    [disabled]="!row.enabled"
+                    [disabledReason]="row.reason"
+                    testId="matrix-checkbox"
+                    (changed)="onToggle(row, $event)"
+                  />
+                  @if (row.label === null) {
+                    <nx-badge variant="neutral" data-testid="unlabelled-badge">{{
+                      copy.badges.unlabelled
+                    }}</nx-badge>
+                  }
+                  @if (row.isSensitive) {
+                    <app-sensitive-badge />
+                  }
+                </span>
+              } @else {
+                <span class="permission-matrix__name">
+                  <span class="permission-matrix__label">{{ row.label ?? row.code }}</span>
+                  @if (row.label === null) {
+                    <nx-badge variant="neutral" data-testid="unlabelled-badge">{{
+                      copy.badges.unlabelled
+                    }}</nx-badge>
+                  }
+                  @if (row.isSensitive) {
+                    <app-sensitive-badge />
+                  }
+                </span>
+                <code class="permission-matrix__code">{{ row.code }}</code>
+              }
               <p class="permission-matrix__description">{{ row.description }}</p>
-              <span
-                class="permission-matrix__status"
-                [class.permission-matrix__status--granted]="row.granted"
-                [attr.data-granted]="row.granted"
-                data-testid="matrix-status"
-              >
-                <nx-icon
-                  class="permission-matrix__status-icon"
-                  [name]="row.granted ? 'check_circle' : 'remove_circle_outline'"
-                />
-                {{ row.granted ? copy.matrix.granted : copy.matrix.notGranted }}
-              </span>
+              @if (!editing()) {
+                <span
+                  class="permission-matrix__status"
+                  [class.permission-matrix__status--granted]="row.granted"
+                  [attr.data-granted]="row.granted"
+                  data-testid="matrix-status"
+                >
+                  <nx-icon
+                    class="permission-matrix__status-icon"
+                    [name]="row.granted ? 'check_circle' : 'remove_circle_outline'"
+                  />
+                  {{ row.granted ? copy.matrix.granted : copy.matrix.notGranted }}
+                </span>
+              }
             </li>
           }
         </ul>

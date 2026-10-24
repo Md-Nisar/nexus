@@ -351,6 +351,11 @@ describe('RoleDetailPage (US-020 design §12.3)', () => {
       edit?.click();
       await settle();
       expect(ctx.router.url).toBe(`/admin/access/roles/${ROLE_ID}/edit`);
+      // The editor is the open mode: the page stays mounted with no Edit control.
+      expect(byTestId(el(), 'role-edit')).toBeNull();
+      expect(byTestId(el(), 'role-detail-title')?.querySelector('bdi')?.textContent).toBe(
+        'Support',
+      );
 
       await ctx.router.navigateByUrl(`/admin/access/roles/${ROLE_ID}/permissions`);
       await settle();
