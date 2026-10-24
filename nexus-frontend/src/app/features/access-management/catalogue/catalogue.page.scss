@@ -1,0 +1,122 @@
+:host {
+  display: block;
+}
+
+.catalogue {
+  display: grid;
+  gap: var(--nx-space-4);
+  min-width: 0;
+}
+
+.catalogue__loading {
+  display: grid;
+  gap: var(--nx-space-3);
+}
+
+.catalogue__loading-text {
+  margin: 0;
+  color: var(--nx-color-on-surface-muted);
+}
+
+.catalogue__skeleton {
+  display: block;
+  height: var(--nx-space-10);
+}
+
+.catalogue__definition {
+  padding: var(--nx-space-3);
+  border: 1px solid var(--nx-color-outline-variant);
+  border-radius: var(--nx-radius-md);
+  background-color: var(--nx-color-surface-2);
+  color: var(--nx-color-on-surface);
+
+  summary {
+    cursor: pointer;
+    font-weight: var(--nx-weight-medium);
+  }
+
+  p {
+    margin: var(--nx-space-2) 0 0;
+    color: var(--nx-color-on-surface-muted);
+  }
+}
+
+.catalogue__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--nx-space-3);
+}
+
+.catalogue__search {
+  flex: 1 1 calc(var(--nx-space-24) * 2);
+  min-width: 0;
+}
+
+.catalogue__count {
+  margin: 0;
+  align-self: center;
+  color: var(--nx-color-on-surface-muted);
+}
+
+.catalogue__group {
+  display: grid;
+  gap: var(--nx-space-2);
+}
+
+.catalogue__group-title {
+  margin: 0;
+  font-size: var(--nx-text-lg);
+  font-weight: var(--nx-weight-semibold);
+}
+
+.catalogue__list {
+  display: grid;
+  gap: var(--nx-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.catalogue__item {
+  display: grid;
+  gap: var(--nx-space-1);
+  min-width: 0;
+  padding: var(--nx-space-3);
+  border: 1px solid var(--nx-color-outline-variant);
+  border-radius: var(--nx-radius-md);
+}
+
+.catalogue__heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nx-space-2);
+  min-width: 0;
+}
+
+.catalogue__label {
+  font-weight: var(--nx-weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.catalogue__code {
+  font-family: var(--nx-font-family-mono);
+  font-size: var(--nx-text-sm);
+  color: var(--nx-color-on-surface-muted);
+  overflow-wrap: anywhere;
+}
+
+.catalogue__badge {
+  padding: 0 var(--nx-space-2);
+  border: 1px solid var(--nx-color-outline-strong);
+  border-radius: var(--nx-radius-full);
+  font-size: var(--nx-text-xs);
+  color: var(--nx-color-on-surface);
+}
+
+.catalogue__description {
+  margin: 0;
+  color: var(--nx-color-on-surface-muted);
+  overflow-wrap: anywhere;
+}

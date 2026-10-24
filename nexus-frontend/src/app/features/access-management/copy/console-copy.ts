@@ -7,8 +7,8 @@ import type { DirectoryErrorCode } from '../../../shared/types/api/user-director
  *
  * T-006 added the layout strings; T-007 adds the whole error map (`RbacErrorMessages`,
  * `Rbac001ReasonCopy`, `NotEnabledCopy`, `format`; A-10) and the roles list strings. Later tasks add
- * only the §14.2 page strings of their own pages. Permission labels follow in T-008 and the
- * propagation constant in T-011.
+ * only the §14.2 page strings of their own pages. Permission labels live in `permission-labels.ts` (T-008)
+ * and the propagation constant follows in T-011.
  *
  * All values are plain text rendered by interpolation; none is ever HTML. The console renders this
  * text and never `AppError.message` (design §9.2).
@@ -59,6 +59,8 @@ export const CONSOLE_COPY = {
   badges: {
     system: 'System',
     custom: 'Custom',
+    sensitive: 'Sensitive',
+    unlabelled: 'Unlabelled',
     hiddenCharacters: 'Contains hidden characters',
     hiddenCharactersExplanation:
       'This text contains characters that are invisible or change text direction. Check it carefully.',
@@ -90,6 +92,21 @@ export const CONSOLE_COPY = {
       members: 'Members',
       created: 'Created',
     },
+  },
+
+  /** The permission catalogue (§12.6, §14.2). */
+  catalogue: {
+    title: 'Permissions',
+    searchLabel: 'Search permissions',
+    resultCount: '{n} permissions',
+    resultCountOne: '1 permission',
+    loading: 'Loading permissions',
+    otherGroup: 'Other',
+    emptyAll: 'No permissions to show',
+    emptySearch: 'No permissions match your search',
+    sensitiveSummary: 'What does Sensitive mean?',
+    sensitiveDefinition:
+      'Sensitive permissions control users, roles, role assignment or tenant settings, or let someone read personal data or the audit trail.',
   },
 } as const;
 

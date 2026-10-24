@@ -24,7 +24,7 @@ env:
   COMPOSE: docker compose -f docker-compose.yml -f docker-compose.e2e.yml
   # Floor for executed tests; `playwright test --list` reports 56. Raise it when specs are added
   # so that a spec that stops running cannot go unnoticed.
-  E2E_MIN_TESTS: "56"
+  E2E_MIN_TESTS: "61"
 
 jobs:
   e2e:
