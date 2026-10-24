@@ -12,13 +12,18 @@ import {
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { LoggerService } from '../../../core/logging/logger.service';
 import type { PermissionResponse } from '../../../shared/types/api/rbac';
-import { NxBanner, NxButton, NxDialog, NxSkeleton } from '../../../shared/ui';
-import { CONSOLE_COPY, format } from '../copy/console-copy';
+import { AppError, isAppError } from '../../../shared/types/app-error';
+import { NxAnnouncer, NxBanner, NxButton, NxDialog, NxSkeleton, NxToast } from '../../../shared/ui';
+import { CONSOLE_COPY, RbacErrorMessages, format } from '../copy/console-copy';
 import { permissionLabel } from '../copy/permission-labels';
-import { resolveConsoleError } from '../copy/resolve-console-error';
+import { propagationFor } from '../copy/propagation';
+import { ConsoleErrorView, resolveConsoleError } from '../copy/resolve-console-error';
 import { AuthorizationProfileStore } from '../data/authorization-profile.store';
 import { CatalogueStore, PermissionGroup } from '../data/catalogue.store';
+import { RbacApi, VersionedPermissionSet } from '../data/rbac-api';
+import { RolesStore } from '../data/roles.store';
 import { RoleDetailStore } from '../role-detail/role-detail.store';
 import { ConsoleErrorPanel } from '../ui/console-error-panel';
 import { MatrixGroupToggle, MatrixToggle, PermissionMatrix } from '../ui/permission-matrix';
@@ -32,17 +37,40 @@ import {
   StagedIntent,
   diffPermissions,
   normaliseIntent,
+  rebase,
   toggle,
   toggleGroup,
 } from '../util/diff-permissions';
 import { withGrantedExtras } from '../util/granted-extras';
+import { DEFAULT_RETRY_AFTER_SECONDS, createRetryCountdown } from '../util/retry-after';
 import { HasUnsavedChanges, beforeUnloadWhileDirty } from './unsaved-changes.guard';
 
-/** How the Review dialog was closed. `save` is handled by the save flow (T-011). */
+/** How the Review dialog was closed: after a save attempt finished, or cancelled. */
 export type ReviewOutcome = 'save' | 'cancel';
 
 /** Why the editor offers no control at all for this role. */
 type Blocked = 'system-role' | 'etag-unusable' | 'no-write';
+
+/**
+ * What the last save left to show (design §11.1, §12.4). `deleted` and `system` end editing: the
+ * server says the role is gone or is a system role, so nothing could ever be saved.
+ */
+type SaveFeedback =
+  | { readonly kind: 'error'; readonly view: ConsoleErrorView }
+  | {
+      readonly kind: 'conflict';
+      readonly upstreamAdded: readonly string[];
+      readonly upstreamRemoved: readonly string[];
+      readonly inPlace: readonly string[];
+      readonly allInPlace: boolean;
+    }
+  | { readonly kind: 'deleted'; readonly view: ConsoleErrorView }
+  | { readonly kind: 'system'; readonly view: ConsoleErrorView };
+
+type ReviewDialogRef = ReturnType<NxDialog['openTemplate']>;
+
+/** Codes of a 403 the live profile predicted would be allowed (design §2.2). */
+const DENIED: ReadonlySet<string> = new Set(['RBAC_001', 'ACCESS_DENIED']);
 
 /** One line of the Review lists. */
 interface ReviewItem {
@@ -54,6 +82,7 @@ interface ReviewItem {
 const DIRECTORY_READ = 'user:directory:read';
 const REVIEW_TITLE_ID = 'role-review-title';
 const COUNTS_ID = 'role-editor-counts';
+const WAIT_ID = 'role-editor-wait';
 
 /**
  * Space kept clear at the bottom of the scrolling page for the sticky footer, so a focused row is
@@ -72,8 +101,7 @@ const [REVIEW_TITLE_BEFORE, REVIEW_TITLE_AFTER = ''] = CONSOLE_COPY.review.title
  *
  * - **Staging:** an intent (`add`, `remove`) relative to the set as read, through the pure engine
  *   in `util/diff-permissions.ts`. A Refresh that brings a staged change from elsewhere drops it
- *   (`normaliseIntent`), so the intent always keeps its invariant. Nothing is sent from here; the
- *   save (one PUT with `If-Match`) is T-011.
+ *   (`normaliseIntent`), so the intent always keeps its invariant.
  * - **Affordances** follow the live profile (`util/affordances.ts`, mirroring the server): a row the
  *   caller cannot change is disabled with its reason as visible text. A group checkbox changes only
  *   its enabled members. No row of a system role is ever offered (FR-B7); a weak or missing version
@@ -84,9 +112,20 @@ const [REVIEW_TITLE_BEFORE, REVIEW_TITLE_AFTER = ''] = CONSOLE_COPY.review.title
  *   directives; at most one open (FR-G5). It lists what will be added and removed, who holds the
  *   role, the empty-result warning and the hints (admin demotion, whole catalogue), and confirms
  *   with "Grant sensitive access" (`danger`) when any add is sensitive.
+ * - **Saving** (T-011; design §7.2, §7.3, §11.1): one `PUT` of the resulting set with the strong
+ *   tag verbatim as `If-Match`. The Review stays open while it runs (confirm `loading`, Cancel
+ *   disabled, `disableClose`), and a second confirm is ignored. A 200 replaces the store's set and
+ *   tag (no re-read), is announced, invalidates the roles list, and on a role the caller holds
+ *   re-reads the profile with a toast. A 412 re-reads the set once, rebases the intent and shows
+ *   what changed; it never resubmits, so a new Review is needed. Every refusal keeps the staged
+ *   work: 428 shows the defect copy (error log), a 403 the reason copy and a profile re-read,
+ *   `RBAC_003` and `ROLE_NOT_FOUND` end editing, and a 429 or 503 holds Review for the wait. The
+ *   one retry (`RBAC_012`) is in `RbacApi`.
  * - **Leaving:** `unsavedChangesGuard` asks while there are unsaved changes, and the browser asks on
  *   unload only while dirty.
- * - **User text:** the role name renders through {@link UserText} only. Nothing here logs.
+ * - **User text:** the role name renders through {@link UserText} only. Logs carry the role id,
+ *   counts and codes only; never the name or description. The session is never refreshed here
+ *   (RC-65): a re-read after an own-access change renews through the interceptor.
  *
  * @security UX only. The server decides every request.
  */
@@ -109,7 +148,12 @@ export class RoleEditorPage implements HasUnsavedChanges {
   private readonly detail = inject(RoleDetailStore);
   private readonly catalogue = inject(CatalogueStore);
   private readonly profile = inject(AuthorizationProfileStore);
+  private readonly roles = inject(RolesStore);
+  private readonly api = inject(RbacApi);
   private readonly dialog = inject(NxDialog);
+  private readonly announcer = inject(NxAnnouncer);
+  private readonly toast = inject(NxToast);
+  private readonly logger = inject(LoggerService);
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
   private readonly destroyRef = inject(DestroyRef);
@@ -120,15 +164,29 @@ export class RoleEditorPage implements HasUnsavedChanges {
   protected readonly reviewTitleBefore = REVIEW_TITLE_BEFORE;
   protected readonly reviewTitleAfter = REVIEW_TITLE_AFTER;
   protected readonly countsId = COUNTS_ID;
+  protected readonly waitId = WAIT_ID;
 
   private readonly reviewTemplate = viewChild.required<TemplateRef<unknown>>('reviewDialog');
-  private reviewRef: ReturnType<NxDialog['openTemplate']> | null = null;
+  private reviewRef: ReviewDialogRef | null = null;
 
   /** The staged intent and the role it belongs to; another role starts clean. */
   private readonly staged = signal<{
     readonly roleId: string | null;
     readonly intent: StagedIntent;
   }>({ roleId: null, intent: EMPTY_INTENT });
+
+  /** What the last save left to show, for the role it belongs to. */
+  private readonly feedback = signal<{
+    readonly roleId: string | null;
+    readonly value: SaveFeedback | null;
+  }>({ roleId: null, value: null });
+
+  /** A save (and, after a 412, its re-read) is running. */
+  protected readonly saving = signal(false);
+
+  /** Holds Review after a 429 or 503 until the wait is over (design §7.4). */
+  private readonly wait = createRetryCountdown(this.destroyRef);
+  protected readonly waiting = this.wait.active;
 
   private readonly data = computed(() => {
     const state = this.detail.state();
@@ -189,6 +247,52 @@ export class RoleEditorPage implements HasUnsavedChanges {
     return role !== null && catalogue !== null && isAdminDefiningHint(role, catalogue.total);
   });
 
+  protected readonly saveFeedback = computed<SaveFeedback | null>(() => {
+    const { roleId, value } = this.feedback();
+    return roleId !== null && roleId === this.role()?.id ? value : null;
+  });
+
+  protected readonly saveError = computed(() => {
+    const feedback = this.saveFeedback();
+    return feedback?.kind === 'error' ? feedback.view : null;
+  });
+
+  /** The server ended editing: the role is gone, or it is a system role after all. */
+  protected readonly ended = computed(() => {
+    const feedback = this.saveFeedback();
+    return feedback?.kind === 'deleted' || feedback?.kind === 'system' ? feedback : null;
+  });
+
+  /** The conflict banner's lines after a 412 rebase (design §12.4, §14.2). */
+  protected readonly conflict = computed(() => {
+    const feedback = this.saveFeedback();
+    if (feedback?.kind !== 'conflict') return null;
+    const { save } = CONSOLE_COPY;
+    const labels = (ids: readonly string[]): string =>
+      ids.map((id) => this.labelOf(id)).join(save.listSeparator);
+    const parts = [
+      ...(feedback.upstreamAdded.length > 0
+        ? [format(save.conflictAdded, { labels: labels(feedback.upstreamAdded) })]
+        : []),
+      ...(feedback.upstreamRemoved.length > 0
+        ? [format(save.conflictRemoved, { labels: labels(feedback.upstreamRemoved) })]
+        : []),
+    ];
+    return {
+      title: RbacErrorMessages.PRECONDITION_FAILED.title,
+      body: RbacErrorMessages.PRECONDITION_FAILED.body,
+      changed:
+        parts.length > 0
+          ? format(save.conflictChanged, { changes: parts.join(save.conflictPartSeparator) })
+          : null,
+      inPlace:
+        feedback.inPlace.length > 0
+          ? format(save.conflictInPlace, { labels: labels(feedback.inPlace) })
+          : null,
+      allInPlace: feedback.allInPlace ? save.alreadyInPlace : null,
+    };
+  });
+
   protected readonly blocked = computed<Blocked | null>(() => {
     const data = this.data();
     if (data === null) return null;
@@ -213,15 +317,18 @@ export class RoleEditorPage implements HasUnsavedChanges {
   });
 
   /** What the editor shows below the page header. */
-  protected readonly view = computed<'none' | 'blocked' | 'loading' | 'error' | 'ready'>(() => {
-    if (this.data() === null) return 'none';
-    if (this.blocked() !== null) return 'blocked';
-    const profile = this.profile.state().status;
-    if (profile === 'idle' || profile === 'loading') return 'loading';
-    const catalogue = this.catalogue.state().status;
-    if (catalogue === 'error') return 'error';
-    return catalogue === 'ready' ? 'ready' : 'loading';
-  });
+  protected readonly view = computed<'none' | 'ended' | 'blocked' | 'loading' | 'error' | 'ready'>(
+    () => {
+      if (this.data() === null) return 'none';
+      if (this.ended() !== null) return 'ended';
+      if (this.blocked() !== null) return 'blocked';
+      const profile = this.profile.state().status;
+      if (profile === 'idle' || profile === 'loading') return 'loading';
+      const catalogue = this.catalogue.state().status;
+      if (catalogue === 'error') return 'error';
+      return catalogue === 'ready' ? 'ready' : 'loading';
+    },
+  );
 
   protected readonly affordances = computed<ReadonlyMap<string, Affordance>>(() => {
     const role = this.role();
@@ -251,7 +358,17 @@ export class RoleEditorPage implements HasUnsavedChanges {
     }),
   );
 
-  protected readonly canReview = computed(() => !this.diff().isEmpty);
+  protected readonly canReview = computed(() => !this.diff().isEmpty && !this.waiting());
+
+  /** Why Review is unavailable: the wait countdown, or the counts while nothing is staged. */
+  protected readonly reviewDescribedBy = computed(() => {
+    if (this.waiting()) return WAIT_ID;
+    return this.diff().isEmpty ? COUNTS_ID : '';
+  });
+
+  protected readonly waitText = computed(() =>
+    format(CONSOLE_COPY.save.wait, { n: this.wait.remaining() }),
+  );
 
   protected readonly catalogueError = computed(() => {
     const state = this.catalogue.state();
@@ -269,15 +386,11 @@ export class RoleEditorPage implements HasUnsavedChanges {
   protected readonly review = computed(() => {
     const diff = this.diff();
     const shown = this.shown();
-    const item = (id: string): ReviewItem => {
-      const entry = shown.get(id);
-      const code = entry?.name ?? id;
-      return {
-        id,
-        label: permissionLabel(code) ?? code,
-        isSensitive: entry?.isSensitive ?? false,
-      };
-    };
+    const item = (id: string): ReviewItem => ({
+      id,
+      label: this.labelOf(id),
+      isSensitive: shown.get(id)?.isSensitive ?? false,
+    });
     const members = this.role()?.memberCount ?? 0;
     const { review, hints } = CONSOLE_COPY;
     const hintTexts: string[] = [];
@@ -296,6 +409,7 @@ export class RoleEditorPage implements HasUnsavedChanges {
             : format(review.members, { n: members }),
       emptyResult: diff.resultIsEmpty,
       hints: hintTexts,
+      propagation: propagationFor({ added: diff.added.length, removed: diff.removed.length }),
       sensitive: diff.addsSensitive,
     };
   });
@@ -318,7 +432,8 @@ export class RoleEditorPage implements HasUnsavedChanges {
   }
 
   hasUnsavedChanges(): boolean {
-    return !this.diff().isEmpty;
+    // A role the server says is gone or a system role leaves nothing that could be saved.
+    return !this.diff().isEmpty && this.ended() === null;
   }
 
   protected onToggle(event: MatrixToggle): void {
@@ -349,7 +464,7 @@ export class RoleEditorPage implements HasUnsavedChanges {
 
   /** Opens the Review dialog, at most once at a time (FR-G5). */
   protected openReview(): void {
-    if (!this.canReview() || this.reviewRef !== null) return;
+    if (!this.canReview() || this.saving() || this.reviewRef !== null) return;
     const ref = this.dialog.openTemplate<ReviewOutcome>(this.reviewTemplate(), {
       ariaLabelledBy: REVIEW_TITLE_ID,
       autoFocus: `#${REVIEW_TITLE_ID}`,
@@ -364,7 +479,168 @@ export class RoleEditorPage implements HasUnsavedChanges {
   }
 
   protected closeReview(outcome: ReviewOutcome): void {
+    if (this.saving()) return;
     this.reviewRef?.close(outcome);
+  }
+
+  /**
+   * The Review's confirm: one PUT of the resulting set with the strong tag the set was read at.
+   * Ignored while a save runs (no double submit) and when there is nothing to save.
+   */
+  protected confirmSave(): void {
+    const data = this.data();
+    const ref = this.reviewRef;
+    const diff = this.diff();
+    if (this.saving() || data === null || ref === null || diff.isEmpty) return;
+    // The editor offers nothing without a strong tag (`blocked`); this keeps the type honest.
+    if (data.etag.kind !== 'strong') return;
+
+    const roleId = data.role.id;
+    const oldBase = this.base();
+    const intent = this.intent();
+    this.saving.set(true);
+    ref.disableClose = true;
+    this.feedback.set({ roleId, value: null });
+    this.wait.stop();
+
+    this.api
+      .replaceRolePermissions(roleId, diff.resulting, data.etag.value)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (set) => {
+          this.finishSave(ref);
+          this.applySaved(roleId, oldBase, set);
+        },
+        error: (error: unknown) => {
+          const appError = toAppError(error);
+          if (appError.code === 'PRECONDITION_FAILED') {
+            this.rebaseAfterConflict(ref, roleId, oldBase, intent);
+            return;
+          }
+          this.finishSave(ref);
+          this.reportFailure(roleId, appError);
+        },
+      });
+  }
+
+  /** Ends the in-flight state and closes the Review (design §12.4: it closes on every outcome). */
+  private finishSave(ref: ReviewDialogRef): void {
+    this.saving.set(false);
+    ref.disableClose = false;
+    ref.close('save');
+  }
+
+  /** A 200, applied or no-op: the server's set and tag become the base. */
+  private applySaved(
+    roleId: string,
+    oldBase: ReadonlySet<string>,
+    set: VersionedPermissionSet,
+  ): void {
+    const newBase = idsOf(set.permissions);
+    const added = [...newBase].filter((id) => !oldBase.has(id)).length;
+    const removed = [...oldBase].filter((id) => !newBase.has(id)).length;
+    this.detail.applySet(roleId, set);
+    this.staged.set({ roleId: null, intent: EMPTY_INTENT });
+    this.roles.invalidate();
+    const { save } = CONSOLE_COPY;
+    void this.announcer.announce(
+      added === 0 && removed === 0 ? save.noop : format(save.success, { n: added, m: removed }),
+      'polite',
+    );
+    if (this.profile.roleIds().has(roleId)) {
+      // The caller's own access changed. The re-read renews the session through the interceptor
+      // if the epoch moved; nothing here refreshes it (RC-65).
+      this.profile.reload('own-access-change');
+      this.toast.info(save.ownAccess);
+    }
+  }
+
+  /**
+   * A 412: someone else changed the set. One GET of the current set, the intent rebased onto it,
+   * and the banner says what changed. Nothing is resubmitted (SD-9).
+   */
+  private rebaseAfterConflict(
+    ref: ReviewDialogRef,
+    roleId: string,
+    oldBase: ReadonlySet<string>,
+    intent: StagedIntent,
+  ): void {
+    this.api
+      .getRolePermissions(roleId)
+      .pipe(takeUntilDestroyed(this.destroyRef))
+      .subscribe({
+        next: (set) => {
+          this.finishSave(ref);
+          const result = rebase(intent, idsOf(set.permissions), oldBase);
+          const upstream = result.upstream ?? { added: [], removed: [] };
+          this.detail.applySet(roleId, set);
+          this.staged.set({ roleId, intent: result.intent });
+          this.logger.info('Access console save met a concurrent change; staged work rebased', {
+            event: 'access_console_conflict_rebased',
+            context: {
+              roleId,
+              droppedCount: result.droppedAsAlreadyApplied.length,
+              upstreamAdded: upstream.added.length,
+              upstreamRemoved: upstream.removed.length,
+            },
+          });
+          this.feedback.set({
+            roleId,
+            value: {
+              kind: 'conflict',
+              upstreamAdded: upstream.added,
+              upstreamRemoved: upstream.removed,
+              inPlace: result.droppedAsAlreadyApplied,
+              allInPlace: result.intent.add.size === 0 && result.intent.remove.size === 0,
+            },
+          });
+        },
+        error: (error: unknown) => {
+          this.finishSave(ref);
+          this.reportFailure(roleId, toAppError(error));
+        },
+      });
+  }
+
+  /** Every refusal but a 412 keeps the staged work and says why (design §11.1, §14.1). */
+  private reportFailure(roleId: string, error: AppError): void {
+    const view = resolveConsoleError(error, { area: 'roles', action: 'save' });
+    if (error.code === 'PRECONDITION_REQUIRED') {
+      // The console only ever sends one strong tag, so a 428 means the edge or the client is wrong.
+      this.logger.error('Access console save was refused for a missing precondition', {
+        event: 'access_console_precondition_required',
+        errorCode: error.code,
+        context: { roleId, traceId: error.traceId },
+      });
+      this.feedback.set({ roleId, value: { kind: 'error', view } });
+      return;
+    }
+    this.logger.warn('Access console save failed', {
+      event: 'access_console_action_failed',
+      errorCode: error.code,
+      context: { action: 'save', roleId, reason: error.reason, traceId: error.traceId },
+    });
+    if (error.code === 'ROLE_NOT_FOUND') {
+      this.roles.invalidate();
+      this.feedback.set({ roleId, value: { kind: 'deleted', view } });
+      return;
+    }
+    if (error.code === 'RBAC_003') {
+      this.feedback.set({ roleId, value: { kind: 'system', view } });
+      return;
+    }
+    this.feedback.set({ roleId, value: { kind: 'error', view } });
+    if (DENIED.has(error.code)) {
+      // The live profile predicted this was allowed: read it again; the work stays.
+      this.profile.reload('denied-predicted-allowed');
+    }
+    if (view.showsWait) this.wait.start(view.retryAfterSeconds ?? DEFAULT_RETRY_AFTER_SECONDS);
+  }
+
+  /** The label shown for a permission id: its catalogue label, else its code, else the id. */
+  private labelOf(id: string): string {
+    const code = this.shown().get(id)?.name ?? id;
+    return permissionLabel(code) ?? code;
   }
 
   private stage(intent: StagedIntent): void {
@@ -374,4 +650,14 @@ export class RoleEditorPage implements HasUnsavedChanges {
   protected retryCatalogue(): void {
     this.catalogue.load();
   }
+}
+
+function idsOf(permissions: readonly PermissionResponse[]): ReadonlySet<string> {
+  return new Set(permissions.map((entry) => entry.id));
+}
+
+function toAppError(error: unknown): AppError {
+  return isAppError(error)
+    ? error
+    : { code: 'UNEXPECTED_ERROR', message: 'The permission set could not be saved.' };
 }

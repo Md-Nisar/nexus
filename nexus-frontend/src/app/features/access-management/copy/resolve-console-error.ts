@@ -1,5 +1,6 @@
 import { isRbacDenialReason } from '../../../shared/types/api/rbac';
 import type { AppError } from '../../../shared/types/app-error';
+import { retryAfterSeconds as secondsToWait } from '../util/retry-after';
 import {
   ActionUnavailableCopy,
   ConsoleErrorArea,
@@ -53,9 +54,6 @@ export interface ConsoleErrorView {
   readonly fieldErrors?: readonly ConsoleFieldError[];
 }
 
-/** Wait shown when the server sent no `Retry-After` (design §7.4). */
-const DEFAULT_WAIT_SECONDS = 30;
-
 const CODES: ReadonlySet<string> = new Set(Object.keys(RbacErrorMessages));
 
 function isConsoleErrorCode(code: string): code is ConsoleErrorCode {
@@ -101,9 +99,7 @@ export function resolveConsoleError(error: AppError, ctx: ConsoleErrorContext): 
   const code = isConsoleErrorCode(error.code) ? error.code : null;
   const copy = copyFor(error, code, ctx);
   const showsWait = copy.showsWait === true;
-  const retryAfterSeconds = showsWait
-    ? (error.retryAfterSeconds ?? DEFAULT_WAIT_SECONDS)
-    : undefined;
+  const retryAfterSeconds = showsWait ? secondsToWait(error) : undefined;
   const reference = copy.showsReference ? (error.traceId ?? error.correlationId) : undefined;
   const isForm = code === 'VALIDATION_FAILED' && ctx.action !== 'load';
 

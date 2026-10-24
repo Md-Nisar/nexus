@@ -3,17 +3,20 @@ import { Service, inject } from '@angular/core';
 import { Observable, map } from 'rxjs';
 import { APP_CONFIG } from '../../../core/config/app-config';
 import { CORRELATION_HEADER } from '../../../core/http/correlation-id.interceptor';
+import { LoggerService } from '../../../core/logging/logger.service';
 import type {
   CallerAuthorizationResponse,
   PermissionListResponse,
   PermissionPageResponse,
   PermissionResponse,
+  ReplaceRolePermissionsRequest,
   RoleListResponse,
   RoleResponse,
 } from '../../../shared/types/api/rbac';
 import type { AppError } from '../../../shared/types/app-error';
 import { consoleHttpContext } from './console-http';
 import { EtagState, classifyEtag } from './etag';
+import { retryOnceOnClassificationChange } from './retry-once';
 
 /**
  * A role's permission set with the version tag it was read at (design §7.1).
@@ -58,11 +61,14 @@ function toVersionedSet(response: HttpResponse<PermissionListResponse>): Version
  * 403 stays with the console instead of redirecting to Access Denied (FR-F4).
  *
  * Errors arrive as `AppError` from `apiErrorInterceptor`; a 401 is renewed and replayed by
- * `authInterceptor`. This client never retries and never refreshes the session (ADR-0028).
+ * `authInterceptor`. The one retry is the write path's single re-send on `RBAC_012`
+ * ({@link retryOnceOnClassificationChange}); reads never retry, and this client never refreshes the
+ * session (ADR-0028).
  */
 @Service()
 export class RbacApi {
   private readonly http = inject(HttpClient);
+  private readonly logger = inject(LoggerService);
   private readonly base = `${inject(APP_CONFIG).apiBaseUrl}/v1`;
 
   /**
@@ -105,6 +111,38 @@ export class RbacApi {
         context: consoleHttpContext(),
       })
       .pipe(map(toVersionedSet));
+  }
+
+  /**
+   * `PUT /roles/{id}/permissions`: replaces the role's whole set in one atomic call (`role:write`
+   * and live `role:read`, us015 flag; design §7.1, §7.2, §7.3).
+   *
+   * - `ifMatch` is the strong tag of the set the user reviewed, sent **verbatim** as `If-Match`
+   *   (quotes included, never altered); the caller holds only strong tags (`classifyEtag`).
+   * - The 200 (applied or no-op) carries the new set and its new tag, so no re-read follows.
+   * - A 409 `RBAC_012` is re-sent once with the same body and tag; every other failure, including
+   *   412 and 428, surfaces for the editor to handle (no automatic resubmit, SD-9).
+   */
+  replaceRolePermissions(
+    id: string,
+    permissionIds: readonly string[],
+    ifMatch: string,
+  ): Observable<VersionedPermissionSet> {
+    const body: ReplaceRolePermissionsRequest = { permissionIds };
+    return retryOnceOnClassificationChange(
+      () =>
+        this.http.put<PermissionListResponse>(
+          `${this.base}/roles/${pathSegment(id)}/permissions`,
+          body,
+          {
+            headers: { 'If-Match': ifMatch },
+            observe: 'response',
+            context: consoleHttpContext(),
+          },
+        ),
+      { operation: 'replace', roleId: id },
+      this.logger,
+    ).pipe(map(toVersionedSet));
   }
 
   /**

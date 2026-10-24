@@ -309,3 +309,25 @@ describe('CONSOLE_COPY (editor and Review strings, design §4.8, §12.4, §14.2)
     expect(CONSOLE_COPY.review.title.split('{role}')).toHaveLength(2);
   });
 });
+
+describe('CONSOLE_COPY (save strings, design §12.4, §14.2)', () => {
+  it('has the D3 success, own-access and conflict strings', () => {
+    expect(CONSOLE_COPY.save.success).toBe('Role updated: {n} added, {m} removed.');
+    expect(CONSOLE_COPY.save.noop).toBe('No changes to save.');
+    expect(CONSOLE_COPY.save.ownAccess).toBe('Your own access has changed.');
+    expect(CONSOLE_COPY.save.alreadyInPlace).toBe('Your changes are already in place.');
+    // §14.2 "Conflict lists", rebuilt from its parts when both sides changed.
+    const changed = format(CONSOLE_COPY.save.conflictChanged, {
+      changes: [
+        format(CONSOLE_COPY.save.conflictAdded, { labels: 'A' }),
+        format(CONSOLE_COPY.save.conflictRemoved, { labels: 'B' }),
+      ].join(CONSOLE_COPY.save.conflictPartSeparator),
+    });
+    expect(changed).toBe('Changed by someone else: added A; removed B.');
+    expect(format(CONSOLE_COPY.save.conflictInPlace, { labels: 'C' })).toBe('Already in place: C.');
+  });
+
+  it('has the wait countdown', () => {
+    expect(format(CONSOLE_COPY.save.wait, { n: 30 })).toBe('Try again in 30 seconds.');
+  });
+});

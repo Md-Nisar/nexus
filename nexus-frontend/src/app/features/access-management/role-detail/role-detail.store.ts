@@ -52,6 +52,9 @@ type ReadMode = 'load' | 'refresh';
  *   view stays while it runs; a failure keeps it and is exposed as `refreshError`, except when the
  *   role is gone (`ROLE_NOT_FOUND`, or a malformed id), which becomes the error state. A refresh
  *   while one runs is ignored.
+ * - **applySet(roleId, set):** the editor's save (T-011) hands over the set and tag a PUT 200 or a
+ *   post-412 re-read returned, so no GET follows a successful save (design §6.5 "Save"). A Refresh
+ *   in flight is cancelled, so an older read cannot overwrite it.
  * - **User change:** state is keyed by the signed-in user id (design §6.2).
  * - **RC-73:** every failure is caught; an `AppError` never reaches `ErrorHandler`. Logs carry
  *   codes and ids only, never the role name or description.
@@ -118,6 +121,32 @@ export class RoleDetailStore {
     this.read(mine.owner as string, mine.roleId, 'refresh');
   }
 
+  /**
+   * Replaces the shown role's permission set, version tag and permission count with `set`, which
+   * the server returned for `roleId`. Ignored unless that role is shown and ready.
+   */
+  applySet(roleId: string, set: VersionedPermissionSet): void {
+    const mine = this.mine();
+    if (mine === null || mine.roleId !== roleId || mine.state.status !== 'ready') return;
+    this.cancel();
+    this.refreshRunning.set(false);
+    this.refreshFailure.set(null);
+    const current = mine.state.data;
+    this.owned.set({
+      owner: mine.owner,
+      roleId,
+      state: {
+        status: 'ready',
+        loadedAt: Date.now(),
+        data: this.toData(
+          roleId,
+          { ...current.role, permissionCount: set.permissions.length },
+          set,
+        ),
+      },
+    });
+  }
+
   private read(owner: string, roleId: string, mode: ReadMode): void {
     const subscription = new Subscription();
     // Set before reading, so a settle that happens synchronously clears it rather than racing it.
@@ -138,6 +167,15 @@ export class RoleDetailStore {
   ): void {
     this.settled();
     this.refreshFailure.set(null);
+    this.owned.set({
+      owner,
+      roleId,
+      state: { status: 'ready', loadedAt: Date.now(), data: this.toData(roleId, role, set) },
+    });
+  }
+
+  /** Classifies the tag; a weak or missing one switches saving off with one warn (ids only). */
+  private toData(roleId: string, role: RoleResponse, set: VersionedPermissionSet): RoleDetailData {
     const saveAvailability: SaveAvailability =
       set.etag.kind === 'strong' ? 'available' : 'etag-unusable';
     if (saveAvailability === 'etag-unusable') {
@@ -147,21 +185,13 @@ export class RoleDetailStore {
         context: { roleId, etagKind: set.etag.kind },
       });
     }
-    this.owned.set({
-      owner,
-      roleId,
-      state: {
-        status: 'ready',
-        loadedAt: Date.now(),
-        data: {
-          role,
-          permissions: set.permissions,
-          etag: set.etag,
-          correlationId: set.correlationId,
-          saveAvailability,
-        },
-      },
-    });
+    return {
+      role,
+      permissions: set.permissions,
+      etag: set.etag,
+      correlationId: set.correlationId,
+      saveAvailability,
+    };
   }
 
   private fail(owner: string, roleId: string, mode: ReadMode, error: unknown): void {

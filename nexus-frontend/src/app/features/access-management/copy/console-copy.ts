@@ -8,7 +8,7 @@ import type { DirectoryErrorCode } from '../../../shared/types/api/user-director
  * T-006 added the layout strings; T-007 adds the whole error map (`RbacErrorMessages`,
  * `Rbac001ReasonCopy`, `NotEnabledCopy`, `format`; A-10) and the roles list strings. Later tasks add
  * only the §14.2 page strings of their own pages. Permission labels live in `permission-labels.ts` (T-008)
- * and the propagation constant follows in T-011.
+ * and the propagation lines in `propagation.ts` (T-011).
  *
  * All values are plain text rendered by interpolation; none is ever HTML. The console renders this
  * text and never `AppError.message` (design §9.2).
@@ -194,6 +194,25 @@ export const CONSOLE_COPY = {
     cancel: 'Cancel',
     save: 'Save changes',
     grantSensitive: 'Grant sensitive access',
+  },
+
+  /**
+   * Saving the editor's changes (§12.4, §14.2). `{n}`, `{m}` are counts, `{labels}` permission
+   * labels joined by `listSeparator`, `{changes}` the conflict parts joined by
+   * `conflictPartSeparator`.
+   */
+  save: {
+    success: 'Role updated: {n} added, {m} removed.',
+    noop: 'No changes to save.',
+    ownAccess: 'Your own access has changed.',
+    alreadyInPlace: 'Your changes are already in place.',
+    conflictChanged: 'Changed by someone else: {changes}.',
+    conflictAdded: 'added {labels}',
+    conflictRemoved: 'removed {labels}',
+    conflictPartSeparator: '; ',
+    conflictInPlace: 'Already in place: {labels}.',
+    listSeparator: ', ',
+    wait: 'Try again in {n} seconds.',
   },
 
   /** The unsaved-changes prompt (§4.8, §14.2). */

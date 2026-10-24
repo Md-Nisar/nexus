@@ -1,5 +1,9 @@
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
-import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import {
+  HttpTestingController,
+  TestRequest,
+  provideHttpClientTesting,
+} from '@angular/common/http/testing';
 import { Component, ErrorHandler, signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
@@ -12,6 +16,7 @@ import { permissionGuard } from '../../../core/guards/permission.guard';
 import { apiErrorInterceptor } from '../../../core/http/api-error.interceptor';
 import { ServiceAvailabilityNotifier } from '../../../core/http/service-availability-notifier';
 import { LoggerService } from '../../../core/logging/logger.service';
+import { AuthService } from '../../auth/auth.service';
 import {
   createAuthSession,
   createAuthStoreStub,
@@ -23,9 +28,13 @@ import type {
   PermissionResponse,
   RoleResponse,
 } from '../../../shared/types/api/rbac';
+import { NxAnnouncer, NxToast } from '../../../shared/ui';
 import { CONSOLE_COPY } from '../copy/console-copy';
+import { permissionLabel } from '../copy/permission-labels';
+import { PROPAGATION_COPY } from '../copy/propagation';
 import { AuthorizationProfileStore } from '../data/authorization-profile.store';
 import { CatalogueStore } from '../data/catalogue.store';
+import { RolesStore } from '../data/roles.store';
 import { RoleDetailPage } from '../role-detail/role-detail.page';
 import { RoleDetailStore } from '../role-detail/role-detail.store';
 import { RolePermissionsTab } from '../role-detail/role-permissions.tab';
@@ -92,6 +101,8 @@ interface SetupOptions {
   readonly held?: readonly string[];
   readonly isAdministrator?: boolean;
   readonly profile?: ProfileStatus;
+  /** Roles the caller holds, by id (the own-role save case). */
+  readonly roleIds?: readonly string[];
 }
 
 function setup(options: SetupOptions = {}) {
@@ -104,15 +115,19 @@ function setup(options: SetupOptions = {}) {
     permissions: () => new Set(ready() ? held : []),
     isAdministrator: () => ready() && (options.isAdministrator ?? false),
     mutationsEnabled: () => ready(),
+    roleIds: () => new Set(ready() ? (options.roleIds ?? []) : []),
     load: vi.fn(),
     reload: vi.fn(),
   };
   const handleError = vi.fn();
+  // RC-65: the console never starts a session refresh of its own.
+  const authRefresh = vi.fn();
   TestBed.configureTestingModule({
     providers: [
       { provide: APP_CONFIG, useValue: CONFIG },
       { provide: ErrorHandler, useValue: { handleError } },
       { provide: ServiceAvailabilityNotifier, useValue: { notifyUnavailable: vi.fn() } },
+      { provide: AuthService, useValue: { refresh: authRefresh } },
       {
         provide: AuthStore,
         useValue: createAuthStoreStub({
@@ -128,6 +143,7 @@ function setup(options: SetupOptions = {}) {
           path: 'admin/access',
           providers: [
             CatalogueStore,
+            RolesStore,
             { provide: AuthorizationProfileStore, useValue: profileStub },
           ],
           children: [
@@ -161,12 +177,20 @@ function setup(options: SetupOptions = {}) {
     vi.spyOn(logger, 'warn'),
     vi.spyOn(logger, 'error'),
   ];
+  const announce = vi.spyOn(TestBed.inject(NxAnnouncer), 'announce').mockResolvedValue();
+  const toast = vi.spyOn(TestBed.inject(NxToast), 'info').mockImplementation(() => undefined);
+  const invalidate = vi.spyOn(RolesStore.prototype, 'invalidate');
   return {
     http: TestBed.inject(HttpTestingController),
     router: TestBed.inject(Router),
     handleError,
+    authRefresh,
+    profileStub,
     profileStatus,
     logs,
+    announce,
+    toast,
+    invalidate,
   };
 }
 
@@ -237,6 +261,8 @@ describe('RoleEditorPage (US-020 design §4.8, §8, §12.4)', () => {
     ctx.http.verify();
     // RC-73: nothing ever reaches the global error handler.
     expect(ctx.handleError).not.toHaveBeenCalled();
+    expect(ctx.authRefresh).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
   });
 
   describe('as a role editor who is not an administrator', () => {
@@ -411,22 +437,6 @@ describe('RoleEditorPage (US-020 design §4.8, §8, §12.4)', () => {
       await settle();
 
       expect(document.querySelectorAll('[data-testid="role-review"]')).toHaveLength(1);
-    });
-
-    it('confirm closes the Review and keeps the staged work; nothing is sent yet (save is T-011)', async () => {
-      ctx = setup();
-      const { el, settle } = await openEditor(ctx);
-      box(el(), 'role:write')?.click();
-      await settle();
-      button(el(), 'role-editor-review')?.click();
-      await settle();
-
-      button(review() as HTMLElement, 'role-review-confirm')?.click();
-      await settle();
-
-      expect(review()).toBeNull();
-      expect(ctx.http.match(() => true)).toHaveLength(0);
-      expect(text(byTestId(el(), 'role-editor-counts'))).toBe('1 to add, 0 to remove');
     });
 
     it('Discard drops the staged work and returns to the permissions tab without asking', async () => {
@@ -650,6 +660,416 @@ describe('RoleEditorPage (US-020 design §4.8, §8, §12.4)', () => {
 
       expect(el().querySelector('[data-testid="role-editor"] input[type="checkbox"]')).toBeNull();
       expect(byTestId(el(), 'role-editor-loading')?.getAttribute('aria-busy')).toBe('true');
+    });
+  });
+
+  describe('saving (T-011, design §7.2, §7.3, §11.1, §12.4)', () => {
+    const label = (code: string): string => permissionLabel(code) ?? code;
+    const ids = (...codes: readonly string[]): string[] => codes.map((code) => `id-${code}`).sort();
+
+    /** The set answer of a PUT or GET with the given codes and tag. */
+    function setBody(codes: readonly string[]) {
+      return { data: CATALOGUE.filter((p) => codes.includes(p.name)) };
+    }
+
+    function refuse(
+      req: TestRequest,
+      status: number,
+      code: string,
+      extra: Record<string, unknown> = {},
+      headers: Record<string, string> = {},
+    ): void {
+      req.flush(
+        { code, detail: `Server detail for ${code}`, traceId: `trace-${code}`, ...extra },
+        { status, statusText: code, headers },
+      );
+    }
+
+    function puts(): TestRequest[] {
+      return ctx.http.match((req) => req.method === 'PUT' && req.url === SET_URL);
+    }
+
+    function gets(): TestRequest[] {
+      return ctx.http.match((req) => req.method === 'GET' && req.url === SET_URL);
+    }
+
+    /** Opens the editor, stages `codes` by clicking their rows, and confirms the Review. */
+    async function stageAndConfirm(
+      codes: readonly string[],
+      options: SetupOptions & Parameters<typeof answer>[1] = {},
+    ) {
+      ctx = setup(options);
+      const page = await openEditor(ctx, options);
+      for (const code of codes) box(page.el(), code)?.click();
+      await page.settle();
+      button(page.el(), 'role-editor-review')?.click();
+      await page.settle();
+      button(review() as HTMLElement, 'role-review-confirm')?.click();
+      await page.settle();
+      return page;
+    }
+
+    function inline(el: HTMLElement): HTMLElement | null {
+      return byTestId(el, 'role-editor-save-error');
+    }
+
+    it('sends one PUT with the resulting ids and the strong tag verbatim', async () => {
+      await stageAndConfirm(['role:write']);
+
+      const [req] = puts();
+      expect(req.request.headers.getAll('If-Match')).toEqual(['"v1"']);
+      expect([...req.request.body.permissionIds].sort()).toEqual(
+        ids('role:read', 'user:read', 'role:write'),
+      );
+      req.flush(setBody(['role:read', 'user:read', 'role:write']), {
+        headers: { ETag: '"v2"' },
+      });
+    });
+
+    it('keeps the Review open while saving: confirm loading, Cancel disabled, no close, no double submit', async () => {
+      const { settle } = await stageAndConfirm(['role:write']);
+
+      const dialog = review() as HTMLElement;
+      expect(dialog).not.toBeNull();
+      const confirm = button(dialog, 'role-review-confirm') as HTMLButtonElement;
+      expect(confirm.getAttribute('aria-busy')).toBe('true');
+      expect(confirm.getAttribute('aria-disabled')).toBe('true');
+      expect(button(dialog, 'role-review-cancel')?.disabled).toBe(true);
+
+      confirm.click();
+      button(dialog, 'role-review-cancel')?.click();
+      document.body.dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }),
+      );
+      (document.querySelector('.cdk-overlay-backdrop') as HTMLElement | null)?.click();
+      await settle();
+
+      expect(review()).not.toBeNull();
+      const pending = puts();
+      expect(pending).toHaveLength(1);
+      pending[0].flush(setBody(['role:read', 'user:read', 'role:write']), {
+        headers: { ETag: '"v2"' },
+      });
+      await settle();
+      expect(review()).toBeNull();
+    });
+
+    it('applies the 200: new set and tag, no re-GET, announced, roles list invalidated', async () => {
+      const { el, settle } = await stageAndConfirm(['role:write', 'user:read']);
+
+      puts()[0].flush(setBody(['role:read', 'role:write']), { headers: { ETag: '"v2"' } });
+      await settle();
+
+      expect(gets()).toHaveLength(0);
+      expect(review()).toBeNull();
+      expect(ctx.announce).toHaveBeenCalledWith('Role updated: 1 added, 1 removed.', 'polite');
+      expect(ctx.invalidate).toHaveBeenCalledTimes(1);
+      expect(text(byTestId(el(), 'role-editor-counts'))).toBe('0 to add, 0 to remove');
+      expect(box(el(), 'role:write')?.checked).toBe(true);
+      expect(box(el(), 'user:read')?.checked).toBe(false);
+      expect(inline(el())).toBeNull();
+      expect(ctx.profileStub.reload).not.toHaveBeenCalled();
+      expect(ctx.toast).not.toHaveBeenCalled();
+
+      // The next save sends the new tag.
+      box(el(), 'user:read')?.click();
+      await settle();
+      button(el(), 'role-editor-review')?.click();
+      await settle();
+      button(review() as HTMLElement, 'role-review-confirm')?.click();
+      await settle();
+      const [next] = puts();
+      expect(next.request.headers.get('If-Match')).toBe('"v2"');
+      next.flush(setBody(['role:read', 'role:write', 'user:read']), {
+        headers: { ETag: '"v3"' },
+      });
+      await settle();
+    });
+
+    it('says "No changes to save." when the 200 leaves the set as it was', async () => {
+      const { settle } = await stageAndConfirm(['role:write']);
+
+      puts()[0].flush(setBody(['role:read', 'user:read']), { headers: { ETag: '"v1"' } });
+      await settle();
+
+      expect(ctx.announce).toHaveBeenCalledWith('No changes to save.', 'polite');
+    });
+
+    it('retries an RBAC_012 once with the same body and tag, then applies the 200', async () => {
+      const { el, settle } = await stageAndConfirm(['role:write']);
+
+      const [first] = puts();
+      refuse(first, 409, 'RBAC_012');
+      const [second] = puts();
+      expect(second.request.body).toEqual(first.request.body);
+      expect(second.request.headers.get('If-Match')).toBe('"v1"');
+      second.flush(setBody(['role:read', 'user:read', 'role:write']), {
+        headers: { ETag: '"v2"' },
+      });
+      await settle();
+
+      expect(ctx.announce).toHaveBeenCalledWith('Role updated: 1 added, 0 removed.', 'polite');
+      expect(inline(el())).toBeNull();
+    });
+
+    it('shows the final RBAC_012 copy after the one retry, and keeps the work', async () => {
+      const { el, settle } = await stageAndConfirm(['role:write']);
+
+      refuse(puts()[0], 409, 'RBAC_012');
+      refuse(puts()[0], 409, 'RBAC_012');
+      await settle();
+
+      expect(puts()).toHaveLength(0);
+      expect(review()).toBeNull();
+      const error = inline(el());
+      expect(error?.getAttribute('role')).toBe('alert');
+      expect(text(error)).toContain('The role changed while saving');
+      expect(text(error)).toContain('Reference: trace-RBAC_012');
+      expect(text(byTestId(el(), 'role-editor-counts'))).toBe('1 to add, 0 to remove');
+    });
+
+    it('412: re-reads the set once, rebases, shows what changed, and never resubmits', async () => {
+      const { el, settle } = await stageAndConfirm(['role:write', 'user:read']);
+
+      refuse(puts()[0], 412, 'PRECONDITION_FAILED');
+      const [reread] = gets();
+      // Someone else removed user:read and added tenant:read.
+      reread.flush(setBody(['role:read', 'tenant:read']), { headers: { ETag: '"v3"' } });
+      await settle();
+
+      expect(puts()).toHaveLength(0);
+      expect(review()).toBeNull();
+      const banner = byTestId(el(), 'role-editor-conflict');
+      expect(banner?.querySelector('[role="alert"]')).not.toBeNull();
+      expect(text(banner)).toContain('Someone else changed this role');
+      expect(text(banner)).toContain(
+        `Changed by someone else: added ${label('tenant:read')}; removed ${label('user:read')}.`,
+      );
+      expect(text(banner)).toContain(`Already in place: ${label('user:read')}.`);
+      // The rebased intent: role:write is still staged on the new set.
+      expect(text(byTestId(el(), 'role-editor-counts'))).toBe('1 to add, 0 to remove');
+      expect(box(el(), 'role:write')?.checked).toBe(true);
+      expect(box(el(), 'tenant:read')?.checked).toBe(true);
+
+      const conflict = ctx.logs[1].mock.calls.find(
+        ([, params]) => params?.event === 'access_console_conflict_rebased',
+      );
+      expect(conflict?.[1]).toEqual({
+        event: 'access_console_conflict_rebased',
+        context: { roleId: ROLE_ID, droppedCount: 1, upstreamAdded: 1, upstreamRemoved: 1 },
+      });
+
+      // A new Review is needed, and it saves against the re-read tag.
+      button(el(), 'role-editor-review')?.click();
+      await settle();
+      button(review() as HTMLElement, 'role-review-confirm')?.click();
+      await settle();
+      const [again] = puts();
+      expect(again.request.headers.get('If-Match')).toBe('"v3"');
+      again.flush(setBody(['role:read', 'tenant:read', 'role:write']), {
+        headers: { ETag: '"v4"' },
+      });
+      await settle();
+      expect(byTestId(el(), 'role-editor-conflict')).toBeNull();
+    });
+
+    it('412: says the changes are already in place when nothing is left to save', async () => {
+      const { el, settle } = await stageAndConfirm(['role:write']);
+
+      refuse(puts()[0], 412, 'PRECONDITION_FAILED');
+      gets()[0].flush(setBody(['role:read', 'user:read', 'role:write']), {
+        headers: { ETag: '"v3"' },
+      });
+      await settle();
+
+      expect(text(byTestId(el(), 'role-editor-conflict'))).toContain(
+        'Your changes are already in place.',
+      );
+      expect(text(byTestId(el(), 'role-editor-counts'))).toBe('0 to add, 0 to remove');
+      await expect(ctx.router.navigateByUrl('/admin/access/roles')).resolves.toBe(true);
+    });
+
+    it('412: a re-read that finds the role gone shows the deleted-elsewhere banner', async () => {
+      const { el, settle } = await stageAndConfirm(['role:write']);
+
+      refuse(puts()[0], 412, 'PRECONDITION_FAILED');
+      refuse(gets()[0], 404, 'ROLE_NOT_FOUND');
+      await settle();
+
+      expect(text(byTestId(el(), 'role-editor-deleted'))).toContain('This role no longer exists');
+    });
+
+    it('428: shows the defect copy with a reference, keeps the work, and logs an error', async () => {
+      const { el, settle } = await stageAndConfirm(['role:write']);
+
+      refuse(puts()[0], 428, 'PRECONDITION_REQUIRED');
+      await settle();
+
+      const error = inline(el());
+      expect(text(error)).toContain("We couldn't save this");
+      expect(text(error)).toContain('A technical problem stopped the save. Your changes are kept.');
+      expect(text(error)).toContain('Reference: trace-PRECONDITION_REQUIRED');
+      expect(text(byTestId(el(), 'role-editor-counts'))).toBe('1 to add, 0 to remove');
+      expect(ctx.logs[3]).toHaveBeenCalledWith(expect.any(String), {
+        event: 'access_console_precondition_required',
+        errorCode: 'PRECONDITION_REQUIRED',
+        context: { roleId: ROLE_ID, traceId: 'trace-PRECONDITION_REQUIRED' },
+      });
+      expect(gets()).toHaveLength(0);
+    });
+
+    it('403 RBAC_001: shows the reason copy inline, keeps the work, re-reads the profile, stays', async () => {
+      const { el, settle } = await stageAndConfirm(['role:write']);
+
+      refuse(puts()[0], 403, 'RBAC_001', {
+        reason: 'GRANT_EXCEEDS_CALLER',
+        requiredPermission: 'tenant:write',
+      });
+      await settle();
+
+      const error = inline(el());
+      expect(text(error)).toContain("You can't grant this");
+      expect(text(error)).not.toContain('tenant:write');
+      expect(text(error)).not.toContain('Server detail');
+      expect(ctx.profileStub.reload).toHaveBeenCalledWith('denied-predicted-allowed');
+      expect(ctx.router.url).toBe(EDIT);
+      expect(text(byTestId(el(), 'role-editor-counts'))).toBe('1 to add, 0 to remove');
+      const failed = ctx.logs[2].mock.calls.find(
+        ([, params]) => params?.event === 'access_console_action_failed',
+      );
+      expect(failed?.[1]).toEqual({
+        event: 'access_console_action_failed',
+        errorCode: 'RBAC_001',
+        context: {
+          action: 'save',
+          roleId: ROLE_ID,
+          reason: 'GRANT_EXCEEDS_CALLER',
+          traceId: 'trace-RBAC_001',
+        },
+      });
+    });
+
+    it('403 ACCESS_DENIED: shows its copy and re-reads the profile', async () => {
+      const { el, settle } = await stageAndConfirm(['role:write']);
+
+      refuse(puts()[0], 403, 'ACCESS_DENIED');
+      await settle();
+
+      expect(text(inline(el()))).toContain("You don't have access to this");
+      expect(ctx.profileStub.reload).toHaveBeenCalledWith('denied-predicted-allowed');
+    });
+
+    it('RBAC_003: shows the system-role banner and offers no edit control', async () => {
+      const { el, settle } = await stageAndConfirm(['role:write']);
+
+      refuse(puts()[0], 409, 'RBAC_003');
+      await settle();
+
+      expect(text(byTestId(el(), 'role-editor-system'))).toContain("System roles can't be changed");
+      expect(el().querySelector('[data-testid="role-editor"] input[type="checkbox"]')).toBeNull();
+      expect(byTestId(el(), 'role-editor-footer')).toBeNull();
+    });
+
+    it('ROLE_NOT_FOUND: shows the deleted-elsewhere banner, disables editing, asks nothing on leaving', async () => {
+      const { el, settle } = await stageAndConfirm(['role:write']);
+
+      refuse(puts()[0], 404, 'ROLE_NOT_FOUND');
+      await settle();
+
+      const banner = byTestId(el(), 'role-editor-deleted');
+      expect(banner?.querySelector('[role="alert"]')).not.toBeNull();
+      expect(text(banner)).toContain('This role no longer exists');
+      expect(banner?.querySelector('a')?.getAttribute('href')).toBe('/admin/access/roles');
+      expect(el().querySelector('[data-testid="role-editor"] input[type="checkbox"]')).toBeNull();
+      expect(ctx.invalidate).toHaveBeenCalled();
+      await expect(ctx.router.navigateByUrl('/admin/access/roles')).resolves.toBe(true);
+    });
+
+    it('AUTH_005: "Nothing was changed", Review waits out Retry-After and then re-enables', async () => {
+      const { el, settle, harness } = await stageAndConfirm(['role:write']);
+
+      refuse(puts()[0], 503, 'AUTH_005', {}, { 'Retry-After': '2' });
+      await settle();
+
+      const error = inline(el());
+      expect(text(error)).toContain('Nothing was changed');
+      expect(text(error)).toContain('Try again in 2 seconds.');
+      const reviewButton = button(el(), 'role-editor-review') as HTMLButtonElement;
+      expect(reviewButton.getAttribute('aria-disabled')).toBe('true');
+      const countdown = byTestId(el(), 'role-editor-wait');
+      expect(reviewButton.getAttribute('aria-describedby')).toBe(countdown?.id);
+      expect(text(countdown)).toBe('Try again in 2 seconds.');
+      expect(countdown?.getAttribute('role')).toBeNull();
+      reviewButton.click();
+      await settle();
+      expect(review()).toBeNull();
+
+      await vi.waitFor(
+        () => {
+          harness.detectChanges();
+          expect(button(el(), 'role-editor-review')?.getAttribute('aria-disabled')).toBeNull();
+        },
+        { timeout: 4000, interval: 100 },
+      );
+      expect(byTestId(el(), 'role-editor-wait')).toBeNull();
+      expect(text(byTestId(el(), 'role-editor-counts'))).toBe('1 to add, 0 to remove');
+    });
+
+    it('429 RBAC_011: waits 30 seconds when the server sent no Retry-After', async () => {
+      const { el, settle } = await stageAndConfirm(['role:write']);
+
+      refuse(puts()[0], 429, 'RBAC_011');
+      await settle();
+
+      expect(text(inline(el()))).toContain('Too many refused attempts');
+      expect(text(byTestId(el(), 'role-editor-wait'))).toBe('Try again in 30 seconds.');
+      expect(button(el(), 'role-editor-review')?.getAttribute('aria-disabled')).toBe('true');
+    });
+
+    it('a save on a role the caller holds re-reads the profile and says their access changed', async () => {
+      const { settle } = await stageAndConfirm(['role:write'], { roleIds: [ROLE_ID] });
+
+      puts()[0].flush(setBody(['role:read', 'user:read', 'role:write']), {
+        headers: { ETag: '"v2"' },
+      });
+      await settle();
+
+      expect(ctx.profileStub.reload).toHaveBeenCalledWith('own-access-change');
+      expect(ctx.toast).toHaveBeenCalledWith('Your own access has changed.');
+    });
+
+    it('the Review tells when the change takes effect: both lines for adds and removes', async () => {
+      ctx = setup();
+      const { el, settle } = await openEditor(ctx);
+      box(el(), 'role:write')?.click();
+      box(el(), 'user:read')?.click();
+      await settle();
+      button(el(), 'role-editor-review')?.click();
+      await settle();
+
+      const lines = Array.from(
+        review()?.querySelectorAll('[data-testid="role-review-propagation"]') ?? [],
+      ).map(text);
+      expect(lines).toEqual([PROPAGATION_COPY.grant, PROPAGATION_COPY.revoke]);
+      button(review() as HTMLElement, 'role-review-cancel')?.click();
+      await settle();
+    });
+
+    it('never logs the role name or description, on success or failure (PII)', async () => {
+      const name = 'Secret payroll role';
+      const description = 'Secret words';
+      const { settle } = await stageAndConfirm(['role:write'], {
+        role: role({ name, description }),
+      });
+
+      refuse(puts()[0], 412, 'PRECONDITION_FAILED');
+      gets()[0].flush(setBody(['role:read']), { headers: { ETag: '"v3"' } });
+      await settle();
+
+      const logged = JSON.stringify(ctx.logs.map((spy) => spy.mock.calls));
+      expect(logged).toContain('access_console_conflict_rebased');
+      expect(logged).not.toContain(name);
+      expect(logged).not.toContain(description);
     });
   });
 });
