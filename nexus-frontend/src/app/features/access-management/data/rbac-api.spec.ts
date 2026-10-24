@@ -1,8 +1,15 @@
-import { provideHttpClient } from '@angular/common/http';
-import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { provideHttpClient, withInterceptors } from '@angular/common/http';
+import {
+  HttpTestingController,
+  TestRequest,
+  provideHttpClientTesting,
+} from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { provideRouter } from '@angular/router';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { APP_CONFIG, AppConfig } from '../../../core/config/app-config';
+import { apiErrorInterceptor } from '../../../core/http/api-error.interceptor';
+import { ServiceAvailabilityNotifier } from '../../../core/http/service-availability-notifier';
 import { SKIP_ACCESS_DENIED_REDIRECT } from '../../../core/http/skip-access-denied-redirect';
 import type {
   CallerAuthorizationResponse,
@@ -39,7 +46,10 @@ describe('RbacApi', () => {
     TestBed.configureTestingModule({
       providers: [
         { provide: APP_CONFIG, useValue: CONFIG },
-        provideHttpClient(),
+        { provide: ServiceAvailabilityNotifier, useValue: { notifyUnavailable: vi.fn() } },
+        provideRouter([]),
+        // Errors reach the client as AppError, as in the app, so the retry-once sees codes.
+        provideHttpClient(withInterceptors([apiErrorInterceptor])),
         provideHttpClientTesting(),
       ],
     });
@@ -239,6 +249,105 @@ describe('RbacApi', () => {
       api.getRolePermissions('a/b').subscribe();
 
       http.expectOne(`${API}/v1/roles/a%2Fb/permissions`).flush(BODY);
+    });
+  });
+
+  describe('replaceRolePermissions (design §7.1, §7.2, §7.3)', () => {
+    const ROLE_ID = '0190a000-0000-7000-8000-0000000000b1';
+    const URL = `${API}/v1/roles/${ROLE_ID}/permissions`;
+    const IDS = ['0190a000-0000-7000-8000-0000000000p1', '0190a000-0000-7000-8000-0000000000p2'];
+    const STRONG = '"7f3a-AZ_09!#$%&\'()*+,-./:;<=>?@[]^`{|}~"';
+    const BODY: PermissionListResponse = {
+      data: [{ id: IDS[0], name: 'role:read', description: 'Read roles', isSensitive: false }],
+    };
+
+    function save() {
+      let received: VersionedPermissionSet | undefined;
+      let failure: unknown;
+      api.replaceRolePermissions(ROLE_ID, IDS, STRONG).subscribe({
+        next: (set) => (received = set),
+        error: (error: unknown) => (failure = error),
+      });
+      return {
+        received: () => received,
+        failure: () => failure as AppError | undefined,
+      };
+    }
+
+    /** Answers a request with the problem document of `code`. */
+    function refuse(req: TestRequest, code: string, status: number): void {
+      req.flush(
+        { code, detail: 'Server detail', traceId: 'trace-1' },
+        { status, statusText: code },
+      );
+    }
+
+    it('PUTs the ids with the strong tag as If-Match, byte for byte', () => {
+      save();
+
+      const req = http.expectOne(URL);
+      expect(req.request.method).toBe('PUT');
+      expect(req.request.body).toEqual({ permissionIds: IDS });
+      expect(req.request.headers.getAll('If-Match')).toEqual([STRONG]);
+      req.flush(BODY, { headers: { ETag: '"v2"' } });
+    });
+
+    it('carries SKIP_ACCESS_DENIED_REDIRECT, so a 403 stays with the editor (FR-F4)', () => {
+      save();
+
+      const req = http.expectOne(URL);
+      expect(req.request.context.get(SKIP_ACCESS_DENIED_REDIRECT)).toBe(true);
+      req.flush(BODY, { headers: { ETag: '"v2"' } });
+    });
+
+    it('emits the new set and its new tag from the 200, with no second request', () => {
+      const outcome = save();
+
+      http.expectOne(URL).flush(BODY, { headers: { ETag: '"v2"', 'X-Correlation-Id': 'corr-2' } });
+
+      expect(outcome.received()).toEqual({
+        permissions: BODY.data,
+        etag: { kind: 'strong', value: '"v2"' },
+        correlationId: 'corr-2',
+      });
+      http.expectNone(URL);
+    });
+
+    it('retries an RBAC_012 once with the same body and If-Match (RES-53)', () => {
+      const outcome = save();
+
+      const first = http.expectOne(URL);
+      refuse(first, 'RBAC_012', 409);
+      const second = http.expectOne(URL);
+      expect(second.request.body).toEqual(first.request.body);
+      expect(second.request.headers.get('If-Match')).toBe(STRONG);
+      second.flush(BODY, { headers: { ETag: '"v2"' } });
+
+      expect(outcome.received()?.etag).toEqual({ kind: 'strong', value: '"v2"' });
+    });
+
+    it.each([
+      ['PRECONDITION_FAILED', 412],
+      ['PRECONDITION_REQUIRED', 428],
+      ['RBAC_001', 403],
+      ['RBAC_003', 409],
+      ['RBAC_011', 429],
+      ['AUTH_005', 503],
+    ] as const)('surfaces %s without retrying', (code, status) => {
+      const outcome = save();
+
+      refuse(http.expectOne(URL), code, status);
+
+      http.expectNone(URL);
+      expect(outcome.failure()?.code).toBe(code);
+    });
+
+    it('encodes the id as one path segment', () => {
+      api.replaceRolePermissions('../x', IDS, STRONG).subscribe();
+
+      http
+        .expectOne(`${API}/v1/roles/%2E%2E%2Fx/permissions`)
+        .flush(BODY, { headers: { ETag: '"v2"' } });
     });
   });
 });

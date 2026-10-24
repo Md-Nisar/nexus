@@ -60,7 +60,47 @@
 .role-editor__actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--nx-space-2);
+}
+
+.role-editor__banner-text {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.role-editor__banner-link {
+  color: var(--nx-color-primary);
+}
+
+/* A failed save, beside the action it refused (design §12.0 "Action failed"). */
+.role-editor__save-error {
+  display: grid;
+  gap: var(--nx-space-1);
+  padding: var(--nx-space-3) var(--nx-space-4);
+  border-radius: var(--nx-radius-md);
+  background-color: var(--nx-color-error-surface);
+  color: var(--nx-color-on-surface);
+}
+
+.role-editor__save-error-title,
+.role-editor__save-error-body,
+.role-editor__save-error-reference,
+.role-editor__wait {
+  margin: 0;
+}
+
+.role-editor__save-error-title {
+  font-weight: var(--nx-weight-semibold);
+}
+
+.role-editor__reference-id {
+  font-family: var(--nx-font-family-mono);
+  overflow-wrap: anywhere;
+}
+
+.role-editor__wait {
+  color: var(--nx-color-on-surface-muted);
 }
 
 /* 320 px (design §12.4): two rows, the counts then the buttons (`lg`: 48 px high, at least 44). */

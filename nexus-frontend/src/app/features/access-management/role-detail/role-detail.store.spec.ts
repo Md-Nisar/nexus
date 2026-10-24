@@ -369,6 +369,72 @@ describe('RoleDetailStore (US-020 design §6.5, §7.1, §7.2)', () => {
     });
   });
 
+  describe('applySet (T-011: the 200 of a save, or the re-read after a 412)', () => {
+    const SAVED = {
+      permissions: [permission('role:read'), permission('role:write'), permission('tenant:read')],
+      etag: { kind: 'strong', value: '"v2"' } as const,
+      correlationId: 'corr-2',
+    };
+
+    beforeEach(() => {
+      ctx.store.load(ROLE_ID);
+      flushBoth('"v1"');
+    });
+
+    it('replaces the set, its tag and the permission count without a request', () => {
+      const before = data(ctx.store);
+
+      ctx.store.applySet(ROLE_ID, SAVED);
+
+      const after = data(ctx.store);
+      expect(after.permissions).toBe(SAVED.permissions);
+      expect(after.etag).toEqual({ kind: 'strong', value: '"v2"' });
+      expect(after.correlationId).toBe('corr-2');
+      expect(after.saveAvailability).toBe('available');
+      expect(after.role).toEqual({ ...before.role, permissionCount: 3 });
+      ctx.http.expectNone(() => true);
+    });
+
+    it('switches saving off and warns when the new tag is not strong', () => {
+      ctx.store.applySet(ROLE_ID, { ...SAVED, etag: { kind: 'weak' } });
+
+      expect(data(ctx.store).saveAvailability).toBe('etag-unusable');
+      expect(ctx.logs.warn).toHaveBeenCalledWith(expect.any(String), {
+        event: 'access_console_etag_unusable',
+        correlationId: 'corr-2',
+        context: { roleId: ROLE_ID, etagKind: 'weak' },
+      });
+    });
+
+    it('ignores a set for another role', () => {
+      const before = data(ctx.store);
+
+      ctx.store.applySet(OTHER_ROLE_ID, SAVED);
+
+      expect(data(ctx.store)).toBe(before);
+    });
+
+    it('cancels a Refresh in flight, so an older read cannot overwrite the saved set', () => {
+      ctx.store.refresh();
+      const stale = [ctx.http.expectOne(roleUrl()), ctx.http.expectOne(setUrl())];
+
+      ctx.store.applySet(ROLE_ID, SAVED);
+
+      expect(stale.every((req) => req.cancelled)).toBe(true);
+      expect(ctx.store.refreshing()).toBe(false);
+      expect(data(ctx.store).etag).toEqual({ kind: 'strong', value: '"v2"' });
+    });
+
+    it('does nothing unless the role is shown', () => {
+      TestBed.resetTestingModule();
+      ctx = setup();
+
+      ctx.store.applySet(ROLE_ID, SAVED);
+
+      expect(ctx.store.state().status).toBe('idle');
+    });
+  });
+
   describe('user change (design §6.2)', () => {
     it("never shows one user's role detail to another user", () => {
       ctx.store.load(ROLE_ID);
