@@ -233,3 +233,32 @@ describe('CONSOLE_COPY (roles page strings, design §14.2)', () => {
     expect(CONSOLE_COPY.badges.hiddenCharacters).toBe('Contains hidden characters');
   });
 });
+
+describe('CONSOLE_COPY (role detail strings, design §7.2, §12.3, §14)', () => {
+  it('has the D3 role detail strings', () => {
+    expect(CONSOLE_COPY.roleDetail.systemBanner).toBe(
+      "This is a system role. Its permissions can't be changed. You can clone it to make a custom role.",
+    );
+    expect(CONSOLE_COPY.roleDetail.emptyPermissions).toBe('This role grants no access yet');
+    expect(CONSOLE_COPY.roleDetail.updated).toBe('Updated {time}');
+    expect(CONSOLE_COPY.roleDetail.edit).toBe('Edit permissions');
+    expect(CONSOLE_COPY.roleDetail.clone).toBe('Clone');
+    expect(CONSOLE_COPY.matrix.caption).toBe('Permissions granted by {role}');
+    expect(CONSOLE_COPY.matrix.granted).toBe('Granted');
+    expect(CONSOLE_COPY.matrix.notGranted).toBe('Not granted');
+  });
+
+  it('has the ETag-unusable banner (§14.1) and the Edit reason (§7.2)', () => {
+    expect(CONSOLE_COPY.roleDetail.etagUnusable.title).toBe('Saving is unavailable');
+    expect(CONSOLE_COPY.roleDetail.etagUnusable.body).toBe(
+      'A network component changed the version information Nexus needs to save safely. You can still view this role.',
+    );
+    expect(CONSOLE_COPY.disabledReason.etagUnusable).toBe(
+      'Saving is unavailable because a network component changed the version information Nexus needs.',
+    );
+  });
+
+  it('puts the role name in the caption only through the {role} placeholder', () => {
+    expect(CONSOLE_COPY.matrix.caption.split('{role}')).toHaveLength(2);
+  });
+});

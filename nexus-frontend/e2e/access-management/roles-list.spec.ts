@@ -33,7 +33,7 @@ async function openRoles(page: Page, query = ''): Promise<void> {
 test.describe('roles list', () => {
   for (const key of PERSONAS_UNDER_TEST) {
     test.describe(`persona ${key}`, () => {
-      test('lists the system roles first with a count, and names are not links', async ({
+      test('lists the system roles first with a count, and names link to the role', async ({
         personaContext,
       }) => {
         const page = await (await personaContext(key)).newPage();
@@ -50,7 +50,12 @@ test.describe('roles list', () => {
           );
           const firstCustom = kinds.indexOf('custom');
           if (firstCustom !== -1) expect(kinds.slice(firstCustom)).not.toContain('system');
-          await expect(page.locator('tbody a')).toHaveCount(0);
+          // Each name links to its role detail page (T-009).
+          await expect(page.locator('tbody a')).toHaveCount(await rowNames(page).count());
+          await expect(page.locator('tbody a').first()).toHaveAttribute(
+            'href',
+            /^\/admin\/access\/roles\/[0-9a-f-]{36}$/,
+          );
         } finally {
           await page.close();
         }

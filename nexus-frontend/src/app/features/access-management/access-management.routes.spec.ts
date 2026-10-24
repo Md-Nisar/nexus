@@ -30,6 +30,7 @@ import { ACCESS_MANAGEMENT_ROUTES, firstAreaRedirect } from './access-management
 import { AuthorizationProfileStore } from './data/authorization-profile.store';
 import { CatalogueStore } from './data/catalogue.store';
 import { RolesStore } from './data/roles.store';
+import { RoleDetailStore } from './role-detail/role-detail.store';
 import { CONSOLE_AREAS } from './layout/console-areas';
 import { AccessConsoleLayout } from './layout/access-console-layout';
 
@@ -107,6 +108,43 @@ describe('ACCESS_MANAGEMENT_ROUTES (US-020 design §4.2)', () => {
       expect(route.title).toBe('Permissions');
       expect(route.component).toBeUndefined();
       expect(route.loadComponent).toBeTypeOf('function');
+    });
+  });
+
+  describe('role detail (T-009, design §4.2)', () => {
+    function detailRoute(): Route {
+      const route = layoutRoute().children?.find((child) => child.path === 'roles/:roleId');
+      expect(route).toBeDefined();
+      return route as Route;
+    }
+
+    it('comes after the roles route', () => {
+      const paths = layoutRoute().children?.map((child) => child.path);
+      expect(paths?.indexOf('roles/:roleId')).toBeGreaterThan(paths?.indexOf('roles') ?? 99);
+    });
+
+    it('is guarded by permissionGuard with role:read and has no title of its own', () => {
+      const route = detailRoute();
+      expect(route.canActivate).toEqual([permissionGuard]);
+      expect(route.data).toEqual({ permission: 'role:read' });
+      expect(route.title).toBeUndefined();
+      expect(route.canActivateChild).toBeUndefined();
+      expect(route.loadComponent).toBeTypeOf('function');
+    });
+
+    it('scopes the RoleDetailStore to the role route', () => {
+      expect(detailRoute().providers).toEqual([RoleDetailStore]);
+      expect(layoutRoute().providers).not.toContain(RoleDetailStore);
+    });
+
+    it('sends the bare role path to the permissions tab, a lazy child with a static title', () => {
+      const [redirect, permissions] = detailRoute().children ?? [];
+      expect(redirect).toEqual({ path: '', pathMatch: 'full', redirectTo: 'permissions' });
+      expect(permissions.path).toBe('permissions');
+      // Static: the role name never reaches document.title or history (DQ-26).
+      expect(permissions.title).toBe('Role permissions');
+      expect(permissions.loadComponent).toBeTypeOf('function');
+      expect(permissions.canActivate).toBeUndefined();
     });
   });
 

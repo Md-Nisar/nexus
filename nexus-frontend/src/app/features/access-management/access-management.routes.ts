@@ -7,6 +7,7 @@ import { CatalogueStore } from './data/catalogue.store';
 import { RolesStore } from './data/roles.store';
 import { AccessConsoleLayout } from './layout/access-console-layout';
 import { CONSOLE_AREAS } from './layout/console-areas';
+import { RoleDetailStore } from './role-detail/role-detail.store';
 
 /** Where a user who holds none of the areas' permissions would go; the parent guard denies them first. */
 const FALLBACK_AREA = '/admin/access/users';
@@ -37,6 +38,9 @@ export const firstAreaRedirect: CanActivateFn = () => {
  *   never shown; it satisfies the "every page route has a title" contract.
  * - Every area page added below carries `permissionGuard` with its own `data.permission` and a
  *   static title (DQ-26). No `canActivateChild` anywhere (RC-65).
+ * - `roles/:roleId` scopes {@link RoleDetailStore} to one role page and has its tabs as child
+ *   routes; its own route has no title (the tabs have static ones), so a role name never reaches
+ *   `document.title`.
  */
 export const ACCESS_MANAGEMENT_ROUTES: Routes = [
   {
@@ -58,6 +62,22 @@ export const ACCESS_MANAGEMENT_ROUTES: Routes = [
         canActivate: [permissionGuard],
         data: { permission: 'role:read' },
         loadComponent: () => import('./roles/roles-list.page').then((m) => m.RolesListPage),
+      },
+      {
+        path: 'roles/:roleId',
+        canActivate: [permissionGuard],
+        data: { permission: 'role:read' },
+        providers: [RoleDetailStore],
+        loadComponent: () => import('./role-detail/role-detail.page').then((m) => m.RoleDetailPage),
+        children: [
+          { path: '', pathMatch: 'full', redirectTo: 'permissions' },
+          {
+            path: 'permissions',
+            title: 'Role permissions',
+            loadComponent: () =>
+              import('./role-detail/role-permissions.tab').then((m) => m.RolePermissionsTab),
+          },
+        ],
       },
       {
         // `permission` is the permissions entry of CONSOLE_AREAS (pinned by the routes spec).

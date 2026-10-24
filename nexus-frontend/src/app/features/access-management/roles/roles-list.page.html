@@ -101,7 +101,9 @@
         >
           <ng-template nxTableCell="name" let-raw>
             <span class="roles__name" data-testid="role-name">
-              <app-user-text [text]="row(raw).name" [maxLines]="2" />
+              <a class="roles__link" [routerLink]="['/admin/access/roles', row(raw).id]">
+                <app-user-text [text]="row(raw).name" [maxLines]="2" />
+              </a>
             </span>
           </ng-template>
           <ng-template nxTableCell="type" let-raw>
