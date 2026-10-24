@@ -10,11 +10,18 @@ export type PersonaKey =
   | 'userManager'
   | 'locked'
   | 'pending'
-  | 'otherTenantAdmin';
+  | 'otherTenantAdmin'
+  | 'roleReaderUserManager'
+  | 'auditor'
+  | 'targetA'
+  | 'targetB';
 
 export interface Persona {
   readonly email: string;
-  /** False when the account cannot obtain a session (locked, pending, second tenant). */
+  /**
+   * False when the account cannot obtain a session (locked, pending, second tenant) or must never
+   * be signed in as (the ACTIVE assignment targets, which only receive and lose roles).
+   */
   readonly canSignIn: boolean;
 }
 
@@ -29,6 +36,10 @@ export const PERSONAS: Readonly<Record<PersonaKey, Persona>> = {
   locked: { email: 'locked@example.com', canSignIn: false },
   pending: { email: 'pending@example.com', canSignIn: false },
   otherTenantAdmin: { email: 'other-tenant-admin@example.com', canSignIn: false },
+  roleReaderUserManager: { email: 'role-reader-user-manager@example.com', canSignIn: true },
+  auditor: { email: 'auditor@example.com', canSignIn: true },
+  targetA: { email: 'target-a@example.com', canSignIn: false },
+  targetB: { email: 'target-b@example.com', canSignIn: false },
 };
 
 /** Personas that can sign in, in a stable order. */
@@ -38,6 +49,8 @@ export const SIGN_IN_PERSONAS: readonly PersonaKey[] = [
   'member',
   'roleManager',
   'userManager',
+  'roleReaderUserManager',
+  'auditor',
 ];
 
 /** Fixture-only second tenant (cross-tenant negative tests; nobody can sign in to it). */

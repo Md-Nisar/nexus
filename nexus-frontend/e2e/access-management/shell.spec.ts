@@ -17,6 +17,10 @@ const NAV_LABELS: Readonly<Record<PersonaKey, readonly string[]>> = {
   locked: [],
   pending: [],
   otherTenantAdmin: [],
+  roleReaderUserManager: ['Dashboard', 'Access management'],
+  auditor: ['Dashboard', 'Access management'],
+  targetA: [],
+  targetB: [],
 };
 
 test.describe('signed-in shell', () => {

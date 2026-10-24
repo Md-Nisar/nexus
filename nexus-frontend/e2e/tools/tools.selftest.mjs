@@ -1,9 +1,11 @@
 /** Self-test for the CI guards: `node --test e2e/tools/tools.selftest.mjs` (US-019 T-027). */
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { assertExecuted } from './assert-executed.mjs';
 import {
   classifyEtag,
@@ -154,6 +156,25 @@ test('the text printed around a match never contains another needle', () => {
     assert.ok(!text.includes('person@example.test'), text);
     assert.ok(!text.includes(other), text);
     assert.ok(!/e2e-\d+@example\.com/.test(text), text);
+  }
+});
+
+// US-020 T-014: the scan's needles come from every PERSONAS entry, so the personas nobody signs in
+// as (the assignment targets) are scanned too. Addresses are read from the fixture, never written
+// here, and the CLI's output is captured, not printed.
+test('the scan CLI flags the address of every persona, including the assignment targets', async () => {
+  const { PERSONAS } = await import('../fixtures/personas.ts');
+  for (const key of ['roleReaderUserManager', 'auditor', 'targetA', 'targetB']) {
+    assert.ok(PERSONAS[key], `persona ${key} is missing from PERSONAS`);
+  }
+  for (const [key, persona] of Object.entries(PERSONAS)) {
+    const dir = write('backend.log', `user ${persona.email} signed in\n`);
+    const run = spawnSync(
+      process.execPath,
+      [fileURLToPath(new URL('./scan-pii.mjs', import.meta.url)), '--hmac-key', KEY, dir],
+      { encoding: 'utf8' },
+    );
+    assert.equal(run.status, 1, `persona ${key} was not flagged`);
   }
 });
 

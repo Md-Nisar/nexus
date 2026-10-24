@@ -43,6 +43,10 @@ public class DevUserSeeder {
   static final String LOCKED_EMAIL = "locked@example.com";
   static final String PENDING_EMAIL = "pending@example.com";
   static final String SECOND_TENANT_ADMIN_EMAIL = "other-tenant-admin@example.com";
+  static final String ROLE_READER_USER_MANAGER_EMAIL = "role-reader-user-manager@example.com";
+  static final String AUDITOR_EMAIL = "auditor@example.com";
+  static final String TARGET_A_EMAIL = "target-a@example.com";
+  static final String TARGET_B_EMAIL = "target-b@example.com";
 
   /**
    * Fixture-only second tenant. Login resolves its tenant from the configured default, so these

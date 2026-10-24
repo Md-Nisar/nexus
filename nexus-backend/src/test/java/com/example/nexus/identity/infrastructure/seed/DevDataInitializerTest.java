@@ -126,6 +126,13 @@ class DevDataInitializerTest {
         .containsExactly(DevDataInitializer.USER_MANAGER_ROLE);
     assertThat(rolesHeldBy(DevUserSeeder.LOCKED_EMAIL)).containsExactly(RbacRoleNames.MEMBER);
     assertThat(rolesHeldBy(DevUserSeeder.PENDING_EMAIL)).isEmpty();
+    assertThat(rolesHeldBy(DevUserSeeder.ROLE_READER_USER_MANAGER_EMAIL))
+        .containsExactly(DevDataInitializer.ROLE_READER_USER_MANAGER_ROLE);
+    assertThat(rolesHeldBy(DevUserSeeder.AUDITOR_EMAIL))
+        .containsExactly(DevDataInitializer.AUDITOR_ROLE);
+    assertThat(rolesHeldBy(DevUserSeeder.TARGET_A_EMAIL)).isEmpty();
+    assertThat(rolesHeldBy(DevUserSeeder.TARGET_B_EMAIL))
+        .containsExactly(DevDataInitializer.TARGET_ROLE);
   }
 
   @Test
@@ -136,6 +143,33 @@ class DevDataInitializerTest {
         .containsExactlyInAnyOrder("role:read", "role:write");
     assertThat(permissionNamesOf(TENANT_ID, DevDataInitializer.USER_MANAGER_ROLE))
         .containsExactlyInAnyOrder("user:read", "user:role:assign", "user:directory:read");
+    assertThat(permissionNamesOf(TENANT_ID, DevDataInitializer.ROLE_READER_USER_MANAGER_ROLE))
+        .containsExactlyInAnyOrder(
+            "role:read", "user:read", "user:role:assign", "user:directory:read");
+    assertThat(permissionNamesOf(TENANT_ID, DevDataInitializer.AUDITOR_ROLE))
+        .containsExactlyInAnyOrder("role:read", "audit:read");
+    assertThat(permissionNamesOf(TENANT_ID, DevDataInitializer.TARGET_ROLE))
+        .containsExactly("role:read");
+  }
+
+  // US-020 T-014: the user manager must stay a non-administrator, or the self-assign and PII-rule
+  // cases it exists for prove nothing. Administrator = one role holding the whole catalogue.
+  @Test
+  void should_notGrantTheWholeCatalogue_when_seedingTheRoleReaderUserManager() {
+    initializer.run(null);
+
+    UUID roleId = rolesByKey.get(key(TENANT_ID, DevDataInitializer.ROLE_READER_USER_MANAGER_ROLE));
+    assertThat(permissionsByRole.get(roleId)).isNotEmpty().isNotEqualTo(catalogue.keySet());
+  }
+
+  @Test
+  void should_seedBothTargetsActive_when_seeding() {
+    initializer.run(null);
+
+    assertThat(userByEmail(DevUserSeeder.TARGET_A_EMAIL, TENANT_ID).getStatus())
+        .isEqualTo(UserStatus.ACTIVE);
+    assertThat(userByEmail(DevUserSeeder.TARGET_B_EMAIL, TENANT_ID).getStatus())
+        .isEqualTo(UserStatus.ACTIVE);
   }
 
   @Test
@@ -167,7 +201,10 @@ class DevDataInitializerTest {
             DevUserSeeder.MEMBER_EMAIL,
             DevUserSeeder.ROLE_MANAGER_EMAIL,
             DevUserSeeder.USER_MANAGER_EMAIL,
-            DevUserSeeder.LOCKED_EMAIL);
+            DevUserSeeder.LOCKED_EMAIL,
+            DevUserSeeder.ROLE_READER_USER_MANAGER_EMAIL,
+            DevUserSeeder.AUDITOR_EMAIL,
+            DevUserSeeder.TARGET_B_EMAIL);
     for (String email : personaEmails) {
       UUID personaId = userByEmail(email, TENANT_ID).getId();
       List<UUID> assigners =
