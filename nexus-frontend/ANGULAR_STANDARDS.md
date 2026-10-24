@@ -40,3 +40,9 @@ You are an expert in TypeScript, Angular, and scalable web application developme
 - Use the `providedIn: 'root'` option for singleton services
 - Prefer the `@Service` decorator over `@Injectable({providedIn: 'root'})` for new singleton services (Angular v22+)
 - Use the `inject()` function instead of constructor injection
+## Async, Routing & HTTP Pitfalls (each one has shipped in this codebase)
+- `computed()` re-runs only when a signal it reads changes; non-signal values such as `Date.now()` are frozen at the last run. Use a method, or a timer-driven signal, for time-based checks (seen in `AuthStore.isAuthenticated`)
+- Guards in one `canActivate` array run concurrently; array order only ranks their results. A guard that depends on another guard's async work must wait on that shared state itself, or sit on a child route (seen in `permissionGuard` with `authGuard`)
+- In a retry flow, put the `catchError` that handles refresh failure before `switchMap(() => next(retry))`; placed after it, it also catches errors from the replayed request (seen in `authInterceptor`, reactive path)
+- An HTTP call made from inside an interceptor flow passes through the same interceptor and can end up waiting on itself. Mark such calls with an `HttpContextToken` that the interceptor skips (seen in `AuthService.refresh()` → `/users/me`)
+- A refresh that rotates credentials must be single-flight for every caller (guards and interceptors), owned by one service, not cancellable by an unsubscribing caller (`shareReplay` without `refCount`), and bounded by `timeout()`

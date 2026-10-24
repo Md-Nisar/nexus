@@ -27,6 +27,7 @@ Run `/design $1` (architect + security-reviewer) → `docs/features/$1/03-design
 - **DB**: Flyway migration plan, additive vs expand/contract (ADR 0003); indexes; audit columns.
 - **Security**: STRIDE threat model; every threat gets a mitigation that becomes a task.
 - **Frontend**: routes, components (smart/dumb), signals state, guards (`angular-standards`).
+- **Critical decisions** (`critical-decisions` skill): for each fired design trigger, an invariant → mechanism → proof-test row; `none` when no trigger fired.
 **Stop for approval.**
 
 ## Step 4 — Task breakdown → **Gate 3**
