@@ -1,6 +1,6 @@
 import { Component, LOCALE_ID, OnInit, computed, inject } from '@angular/core';
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
-import { ActivatedRoute, Router, RouterLink, RouterOutlet } from '@angular/router';
+import { ActivatedRoute, NavigationEnd, Router, RouterLink, RouterOutlet } from '@angular/router';
 import { distinctUntilChanged, filter, interval, map } from 'rxjs';
 import { AuthStore } from '../../../core/auth/auth.store';
 import {
@@ -52,6 +52,8 @@ interface DisabledReason {
  *   missing, "Edit permissions" stays visible and focusable but `aria-disabled`, with the reason as
  *   visible text, and a banner explains it with the read's reference (design §7.2). The read view
  *   is never hidden.
+ * - **Editor:** the `edit` child renders in the same outlet, so this page and its store stay
+ *   mounted and entering the editor reads nothing; "Edit permissions" is hidden while it is open.
  * - **User text:** the name and description render through {@link UserText} by interpolation
  *   only, in `<bdi>` or a `dir="auto"` block. Route titles are static, so the name never reaches
  *   `document.title`, and nothing here logs.
@@ -91,6 +93,15 @@ export class RoleDetailPage implements OnInit {
   private readonly now = toSignal(interval(CLOCK_TICK_MS).pipe(map(() => Date.now())), {
     initialValue: Date.now(),
   });
+
+  /** The editor (`edit` child) is open: the page stays mounted and shows no Edit action. */
+  private readonly editing = toSignal(
+    this.router.events.pipe(
+      filter((event) => event instanceof NavigationEnd),
+      map(() => this.editorOpen()),
+    ),
+    { initialValue: this.editorOpen() },
+  );
 
   protected readonly status = computed(() => this.store.state().status);
 
@@ -221,11 +232,16 @@ export class RoleDetailPage implements OnInit {
   });
 
   /** "Edit permissions": custom roles only, never on a system role (FR-B7). */
-  protected readonly editState = computed<WriteAccess>(() => {
+  private readonly editAccess = computed<WriteAccess>(() => {
     const role = this.role();
     if (role === null || role.isSystemRole || this.writeAccess() === 'hidden') return 'hidden';
     return this.editReasons().length > 0 ? 'disabled' : 'enabled';
   });
+
+  /** The Edit action as shown: hidden while the editor is open. */
+  protected readonly editState = computed<WriteAccess>(() =>
+    this.editing() ? 'hidden' : this.editAccess(),
+  );
 
   protected readonly editDescribedBy = computed(() =>
     this.editReasons()
@@ -235,7 +251,7 @@ export class RoleDetailPage implements OnInit {
 
   /** The "Saving is unavailable" banner, shown where an Edit control is shown. */
   protected readonly showEtagBanner = computed(
-    () => this.etagUnusable() && this.editState() !== 'hidden',
+    () => this.etagUnusable() && this.editAccess() !== 'hidden',
   );
 
   protected readonly etagReference = computed(() => this.data()?.data.correlationId ?? null);
@@ -253,6 +269,10 @@ export class RoleDetailPage implements OnInit {
 
   ngOnInit(): void {
     this.catalogue.load();
+  }
+
+  private editorOpen(): boolean {
+    return this.route.firstChild?.routeConfig?.path === 'edit';
   }
 
   protected refresh(): void {

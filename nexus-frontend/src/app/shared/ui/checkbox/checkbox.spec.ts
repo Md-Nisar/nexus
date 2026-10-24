@@ -1,4 +1,4 @@
-import { Component } from '@angular/core';
+import { Component, signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -18,6 +18,80 @@ class HostComponent {
   template: `<nx-checkbox label="I agree to the"><a href="/terms">terms</a></nx-checkbox>`,
 })
 class ProjectionHostComponent {}
+
+/** A host that owns the state and decides what each click means. */
+@Component({
+  imports: [NxCheckbox],
+  template: `<nx-checkbox
+    label="All"
+    [checked]="checked()"
+    [indeterminate]="mixed()"
+    (changed)="onChanged($event)"
+  />`,
+})
+class ControlledHostComponent {
+  readonly checked = signal(false);
+  readonly mixed = signal(false);
+  readonly received: boolean[] = [];
+  accept = true;
+
+  onChanged(next: boolean): void {
+    this.received.push(next);
+    if (this.accept) {
+      this.checked.set(next);
+      this.mixed.set(false);
+    }
+  }
+}
+
+describe('NxCheckbox controlled by checked', () => {
+  async function controlled() {
+    const host = TestBed.createComponent(ControlledHostComponent);
+    await host.whenStable();
+    const input = (): HTMLInputElement => host.nativeElement.querySelector('input');
+    return { host, input };
+  }
+
+  it('renders the checked input', async () => {
+    const { host, input } = await controlled();
+    expect(input().checked).toBe(false);
+    host.componentInstance.checked.set(true);
+    await host.whenStable();
+    expect(input().checked).toBe(true);
+  });
+
+  it('follows the host when it accepts a click', async () => {
+    const { host, input } = await controlled();
+    input().click();
+    await host.whenStable();
+    expect(host.componentInstance.received).toEqual([true]);
+    expect(input().checked).toBe(true);
+    input().click();
+    await host.whenStable();
+    expect(host.componentInstance.received).toEqual([true, false]);
+    expect(input().checked).toBe(false);
+  });
+
+  it('keeps the host value when the host does not change it', async () => {
+    const { host, input } = await controlled();
+    host.componentInstance.accept = false;
+    input().click();
+    await host.whenStable();
+    expect(host.componentInstance.received).toEqual([true]);
+    expect(input().checked).toBe(false);
+  });
+
+  it('keeps mixed when the host keeps it', async () => {
+    const { host, input } = await controlled();
+    host.componentInstance.mixed.set(true);
+    await host.whenStable();
+    host.componentInstance.accept = false;
+    input().click();
+    await host.whenStable();
+    expect(input().checked).toBe(false);
+    expect(input().getAttribute('aria-checked')).toBe('mixed');
+  });
+});
 
 describe('NxCheckbox content projection', () => {
   it('renders projected content after the label', async () => {

@@ -1,0 +1,147 @@
+:host {
+  display: block;
+  min-width: 0;
+  padding-block-start: var(--nx-space-4);
+}
+
+.role-editor {
+  display: grid;
+  gap: var(--nx-space-4);
+  min-width: 0;
+}
+
+.role-editor__blocked {
+  display: grid;
+  gap: var(--nx-space-3);
+  justify-items: start;
+}
+
+.role-editor__blocked-reason,
+.role-editor__loading-text {
+  margin: 0;
+  color: var(--nx-color-on-surface-muted);
+}
+
+.role-editor__back {
+  color: var(--nx-color-primary);
+}
+
+.role-editor__loading {
+  display: grid;
+  gap: var(--nx-space-3);
+}
+
+.role-editor__skeleton {
+  display: block;
+  height: var(--nx-space-10);
+}
+
+/* Sticky at the bottom of the scrolling page; the page keeps `scroll-padding-bottom` for it. */
+.role-editor__footer {
+  position: sticky;
+  inset-block-end: 0;
+  z-index: var(--nx-z-sticky);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nx-space-3);
+  padding: var(--nx-space-3) var(--nx-space-4);
+  border-block-start: 1px solid var(--nx-color-outline-variant);
+  background-color: var(--nx-color-surface);
+}
+
+.role-editor__counts {
+  margin: 0;
+  font-weight: var(--nx-weight-medium);
+  color: var(--nx-color-on-surface);
+}
+
+.role-editor__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--nx-space-2);
+}
+
+/* 320 px (design §12.4): two rows, the counts then the buttons (`lg`: 48 px high, at least 44). */
+@media (max-width: 599px) {
+  .role-editor__footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .role-editor__actions {
+    flex-direction: column;
+  }
+}
+
+.role-review {
+  display: grid;
+  gap: var(--nx-space-4);
+  padding: var(--nx-space-6);
+  color: var(--nx-color-on-surface);
+}
+
+.role-review__title {
+  margin: 0;
+  font-size: var(--nx-text-lg);
+  font-weight: var(--nx-weight-semibold);
+  overflow-wrap: anywhere;
+}
+
+.role-review__content {
+  display: grid;
+  gap: var(--nx-space-4);
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.role-review__section {
+  display: grid;
+  gap: var(--nx-space-2);
+}
+
+.role-review__heading {
+  margin: 0;
+  font-size: var(--nx-text-base);
+  font-weight: var(--nx-weight-semibold);
+}
+
+.role-review__list {
+  display: grid;
+  gap: var(--nx-space-1);
+  margin: 0;
+  padding-inline-start: var(--nx-space-5);
+}
+
+.role-review__item {
+  overflow-wrap: anywhere;
+}
+
+.role-review__label {
+  margin-inline-end: var(--nx-space-2);
+}
+
+.role-review__text,
+.role-review__hint {
+  margin: 0;
+}
+
+.role-review__hint {
+  color: var(--nx-color-on-surface-muted);
+}
+
+.role-review__warning {
+  margin: 0;
+  padding: var(--nx-space-3);
+  border-radius: var(--nx-radius-md);
+  background-color: var(--nx-color-warning-surface);
+  color: var(--nx-color-on-surface);
+}
+
+.role-review__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--nx-space-2);
+}

@@ -46,6 +46,19 @@ export const CONSOLE_COPY = {
     profileUnavailable: "Changes are off because we couldn't confirm your access.",
     etagUnusable:
       'Saving is unavailable because a network component changed the version information Nexus needs.',
+    /** Editor rows (§8.3). */
+    notHeld: "You don't hold this permission, so you can't grant it.",
+    adminOnlyDirectory: 'Only an administrator can grant access to email addresses.',
+    roleExceedsCaller:
+      "You can't remove permissions from this role because it includes access you don't hold.",
+  },
+
+  /** Hints that never disable anything (§8.3, Q17). */
+  hints: {
+    adminDemotion:
+      'This role currently grants every permission. Removing any requires you to be an administrator through another role.',
+    wholeCatalogue:
+      'This role will grant every permission, which makes its members administrators.',
   },
 
   /** 503 `AUTH_005` on a page load (§14.1). */
@@ -153,6 +166,42 @@ export const CONSOLE_COPY = {
     },
     granted: 'Granted',
     notGranted: 'Not granted',
+  },
+
+  /** The role editor (§12.4, §14.2). `{label}`, `{code}`, `{group}` are catalogue text. */
+  editor: {
+    rowLabel: '{label} ({code})',
+    groupLabel: 'All {group} permissions',
+    footerLabel: 'Staged changes',
+    footerCounts: '{n} to add, {m} to remove',
+    discard: 'Discard',
+    review: 'Review changes',
+    loading: 'Loading the editor',
+    noWrite: "You can't change this role's permissions.",
+    backToPermissions: 'Back to permissions',
+  },
+
+  /** The Review dialog (§12.4, §14.2). `{role}` is the role name, rendered isolated. */
+  review: {
+    title: 'Review changes to {role}',
+    adding: 'Adding ({n})',
+    removing: 'Removing ({n})',
+    affected: 'Who is affected',
+    members: '{n} people hold this role.',
+    membersOne: '1 person holds this role.',
+    membersNone: 'No one holds this role yet.',
+    emptyResult: 'This role will grant no access.',
+    cancel: 'Cancel',
+    save: 'Save changes',
+    grantSensitive: 'Grant sensitive access',
+  },
+
+  /** The unsaved-changes prompt (§4.8, §14.2). */
+  leave: {
+    title: 'Leave without saving?',
+    message: 'Your changes stay as a draft in this tab.',
+    confirm: 'Leave',
+    cancel: 'Stay',
   },
 } as const;
 

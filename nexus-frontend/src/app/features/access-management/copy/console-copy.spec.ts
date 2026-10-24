@@ -262,3 +262,50 @@ describe('CONSOLE_COPY (role detail strings, design §7.2, §12.3, §14)', () =>
     expect(CONSOLE_COPY.matrix.caption.split('{role}')).toHaveLength(2);
   });
 });
+
+describe('CONSOLE_COPY (editor and Review strings, design §4.8, §12.4, §14.2)', () => {
+  it('has the D3 disabled reasons and hints of the editor rules (§8.3)', () => {
+    expect(CONSOLE_COPY.disabledReason.notHeld).toBe(
+      "You don't hold this permission, so you can't grant it.",
+    );
+    expect(CONSOLE_COPY.disabledReason.adminOnlyDirectory).toBe(
+      'Only an administrator can grant access to email addresses.',
+    );
+    expect(CONSOLE_COPY.disabledReason.roleExceedsCaller).toBe(
+      "You can't remove permissions from this role because it includes access you don't hold.",
+    );
+    expect(CONSOLE_COPY.hints.adminDemotion).toBe(
+      'This role currently grants every permission. Removing any requires you to be an administrator through another role.',
+    );
+    expect(CONSOLE_COPY.hints.wholeCatalogue).toBe(
+      'This role will grant every permission, which makes its members administrators.',
+    );
+  });
+
+  it('has the D3 editor, Review and leave strings', () => {
+    expect(CONSOLE_COPY.editor.footerCounts).toBe('{n} to add, {m} to remove');
+    expect(CONSOLE_COPY.editor.discard).toBe('Discard');
+    expect(CONSOLE_COPY.editor.review).toBe('Review changes');
+    expect(CONSOLE_COPY.editor.rowLabel).toBe('{label} ({code})');
+    expect(CONSOLE_COPY.editor.groupLabel).toBe('All {group} permissions');
+    expect(CONSOLE_COPY.review.title).toBe('Review changes to {role}');
+    expect(CONSOLE_COPY.review.adding).toBe('Adding ({n})');
+    expect(CONSOLE_COPY.review.removing).toBe('Removing ({n})');
+    expect(CONSOLE_COPY.review.affected).toBe('Who is affected');
+    expect(CONSOLE_COPY.review.members).toBe('{n} people hold this role.');
+    expect(CONSOLE_COPY.review.membersNone).toBe('No one holds this role yet.');
+    expect(CONSOLE_COPY.review.emptyResult).toBe('This role will grant no access.');
+    expect(CONSOLE_COPY.review.save).toBe('Save changes');
+    expect(CONSOLE_COPY.review.grantSensitive).toBe('Grant sensitive access');
+    expect(CONSOLE_COPY.leave).toEqual({
+      title: 'Leave without saving?',
+      message: 'Your changes stay as a draft in this tab.',
+      confirm: 'Leave',
+      cancel: 'Stay',
+    });
+  });
+
+  it('puts the role name in the Review title only through the {role} placeholder', () => {
+    expect(CONSOLE_COPY.review.title.split('{role}')).toHaveLength(2);
+  });
+});
