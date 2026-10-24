@@ -3,6 +3,7 @@ import { CanActivateFn, Router, Routes } from '@angular/router';
 import { AuthStore } from '../../core/auth/auth.store';
 import { permissionGuard } from '../../core/guards/permission.guard';
 import { AuthorizationProfileStore } from './data/authorization-profile.store';
+import { CatalogueStore } from './data/catalogue.store';
 import { RolesStore } from './data/roles.store';
 import { AccessConsoleLayout } from './layout/access-console-layout';
 import { CONSOLE_AREAS } from './layout/console-areas';
@@ -30,8 +31,8 @@ export const firstAreaRedirect: CanActivateFn = () => {
  * console chunk.
  *
  * - The `''` child is the {@link AccessConsoleLayout}. Its route `providers` scope the console
- *   stores to the console: {@link AuthorizationProfileStore} and {@link RolesStore} here; the
- *   catalogue store joins with its page.
+ *   stores to the console: {@link AuthorizationProfileStore}, {@link RolesStore} and
+ *   {@link CatalogueStore}.
  * - Its empty path always leaves through {@link firstAreaRedirect}. The `title` on that route is
  *   never shown; it satisfies the "every page route has a title" contract.
  * - Every area page added below carries `permissionGuard` with its own `data.permission` and a
@@ -41,7 +42,7 @@ export const ACCESS_MANAGEMENT_ROUTES: Routes = [
   {
     path: '',
     component: AccessConsoleLayout,
-    providers: [AuthorizationProfileStore, RolesStore],
+    providers: [AuthorizationProfileStore, RolesStore, CatalogueStore],
     children: [
       {
         path: '',
@@ -57,6 +58,14 @@ export const ACCESS_MANAGEMENT_ROUTES: Routes = [
         canActivate: [permissionGuard],
         data: { permission: 'role:read' },
         loadComponent: () => import('./roles/roles-list.page').then((m) => m.RolesListPage),
+      },
+      {
+        // `permission` is the permissions entry of CONSOLE_AREAS (pinned by the routes spec).
+        path: 'permissions',
+        title: 'Permissions',
+        canActivate: [permissionGuard],
+        data: { permission: 'role:read' },
+        loadComponent: () => import('./catalogue/catalogue.page').then((m) => m.CataloguePage),
       },
     ],
   },

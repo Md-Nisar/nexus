@@ -1,0 +1,81 @@
+<div class="catalogue" data-testid="catalogue-page">
+  <nx-page-header [title]="copy.catalogue.title" [description]="copy.areas.permissions.explainer" />
+
+  @switch (status()) {
+    @case ('error') {
+      @if (errorView(); as view) {
+        <app-console-error-panel
+          [view]="view"
+          [recordedAt]="failedAt()"
+          (retry)="retry()"
+          data-testid="catalogue-error"
+        />
+      }
+    }
+    @case ('ready') {
+      <details class="catalogue__definition" data-testid="sensitive-definition">
+        <summary>{{ copy.catalogue.sensitiveSummary }}</summary>
+        <p>{{ copy.catalogue.sensitiveDefinition }}</p>
+      </details>
+
+      <div class="catalogue__toolbar">
+        <nx-search-field
+          class="catalogue__search"
+          [label]="copy.catalogue.searchLabel"
+          [ngModel]="q()"
+          (search)="onSearch($event)"
+          (cleared)="onSearchCleared()"
+        />
+        <p class="catalogue__count" role="status" data-testid="catalogue-count">
+          {{ countText() }}
+        </p>
+      </div>
+
+      @if (visibleGroups().length === 0) {
+        <nx-empty-state icon="key" [title]="emptyText()" />
+      } @else {
+        @for (group of visibleGroups(); track group.resource) {
+          <section
+            class="catalogue__group"
+            [attr.aria-labelledby]="'catalogue-group-' + group.resource"
+          >
+            <h2 class="catalogue__group-title" [id]="'catalogue-group-' + group.resource">
+              {{ group.label }}
+            </h2>
+            <ul class="catalogue__list">
+              @for (row of group.rows; track row.id) {
+                <li class="catalogue__item" data-testid="permission-item">
+                  <div class="catalogue__heading">
+                    @if (row.label !== null) {
+                      <span class="catalogue__label">{{ row.label }}</span>
+                    }
+                    <code class="catalogue__code" data-testid="permission-code">{{
+                      row.code
+                    }}</code>
+                    @if (row.label === null) {
+                      <span class="catalogue__badge" data-testid="unlabelled-badge">
+                        {{ copy.badges.unlabelled }}
+                      </span>
+                    }
+                    @if (row.isSensitive) {
+                      <app-sensitive-badge />
+                    }
+                  </div>
+                  <p class="catalogue__description">{{ row.description }}</p>
+                </li>
+              }
+            </ul>
+          </section>
+        }
+      }
+    }
+    @default {
+      <div class="catalogue__loading" aria-busy="true" data-testid="catalogue-loading">
+        <p class="catalogue__loading-text" role="status">{{ copy.catalogue.loading }}</p>
+        @for (row of skeletonRows; track row) {
+          <nx-skeleton class="catalogue__skeleton" variant="rect" />
+        }
+      </div>
+    }
+  }
+</div>

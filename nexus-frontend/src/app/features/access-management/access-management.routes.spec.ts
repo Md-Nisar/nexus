@@ -28,6 +28,7 @@ import { createAuthSession, createAuthStoreStub } from '../../shared/testing/aut
 import { permissionGuard } from '../../core/guards/permission.guard';
 import { ACCESS_MANAGEMENT_ROUTES, firstAreaRedirect } from './access-management.routes';
 import { AuthorizationProfileStore } from './data/authorization-profile.store';
+import { CatalogueStore } from './data/catalogue.store';
 import { RolesStore } from './data/roles.store';
 import { CONSOLE_AREAS } from './layout/console-areas';
 import { AccessConsoleLayout } from './layout/access-console-layout';
@@ -74,6 +75,39 @@ describe('ACCESS_MANAGEMENT_ROUTES (US-020 design §4.2)', () => {
 
   it('provides the roles store on the layout route, beside the profile store', () => {
     expect(layoutRoute().providers).toContain(RolesStore);
+  });
+
+  it('provides the catalogue store on the layout route', () => {
+    expect(layoutRoute().providers).toContain(CatalogueStore);
+  });
+
+  describe('permissions area (T-008)', () => {
+    function permissionsRoute(): Route {
+      const route = layoutRoute().children?.find((child) => child.path === 'permissions');
+      expect(route).toBeDefined();
+      return route as Route;
+    }
+
+    it('comes after the roles route', () => {
+      const paths = layoutRoute().children?.map((child) => child.path);
+      expect(paths?.indexOf('permissions')).toBeGreaterThan(paths?.indexOf('roles') ?? 99);
+    });
+
+    it('is guarded by permissionGuard with the permission its console area requires', () => {
+      const route = permissionsRoute();
+      const area = CONSOLE_AREAS.find((candidate) => candidate.id === 'permissions');
+      expect(route.canActivate).toEqual([permissionGuard]);
+      expect(route.data).toEqual({ permission: area?.permission });
+      expect(area?.path).toBe('/admin/access/permissions');
+      expect(route.canActivateChild).toBeUndefined();
+    });
+
+    it('has a static title and is lazy', () => {
+      const route = permissionsRoute();
+      expect(route.title).toBe('Permissions');
+      expect(route.component).toBeUndefined();
+      expect(route.loadComponent).toBeTypeOf('function');
+    });
   });
 
   describe('roles area (T-007)', () => {
@@ -169,7 +203,9 @@ describe('console entry with the real router', () => {
                 {
                   ...layout,
                   children: [
-                    ...(layout.children ?? []).filter((child) => child.path !== 'roles'),
+                    ...(layout.children ?? []).filter(
+                      (child) => child.path !== 'roles' && child.path !== 'permissions',
+                    ),
                     { path: 'roles', title: 'Roles', component: FixturePage },
                     { path: 'permissions', title: 'Permissions', component: FixturePage },
                     { path: 'users', title: 'Users', component: FixturePage },
