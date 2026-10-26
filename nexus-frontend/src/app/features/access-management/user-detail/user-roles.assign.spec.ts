@@ -866,13 +866,16 @@ describe('Assign dialog (US-020 design §6.5, §8.3, §12.9; RC-68, RC-69, H-2, 
       // Member counts changed: the console's roles list is read again, once.
       const reread = ctx.http.match(ROLES_URL);
       expect(reread).toHaveLength(1);
-      expect(text(byTestId(page.el(), 'user-role-type'))).not.toBe(
-        CONSOLE_COPY.userRoles.typeUnknown,
-      );
-      reread[0].flush(rolesPage());
+      // The assignments re-read answers first; the roles re-read is still pending. The join must
+      // be retained meanwhile, so the table shows real Type badges (a missing cell proves nothing).
       ctx.http
         .expectOne(ASSIGNMENTS_URL)
         .flush(assignments([...HELD, assignment(ID.support, 'Support')]));
+      await page.settle();
+      const typeCell = byTestId(page.el(), 'user-role-type');
+      expect(typeCell).not.toBeNull();
+      expect(text(typeCell)).not.toBe(CONSOLE_COPY.userRoles.typeUnknown);
+      reread[0].flush(rolesPage());
       await page.settle();
       expect(byTestId(page.el(), 'user-roles-join-error')).toBeNull();
       ctx.http.expectNone(() => true);

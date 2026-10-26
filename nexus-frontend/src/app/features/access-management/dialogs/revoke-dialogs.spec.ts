@@ -179,10 +179,12 @@ function setup(options: SetupOptions = {}) {
   const held = options.held ?? MANAGER;
   const callerId = options.callerId ?? CALLER_ID;
   const profileStatus = signal<'loading' | 'ready' | 'error'>('ready');
+  // Like the real store, a re-read keeps the last profile `ready` and only flips `reloading`.
+  const profileReloading = signal(false);
   const ready = (): boolean => profileStatus() === 'ready';
   const profileStub = {
     state: () => ({ status: profileStatus() }),
-    settled: () => profileStatus() !== 'loading',
+    settled: () => profileStatus() !== 'loading' && !profileReloading(),
     userId: () => (ready() ? callerId : null),
     can: (p: string) => ready() && held.includes(p),
     permissions: () => new Set(ready() ? held : []),
@@ -230,7 +232,14 @@ function setup(options: SetupOptions = {}) {
       ]),
     ],
   });
-  return { ...instrument(), handleError, profileStub, profileStatus, catalogueStub };
+  return {
+    ...instrument(),
+    handleError,
+    profileStub,
+    profileStatus,
+    profileReloading,
+    catalogueStub,
+  };
 }
 
 /** Spies on the logger, the toasts and `AuthService.refresh` of the configured TestBed. */
@@ -902,7 +911,7 @@ describe('Revoke dialogs (US-020 design §6.5, §11.4, §12.10; RC-68, D-5, Q16)
     it('after a self-revoke: one profile reload, then the toast, then /dashboard; never a refresh', async () => {
       const setupCtx = setup({ held: EVERY, isAdministrator: true, callerId: USER_ID });
       ctx = setupCtx;
-      setupCtx.profileStub.reload.mockImplementation(() => setupCtx.profileStatus.set('loading'));
+      setupCtx.profileStub.reload.mockImplementation(() => setupCtx.profileReloading.set(true));
       vi.spyOn(TestBed.inject(NxDialog), 'confirmTyped').mockReturnValue({
         afterClosed: () => of(true),
       } as ReturnType<NxDialog['confirmTyped']>);
@@ -922,7 +931,7 @@ describe('Revoke dialogs (US-020 design §6.5, §11.4, §12.10; RC-68, D-5, Q16)
       expect(setupCtx.toasts.info).not.toHaveBeenCalled();
       expect(router.url).toBe(`/admin/access/users/${USER_ID}/roles`);
 
-      setupCtx.profileStatus.set('ready');
+      setupCtx.profileReloading.set(false);
       await page.settle();
 
       expect(setupCtx.toasts.info).toHaveBeenCalledTimes(1);

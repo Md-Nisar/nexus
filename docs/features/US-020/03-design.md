@@ -15,6 +15,13 @@
 - **D-5 (S3b, §12.10):** the self-revoke variant is chosen by user-id equality, never by email.
 - **D-6 (S2, §10, §14.2):** §10 gains the RC-74 rules (reject a future save time; clear storage in logout's cleanup step even when the request fails); §14.2 gains the string "Not restored because you can't grant them".
 
+**Post-review amendments (code and security review, fix pass `77d03f6`).** Where these conflict with the sections below, they win:
+- **Profile store (§6.2, §8.2):** a re-read keeps the last `ready` profile for the same user and adds `reloading()` and `settled()`. `mutationsEnabled = status === 'ready' && !reloading()`, so nothing unmounts during a reload and no mutation runs on a stale profile. A different user, or a failed reload, fails closed. Own-access navigation waits on `settled`, never on `status`.
+- **Affordances (§8.3):** two reasons are added. `draft-offer-pending` holds every editor row while the restore offer is showing ("Restore or discard your unsaved changes first."). `pending-catalogue-unknown` applies when the catalogue total is unknown for an unverified target.
+- **Unverified targets (§8.3, §12.9, §12.10, RC-69, H-2):** every place that says "PENDING" for the warning, the typed confirm and the admin-role block means an unknown target, a PENDING account, or one with `emailVerified` false (`targetNeedsVerification`).
+- **Edge headers (§19.6, H-1/H-4):** the security headers come from one shared snippet included in every location that sets a header, and the production build must not need an inline script (Angular critical-CSS inlining is off) because the CSP is `script-src 'self'`.
+- **Known open item:** leaving is refused while a role create (or its partial-create Retry) is running. The app has no HTTP timeout, so a request that never answers keeps the refusal until logout or a reload. A bounded refusal or an explicit "Leave anyway" is the proposed follow-up.
+
 **Revision 1 (threat model `03b-threat-model.md` §6, §7, §9).** No Gate 1 decision is reopened.
 
 | RC | Threat | Sections changed |
