@@ -106,6 +106,7 @@ public class SecurityConfig {
             // request; the endpoint-aware matcher follows the actuator's own path mapping.
             .requestMatchers(EndpointRequest.to("prometheus", "metrics"))
                 .hasAuthority(ScrapeTokenFilter.AUTHORITY)
+            .requestMatchers("/actuator/**").hasAuthority("SYSTEM_ADMIN")
             .anyRequest().authenticated())
         .exceptionHandling(e -> e
             .authenticationEntryPoint(jwtAuthenticationEntryPoint())
