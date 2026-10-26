@@ -193,6 +193,7 @@ nexus:
       entry-failure-threshold: ${NEXUS_RBAC_EPOCH_ENTRY_FAILURE_THRESHOLD:3}
       entry-failure-window: ${NEXUS_RBAC_EPOCH_ENTRY_FAILURE_WINDOW:PT10S}
       recovery-sustain: ${NEXUS_RBAC_EPOCH_RECOVERY_SUSTAIN:PT60S}
+      recovery-probe-threshold: ${NEXUS_RBAC_EPOCH_RECOVERY_PROBE_THRESHOLD:5}
       # Lost-bump replay queue (design §9.3, T-012): the most distinct users whose failed bump is
       # held per instance for replay. Overflow drops the newest and pages (bump_failed overflow).
       replay-capacity-users: ${NEXUS_RBAC_EPOCH_REPLAY_CAPACITY_USERS:100000}

@@ -210,6 +210,8 @@ public final class PermissionFreshnessService {
   private final int entryFailureThreshold;
   private final Duration entryFailureWindow;
   private final Duration recoverySustain;
+  private final int recoveryProbeThreshold;
+  private int consecutiveProbeSuccesses;
   private final Duration lastSeenTtl;
   private final Map<FreshnessVerdict, Counter> outcomeCounters;
   private final Timer checkLatency;
@@ -288,6 +290,26 @@ public final class PermissionFreshnessService {
       PermissionCachePort permissionCachePort,
       MeterRegistry meterRegistry,
       Clock clock,
+      Duration failOpenWindow,
+      int entryFailureThreshold,
+      Duration entryFailureWindow,
+      Duration recoverySustain,
+      long keyTtlSeconds,
+      int replayCapacityUsers,
+      int replayCapacityRoles,
+      int lastSeenTenantPercent) {
+    this(
+        epochPort, userRoleAssignmentPort, permissionCachePort, meterRegistry, clock,
+        failOpenWindow, entryFailureThreshold, entryFailureWindow, recoverySustain,
+        keyTtlSeconds, replayCapacityUsers, replayCapacityRoles, lastSeenTenantPercent, 1);
+  }
+
+  public PermissionFreshnessService(
+      PermissionEpochPort epochPort,
+      UserRoleAssignmentPort userRoleAssignmentPort,
+      PermissionCachePort permissionCachePort,
+      MeterRegistry meterRegistry,
+      Clock clock,
       @Value("${nexus.rbac.epoch.fail-open-window}") Duration failOpenWindow,
       @Value("${nexus.rbac.epoch.entry-failure-threshold}") int entryFailureThreshold,
       @Value("${nexus.rbac.epoch.entry-failure-window}") Duration entryFailureWindow,
@@ -295,8 +317,10 @@ public final class PermissionFreshnessService {
       @Value("${nexus.rbac.epoch.key-ttl-seconds}") long keyTtlSeconds,
       @Value("${nexus.rbac.epoch.replay-capacity-users}") int replayCapacityUsers,
       @Value("${nexus.rbac.epoch.replay-capacity-roles:1000}") int replayCapacityRoles,
-      @Value("${nexus.rbac.epoch.last-seen-tenant-percent:10}") int lastSeenTenantPercent) {
+      @Value("${nexus.rbac.epoch.last-seen-tenant-percent:10}") int lastSeenTenantPercent,
+      @Value("${nexus.rbac.epoch.recovery-probe-threshold:1}") int recoveryProbeThreshold) {
     if (entryFailureThreshold < 1
+        || recoveryProbeThreshold < 1
         || failOpenWindow.isNegative()
         || !entryFailureWindow.isPositive()
         || !recoverySustain.isPositive()
@@ -323,6 +347,7 @@ public final class PermissionFreshnessService {
     this.entryFailureThreshold = entryFailureThreshold;
     this.entryFailureWindow = entryFailureWindow;
     this.recoverySustain = recoverySustain;
+    this.recoveryProbeThreshold = recoveryProbeThreshold;
     this.lastSeenTtl = Duration.ofSeconds(keyTtlSeconds);
     this.outcomeCounters = new EnumMap<>(FreshnessVerdict.class);
     for (FreshnessVerdict verdict : FreshnessVerdict.values()) {
@@ -653,6 +678,9 @@ public final class PermissionFreshnessService {
     }
     boolean answered = epochPort.probe();
     if (!answered) {
+      synchronized (lock) {
+        consecutiveProbeSuccesses = 0;
+      }
       recordReadFailure(clock.instant());
       return;
     }
@@ -684,6 +712,7 @@ public final class PermissionFreshnessService {
 
   private void recordReadFailure(Instant now) {
     synchronized (lock) {
+      consecutiveProbeSuccesses = 0;
       DegradedState current = state;
       if (current != DegradedState.HEALTHY && current != DegradedState.RECOVERING) {
         return;
@@ -734,7 +763,9 @@ public final class PermissionFreshnessService {
     synchronized (lock) {
       switch (state) {
         case DEGRADED_OPEN, DEGRADED_CLOSED -> {
-          if (drainComplete()) {
+          consecutiveProbeSuccesses++;
+          if (consecutiveProbeSuccesses >= recoveryProbeThreshold && drainComplete()) {
+            consecutiveProbeSuccesses = 0;
             recoverySince = now;
             recentFailures.clear();
             moveTo(DegradedState.RECOVERING, "probe_succeeded", false, now);
@@ -759,8 +790,10 @@ public final class PermissionFreshnessService {
     state = target;
     if (target == DegradedState.HEALTHY || target == DegradedState.DEGRADED_OPEN) {
       recoveringFromClosed = false;
+      consecutiveProbeSuccesses = 0;
     } else if (target == DegradedState.DEGRADED_CLOSED) {
       recoveringFromClosed = true;
+      consecutiveProbeSuccesses = 0;
     } else if (target == DegradedState.RECOVERING) {
       recoveringFromClosed = (from == DegradedState.DEGRADED_CLOSED || (t0 != null && windowElapsed(now)));
     }
