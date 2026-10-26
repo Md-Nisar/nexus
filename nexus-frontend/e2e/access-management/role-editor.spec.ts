@@ -110,6 +110,20 @@ function checkbox(page: Page, code: Code) {
   return page.getByRole('checkbox', { name: `${LABELS[code]} (${code})`, exact: true });
 }
 
+/**
+ * Toggles a permission checkbox and waits for the staged state to show. The matrix checkbox is
+ * controlled by the host store, so it reflects a click only after the store updates and the view
+ * renders; `locator.check()` reads the state straight after the click and fails on a slow runner.
+ */
+async function setChecked(page: Page, code: Code, checked: boolean): Promise<void> {
+  const box = checkbox(page, code);
+  if ((await box.isChecked()) === checked) {
+    return;
+  }
+  await box.click();
+  await (checked ? expect(box).toBeChecked() : expect(box).not.toBeChecked());
+}
+
 /** Deep-links into the editor of a role and waits until it offers its controls. */
 async function openEditor(page: Page, roleId: string): Promise<void> {
   await page.goto(`/admin/access/roles/${roleId}/edit`);
@@ -148,8 +162,8 @@ test.describe('role editor: save', () => {
       });
       await openEditor(page, role.id);
 
-      await checkbox(page, 'audit:read').check();
-      await checkbox(page, 'tenant:read').uncheck();
+      await setChecked(page, 'audit:read', true);
+      await setChecked(page, 'tenant:read', false);
       await expect(page.getByTestId('role-editor-counts')).toHaveText('1 to add, 1 to remove');
       await openReview(page);
       const dialog = page.getByTestId('role-review');
@@ -190,8 +204,8 @@ test.describe('role editor: save', () => {
       await openEditor(page, role.id);
 
       // Staging and unstaging the same row leaves nothing to save.
-      await checkbox(page, 'audit:read').check();
-      await checkbox(page, 'audit:read').uncheck();
+      await setChecked(page, 'audit:read', true);
+      await setChecked(page, 'audit:read', false);
       const review = page.getByTestId('role-editor-review').getByRole('button');
       await expect(review).toHaveAttribute('aria-disabled', 'true');
       // Forced: Playwright waits for an aria-disabled control; the button must swallow the press.
@@ -217,7 +231,7 @@ test.describe('role editor: save', () => {
         if (isSetCall(request, 'PUT')) puts += 1;
       });
       await openEditor(page, role.id);
-      await checkbox(page, 'audit:read').check();
+      await setChecked(page, 'audit:read', true);
 
       // Someone else adds role:read between the load and the save.
       const { etag } = await admin.readSet(role.id);
@@ -289,7 +303,7 @@ test.describe('role editor: save', () => {
         await expect(page.locator('html')).toHaveAttribute('data-theme', scheme);
         await expectNoSeriousA11yViolations(page);
 
-        await checkbox(page, 'audit:read').check();
+        await setChecked(page, 'audit:read', true);
         await openReview(page);
         await expectNoSeriousA11yViolations(page);
         await page.getByTestId('role-review-cancel').getByRole('button').click();

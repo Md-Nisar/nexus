@@ -109,6 +109,20 @@ function checkbox(page: Page, code: Code) {
   return page.getByRole('checkbox', { name: `${LABELS[code]} (${code})`, exact: true });
 }
 
+/**
+ * Toggles a permission checkbox and waits for the staged state to show. The matrix checkbox is
+ * controlled by the host store, so it reflects a click only after the store updates and the view
+ * renders; `locator.check()` reads the state straight after the click and fails on a slow runner.
+ */
+async function setChecked(page: Page, code: Code, checked: boolean): Promise<void> {
+  const box = checkbox(page, code);
+  if ((await box.isChecked()) === checked) {
+    return;
+  }
+  await box.click();
+  await (checked ? expect(box).toBeChecked() : expect(box).not.toBeChecked());
+}
+
 function isRolesCall(request: Request, method: string, path: RegExp): boolean {
   return request.method() === method && path.test(new URL(request.url()).pathname);
 }
@@ -179,8 +193,8 @@ test.describe('role create and clone', () => {
       });
       await openCreate(page);
       await page.getByLabel('Name', { exact: true }).fill(uniqueName());
-      await checkbox(page, 'tenant:read').check();
-      await checkbox(page, 'audit:read').check();
+      await setChecked(page, 'tenant:read', true);
+      await setChecked(page, 'audit:read', true);
       await expect(page.getByTestId('role-create-propagation')).toBeVisible();
       id = await submitAndLand(page);
 
