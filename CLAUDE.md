@@ -57,6 +57,16 @@ The test: Every changed line should trace directly to the user's request.
 
 Full command reference and the feature-development gates: [PROJECT.md](PROJECT.md).
 
+## 5. No Subagents
+
+**Do all work in the main session. Never spawn subagents, to avoid the token cost of extra contexts.**
+
+- Do not use the `Agent` tool (or a fork) for any task, including the operating-model phases that name a role agent (`business-analyst`, `architect`, `security-reviewer`, `backend-engineer`, `frontend-engineer`, `code-reviewer`, `qa-engineer`, `release-manager`) or a "fresh-context sub-agent".
+- When a phase or slash command calls for a subagent, read that agent's definition in `.claude/agents/`, understand its responsibility, inputs, outputs and constraints, and perform that responsibility yourself in the main session. Produce the same deliverable the phase requires.
+- Doing it inline lowers cost, not the bar: every phase, gate, test-first rule, review, threat model and quality check applies in full. Skipping or thinning a step because there is no subagent is a violation.
+- For reviews that rely on fresh context (Phase 6/7), re-read the diff and upstream documents as written, and review adversarially as the reviewer role would, without leaning on your implementation reasoning.
+- Searching and exploring is done directly with `Glob`, `Grep` and `Read`.
+
 ---
 
 These guidelines aim to reduce unnecessary changes, prevent overcomplication, and encourage clarifying questions before implementation.
