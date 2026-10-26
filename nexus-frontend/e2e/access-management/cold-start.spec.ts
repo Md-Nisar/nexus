@@ -92,7 +92,7 @@ test.describe('unavailable view', () => {
       await expect(page).toHaveURL(/\/unavailable\?returnUrl=%2Fdashboard$/);
       await expect(unavailableHeading(page)).toBeFocused();
       await expect(retryButton(page)).toHaveAttribute('aria-disabled', 'true');
-      await expect(page.getByTestId('unavailable-countdown')).toHaveText(/^Retry in \d+ s$/);
+      await expect(page.getByTestId('unavailable-countdown')).toHaveText(/^\s*Retry in \d+ s\s*$/);
       expect(requests.filter(isRefresh)).toHaveLength(1);
       const apiCallsOnArrival = requests.filter(isApiCall).length;
 

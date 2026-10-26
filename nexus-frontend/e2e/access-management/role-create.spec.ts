@@ -121,7 +121,7 @@ async function openCreate(page: Page, query = ''): Promise<void> {
 /** Submits the form and returns the new role's id from the page it lands on. */
 async function submitAndLand(page: Page): Promise<string> {
   await page.getByTestId('role-create-submit').getByRole('button').click();
-  await page.waitForURL(ROLE_PAGE);
+  await page.waitForURL((url) => ROLE_PAGE.test(url.pathname));
   const id = ROLE_PAGE.exec(new URL(page.url()).pathname)?.[1] ?? '';
   created.push(id);
   await expect(page.getByTestId('role-detail-title')).toBeVisible();

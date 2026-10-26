@@ -66,8 +66,11 @@
   height: var(--nx-space-10);
 }
 
+/* On the error surface the primary colour is below 4.5:1 (axe color-contrast); the error text
+   colour is the token designed for text on that surface. */
 .role-create__link {
-  color: var(--nx-color-primary);
+  color: var(--nx-color-error-text);
+  text-decoration: underline;
 }
 
 .role-create__summary,

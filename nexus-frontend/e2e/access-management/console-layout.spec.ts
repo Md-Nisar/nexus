@@ -25,7 +25,8 @@ function isProfileRead(request: Request): boolean {
 }
 
 function areaNav(page: Page) {
-  return page.getByRole('navigation', { name: 'Access management areas' });
+  // mat-tab-nav-bar with a tab panel is exposed as a tablist, not a navigation landmark.
+  return page.getByRole('tablist', { name: 'Access management areas' });
 }
 
 test.describe('access console layout', () => {
