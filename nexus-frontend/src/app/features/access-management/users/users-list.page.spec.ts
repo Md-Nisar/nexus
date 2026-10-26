@@ -549,13 +549,13 @@ describe('UsersListPage (US-020 design §12.7)', () => {
       type(el(), LOOKUP_ADDRESS);
       pressEnter(el());
       await settle();
-      problem(ctx.http.expectOne(LOOKUP_URL), 429, 'USER_DIR_001', { 'Retry-After': '2' });
+      problem(ctx.http.expectOne(LOOKUP_URL), 429, 'USER_DIR_001', { 'Retry-After': '3' });
       await settle();
 
       const button = lookupButton(el());
       expect(button.getAttribute('aria-disabled')).toBe('true');
       const wait = byTestId(el(), 'users-lookup-wait') as HTMLElement;
-      expect(wait.textContent).toContain('Try again in 2 seconds.');
+      expect(wait.textContent).toContain('Try again in 3 seconds.');
       // Linked, not live: the countdown is not announced every second.
       expect(button.getAttribute('aria-describedby')).toBe(wait.id);
       expect(wait.getAttribute('role')).toBeNull();
@@ -576,14 +576,14 @@ describe('UsersListPage (US-020 design §12.7)', () => {
             'Try again in 1 second.',
           );
         },
-        { timeout: 2500, interval: 50 },
+        { timeout: 3500, interval: 50 },
       );
       await vi.waitFor(
         () => {
           harness.detectChanges();
           expect(lookupButton(el()).getAttribute('aria-disabled')).toBeNull();
         },
-        { timeout: 2500, interval: 50 },
+        { timeout: 3500, interval: 50 },
       );
       expect(byTestId(el(), 'users-lookup-wait')).toBeNull();
       // Nothing was sent at zero: the user decides.
