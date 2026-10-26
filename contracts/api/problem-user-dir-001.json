@@ -1,0 +1,7 @@
+{
+  "detail" : "Too many directory lookups; try again later",
+  "status" : 429,
+  "title" : "Too Many Requests",
+  "code" : "USER_DIR_001",
+  "traceId" : "0190a000-0000-7000-8000-0000000000ff"
+}

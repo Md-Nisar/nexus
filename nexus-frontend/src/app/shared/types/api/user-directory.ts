@@ -5,6 +5,9 @@ import type { PageLinks, PageMetadata } from './rbac';
  * `contracts/api` by `api-contract.spec.ts`.
  */
 
+/** Throttle codes of the directory endpoints (429 with `Retry-After`). */
+export type DirectoryErrorCode = 'USER_DIR_001' | 'USER_DIR_002';
+
 export type UserStatus = 'PENDING' | 'ACTIVE' | 'LOCKED' | 'DISABLED';
 
 export interface UserDirectoryEntry {

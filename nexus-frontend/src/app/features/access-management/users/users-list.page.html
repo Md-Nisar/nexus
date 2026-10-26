@@ -1,0 +1,156 @@
+<div class="users" data-testid="users-list-page">
+  <nx-page-header [title]="copy.users.title" [description]="copy.areas.users.explainer" />
+
+  <div class="users__toolbar">
+    <nx-select
+      class="users__status"
+      [label]="copy.users.statusLabel"
+      [options]="statusOptions"
+      [ngModel]="statusValue()"
+      (selectionChange)="onStatus($event)"
+      data-testid="users-status-filter"
+    />
+    <div class="users__lookup">
+      <div class="users__lookup-row">
+        <nx-search-field
+          class="users__lookup-field"
+          mode="submit"
+          [label]="copy.users.lookupLabel"
+          [ngModel]="lookupText()"
+          (ngModelChange)="onLookupInput($event)"
+          (search)="submitLookup($event)"
+          (cleared)="clearLookup()"
+        />
+        <nx-button
+          variant="secondary"
+          [ariaDisabled]="waiting()"
+          [ariaDescribedBy]="lookupDescribedBy()"
+          [loading]="lookupBusy()"
+          (clicked)="submitLookup()"
+          data-testid="users-lookup-submit"
+          >{{ copy.users.lookupSubmit }}</nx-button
+        >
+      </div>
+      <p [id]="hintId" class="users__hint" data-testid="users-lookup-hint">
+        {{ copy.users.lookupHint }}
+      </p>
+      @if (waiting()) {
+        <p [id]="waitId" class="users__wait" data-testid="users-lookup-wait">{{ waitText() }}</p>
+      }
+      @if (lookupError(); as failure) {
+        <div class="users__lookup-error" role="alert" data-testid="users-lookup-error">
+          <p class="users__lookup-error-title">{{ failure.title }}</p>
+          @if (!failure.showsWait) {
+            <p class="users__lookup-error-body">{{ failure.body }}</p>
+          }
+          @if (failure.reference; as reference) {
+            <p class="users__lookup-error-body">{{ copy.reference }} {{ reference }}</p>
+          }
+        </div>
+      }
+    </div>
+  </div>
+
+  @if (tableShown()) {
+    <div
+      [attr.data-testid]="isLookupTable() ? 'users-lookup-result' : 'users-list'"
+      [attr.aria-busy]="tableBusy() ? 'true' : null"
+    >
+      <nx-table
+        class="users__table"
+        [columns]="columns"
+        [rows]="tableRows()"
+        [caption]="tableCaption()"
+        [captionVisuallyHidden]="!isLookupTable()"
+        [clickable]="true"
+        [loading]="tableBusy()"
+        [pageable]="tablePageable()"
+        [totalCount]="total()"
+        [pageSize]="query().size"
+        [pageSizeOptions]="pageSizeOptions"
+        [pageIndex]="query().page"
+        (rowClick)="openUser($event)"
+        (pageChange)="onPageChange($event)"
+      >
+        <ng-template nxTableCell="email" let-raw>
+          <span class="users__email" data-testid="user-row-email">
+            <a class="users__link" [routerLink]="['/admin/access/users', row(raw).userId]">
+              <app-user-text [text]="row(raw).email" mode="email" [maxLines]="2" />
+            </a>
+            @if (row(raw).isSelf) {
+              <span class="users__you" data-testid="user-you">{{ copy.badges.you }}</span>
+            }
+          </span>
+        </ng-template>
+        <ng-template nxTableCell="status" let-raw>
+          <app-user-status-badge [status]="row(raw).status" />
+        </ng-template>
+        <ng-template nxTableCell="verified" let-raw>
+          <nx-badge
+            [variant]="row(raw).verified.variant"
+            [attr.data-verified]="row(raw).emailVerified"
+            data-testid="user-verified"
+          >
+            <nx-icon [name]="row(raw).verified.icon" />
+            {{ row(raw).verified.label }}
+          </nx-badge>
+        </ng-template>
+        <ng-template nxTableCell="joined" let-raw>
+          <span class="users__label">{{ copy.users.columns.joined }}</span>
+          <span class="users__date">{{ row(raw).createdAt | date: 'mediumDate' }}</span>
+        </ng-template>
+      </nx-table>
+    </div>
+  } @else {
+    @switch (view()) {
+      @case ('lookup-loading') {
+        <div class="users__loading" aria-busy="true" data-testid="users-lookup-loading">
+          <p class="users__loading-text" role="status">{{ copy.users.lookupLoading }}</p>
+          <nx-skeleton class="users__skeleton" variant="rect" />
+        </div>
+      }
+      @case ('lookup-miss') {
+        <nx-empty-state
+          icon="person_search"
+          [title]="copy.users.lookupMiss"
+          data-testid="users-lookup-miss"
+        />
+      }
+      @case ('empty') {
+        <nx-empty-state icon="group" [title]="copy.users.emptyFilter" />
+      }
+      @case ('past-the-end') {
+        @if (errorView(); as view) {
+          <nx-empty-state
+            icon="last_page"
+            [title]="view.title"
+            [description]="view.body"
+            data-testid="users-offset"
+          >
+            <nx-button variant="secondary" (clicked)="firstPage()" data-testid="users-first-page">{{
+              copy.users.firstPage
+            }}</nx-button>
+          </nx-empty-state>
+        }
+      }
+      @case ('error') {
+        @if (errorView(); as view) {
+          <app-console-error-panel
+            [view]="view"
+            [recordedAt]="failedAt()"
+            (retry)="retry()"
+            data-testid="users-error"
+          />
+        }
+      }
+      @default {
+        <div class="users__loading" aria-busy="true" data-testid="users-loading">
+          <p class="users__loading-text" role="status">{{ copy.users.loading }}</p>
+          @for (skeleton of skeletonRows; track skeleton) {
+            <nx-skeleton class="users__skeleton" variant="rect" />
+          }
+        </div>
+      }
+    }
+  }
+</div>

@@ -120,6 +120,7 @@ public class RoleManagementService {
   private static final String OPERATION_UPDATE = "update";
   private static final String OPERATION_LIST = "list";
   private static final String OPERATION_GET = "get";
+  private static final String LOG_KEY_OPERATION = "operation";
   private static final String OPERATION_REPLACE = "replace";
   private static final String AUDIT_OPERATION_REPLACE = "REPLACE";
 
@@ -761,7 +762,7 @@ public class RoleManagementService {
         .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
         .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
         .addKeyValue(LOG_KEY_ROLE_ID, role.id())
-        .addKeyValue("operation", operation)
+        .addKeyValue(LOG_KEY_OPERATION, operation)
         .addKeyValue("stage", "locked")
         .log("Blocked a change to an admin-defining role: under the set lock the caller is no"
             + " longer an administrator through another role");
@@ -802,7 +803,7 @@ public class RoleManagementService {
         .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
         .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
         .addKeyValue(LOG_KEY_ROLE_ID, role.id())
-        .addKeyValue("operation", operation)
+        .addKeyValue(LOG_KEY_OPERATION, operation)
         .addKeyValue(KEY_NON_ADMIN_ASSIGNED_COUNT, nonAdminAssignedCount)
         .log("Refused a permission change that would make a role admin-defining while some of"
             + " its holders were assigned by a non-administrator");
@@ -891,7 +892,7 @@ public class RoleManagementService {
             .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
             .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
             .addKeyValue(LOG_KEY_ROLE_ID, role.id())
-            .addKeyValue("operation", OPERATION_REPLACE)
+            .addKeyValue(LOG_KEY_OPERATION, OPERATION_REPLACE)
             .log("Blocked a role definition change by a caller who does not hold the role's"
                 + " permissions");
         throw new InsufficientPermissionException(ROLE_WRITE, DenialReason.GRANT_EXCEEDS_CALLER);
@@ -920,7 +921,7 @@ public class RoleManagementService {
         .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
         .addKeyValue(LOG_KEY_ROLE_ID, role.id())
         .addKeyValue("requiredPermission", permission)
-        .addKeyValue("operation", OPERATION_REPLACE)
+        .addKeyValue(LOG_KEY_OPERATION, OPERATION_REPLACE)
         .log("Blocked a permission-set replace by a caller whose live holdings lack an endpoint"
             + " permission");
     throw new InsufficientPermissionException(permission, DenialReason.PERMISSION_ABSENT);
@@ -1021,7 +1022,7 @@ public class RoleManagementService {
   private void stopLockHoldTimer(Timer.Sample sample, String outcome) {
     sample.stop(
         Timer.builder(TIMER_LOCK_HOLD)
-            .tag("operation", OPERATION_REPLACE)
+            .tag(LOG_KEY_OPERATION, OPERATION_REPLACE)
             .tag(TAG_OUTCOME, outcome)
             .register(meterRegistry));
   }
@@ -1218,7 +1219,7 @@ public class RoleManagementService {
           .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
           .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
           .addKeyValue("targetKind", "role")
-          .addKeyValue("operation", operation)
+          .addKeyValue(LOG_KEY_OPERATION, operation)
           .log("Refused a role change: the target belongs to another tenant");
       Counter.builder(COUNTER_PERMISSION_DENIED)
           .tag(TAG_PERMISSION, requiredPermission)
@@ -1337,7 +1338,7 @@ public class RoleManagementService {
         .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
         .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
         .addKeyValue(LOG_KEY_ROLE_ID, role.id())
-        .addKeyValue("operation", operation)
+        .addKeyValue(LOG_KEY_OPERATION, operation)
         .log("Blocked a role definition change by a caller who does not hold the role's permissions");
     throw new InsufficientPermissionException(ROLE_WRITE, DenialReason.GRANT_EXCEEDS_CALLER);
   }
@@ -1393,10 +1394,10 @@ public class RoleManagementService {
         .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
         .addKeyValue(LOG_KEY_ROLE_ID, role.id())
         .addKeyValue(LOG_KEY_PERMISSION_ID, permissionId)
-        .addKeyValue("operation", OPERATION_ATTACH)
+        .addKeyValue(LOG_KEY_OPERATION, OPERATION_ATTACH)
         .log("Rolled back an attach: the role became admin-defining while the attach waited");
     Counter.builder(COUNTER_ROLE_CLASSIFICATION_CHANGED)
-        .tag("operation", OPERATION_ATTACH)
+        .tag(LOG_KEY_OPERATION, OPERATION_ATTACH)
         .register(meterRegistry)
         .increment();
     throw new RoleClassificationChangedException();
@@ -1632,7 +1633,7 @@ public class RoleManagementService {
     // success into a 500 and still leave every holder's token and cache entry in place.
     log.atError()
         .addKeyValue(LOG_KEY_EVENT, "RBAC_HOLDER_READ_FAILED")
-        .addKeyValue("operation", operation)
+        .addKeyValue(LOG_KEY_OPERATION, operation)
         .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
         .addKeyValue(LOG_KEY_ROLE_ID, roleId)
         .addKeyValue("exception", failure.getClass().getSimpleName())

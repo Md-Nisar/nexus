@@ -247,7 +247,7 @@ export class ResetPasswordComponent implements OnInit {
   ngOnInit(): void {
     this.tokenFromUrl.set(this.route.snapshot.queryParamMap.get('token') ?? '');
     // Strip token from URL to prevent Referer leakage and browser history exposure (LOW-1).
-    this.router.navigate([], { relativeTo: this.route, queryParams: {}, replaceUrl: true });
+    void this.router.navigate([], { relativeTo: this.route, queryParams: {}, replaceUrl: true });
   }
 
   /**
@@ -280,7 +280,7 @@ export class ResetPasswordComponent implements OnInit {
     this.authService.resetPassword(this.tokenFromUrl(), newPassword).subscribe({
       next: () => {
         this.loading.set(false);
-        this.router.navigate(['/auth/login'], { queryParams: { reset: 'true' } });
+        void this.router.navigate(['/auth/login'], { queryParams: { reset: 'true' } });
       },
       error: (err: AppError) => {
         this.loading.set(false);

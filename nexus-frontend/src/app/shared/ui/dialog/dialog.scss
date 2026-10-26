@@ -44,6 +44,12 @@
   &__actions {
     padding: var(--nx-space-3) var(--nx-space-4) var(--nx-space-4);
     gap: var(--nx-space-2);
+
+    /* Text buttons (Cancel) take the token text colour, as the toast action does: the Material
+       palette's primary fails 4.5:1 on the light surface (axe, US-020 T-018). */
+    .mat-mdc-button {
+      color: var(--nx-color-primary-text);
+    }
   }
 
   /* Danger confirm button — override styles for destructive action */

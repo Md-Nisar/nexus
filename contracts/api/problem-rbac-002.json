@@ -1,0 +1,7 @@
+{
+  "detail" : "Cannot revoke the last active TENANT_ADMIN assignment in this tenant",
+  "status" : 409,
+  "title" : "Conflict",
+  "code" : "RBAC_002",
+  "traceId" : "0190a000-0000-7000-8000-0000000000ff"
+}

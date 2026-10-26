@@ -1,0 +1,187 @@
+:host {
+  display: block;
+}
+
+.users {
+  display: grid;
+  gap: var(--nx-space-4);
+  min-width: 0;
+}
+
+.users__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--nx-space-3);
+}
+
+.users__status {
+  flex: 0 1 calc(var(--nx-space-24) * 2);
+  min-width: 0;
+}
+
+.users__lookup {
+  display: grid;
+  flex: 1 1 calc(var(--nx-space-24) * 3);
+  gap: var(--nx-space-1);
+  min-width: 0;
+}
+
+.users__lookup-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nx-space-2);
+}
+
+.users__lookup-field {
+  flex: 1 1 calc(var(--nx-space-24) * 2);
+  min-width: 0;
+}
+
+.users__hint,
+.users__wait {
+  margin: 0;
+  font-size: var(--nx-text-sm);
+  color: var(--nx-color-on-surface-muted);
+}
+
+.users__wait {
+  font-weight: var(--nx-weight-medium);
+  color: var(--nx-color-on-surface);
+}
+
+.users__lookup-error {
+  display: grid;
+  gap: var(--nx-space-1);
+  padding: var(--nx-space-2) var(--nx-space-3);
+  border-radius: var(--nx-radius-sm);
+  background-color: var(--nx-color-error-surface);
+  color: var(--nx-color-on-surface);
+}
+
+.users__lookup-error-title,
+.users__lookup-error-body {
+  margin: 0;
+  font-size: var(--nx-text-sm);
+}
+
+.users__lookup-error-title {
+  font-weight: var(--nx-weight-semibold);
+}
+
+.users__loading {
+  display: grid;
+  gap: var(--nx-space-3);
+}
+
+.users__loading-text {
+  margin: 0;
+  color: var(--nx-color-on-surface-muted);
+}
+
+.users__skeleton {
+  display: block;
+  height: var(--nx-space-10);
+}
+
+.users__email {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--nx-space-2);
+  min-width: 0;
+  font-weight: var(--nx-weight-medium);
+}
+
+.users__link {
+  min-width: 0;
+  color: var(--nx-color-primary-text);
+  text-decoration: underline;
+}
+
+.users__you {
+  color: var(--nx-color-on-surface-muted);
+  font-weight: var(--nx-weight-regular);
+}
+
+.users__date {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Column labels exist only for the card layout, where the header row is hidden. */
+.users__label {
+  display: none;
+}
+
+/* 320 px (design §12.7, WCAG 1.4.10): one card per row (email, then the badges, then the date),
+   no sideways scroll. nx-table renders Material table cells and has no card mode, so the card
+   layout reaches into its cells, as the roles list does. */
+@media (max-width: 599px) {
+  :host ::ng-deep .users__table {
+    .nx-table-wrapper {
+      overflow-x: visible;
+      border: 0;
+    }
+
+    /* The header row stays for assistive technology and is hidden visually. */
+    tr.mat-mdc-header-row {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+    }
+
+    table,
+    tbody {
+      display: block;
+    }
+
+    tr.mat-mdc-row {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      grid-template-areas:
+        'email email'
+        'status verified'
+        'joined joined';
+      gap: var(--nx-space-1) var(--nx-space-3);
+      justify-items: start;
+      margin-block-end: var(--nx-space-3);
+      padding: var(--nx-space-3);
+      border: 1px solid var(--nx-color-outline-variant);
+      border-radius: var(--nx-radius-md);
+    }
+
+    td.mat-mdc-cell {
+      display: block;
+      min-width: 0;
+      padding: 0;
+      border: 0;
+    }
+
+    td.mat-column-email {
+      grid-area: email;
+    }
+
+    td.mat-column-status {
+      grid-area: status;
+    }
+
+    td.mat-column-verified {
+      grid-area: verified;
+    }
+
+    td.mat-column-joined {
+      grid-area: joined;
+    }
+
+    .users__label {
+      display: inline;
+      margin-inline-end: var(--nx-space-1);
+      font-size: var(--nx-text-xs);
+      color: var(--nx-color-on-surface-muted);
+    }
+  }
+}

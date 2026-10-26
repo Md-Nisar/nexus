@@ -1,6 +1,12 @@
-import { Component, forwardRef, input, output, signal } from '@angular/core';
-import { ControlValueAccessor, NG_VALUE_ACCESSOR, ReactiveFormsModule } from '@angular/forms';
+import { Component, ElementRef, forwardRef, input, output, viewChild } from '@angular/core';
+import {
+  ControlValueAccessor,
+  FormControl,
+  NG_VALUE_ACCESSOR,
+  ReactiveFormsModule,
+} from '@angular/forms';
 import { MatFormFieldModule } from '@angular/material/form-field';
+import { ErrorStateMatcher } from '@angular/material/core';
 import { MatInputModule } from '@angular/material/input';
 import { MatIconModule } from '@angular/material/icon';
 
@@ -76,14 +82,16 @@ import { MatIconModule } from '@angular/material/icon';
         <mat-icon matPrefix>{{ prefixIcon() }}</mat-icon>
       }
       <input
+        #field
         matInput
         [id]="inputId()"
         [type]="type()"
         [placeholder]="placeholder()"
-        [disabled]="isDisabled()"
-        [value]="value()"
+        [formControl]="inner"
         [attr.aria-label]="label() || null"
         [attr.autocomplete]="autocomplete()"
+        [aria-describedby]="describedBy()"
+        [errorStateMatcher]="errorMatcher"
         (input)="onInput($event)"
         (blur)="onTouched()"
         data-testid="nx-input"
@@ -183,6 +191,13 @@ export class NxInput implements ControlValueAccessor {
   readonly appearance = input<'fill' | 'outline'>('outline');
 
   /**
+   * Ids of elements outside the field that describe the input, such as a counter or an error
+   * rendered by the page; appended to the hint's id in `aria-describedby`.
+   * @default ''
+   */
+  readonly describedBy = input<string>('');
+
+  /**
    * Emitted when the input value changes.
    * Fires after every keystroke; for validation, use FormControl.valueChanges instead.
    * @event
@@ -196,8 +211,18 @@ export class NxInput implements ControlValueAccessor {
    */
   readonly suffixIconClick = output<void>();
 
-  protected readonly value = signal('');
-  protected readonly isDisabled = signal(false);
+  /**
+   * The inner `matInput` needs a form control of its own: Material only refreshes the error state
+   * (and so renders `mat-error` and `aria-invalid`) for an input that has one, and the outer form
+   * binds to `nx-input` itself. It carries the value and disabled state; the `error` input is the
+   * source of truth for the error state, through `errorMatcher`.
+   */
+  protected readonly inner = new FormControl('', { nonNullable: true });
+  protected readonly errorMatcher: ErrorStateMatcher = {
+    isErrorState: () => this.error() !== '',
+  };
+
+  private readonly field = viewChild.required<ElementRef<HTMLInputElement>>('field');
 
   private onChange: (v: string) => void = () => {
     /* replaced by registerOnChange */
@@ -207,7 +232,7 @@ export class NxInput implements ControlValueAccessor {
   };
 
   writeValue(val: string): void {
-    this.value.set(val ?? '');
+    this.inner.setValue(val ?? '', { emitEvent: false });
   }
 
   registerOnChange(fn: (v: string) => void): void {
@@ -219,12 +244,17 @@ export class NxInput implements ControlValueAccessor {
   }
 
   setDisabledState(disabled: boolean): void {
-    this.isDisabled.set(disabled);
+    if (disabled) this.inner.disable({ emitEvent: false });
+    else this.inner.enable({ emitEvent: false });
+  }
+
+  /** Moves focus to the input, for example from an error-summary link. */
+  focus(): void {
+    this.field().nativeElement.focus();
   }
 
   protected onInput(event: Event): void {
     const v = (event.target as HTMLInputElement).value;
-    this.value.set(v);
     this.onChange(v);
     this.valueChange.emit(v);
   }

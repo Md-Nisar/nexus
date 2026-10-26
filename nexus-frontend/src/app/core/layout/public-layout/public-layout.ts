@@ -3,7 +3,8 @@ import { RouterLink, RouterOutlet } from '@angular/router';
 import { ThemeToggle } from '../theme-toggle/theme-toggle';
 
 /**
- * Layout of the pages reachable without a session (auth, access denied, design system):
+ * Layout of the pages reachable without a session (auth, access denied, design system,
+ * unavailable):
  * wordmark and theme toggle above the routed page. It renders no `main`; each page owns its own.
  */
 @Component({

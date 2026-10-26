@@ -1,9 +1,10 @@
-import { Component, computed, inject } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { FormControl, ReactiveFormsModule } from '@angular/forms';
 import { ThemeService } from '../../core/theme.service';
 import {
   NxAnnouncer,
   NxBadge,
+  NxBanner,
   NxButton,
   NxBreadcrumb,
   NxCard,
@@ -20,6 +21,7 @@ import {
   NxTable,
   NxTableCellDef,
   NxTabs,
+  NxTextarea,
   NxTooltip,
   BreadcrumbItem,
   NavTab,
@@ -37,6 +39,7 @@ import {
   imports: [
     ReactiveFormsModule,
     NxBadge,
+    NxBanner,
     NxButton,
     NxBreadcrumb,
     NxCard,
@@ -51,6 +54,7 @@ import {
     NxTable,
     NxTableCellDef,
     NxTabs,
+    NxTextarea,
     NxTooltip,
     NxEmptyState,
     NxErrorState,
@@ -77,6 +81,9 @@ export class DesignSystemPreviewComponent {
   ];
   lastMenuSelection = '';
 
+  /** The dismissible banner preview; the host owns its visibility. */
+  readonly bannerDismissed = signal(false);
+
   // Interactive form controls
   readonly previewTabs: readonly NavTab[] = [
     { label: 'Design system', path: '/design-system' },
@@ -93,6 +100,7 @@ export class DesignSystemPreviewComponent {
   readonly errorControl = new FormControl('NXS-???');
   readonly selectControl = new FormControl('high');
   readonly disabledControl = new FormControl({ value: 'Disabled value', disabled: true });
+  readonly descriptionControl = new FormControl('Handles support tickets');
 
   readonly priorityOptions: SelectOption[] = [
     { label: 'High', value: 'high' },

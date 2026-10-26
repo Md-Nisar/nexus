@@ -6,11 +6,23 @@ interface AxeOptions {
   readonly disableRules?: readonly string[];
 }
 
-/** Fails on any critical or serious WCAG 2.x A/AA violation and attaches the JSON result. */
+/**
+ * Fails on any critical or serious WCAG 2.x A/AA violation and attaches the JSON result. Scans after
+ * finite animations and transitions have finished.
+ */
 export async function expectNoSeriousA11yViolations(
   page: Page,
   options: AxeOptions = {},
 ): Promise<void> {
+  // Contrast is measured on what is painted, so a dialog still fading in reads as a violation.
+  await page.evaluate(() =>
+    Promise.all(
+      document
+        .getAnimations()
+        .filter((animation) => animation.effect?.getComputedTiming().iterations !== Infinity)
+        .map((animation) => animation.finished.catch(() => undefined)),
+    ),
+  );
   let builder = new AxeBuilder({ page }).withTags([
     'wcag2a',
     'wcag2aa',

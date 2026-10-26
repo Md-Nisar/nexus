@@ -56,6 +56,12 @@ import { MatIconModule } from '@angular/material/icon';
  * - `[aria-busy]="loading()"` announces async operations to assistive technologies
  * - `[aria-label]` optional input supports icon-only or context-extended buttons
  * - Disabled state prevents all interaction (keyboard, pointer, touch)
+ * - `ariaDisabled` is the focusable alternative for a disabled control with a visible reason
+ *   (US-020 design §12.0, §13): `aria-disabled="true"`, still in the tab order, activation
+ *   swallowed; link the reason text with `ariaDescribedBy`
+ * - `loading` swallows activation the same way, keyboard included (Enter and Space dispatch a
+ *   click on the native button, which `pointer-events: none` does not stop), and sets
+ *   `aria-disabled="true"`, so a busy button can never submit twice
  * - Icon glyphs marked `aria-hidden="true"` prevent semantic duplication
  * - Focus ring via `:focus-visible` pseudo-class ensures visible focus indicator
  * - Loading spinner icon marked `aria-hidden` to avoid duplication of busy state
@@ -74,9 +80,11 @@ export type ButtonSize = 'sm' | 'md' | 'lg';
       [class]="buttonClass()"
       [type]="type()"
       [disabled]="disabled()"
+      [attr.aria-disabled]="ariaDisabled() || loading() ? 'true' : null"
+      [attr.aria-describedby]="ariaDescribedBy() || null"
       [attr.aria-busy]="loading() ? true : null"
       [attr.aria-label]="ariaLabel() || null"
-      (click)="clicked.emit()"
+      (click)="onClick($event)"
       data-testid="nx-button"
     >
       @if (loading()) {
@@ -144,11 +152,30 @@ export class NxButton {
   readonly disabled = input(false);
 
   /**
+   * Disabled but focusable: sets `aria-disabled="true"`, keeps the button in the tab order so
+   * keyboard and screen-reader users reach it and hear its reason, and swallows activation (no
+   * `clicked`, no click on the host element, no form submission). Prefer it over `disabled`
+   * whenever the control shows why it is unavailable (US-020 design §12.0, NFR-X2).
+   *
+   * @default false
+   */
+  readonly ariaDisabled = input(false);
+
+  /**
+   * Id(s) of the element(s) describing the button, typically the visible reason text of an
+   * `ariaDisabled` button. Rendered as `aria-describedby` on the native button.
+   *
+   * @default '' (none)
+   */
+  readonly ariaDescribedBy = input<string>('');
+
+  /**
    * Whether the button is in a loading/processing state.
    *
    * When true:
    * - A spinning icon replaces the `leadingIcon`
-   * - The button may become disabled (via parent logic)
+   * - Activation is swallowed (no `clicked`, no form submission), keyboard included, and
+   *   `aria-disabled="true"` is set; the button stays focusable
    * - `aria-busy="true"` is set for assistive tech
    * - Typically used during async operations (API calls, form submission)
    *
@@ -222,6 +249,16 @@ export class NxButton {
    * ```
    */
   readonly clicked = output<void>();
+
+  /** Emits `clicked`, unless the button is `ariaDisabled` or `loading`: both swallow activation. */
+  protected onClick(event: MouseEvent): void {
+    if (this.ariaDisabled() || this.loading()) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    this.clicked.emit();
+  }
 
   /**
    * Builds the CSS class string for the button element.

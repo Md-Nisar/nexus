@@ -1,0 +1,7 @@
+{
+  "detail" : "Too many denied role changes; try again later",
+  "status" : 429,
+  "title" : "Too Many Requests",
+  "code" : "RBAC_011",
+  "traceId" : "0190a000-0000-7000-8000-0000000000ff"
+}

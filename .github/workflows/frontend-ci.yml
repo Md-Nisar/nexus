@@ -38,6 +38,11 @@ jobs:
       - name: Install Dependencies
         run: npm ci --ignore-scripts
 
+      # US-020 T-004 (A-7, ADR-0029): the CI-guard and edge-smoke self-tests, including the static
+      # check that nginx.conf turns gzip off for /api/. Plain node, no Docker.
+      - name: Self-Test CI Guards And Edge Config
+        run: node --test e2e/tools/tools.selftest.mjs
+
       - name: Check Formatting
         run: npm run format:check
 
@@ -49,6 +54,9 @@ jobs:
 
       - name: Build Production Application
         run: npm run build -- --configuration production
+
+      - name: Check Built index.html Has No Inline Script (edge CSP is script-src 'self')
+        run: node e2e/tools/check-index-csp.mjs dist/nexus-frontend/browser/index.html
 
       - name: Upload Build Artifact
         if: success()

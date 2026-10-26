@@ -160,7 +160,7 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
         // A 429 means rate-limited, not unauthenticated: keep the session so a later action retries.
         if (!isRateLimited(err)) {
           authStore.clearSession();
-          router.navigate(['/auth/login']);
+          void router.navigate(['/auth/login']);
         }
         return throwError(() => err);
       }),
@@ -193,7 +193,7 @@ export const authInterceptor: HttpInterceptorFn = (req, next) => {
           catchError((refreshErr: unknown) => {
             if (!isRateLimited(refreshErr)) {
               authStore.clearSession();
-              router.navigate(['/auth/login']);
+              void router.navigate(['/auth/login']);
             }
             return throwError(() => error);
           }),

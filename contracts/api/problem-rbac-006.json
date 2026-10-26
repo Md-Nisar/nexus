@@ -1,0 +1,7 @@
+{
+  "detail" : "A role with this name already exists in this tenant",
+  "status" : 409,
+  "title" : "Conflict",
+  "code" : "RBAC_006",
+  "traceId" : "0190a000-0000-7000-8000-0000000000ff"
+}

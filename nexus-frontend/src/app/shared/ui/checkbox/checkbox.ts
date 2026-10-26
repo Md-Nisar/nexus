@@ -10,6 +10,11 @@ let nextId = 0;
  * Indeterminate renders `aria-checked="mixed"` (APG). With `disabledReason` the checkbox is
  * disabled but stays focusable (`disabledInteractive`) and the visible reason text is linked
  * through `aria-describedby`, so the reason never depends on a tooltip alone.
+ *
+ * **Controlled mode:** bind `checked` (and `indeterminate`) when the host owns the state and decides
+ * what each click means, for example a group checkbox. The click still emits `changed` with the
+ * toggled value, but the checkbox keeps showing the host's inputs, so it never drifts from a host
+ * that ignores or reinterprets the click. Without `checked`, the CVA value is used as before.
  */
 @Component({
   selector: 'nx-checkbox',
@@ -21,7 +26,7 @@ let nextId = 0;
     <mat-checkbox
       class="nx-checkbox"
       [attr.data-testid]="testId()"
-      [checked]="value()"
+      [checked]="checked() ?? value()"
       [indeterminate]="indeterminate()"
       [disabled]="isDisabled()"
       [disabledInteractive]="!!disabledReason()"
@@ -41,6 +46,8 @@ let nextId = 0;
 })
 export class NxCheckbox implements ControlValueAccessor {
   readonly label = input.required<string>();
+  /** Controlled checked state; `undefined` (the default) leaves the state to the CVA. */
+  readonly checked = input<boolean | undefined>(undefined);
   readonly indeterminate = input(false);
   readonly disabled = input(false);
   /** Visible explanation for a disabled checkbox; keeps it focusable and announced. */
@@ -82,7 +89,19 @@ export class NxCheckbox implements ControlValueAccessor {
   }
 
   protected onToggle(event: MatCheckboxChange): void {
-    this.value.set(event.checked);
+    const controlled = this.checked();
+    if (controlled === undefined) {
+      this.value.set(event.checked);
+    } else {
+      // MatCheckbox flips itself on click; show the host's state until the host changes it.
+      event.source.checked = controlled;
+      if (this.indeterminate()) {
+        // MatCheckbox clears `indeterminate` in a microtask after the click; restore it after that.
+        void Promise.resolve().then(() => {
+          event.source.indeterminate = this.indeterminate();
+        });
+      }
+    }
     this.onChange(event.checked);
     this.changed.emit(event.checked);
   }

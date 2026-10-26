@@ -54,7 +54,7 @@ export class VerificationLandingComponent implements OnInit {
     // - Proxy/CDN log exposure
     // This must run BEFORE the backend call to minimize the exposure window.
     // Matches the same hardening applied to password-reset links (US-007).
-    this.router.navigate([], { relativeTo: this.route, queryParams: {}, replaceUrl: true });
+    void this.router.navigate([], { relativeTo: this.route, queryParams: {}, replaceUrl: true });
 
     if (!token) {
       this.state.set(
