@@ -2524,6 +2524,40 @@ class PermissionFreshnessServiceTest {
   }
 
   @Test
+  void should_preventDuplicateReplayRuns_when_concurrentDrainAttempted() throws Exception {
+    when(port.bump(any(), any())).thenThrow(new org.springframework.data.redis.RedisConnectionFailureException("down"));
+    service.invalidateHolders(TENANT, List.of(UUID.randomUUID()), "detach");
+
+    java.util.concurrent.CountDownLatch firstEnter = new java.util.concurrent.CountDownLatch(1);
+    java.util.concurrent.CountDownLatch unblock = new java.util.concurrent.CountDownLatch(1);
+    java.util.concurrent.atomic.AtomicInteger bumpCalls = new java.util.concurrent.atomic.AtomicInteger(0);
+
+    doAnswer(invocation -> {
+      bumpCalls.incrementAndGet();
+      firstEnter.countDown();
+      unblock.await(2, TimeUnit.SECONDS);
+      Map<UUID, Long> written = new HashMap<>();
+      for (Object userId : (java.util.Collection<?>) invocation.getArgument(1)) {
+        written.put((UUID) userId, EPOCH);
+      }
+      return written;
+    }).when(port).bump(any(), anyCollection());
+
+    java.util.concurrent.CompletableFuture<Void> firstDrain =
+        java.util.concurrent.CompletableFuture.runAsync(() -> service.probe());
+
+    assertThat(firstEnter.await(2, TimeUnit.SECONDS)).isTrue();
+
+    // Second thread invokes probe concurrently while first drain is in progress
+    service.probe();
+
+    unblock.countDown();
+    firstDrain.get(2, TimeUnit.SECONDS);
+
+    assertThat(bumpCalls.get()).isEqualTo(1);
+  }
+
+  @Test
   void should_notCountRoleReplayFailureAsReadFailure_when_recovering() {
     tripAtT();
     recoverNow();

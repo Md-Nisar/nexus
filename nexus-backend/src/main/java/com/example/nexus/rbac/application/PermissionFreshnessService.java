@@ -251,6 +251,8 @@ public final class PermissionFreshnessService {
   private Instant t0;
   private Instant recoverySince;
   private volatile boolean recoveringFromClosed;
+  private final AtomicBoolean isDrainingReplay = new AtomicBoolean(false);
+  private final AtomicBoolean isDrainingRole = new AtomicBoolean(false);
   private final Deque<Instant> recentFailures = new ArrayDeque<>();
   private final Deque<Instant> recentEntries = new ArrayDeque<>();
 
@@ -1224,7 +1226,11 @@ public final class PermissionFreshnessService {
    * polled stays queued. Called only from the scheduler.
    */
   private void drainReplayQueue() {
-    while (!replayQueue.isEmpty()) {
+    if (!isDrainingReplay.compareAndSet(false, true)) {
+      return;
+    }
+    try {
+      while (!replayQueue.isEmpty()) {
       Instant now = clock.instant();
       Optional<EpochReplayQueue.Batch> polled =
           replayQueue.poll(FANOUT_BATCH_SIZE, now.minus(lastSeenTtl));
@@ -1256,6 +1262,9 @@ public final class PermissionFreshnessService {
           .addKeyValue(LOG_KEY_USER_COUNT, userIds.size())
           .addKeyValue("ageMs", Duration.between(batch.oldestFailedAt(), now).toMillis())
           .log("Permission epoch bump replayed");
+      }
+    } finally {
+      isDrainingReplay.set(false);
     }
   }
 
@@ -1266,7 +1275,11 @@ public final class PermissionFreshnessService {
    * one read and one ERROR line a second. Called only from the scheduler.
    */
   private void drainRoleQueue() {
-    while (!roleReplayQueue.isEmpty()) {
+    if (!isDrainingRole.compareAndSet(false, true)) {
+      return;
+    }
+    try {
+      while (!roleReplayQueue.isEmpty()) {
       Instant now = clock.instant();
       Optional<RoleReplayQueue.Entry> polled = roleReplayQueue.poll(now.minus(lastSeenTtl));
       if (polled.isEmpty()) {
@@ -1297,6 +1310,9 @@ public final class PermissionFreshnessService {
           .addKeyValue("holderCount", holders.size())
           .addKeyValue("ageMs", Duration.between(entry.oldestFailedAt(), now).toMillis())
           .log("Role holders read and bumped by the replay");
+      }
+    } finally {
+      isDrainingRole.set(false);
     }
   }
 
