@@ -5,6 +5,7 @@ import { APP_CONFIG } from '../../../core/config/app-config';
 import { CORRELATION_HEADER } from '../../../core/http/correlation-id.interceptor';
 import { LoggerService } from '../../../core/logging/logger.service';
 import type {
+  AssignRoleRequest,
   CallerAuthorizationResponse,
   CreateRoleRequest,
   PermissionListResponse,
@@ -12,6 +13,7 @@ import type {
   PermissionResponse,
   ReplaceRolePermissionsRequest,
   RoleAssignmentListResponse,
+  RoleAssignmentResponse,
   RoleListResponse,
   RoleResponse,
 } from '../../../shared/types/api/rbac';
@@ -183,6 +185,31 @@ export class RbacApi {
     return this.http.get<RoleAssignmentListResponse>(
       `${this.base}/users/${pathSegment(userId)}/roles`,
       { params: { page, size }, context: consoleHttpContext() },
+    );
+  }
+
+  /**
+   * `POST /users/{id}/roles` `{roleId}`: assigns one role to a user (`user:role:assign`, us012
+   * flag; design §7.1, §7.3). The 201 body is the new assignment.
+   *
+   * - A 409 `RBAC_012` (the role's classification changed while the request waited; nothing was
+   *   applied) is re-sent once with the same body ({@link retryOnceOnClassificationChange}).
+   * - Everything else surfaces for the dialog: 403 with its reason (including `SELF_ASSIGNMENT`),
+   *   409 `RBAC_004` (already held: convergent), `RBAC_010`, a second `RBAC_012`, 429 `RBAC_011`,
+   *   503. A 401 is renewed and replayed by `authInterceptor`; the filter refused it before the
+   *   handler, so the replay is the first execution (SD-11).
+   */
+  assignRole(userId: string, roleId: string): Observable<RoleAssignmentResponse> {
+    const body: AssignRoleRequest = { roleId };
+    return retryOnceOnClassificationChange(
+      () =>
+        this.http.post<RoleAssignmentResponse>(
+          `${this.base}/users/${pathSegment(userId)}/roles`,
+          body,
+          { context: consoleHttpContext() },
+        ),
+      { operation: 'assign', roleId },
+      this.logger,
     );
   }
 }

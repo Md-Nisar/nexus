@@ -25,6 +25,7 @@ import type { UserDirectoryEntry, UserStatus } from '../../../shared/types/api/u
 import { ACCESS_MANAGEMENT_ROUTES } from '../access-management.routes';
 import { CONSOLE_COPY, NotEnabledCopy, RbacErrorMessages } from '../copy/console-copy';
 import { AuthorizationProfileStore } from '../data/authorization-profile.store';
+import { CatalogueStore } from '../data/catalogue.store';
 import { DirectoryCache } from '../data/directory-cache';
 import { RolesStore } from '../data/roles.store';
 
@@ -76,6 +77,9 @@ function setup(options: { permissions?: readonly string[]; profileUserId?: strin
     state: () => ({ status: 'ready' }),
     userId: profileUserId,
     can: (p: string) => permissions.includes(p),
+    permissions: () => new Set(permissions),
+    isAdministrator: () => false,
+    mutationsEnabled: () => true,
     load: vi.fn(),
     reload: vi.fn(),
   };
@@ -100,6 +104,7 @@ function setup(options: { permissions?: readonly string[]; profileUserId?: strin
           path: 'admin/access',
           providers: [
             RolesStore,
+            CatalogueStore,
             DirectoryCache,
             { provide: AuthorizationProfileStore, useValue: profileStub },
           ],

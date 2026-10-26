@@ -31,6 +31,7 @@ import type { UserDirectoryEntry } from '../../../shared/types/api/user-director
 import { ACCESS_MANAGEMENT_ROUTES } from '../access-management.routes';
 import { CONSOLE_COPY, NotEnabledCopy, RbacErrorMessages } from '../copy/console-copy';
 import { AuthorizationProfileStore } from '../data/authorization-profile.store';
+import { CatalogueStore } from '../data/catalogue.store';
 import { DirectoryCache } from '../data/directory-cache';
 import { RolesStore } from '../data/roles.store';
 
@@ -124,6 +125,9 @@ function setup(permissions: readonly string[] = ALL) {
     state: () => ({ status: 'ready' }),
     userId: () => CALLER_ID,
     can: (p: string) => permissions.includes(p),
+    permissions: () => new Set(permissions),
+    isAdministrator: () => false,
+    mutationsEnabled: () => true,
     load: vi.fn(),
     reload: vi.fn(),
   };
@@ -148,7 +152,11 @@ function setup(permissions: readonly string[] = ALL) {
       provideRouter([
         {
           path: 'admin/access',
-          providers: [RolesStore, { provide: AuthorizationProfileStore, useValue: profileStub }],
+          providers: [
+            RolesStore,
+            CatalogueStore,
+            { provide: AuthorizationProfileStore, useValue: profileStub },
+          ],
           children: [
             { path: 'users', component: Placeholder },
             { path: 'roles/:roleId', component: Placeholder },

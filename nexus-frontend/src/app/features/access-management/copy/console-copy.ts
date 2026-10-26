@@ -51,6 +51,16 @@ export const CONSOLE_COPY = {
     adminOnlyDirectory: 'Only an administrator can grant access to email addresses.',
     roleExceedsCaller:
       "You can't remove permissions from this role because it includes access you don't hold.",
+    /** Assign dialog and its button (§8.3 assign table, §12.8, §12.9). `{labels}`: permission labels. */
+    selfAssign: "You can't change your own roles. Ask an administrator.",
+    alreadyAssigned: 'Already assigned',
+    roleNeedsMoreAccess: "This role includes access you don't hold: {labels}.",
+    /** The pigeonhole pre-check: known from the count alone, before the permissions are read. */
+    roleNeedsMoreAccessUnlisted: "This role includes access you don't hold.",
+    pendingAdminRole:
+      "Administrator roles can't be given to an unverified account. Ask the person to verify and sign in first.",
+    /** The picker lists roles and reads what they grant, which needs `role:read` (FR-C3, Q19). */
+    noRoleRead: "Choosing a role needs permission to read roles, which you don't have.",
   },
 
   /** Hints that never disable anything (§8.3, Q17). */
@@ -59,6 +69,7 @@ export const CONSOLE_COPY = {
       'This role currently grants every permission. Removing any requires you to be an administrator through another role.',
     wholeCatalogue:
       'This role will grant every permission, which makes its members administrators.',
+    adminAssign: 'This looks like an administrator role. Only an administrator can assign it.',
   },
 
   /** 503 `AUTH_005` on a page load (§14.1). */
@@ -165,6 +176,40 @@ export const CONSOLE_COPY = {
       assigned: 'Assigned',
       assignedBy: 'Assigned by',
     },
+  },
+
+  /**
+   * The Assign dialog (§12.9, §14.2; RC-68, RC-69). `{person}` is the address (rendered through
+   * `UserText`, never formatted into a string) or {@link person}; `{role}` a role name, `{n}` a
+   * count or a number of seconds, `{labels}` permission labels joined by `save.listSeparator`.
+   */
+  assign: {
+    open: 'Assign role',
+    title: 'Assign a role to {person}',
+    /** The `{person}` fallback without a directory entry (FR-X5). */
+    person: 'this person',
+    pendingWarning:
+      "This account hasn't been verified. Until it is, it may have been created by someone other than the owner of this address, and they would get this role when it's verified. Prefer assigning after the person has signed in.",
+    searchLabel: 'Search roles',
+    listLabel: 'Roles you can choose from',
+    permissionCount: '{n} permissions',
+    permissionCountOne: '{n} permission',
+    noMatches: 'No roles match your search',
+    loadingRoles: 'Loading roles',
+    rolesFailed: "Roles couldn't be loaded.",
+    retry: 'Retry',
+    chooseRole: 'Choose a role to see what it grants.',
+    loadingPermissions: 'Loading what this role grants',
+    permissionsFailed: "We couldn't load what this role grants.",
+    grants: 'Grants: {labels}',
+    grantsNothing: 'This role grants no access yet',
+    cancel: 'Cancel',
+    confirm: 'Assign role',
+    confirmUnverified: 'Assign to unverified account',
+    /** The typed confirm for an admin-looking role and a PENDING target (reachable after F-4). */
+    typedTitle: 'Assign {role} to an unverified account?',
+    success: 'Role assigned.',
+    wait: 'Try again in {n} seconds.',
   },
 
   /** The roles list (§12.2, §14.2). */

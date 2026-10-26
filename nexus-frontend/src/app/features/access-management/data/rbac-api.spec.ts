@@ -16,6 +16,7 @@ import type {
   PermissionListResponse,
   PermissionPageResponse,
   RoleAssignmentListResponse,
+  RoleAssignmentResponse,
   RoleListResponse,
   RoleResponse,
 } from '../../../shared/types/api/rbac';
@@ -442,6 +443,108 @@ describe('RbacApi', () => {
 
       http.expectNone(url);
       expect(failure?.code).toBe('RBAC_001');
+    });
+  });
+
+  describe('assignRole (design §7.1, §7.3; FR-X6, FR-G3)', () => {
+    const USER_ID = '0190a000-0000-7000-8000-000000000042';
+    const ROLE_ID = '0190a000-0000-7000-8000-0000000000b1';
+    const URL = `${API}/v1/users/${USER_ID}/roles`;
+    const CREATED: RoleAssignmentResponse = {
+      userId: USER_ID,
+      roleId: ROLE_ID,
+      roleName: 'Support',
+      assignedAt: '2026-01-01T00:00:00Z',
+      assignedBy: '0190a000-0000-7000-8000-0000000000ca',
+    };
+
+    function assign() {
+      let received: RoleAssignmentResponse | undefined;
+      let failure: unknown;
+      api.assignRole(USER_ID, ROLE_ID).subscribe({
+        next: (body) => (received = body),
+        error: (error: unknown) => (failure = error),
+      });
+      return {
+        received: () => received,
+        failure: () => failure as AppError | undefined,
+      };
+    }
+
+    function refuse(req: TestRequest, code: string, status: number): void {
+      req.flush(
+        { code, detail: 'Server detail', traceId: 'trace-1' },
+        { status, statusText: code },
+      );
+    }
+
+    it('POSTs exactly {roleId} with the console context and emits the 201 body', () => {
+      const outcome = assign();
+
+      const req = http.expectOne(URL);
+      expect(req.request.method).toBe('POST');
+      expect(req.request.body).toEqual({ roleId: ROLE_ID });
+      expect(req.request.context.get(SKIP_ACCESS_DENIED_REDIRECT)).toBe(true);
+      req.flush(CREATED, { status: 201, statusText: 'Created' });
+
+      expect(outcome.received()).toEqual(CREATED);
+      http.expectNone(URL);
+    });
+
+    it('re-sends an RBAC_012 once with the same body (RES-53)', () => {
+      const outcome = assign();
+
+      const first = http.expectOne(URL);
+      refuse(first, 'RBAC_012', 409);
+      const second = http.expectOne(URL);
+      expect(second.request.body).toEqual(first.request.body);
+      second.flush(CREATED, { status: 201, statusText: 'Created' });
+
+      expect(outcome.received()).toEqual(CREATED);
+    });
+
+    it('surfaces a second RBAC_012 and sends nothing more', () => {
+      const outcome = assign();
+
+      refuse(http.expectOne(URL), 'RBAC_012', 409);
+      refuse(http.expectOne(URL), 'RBAC_012', 409);
+
+      http.expectNone(URL);
+      expect(outcome.failure()?.code).toBe('RBAC_012');
+    });
+
+    it('surfaces a 403 met on the retry (US-019 §0 #29)', () => {
+      const outcome = assign();
+
+      refuse(http.expectOne(URL), 'RBAC_012', 409);
+      refuse(http.expectOne(URL), 'RBAC_001', 403);
+
+      http.expectNone(URL);
+      expect(outcome.failure()?.code).toBe('RBAC_001');
+    });
+
+    it.each([
+      ['RBAC_001', 403],
+      ['PRECONDITION_FAILED', 412],
+      ['RBAC_011', 429],
+      ['AUTH_005', 503],
+      ['RBAC_004', 409],
+      ['RBAC_010', 409],
+    ] as const)('surfaces %s without retrying', (code, status) => {
+      const outcome = assign();
+
+      refuse(http.expectOne(URL), code, status);
+
+      http.expectNone(URL);
+      expect(outcome.failure()?.code).toBe(code);
+    });
+
+    it('encodes the user id as one path segment', () => {
+      api.assignRole('../x', ROLE_ID).subscribe();
+
+      http
+        .expectOne(`${API}/v1/users/%2E%2E%2Fx/roles`)
+        .flush(CREATED, { status: 201, statusText: 'Created' });
     });
   });
 });

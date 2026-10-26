@@ -130,3 +130,127 @@
     }
   }
 }
+
+.user-roles__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nx-space-2) var(--nx-space-3);
+}
+
+.user-roles__propagation {
+  display: grid;
+  gap: var(--nx-space-1);
+}
+
+// The Assign dialog renders in the overlay; its nodes still carry this component's scope.
+.assign-dialog,
+.assign-dialog__content,
+.assign-dialog__selected {
+  display: grid;
+  gap: var(--nx-space-4);
+  min-width: 0;
+}
+
+.assign-dialog {
+  padding: var(--nx-space-6);
+  color: var(--nx-color-on-surface);
+}
+
+.assign-dialog__title {
+  margin: 0;
+  font-size: var(--nx-text-lg);
+  font-weight: var(--nx-weight-semibold);
+  overflow-wrap: anywhere;
+}
+
+.assign-dialog__content {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.assign-dialog__selected {
+  gap: var(--nx-space-2);
+}
+
+.assign-dialog p,
+.assign-dialog__legend {
+  margin: 0;
+}
+
+.assign-dialog__note,
+.assign-dialog__count,
+.assign-dialog__reason,
+.assign-dialog__hint,
+.assign-dialog__wait {
+  color: var(--nx-color-on-surface-muted);
+}
+
+.assign-dialog__list,
+.assign-dialog__option-body {
+  display: grid;
+  gap: var(--nx-space-1);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.assign-dialog__option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--nx-space-3);
+  padding: var(--nx-space-2) var(--nx-space-3);
+  border: 1px solid var(--nx-color-outline-variant);
+  border-radius: var(--nx-radius-md);
+
+  &:has(:checked) {
+    border-color: var(--nx-color-primary);
+  }
+}
+
+.assign-dialog__radio {
+  margin: var(--nx-space-1) 0 0;
+  accent-color: var(--nx-color-primary);
+}
+
+.assign-dialog__option-line,
+.assign-dialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nx-space-2);
+  min-width: 0;
+}
+
+.assign-dialog__name {
+  min-width: 0;
+  font-weight: var(--nx-weight-medium);
+}
+
+.assign-dialog__grants,
+.assign-dialog__id {
+  overflow-wrap: anywhere;
+}
+
+.assign-dialog__error {
+  padding: var(--nx-space-3);
+  border-radius: var(--nx-radius-md);
+  background-color: var(--nx-color-error-surface);
+}
+
+.assign-dialog__error-title {
+  font-weight: var(--nx-weight-semibold);
+}
+
+.assign-dialog__id {
+  font-family: var(--nx-font-family-mono);
+}
+
+.assign-dialog__actions {
+  justify-content: flex-end;
+}
+
+.assign-dialog__wait {
+  margin-inline-end: auto;
+}
