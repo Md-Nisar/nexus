@@ -51,10 +51,10 @@ class RedisPermissionCacheAdapterTest {
   private static final UUID TENANT_ID = UUID.randomUUID();
   private static final UUID USER_ID = UUID.randomUUID();
   private static final String ROLE_KEY =
-      KEY_PREFIX + ":rbac:roleset:" + TENANT_ID + ":" + USER_ID + ":" + EPOCH;
+      KEY_PREFIX + ":rbac:roleset:{" + TENANT_ID + "}:" + USER_ID + ":" + EPOCH;
   private static final String PERM_KEY =
-      KEY_PREFIX + ":rbac:permset:" + TENANT_ID + ":" + USER_ID + ":" + EPOCH;
-  private static final String EPOCH_KEY = KEY_PREFIX + ":rbac:epoch:" + TENANT_ID + ":" + USER_ID;
+      KEY_PREFIX + ":rbac:permset:{" + TENANT_ID + "}:" + USER_ID + ":" + EPOCH;
+  private static final String EPOCH_KEY = KEY_PREFIX + ":rbac:epoch:{" + TENANT_ID + "}:" + USER_ID;
 
   @Mock private StringRedisTemplate redisTemplate;
   @Mock private SetOperations<String, String> setOperations;
@@ -212,8 +212,8 @@ class RedisPermissionCacheAdapterTest {
     verify(redisTemplate).execute(any(RedisScript.class), keys.capture(), args.capture());
     assertThat(keys.getValue()).containsExactly(EPOCH_KEY);
     assertThat(args.getValue()).containsExactly(
-        KEY_PREFIX + ":rbac:roleset:" + TENANT_ID + ":" + USER_ID + ":",
-        KEY_PREFIX + ":rbac:permset:" + TENANT_ID + ":" + USER_ID + ":");
+        KEY_PREFIX + ":rbac:roleset:{" + TENANT_ID + "}:" + USER_ID + ":",
+        KEY_PREFIX + ":rbac:permset:{" + TENANT_ID + "}:" + USER_ID + ":");
   }
 
   @Test
@@ -228,7 +228,7 @@ class RedisPermissionCacheAdapterTest {
     assertThat(keys.getAllValues()).extracting(List::size).containsExactly(500, 500, 1);
     assertThat(args.getAllValues()).extracting(a -> a.length).containsExactly(1000, 1000, 2);
     assertThat(keys.getAllValues().get(2))
-        .containsExactly(KEY_PREFIX + ":rbac:epoch:" + TENANT_ID + ":" + holders.get(1000));
+        .containsExactly(KEY_PREFIX + ":rbac:epoch:{" + TENANT_ID + "}:" + holders.get(1000));
   }
 
   @Test
