@@ -42,7 +42,12 @@ describe('apiErrorInterceptor', () => {
         { provide: NxToast, useValue: toastSpy },
         {
           provide: APP_CONFIG,
-          useValue: { production: false, apiBaseUrl: '/api', logLevel: 'debug' },
+          useValue: {
+            production: false,
+            apiBaseUrl: '/api',
+            logLevel: 'debug',
+            accessConsoleEnabled: false,
+          },
         },
       ],
     });

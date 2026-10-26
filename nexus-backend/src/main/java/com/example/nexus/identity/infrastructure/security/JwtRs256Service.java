@@ -129,7 +129,7 @@ public class JwtRs256Service implements JwtPort {
             .add("typ", "JWT")
             .and()
         .subject(user.getId().toString())
-        .claim("tenant_id", user.getTenantId().toString())
+        .claim(CLAIM_TENANT_ID, user.getTenantId().toString())
         .claim("email_verified", user.getStatus() == UserStatus.ACTIVE)
         .claim("roles", resolved.roles())
         .claim("permissions", resolved.permissions())
@@ -137,7 +137,7 @@ public class JwtRs256Service implements JwtPort {
         .expiration(Date.from(now.plusSeconds(accessTokenTtlSeconds)))
         .id(jti)
         .claim("token_version", user.getTokenVersion())
-        .claim("schema_version", JwtClaims.CURRENT_VERSION)
+        .claim(CLAIM_SCHEMA_VERSION, JwtClaims.CURRENT_VERSION)
         .claim(CLAIM_PERM_EPOCH, permEpoch)
         .signWith(keyPair.getPrivate(), Jwts.SIG.RS256)
         .compact();
@@ -304,10 +304,10 @@ public class JwtRs256Service implements JwtPort {
     SIGNATURE("signature"),
     EXPIRED("expired"),
     CLAIMS_MISSING("claims_missing"),
-    SCHEMA_VERSION("schema_version"),
-    TENANT_ID("tenant_id"),
+    SCHEMA_VERSION(CLAIM_SCHEMA_VERSION),
+    TENANT_ID(CLAIM_TENANT_ID),
     SUB("sub"),
-    PERM_EPOCH("perm_epoch");
+    PERM_EPOCH(CLAIM_PERM_EPOCH);
 
     private final String tag;
 

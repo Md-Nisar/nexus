@@ -27,8 +27,9 @@ For the task under review:
    - Edge cases (empty, null, max, min)
    - Error paths (each thrown exception, each error response)
    - Boundary values
-   - Concurrent access (where relevant)
+   - Concurrent access — wherever the code has check-then-act, `@Version`, `REQUIRES_NEW`, a bulk revoke or a shared in-flight request
    - Authorization (each role × each endpoint)
+   - **Weak proof tests** — an existing test that backs a guarantee but breaks `docs/TESTING.md` → *Tests that prove a guarantee* is a `[HIGH]` gap, even when coverage is green
 3. **Add missing tests** — fill the gaps, one at a time.
 4. **Add load test scenarios** — Gatling or k6 script for any endpoint expected to see >10 RPS.
 5. **Run the full suite** — `./mvnw verify` (includes the Testcontainers `*IT` suite; needs Docker) and `npm run test:ci`. Paste results. If Docker is unavailable, say so explicitly — do not report ITs as passing.

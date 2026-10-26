@@ -1,0 +1,89 @@
+:host {
+  display: block;
+}
+
+.user-detail {
+  display: grid;
+  gap: var(--nx-space-4);
+  min-width: 0;
+}
+
+.user-detail__header {
+  display: grid;
+  gap: var(--nx-space-2);
+  min-width: 0;
+}
+
+.user-detail__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--nx-space-2);
+  margin: 0;
+  font-size: var(--nx-text-3xl);
+  font-weight: var(--nx-weight-semibold);
+  color: var(--nx-color-on-surface);
+  overflow-wrap: anywhere;
+
+  &:focus-visible {
+    outline: 2px solid var(--nx-color-primary);
+    outline-offset: var(--nx-space-1);
+  }
+}
+
+.user-detail__you {
+  font-size: var(--nx-text-lg);
+  font-weight: var(--nx-weight-regular);
+  color: var(--nx-color-on-surface-muted);
+}
+
+.user-detail__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nx-space-3);
+}
+
+.user-detail__joined {
+  font-size: var(--nx-text-sm);
+  color: var(--nx-color-on-surface-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.user-detail__not-found {
+  display: grid;
+  gap: var(--nx-space-3);
+  justify-items: start;
+}
+
+.user-detail__not-found-body {
+  margin: 0;
+  color: var(--nx-color-on-surface-muted);
+}
+
+.user-detail__back {
+  color: var(--nx-color-primary-text);
+  text-decoration: underline;
+}
+
+.user-detail__loading {
+  display: grid;
+  gap: var(--nx-space-3);
+}
+
+.user-detail__loading-text {
+  margin: 0;
+  color: var(--nx-color-on-surface-muted);
+}
+
+.user-detail__skeleton {
+  display: block;
+  height: var(--nx-space-10);
+}
+
+/* 320 px (design §12.8): the address wraps; the badges wrap below it. */
+@media (max-width: 599px) {
+  .user-detail__title {
+    font-size: var(--nx-text-2xl);
+  }
+}

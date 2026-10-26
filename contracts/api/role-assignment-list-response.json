@@ -1,0 +1,25 @@
+{
+  "data" : [ {
+    "userId" : "0190a000-0000-7000-8000-000000000001",
+    "roleId" : "0190a000-0000-7000-8000-00000000000a",
+    "roleName" : "Support",
+    "assignedAt" : "2026-01-01T00:00:00Z",
+    "assignedBy" : "0190a000-0000-7000-8000-000000000001"
+  }, {
+    "userId" : "0190a000-0000-7000-8000-000000000001",
+    "roleId" : "0190a000-0000-7000-8000-00000000000b",
+    "roleName" : "Auditor",
+    "assignedAt" : "2026-01-01T00:00:00Z",
+    "assignedBy" : null
+  } ],
+  "page" : {
+    "size" : 20,
+    "number" : 0,
+    "totalElements" : 2,
+    "totalPages" : 1
+  },
+  "links" : {
+    "next" : null,
+    "prev" : null
+  }
+}

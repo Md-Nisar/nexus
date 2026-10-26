@@ -76,6 +76,17 @@ export interface AppConfig {
    * The real value is a product decision (US-019 Q-N5).
    */
   readonly supportContact: SupportContact | null;
+
+  /**
+   * Whether the access management console UI ships in this build (US-020 design §18).
+   * When false, the "Access management" nav item and dashboard card are hidden and
+   * `accessConsoleEnabledGuard` makes `/admin/access` fall through to Not Found.
+   *
+   * @security A **release control, not an access control** (RC-76). It decides only whether the
+   * console UI is reachable; route guards are UX and the server's `@RequiresPermission` is the
+   * enforcement point. The backend feature flags are the off switch for the APIs.
+   */
+  readonly accessConsoleEnabled: boolean;
 }
 
 /** A labelled contact link. */

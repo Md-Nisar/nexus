@@ -1,0 +1,139 @@
+<div class="roles" data-testid="roles-list-page">
+  <nx-page-header [title]="copy.roles.title" [description]="copy.areas.roles.explainer">
+    @if (createState() !== 'hidden') {
+      <div slot="actions" class="roles__create">
+        <nx-button
+          variant="primary"
+          leadingIcon="add"
+          [ariaDisabled]="createState() === 'disabled'"
+          [ariaDescribedBy]="createState() === 'disabled' ? createReasonId : ''"
+          (clicked)="create()"
+          data-testid="roles-create"
+          >{{ copy.roles.create }}</nx-button
+        >
+        @if (createState() === 'disabled') {
+          <p [id]="createReasonId" class="roles__reason" data-testid="roles-create-reason">
+            {{ copy.disabledReason.profileUnavailable }}
+          </p>
+        }
+      </div>
+    }
+  </nx-page-header>
+
+  @switch (status()) {
+    @case ('loading') {
+      <div class="roles__loading" aria-busy="true" data-testid="roles-loading">
+        <p class="roles__loading-text" role="status">{{ loadingText() }}</p>
+        @for (row of skeletonRows; track row) {
+          <nx-skeleton class="roles__skeleton" variant="rect" />
+        }
+      </div>
+    }
+    @case ('error') {
+      @if (errorView(); as view) {
+        <app-console-error-panel
+          [view]="view"
+          [recordedAt]="failedAt()"
+          (retry)="retry()"
+          data-testid="roles-error"
+        />
+      }
+    }
+    @case ('ready') {
+      @if (truncated()) {
+        <nx-banner
+          class="roles__truncated"
+          variant="warning"
+          live="polite"
+          [title]="truncatedText()"
+          data-testid="roles-truncated"
+        />
+      }
+
+      <div class="roles__toolbar">
+        <nx-search-field
+          class="roles__search"
+          [label]="copy.roles.searchLabel"
+          [ngModel]="q()"
+          (search)="onSearch($event)"
+          (cleared)="onSearchCleared()"
+        />
+        <nx-select
+          class="roles__filter"
+          [label]="copy.roles.filterLabel"
+          [options]="filterOptions"
+          [ngModel]="filter()"
+          (selectionChange)="onFilter($event)"
+        />
+        <p class="roles__count" role="status" data-testid="roles-count">{{ countText() }}</p>
+      </div>
+
+      @if (rows().length === 0) {
+        <nx-empty-state
+          icon="admin_panel_settings"
+          [title]="emptyKind() === 'search' ? copy.roles.emptySearch : copy.roles.emptyCustom"
+        >
+          @if (emptyKind() === 'custom' && createState() !== 'hidden') {
+            <nx-button
+              variant="primary"
+              leadingIcon="add"
+              [ariaDisabled]="createState() === 'disabled'"
+              [ariaDescribedBy]="createState() === 'disabled' ? createReasonId : ''"
+              (clicked)="create()"
+              data-testid="roles-create"
+              >{{ copy.roles.create }}</nx-button
+            >
+          }
+        </nx-empty-state>
+      } @else {
+        <nx-table
+          class="roles__table"
+          [columns]="columns"
+          [rows]="rows()"
+          [caption]="copy.roles.caption"
+          [captionVisuallyHidden]="true"
+          [pageable]="pageCount() > 1"
+          [totalCount]="total()"
+          [pageSize]="pageSize"
+          [pageSizeOptions]="pageSizeOptions"
+          [pageIndex]="page()"
+          (pageChange)="onPageChange($event)"
+        >
+          <ng-template nxTableCell="name" let-raw>
+            <span class="roles__name" data-testid="role-name">
+              <a class="roles__link" [routerLink]="['/admin/access/roles', row(raw).id]">
+                <app-user-text [text]="row(raw).name" [maxLines]="2" />
+              </a>
+            </span>
+          </ng-template>
+          <ng-template nxTableCell="type" let-raw>
+            <span class="roles__type">
+              <app-system-role-badge [isSystemRole]="row(raw).isSystemRole" />
+            </span>
+          </ng-template>
+          <ng-template nxTableCell="description" let-raw>
+            <span class="roles__description" data-testid="role-description">
+              @if (row(raw).description === '') {
+                <span class="roles__none">{{ copy.roles.noDescription }}</span>
+              } @else {
+                <app-user-text [text]="row(raw).description" [maxLines]="2" />
+              }
+            </span>
+          </ng-template>
+          <ng-template nxTableCell="permissions" let-raw>
+            <span class="roles__label">{{ copy.roles.columns.permissions }}</span>
+            <span class="roles__number">{{ row(raw).permissionCount }}</span>
+          </ng-template>
+          <ng-template nxTableCell="members" let-raw>
+            <span class="roles__label">{{ copy.roles.columns.members }}</span>
+            <span class="roles__number">{{ row(raw).memberCount }}</span>
+          </ng-template>
+          <ng-template nxTableCell="created" let-raw>
+            <span class="roles__label">{{ copy.roles.columns.created }}</span>
+            <span class="roles__date">{{ row(raw).createdAt | date: 'mediumDate' }}</span>
+          </ng-template>
+        </nx-table>
+      }
+    }
+  }
+</div>

@@ -1,0 +1,48 @@
+:host {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--nx-space-2);
+  max-width: 100%;
+  min-width: 0;
+}
+
+.user-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+
+  &--clamped {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: var(--user-text-lines);
+    line-clamp: var(--user-text-lines);
+    overflow: hidden;
+  }
+}
+
+.user-text__badge {
+  flex: none;
+}
+
+/* The badge's description for assistive technology; the badge itself is the visible cue. */
+.user-text__explanation {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* A hidden character shown as a visible token (RC-68): marked off so it reads as one unit. */
+.user-text__token {
+  padding-inline: var(--nx-space-1);
+  border-radius: var(--nx-radius-xs);
+  background-color: var(--nx-color-warning-surface);
+  color: var(--nx-color-on-surface);
+  font-family: var(--nx-font-family-mono);
+  font-size: var(--nx-text-xs);
+  white-space: nowrap;
+}

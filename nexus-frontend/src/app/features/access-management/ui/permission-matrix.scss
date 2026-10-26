@@ -1,0 +1,159 @@
+:host {
+  display: block;
+  min-width: 0;
+}
+
+.permission-matrix {
+  min-width: 0;
+}
+
+.permission-matrix__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--nx-text-sm);
+  color: var(--nx-color-on-surface);
+
+  th,
+  td {
+    padding: var(--nx-space-2) var(--nx-space-3);
+    border-block-end: 1px solid var(--nx-color-outline-variant);
+    text-align: start;
+    vertical-align: top;
+  }
+
+  thead th {
+    font-weight: var(--nx-weight-semibold);
+    color: var(--nx-color-on-surface-muted);
+  }
+}
+
+.permission-matrix__caption {
+  padding-block-end: var(--nx-space-3);
+  text-align: start;
+  font-size: var(--nx-text-base);
+  font-weight: var(--nx-weight-medium);
+}
+
+.permission-matrix__group th {
+  padding-block-start: var(--nx-space-4);
+  background-color: var(--nx-color-surface-2);
+  font-size: var(--nx-text-base);
+  font-weight: var(--nx-weight-semibold);
+}
+
+.permission-matrix__row-header {
+  font-weight: var(--nx-weight-regular);
+}
+
+.permission-matrix__name {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nx-space-2);
+  min-width: 0;
+}
+
+.permission-matrix__label {
+  font-weight: var(--nx-weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.permission-matrix__code {
+  font-family: var(--nx-font-family-mono);
+  font-size: var(--nx-text-sm);
+  color: var(--nx-color-on-surface-muted);
+  overflow-wrap: anywhere;
+}
+
+.permission-matrix__description {
+  margin: 0;
+  color: var(--nx-color-on-surface-muted);
+  overflow-wrap: anywhere;
+}
+
+.permission-matrix__status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--nx-space-1);
+  white-space: nowrap;
+  color: var(--nx-color-on-surface-muted);
+
+  &--granted {
+    color: var(--nx-color-on-surface);
+    font-weight: var(--nx-weight-medium);
+  }
+}
+
+.permission-matrix__status-icon {
+  width: var(--nx-space-5);
+  height: var(--nx-space-5);
+  font-size: var(--nx-text-lg);
+}
+
+.permission-matrix__status--granted .permission-matrix__status-icon {
+  color: var(--nx-color-success);
+}
+
+/* Edit mode: the checkbox carries the label and the code; badges sit beside it, outside its name. */
+.permission-matrix__edit {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--nx-space-2);
+  min-width: 0;
+}
+
+.permission-matrix--edit .permission-matrix__group nx-checkbox {
+  font-weight: var(--nx-weight-semibold);
+}
+
+/* Narrow rendering: shown below 600 px only. */
+.permission-matrix__sections {
+  display: none;
+  gap: var(--nx-space-4);
+}
+
+.permission-matrix__heading {
+  margin: 0;
+  font-size: var(--nx-text-base);
+  font-weight: var(--nx-weight-medium);
+}
+
+.permission-matrix__section {
+  display: grid;
+  gap: var(--nx-space-2);
+}
+
+.permission-matrix__section-title {
+  margin: 0;
+  font-size: var(--nx-text-base);
+  font-weight: var(--nx-weight-semibold);
+}
+
+.permission-matrix__list {
+  display: grid;
+  gap: var(--nx-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.permission-matrix__item {
+  display: grid;
+  gap: var(--nx-space-1);
+  min-width: 0;
+  padding: var(--nx-space-3);
+  border: 1px solid var(--nx-color-outline-variant);
+  border-radius: var(--nx-radius-md);
+}
+
+/* 320 px (design §12.3, WCAG 1.4.10): one section per resource, no sideways scroll. */
+@media (max-width: 599px) {
+  .permission-matrix__table-wrap {
+    display: none;
+  }
+
+  .permission-matrix__sections {
+    display: grid;
+  }
+}

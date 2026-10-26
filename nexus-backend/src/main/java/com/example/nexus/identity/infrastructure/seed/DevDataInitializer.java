@@ -20,6 +20,13 @@ import org.springframework.transaction.annotation.Transactional;
  * and a pending user in the bootstrap tenant, plus a fixture-only second tenant whose administrator
  * holds a custom role built from the whole permission catalogue.
  *
+ * <p>US-020 T-014 (design §19.4) adds a role-reader user manager (never an administrator) and an
+ * auditor, who sign in, and two ACTIVE assignment targets nobody signs in as: target A holds no
+ * role, target B holds one dedicated custom role so its read expectations never move.
+ *
+ * <p>The US-020 review adds a PENDING hidden-character target nobody signs in as (RC-68 item 4,
+ * {@link DevUserSeeder#HIDDEN_CHARACTER_TARGET_EMAIL}): no role, never verified.
+ *
  * <p>Runs as one transaction: a partial seed rolls back and completes on the next start. Idempotent
  * through {@link DevUserSeeder} and {@link DevRbacSeeder}. Every persona assignment records the
  * seeded E2E administrator as {@code assigned_by}, never the persona itself, because a
@@ -37,6 +44,9 @@ public class DevDataInitializer implements ApplicationRunner {
   static final String ROLE_MANAGER_ROLE = "Role Manager";
   static final String USER_MANAGER_ROLE = "User Manager";
   static final String DEV_ADMIN_ROLE = "Dev Administrator";
+  static final String ROLE_READER_USER_MANAGER_ROLE = "Role-reader User Manager";
+  static final String AUDITOR_ROLE = "Auditor";
+  static final String TARGET_ROLE = "Target Reader";
 
   private static final Logger log = LoggerFactory.getLogger(DevDataInitializer.class);
 
@@ -83,6 +93,16 @@ public class DevDataInitializer implements ApplicationRunner {
     String userManager = rbacSeeder.ensureRole(
         defaultTenantId, USER_MANAGER_ROLE, "Dev persona: manages user role assignments",
         Set.of("user:read", "user:role:assign", "user:directory:read"), report);
+    String roleReaderUserManager = rbacSeeder.ensureRole(
+        defaultTenantId, ROLE_READER_USER_MANAGER_ROLE,
+        "Dev persona: reads roles and manages user role assignments",
+        Set.of("role:read", "user:read", "user:role:assign", "user:directory:read"), report);
+    String auditor = rbacSeeder.ensureRole(
+        defaultTenantId, AUDITOR_ROLE, "Dev persona: reads roles and the audit trail",
+        Set.of("role:read", "audit:read"), report);
+    String targetRole = rbacSeeder.ensureRole(
+        defaultTenantId, TARGET_ROLE, "Dev fixture: the one role held by assignment target B",
+        Set.of("role:read"), report);
 
     persona(DevUserSeeder.SECOND_ADMIN_EMAIL, DevUserSeeder.State.ACTIVE,
         RbacRoleNames.TENANT_ADMIN, admin, report);
@@ -96,6 +116,17 @@ public class DevDataInitializer implements ApplicationRunner {
         RbacRoleNames.MEMBER, admin, report);
     userSeeder.ensureUser(
         defaultTenantId, DevUserSeeder.PENDING_EMAIL, DevUserSeeder.State.PENDING, report);
+    persona(DevUserSeeder.ROLE_READER_USER_MANAGER_EMAIL, DevUserSeeder.State.ACTIVE,
+        roleReaderUserManager, admin, report);
+    persona(DevUserSeeder.AUDITOR_EMAIL, DevUserSeeder.State.ACTIVE, auditor, admin, report);
+    userSeeder.ensureUser(
+        defaultTenantId, DevUserSeeder.TARGET_A_EMAIL, DevUserSeeder.State.ACTIVE, report);
+    persona(DevUserSeeder.TARGET_B_EMAIL, DevUserSeeder.State.ACTIVE, targetRole, admin, report);
+    userSeeder.ensureUser(
+        defaultTenantId,
+        DevUserSeeder.HIDDEN_CHARACTER_TARGET_EMAIL,
+        DevUserSeeder.State.PENDING,
+        report);
   }
 
   private void persona(

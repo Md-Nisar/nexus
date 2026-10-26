@@ -1,0 +1,260 @@
+<div class="role-create" data-testid="role-create">
+  <nx-page-header [title]="copy.createRole.title" [description]="copy.areas.roles.explainer" />
+
+  @switch (view()) {
+    @case ('loading') {
+      <div class="role-create__loading" aria-busy="true" data-testid="role-create-loading">
+        <p class="role-create__muted" role="status">{{ loadingText() }}</p>
+        @for (row of skeletonRows; track row) {
+          <nx-skeleton class="role-create__skeleton" variant="rect" />
+        }
+      </div>
+    }
+    @case ('blocked') {
+      <section class="role-create__notice" data-testid="role-create-blocked">
+        <p class="role-create__muted">{{ copy.createRole.noWrite }}</p>
+        <a class="role-create__link" routerLink="/admin/access/roles">{{
+          copy.roleDetail.backToRoles
+        }}</a>
+      </section>
+    }
+    @case ('gone') {
+      <section class="role-create__notice" data-testid="role-create-source-gone">
+        <h2 class="role-create__heading">{{ notFoundCopy.title }}</h2>
+        <p class="role-create__muted">{{ notFoundCopy.body }}</p>
+        <a class="role-create__link" routerLink="/admin/access/roles">{{
+          copy.roleDetail.backToRoles
+        }}</a>
+      </section>
+    }
+    @case ('source-error') {
+      @if (sourceError(); as failed) {
+        <app-console-error-panel
+          [view]="failed.view"
+          [recordedAt]="failed.failedAt"
+          (retry)="retrySource()"
+          data-testid="role-create-source-error"
+        />
+      }
+    }
+    @case ('error') {
+      @if (catalogueError(); as failed) {
+        <app-console-error-panel
+          [view]="failed.view"
+          [recordedAt]="failed.failedAt"
+          (retry)="retryCatalogue()"
+          data-testid="role-create-error-panel"
+        />
+      }
+    }
+    @case ('ready') {
+      @if (partial(); as half) {
+        <nx-banner
+          variant="warning"
+          live="assertive"
+          [title]="copy.createRole.partial"
+          data-testid="role-create-partial"
+        >
+          <p class="role-create__text">{{ half.failure.title }}</p>
+          <p class="role-create__text">{{ half.failure.body }}</p>
+          @if (half.failure.reference; as reference) {
+            <p class="role-create__text">
+              {{ copy.reference }} <span class="role-create__reference">{{ reference }}</span>
+            </p>
+          }
+          @if (waiting()) {
+            <p class="role-create__text" [id]="waitId" data-testid="role-create-wait">
+              {{ waitText() }}
+            </p>
+          }
+          <div slot="actions" class="role-create__banner-actions">
+            <nx-button
+              variant="primary"
+              size="sm"
+              [loading]="half.retrying"
+              [ariaDisabled]="half.retrying || waiting()"
+              [ariaDescribedBy]="waiting() ? waitId : ''"
+              (clicked)="retry()"
+              data-testid="role-create-retry"
+              >{{ copy.createRole.retry }}</nx-button
+            >
+            <nx-button
+              variant="secondary"
+              size="sm"
+              [disabled]="half.retrying"
+              (clicked)="openRole()"
+              data-testid="role-create-open"
+              >{{ copy.createRole.openRole }}</nx-button
+            >
+          </div>
+        </nx-banner>
+      }
+
+      @if (limit(); as reached) {
+        <nx-banner
+          variant="error"
+          live="assertive"
+          [title]="reached.title"
+          data-testid="role-create-limit"
+        >
+          <p class="role-create__text">{{ reached.body }}</p>
+        </nx-banner>
+      }
+
+      @if (summary().length > 0) {
+        <div
+          #summaryBox
+          class="role-create__summary"
+          role="alert"
+          tabindex="-1"
+          aria-labelledby="role-create-summary-title"
+          data-testid="role-create-summary"
+        >
+          <h2 class="role-create__heading" id="role-create-summary-title">
+            {{ copy.createRole.summaryTitle }}
+          </h2>
+          <ul class="role-create__summary-list">
+            @for (item of summary(); track $index) {
+              <li>
+                @if (item.field === 'name') {
+                  <a
+                    class="role-create__link"
+                    [href]="'#' + nameId"
+                    (click)="focusField($event, 'name')"
+                    >{{ item.message }}</a
+                  >
+                } @else if (item.field === 'description') {
+                  <a
+                    class="role-create__link"
+                    [href]="'#' + descriptionId"
+                    (click)="focusField($event, 'description')"
+                    >{{ item.message }}</a
+                  >
+                } @else {
+                  {{ item.message }}
+                }
+              </li>
+            }
+          </ul>
+        </div>
+      }
+
+      @if (notCopied(); as skipped) {
+        <nx-banner
+          variant="info"
+          live="polite"
+          [title]="skipped.title"
+          data-testid="role-create-not-copied"
+        >
+          <ul class="role-create__list">
+            @for (item of skipped.items; track item.id) {
+              <li data-testid="role-create-not-copied-item">{{ item.text }}</li>
+            }
+          </ul>
+        </nx-banner>
+      }
+
+      <form class="role-create__form" [formGroup]="form" (ngSubmit)="submit()" novalidate>
+        <div class="role-create__field">
+          <nx-input
+            formControlName="name"
+            [inputId]="nameId"
+            [label]="copy.createRole.nameLabel"
+            [hint]="copy.createRole.nameHint"
+            [describedBy]="nameDescribedBy()"
+          />
+          <p
+            class="role-create__counter"
+            [id]="nameCounterId"
+            data-testid="role-create-name-counter"
+          >
+            {{ nameCounter() }}
+          </p>
+          @if (nameErrorText(); as error) {
+            <p class="role-create__error" [id]="nameErrorId" data-testid="role-create-name-error">
+              {{ error }}
+            </p>
+          }
+        </div>
+
+        <nx-textarea
+          class="role-create__field"
+          formControlName="description"
+          [inputId]="descriptionId"
+          [label]="copy.createRole.descriptionLabel"
+          [maxLength]="descriptionMax"
+          [rows]="3"
+          [error]="descriptionErrorText() ?? ''"
+          testId="role-create-description"
+        />
+
+        <section class="role-create__permissions" aria-labelledby="role-create-permissions-title">
+          <h2 class="role-create__heading" id="role-create-permissions-title">
+            {{ copy.createRole.permissionsTitle }}
+          </h2>
+          <p class="role-create__muted">{{ copy.createRole.permissionsHint }}</p>
+          @if (lockedIds(); as granted) {
+            <app-permission-matrix
+              [groups]="groups()"
+              [granted]="granted"
+              [roleName]="matrixRole()"
+            />
+          } @else {
+            <app-permission-matrix
+              mode="edit"
+              [groups]="groups()"
+              [granted]="noIds"
+              [staged]="intent()"
+              [affordances]="affordances()"
+              [roleName]="matrixRole()"
+              (permissionToggle)="onToggle($event)"
+              (groupToggle)="onToggleGroup($event)"
+            />
+          }
+          @for (line of propagation(); track line) {
+            <p class="role-create__muted" data-testid="role-create-propagation">{{ line }}</p>
+          }
+        </section>
+
+        @if (failure(); as error) {
+          <div class="role-create__failure" role="alert" data-testid="role-create-error">
+            <p class="role-create__failure-title">{{ error.title }}</p>
+            <p class="role-create__text">{{ error.body }}</p>
+            @if (error.reference; as reference) {
+              <p class="role-create__text">
+                {{ copy.reference }} <span class="role-create__reference">{{ reference }}</span>
+              </p>
+            }
+          </div>
+        }
+
+        @if (!partial()) {
+          <div class="role-create__actions">
+            @if (submitDescribedBy() === submitReasonId) {
+              <p class="role-create__muted" [id]="submitReasonId">
+                {{ copy.disabledReason.profileUnavailable }}
+              </p>
+            }
+            @if (waiting()) {
+              <p class="role-create__muted" [id]="waitId" data-testid="role-create-wait">
+                {{ waitText() }}
+              </p>
+            }
+            <nx-button variant="secondary" (clicked)="cancel()" data-testid="role-create-cancel">{{
+              copy.createRole.cancel
+            }}</nx-button>
+            <nx-button
+              type="submit"
+              variant="primary"
+              [loading]="creating()"
+              [ariaDisabled]="creating() || submitBlocked()"
+              [ariaDescribedBy]="submitDescribedBy()"
+              data-testid="role-create-submit"
+              >{{ copy.createRole.submit }}</nx-button
+            >
+          </div>
+        }
+      </form>
+    }
+  }
+</div>

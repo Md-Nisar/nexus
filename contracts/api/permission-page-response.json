@@ -1,0 +1,58 @@
+{
+  "data" : [ {
+    "id" : "0190a000-0000-7000-8000-000000000100",
+    "name" : "tenant:read",
+    "description" : "Read tenant configuration and metadata",
+    "isSensitive" : false
+  }, {
+    "id" : "0190a000-0000-7000-8000-000000000101",
+    "name" : "tenant:write",
+    "description" : "Create and modify tenant configuration",
+    "isSensitive" : true
+  }, {
+    "id" : "0190a000-0000-7000-8000-000000000102",
+    "name" : "user:read",
+    "description" : "Read user accounts and profiles",
+    "isSensitive" : false
+  }, {
+    "id" : "0190a000-0000-7000-8000-000000000103",
+    "name" : "user:write",
+    "description" : "Create and modify user accounts",
+    "isSensitive" : true
+  }, {
+    "id" : "0190a000-0000-7000-8000-000000000104",
+    "name" : "role:read",
+    "description" : "Read roles and their permission assignments",
+    "isSensitive" : false
+  }, {
+    "id" : "0190a000-0000-7000-8000-000000000105",
+    "name" : "role:write",
+    "description" : "Create roles and manage role-permission assignments",
+    "isSensitive" : true
+  }, {
+    "id" : "0190a000-0000-7000-8000-000000000106",
+    "name" : "audit:read",
+    "description" : "Read the authentication and audit event trail",
+    "isSensitive" : true
+  }, {
+    "id" : "0190a000-0000-7000-8000-000000000107",
+    "name" : "user:role:assign",
+    "description" : "Assign and revoke roles for users in the tenant",
+    "isSensitive" : true
+  }, {
+    "id" : "0190a000-0000-7000-8000-000000000108",
+    "name" : "user:directory:read",
+    "description" : "Read the tenant user directory, including email addresses",
+    "isSensitive" : true
+  } ],
+  "page" : {
+    "size" : 20,
+    "number" : 0,
+    "totalElements" : 9,
+    "totalPages" : 1
+  },
+  "links" : {
+    "next" : null,
+    "prev" : null
+  }
+}

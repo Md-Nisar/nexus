@@ -1,0 +1,165 @@
+<div class="role-detail" data-testid="role-detail-page">
+  <header class="role-detail__header">
+    <nx-breadcrumb [items]="crumbs()" />
+
+    <div class="role-detail__heading-row">
+      <div class="role-detail__heading">
+        <h1 class="role-detail__title" tabindex="-1" data-testid="role-detail-title">
+          @if (role(); as current) {
+            <app-user-text [text]="current.name" />
+          } @else {
+            {{ fallbackTitle() }}
+          }
+        </h1>
+        @if (role(); as current) {
+          <div class="role-detail__meta">
+            <app-system-role-badge [isSystemRole]="current.isSystemRole" />
+            <span class="role-detail__counts" data-testid="role-detail-counts">{{
+              countsText()
+            }}</span>
+          </div>
+        }
+      </div>
+
+      @if (role()) {
+        <div class="role-detail__actions">
+          @if (editState() !== 'hidden') {
+            <div class="role-detail__action">
+              <nx-button
+                variant="primary"
+                leadingIcon="edit"
+                [ariaDisabled]="editState() === 'disabled'"
+                [ariaDescribedBy]="editDescribedBy()"
+                (clicked)="edit()"
+                data-testid="role-edit"
+                >{{ copy.roleDetail.edit }}</nx-button
+              >
+              @for (reason of editReasons(); track reason.id) {
+                <p [id]="reason.id" class="role-detail__reason" data-testid="role-edit-reason">
+                  {{ reason.text }}
+                </p>
+              }
+            </div>
+          }
+          @if (cloneState() !== 'hidden') {
+            <div class="role-detail__action">
+              <nx-button
+                variant="secondary"
+                leadingIcon="content_copy"
+                [ariaDisabled]="cloneState() === 'disabled'"
+                [ariaDescribedBy]="cloneState() === 'disabled' ? cloneReasonId : ''"
+                (clicked)="clone()"
+                data-testid="role-clone"
+                >{{ copy.roleDetail.clone }}</nx-button
+              >
+              @if (cloneState() === 'disabled') {
+                <p [id]="cloneReasonId" class="role-detail__reason" data-testid="role-clone-reason">
+                  {{ copy.disabledReason.profileUnavailable }}
+                </p>
+              }
+            </div>
+          }
+        </div>
+      }
+    </div>
+
+    @if (role(); as current) {
+      <p class="role-detail__description" dir="auto" data-testid="role-detail-description">
+        @if (current.description === '') {
+          <span class="role-detail__none">{{ copy.roles.noDescription }}</span>
+        } @else {
+          <app-user-text [text]="current.description" />
+        }
+      </p>
+
+      <div class="role-detail__freshness">
+        <span class="role-detail__updated" data-testid="role-detail-updated">
+          <time [attr.datetime]="updatedIso()">{{ updatedText() }}</time>
+        </span>
+        <nx-button
+          variant="ghost"
+          size="sm"
+          leadingIcon="refresh"
+          [loading]="refreshing()"
+          [ariaDisabled]="refreshing()"
+          (clicked)="refresh()"
+          data-testid="role-detail-refresh"
+          >{{ copy.roleDetail.refresh }}</nx-button
+        >
+      </div>
+
+      @if (refreshErrorView(); as failure) {
+        <div class="role-detail__refresh-error" role="alert" data-testid="role-refresh-error">
+          <p class="role-detail__refresh-error-title">{{ failure.title }}</p>
+          <p class="role-detail__refresh-error-body">{{ failure.body }}</p>
+          @if (failure.reference; as reference) {
+            <p class="role-detail__refresh-error-body">
+              {{ copy.reference }} <span class="role-detail__reference">{{ reference }}</span>
+            </p>
+          }
+        </div>
+      }
+    }
+  </header>
+
+  @if (role()?.isSystemRole) {
+    <nx-banner
+      class="role-detail__banner"
+      variant="info"
+      [title]="copy.roleDetail.systemBanner"
+      data-testid="role-system-banner"
+    />
+  }
+
+  @if (showEtagBanner()) {
+    <nx-banner
+      class="role-detail__banner"
+      variant="warning"
+      [title]="copy.roleDetail.etagUnusable.title"
+      data-testid="role-etag-banner"
+    >
+      <p class="role-detail__banner-text">{{ copy.roleDetail.etagUnusable.body }}</p>
+      @if (etagReference(); as reference) {
+        <p class="role-detail__banner-text" data-testid="role-etag-reference">
+          {{ copy.reference }} <span class="role-detail__reference">{{ reference }}</span>
+        </p>
+      }
+    </nx-banner>
+  }
+
+  @switch (status()) {
+    @case ('ready') {
+      <nx-tabs [tabs]="tabs()" [ariaLabel]="copy.roleDetail.tabsLabel">
+        <router-outlet />
+      </nx-tabs>
+    }
+    @case ('error') {
+      @if (notFound()) {
+        <section class="role-detail__not-found" data-testid="role-not-found">
+          <p class="role-detail__not-found-body">{{ notFoundCopy.body }}</p>
+          <a
+            class="role-detail__back"
+            routerLink="/admin/access/roles"
+            data-testid="role-not-found-back"
+            >{{ copy.roleDetail.backToRoles }}</a
+          >
+        </section>
+      } @else if (errorView(); as view) {
+        <app-console-error-panel
+          [view]="view"
+          [recordedAt]="failedAt()"
+          (retry)="retry()"
+          data-testid="role-detail-error"
+        />
+      }
+    }
+    @default {
+      <div class="role-detail__loading" aria-busy="true" data-testid="role-detail-loading">
+        <p class="role-detail__loading-text" role="status">{{ copy.roleDetail.loading }}</p>
+        @for (row of skeletonRows; track row) {
+          <nx-skeleton class="role-detail__skeleton" variant="rect" />
+        }
+      </div>
+    }
+  }
+</div>

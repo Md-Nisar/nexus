@@ -11,6 +11,9 @@ export interface BreadcrumbItem {
 /**
  * Breadcrumb trail. Earlier items with a path are links; the last item is plain text marked
  * `aria-current="page"`. The separator is decorative and hidden from assistive technology.
+ *
+ * Every label renders by interpolation inside `<bdi>`, so a user-authored label (a role name, US-020
+ * design §15.3) cannot reorder its neighbours with a direction override.
  */
 @Component({
   selector: 'nx-breadcrumb',
@@ -22,11 +25,17 @@ export interface BreadcrumbItem {
           @for (crumb of crumbs(); track $index) {
             <li class="nx-breadcrumb__item">
               @if (crumb.current) {
-                <span class="nx-breadcrumb__current" aria-current="page">{{ crumb.label }}</span>
+                <span class="nx-breadcrumb__current" aria-current="page"
+                  ><bdi>{{ crumb.label }}</bdi></span
+                >
               } @else if (crumb.path) {
-                <a class="nx-breadcrumb__link" [routerLink]="crumb.path">{{ crumb.label }}</a>
+                <a class="nx-breadcrumb__link" [routerLink]="crumb.path"
+                  ><bdi>{{ crumb.label }}</bdi></a
+                >
               } @else {
-                <span>{{ crumb.label }}</span>
+                <span
+                  ><bdi>{{ crumb.label }}</bdi></span
+                >
               }
             </li>
           }

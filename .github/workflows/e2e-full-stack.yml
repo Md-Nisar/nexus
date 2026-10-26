@@ -22,9 +22,9 @@ permissions:
 
 env:
   COMPOSE: docker compose -f docker-compose.yml -f docker-compose.e2e.yml
-  # Floor for executed tests; `playwright test --list` reports 31. Raise it when specs are added
+  # Floor for executed tests; `playwright test --list` reports 114. Raise it when specs are added
   # so that a spec that stops running cannot go unnoticed.
-  E2E_MIN_TESTS: "31"
+  E2E_MIN_TESTS: "114"
 
 jobs:
   e2e:
@@ -123,6 +123,60 @@ jobs:
             e2e-logs
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Stop Stack
+        if: always()
+        run: $COMPOSE down --volumes
+
+  # US-020 T-004 (design 19.6, ADR-0029, RC-72, D-3). Proves through real nginx that a strong ETag
+  # and If-Match survive the edge: a PUT with the tag answers 409 RBAC_003 (nothing is written),
+  # and the local-edge-only negative control (a weak If-Match) answers 428. First, without
+  # credentials, the SPA shell and a static asset must carry CSP frame-ancestors 'none',
+  # X-Frame-Options, nosniff and Referrer-Policy (review H-1). A separate runner from the
+  # Playwright job, so nginx can own port 2000 here. CI persona mode (NEXUS_SMOKE_CI=1 against a
+  # local edge, never the generic CI): the script reads the dev administrator persona from
+  # e2e/fixtures/personas.ts; no secret is used and none is printed. Nothing is uploaded.
+  edge-etag-smoke:
+    name: edge-etag-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # `backend` brings mysql, redis and flyway-migrate; `frontend` is the nginx image built from
+      # nexus-frontend/nginx.conf, on the edge network address the backend trusts as its proxy.
+      - name: Start Backend And Edge
+        run: $COMPOSE up -d --build backend frontend
+
+      # 401 from /api/ through port 2000 means nginx proxied the request and the backend answered
+      # it (a backend that is not up yet gives 502).
+      - name: Wait For The API Through nginx
+        run: |
+          deadline=$((SECONDS + 300))
+          until [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:2000/api/v1/roles)" = "401" ]; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "API not reachable through nginx after 5 minutes" >&2
+              $COMPOSE ps -a
+              $COMPOSE logs --no-color flyway-migrate backend frontend | tail -n 200
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+
+      - name: Run Edge ETag Smoke With Negative Control
+        working-directory: nexus-frontend
+        env:
+          NEXUS_SMOKE_CI: "1"
+        run: node e2e/tools/etag-edge-smoke.mjs --base http://localhost:2000 --negative-control
 
       - name: Stop Stack
         if: always()

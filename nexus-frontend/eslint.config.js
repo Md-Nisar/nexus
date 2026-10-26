@@ -117,6 +117,30 @@ module.exports = defineConfig([
     },
   },
   {
+    // Flat config replaces rule options per file, so the Material/CDK pattern is repeated here.
+    files: ["src/app/features/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["@angular/material", "@angular/material/*", "@angular/cdk", "@angular/cdk/*"],
+              message: "Import Material/CDK only inside src/app/shared/ui (ADR-0004).",
+            },
+          ],
+          paths: [
+            {
+              name: "@angular/platform-browser",
+              importNames: ["DomSanitizer"],
+              message: "DomSanitizer is forbidden in features (RC-62.1). Bind text, or add a typed component.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     files: ["src/app/shared/ui/**/*.ts"],
     rules: {
       "no-restricted-imports": "off",

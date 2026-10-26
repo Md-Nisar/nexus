@@ -10,8 +10,8 @@ import { PrimaryNav } from './primary-nav';
 class Blank {}
 
 const ITEMS: readonly NavItem[] = [
-  { id: 'dashboard', label: 'Dashboard', path: '/dashboard', icon: 'dashboard', permission: null },
-  { id: 'other', label: 'Other', path: '/other', icon: 'folder', permission: null },
+  { id: 'dashboard', label: 'Dashboard', path: '/dashboard', icon: 'dashboard', anyOf: null },
+  { id: 'other', label: 'Other', path: '/other', icon: 'folder', anyOf: null },
 ];
 
 describe('PrimaryNav', () => {

@@ -746,7 +746,7 @@ public class RoleAssignmentService {
 
   private void countThrottled(String operation) {
     Counter.builder(COUNTER_DENIAL_THROTTLED)
-        .tag("operation", operation)
+        .tag(LOG_KEY_OPERATION, operation)
         .register(meterRegistry)
         .increment();
   }

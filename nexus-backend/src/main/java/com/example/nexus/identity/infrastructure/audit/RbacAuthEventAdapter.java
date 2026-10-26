@@ -67,6 +67,10 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
   private static final Logger log = LoggerFactory.getLogger(RbacAuthEventAdapter.class);
 
   private static final String KEY_OPERATION = "operation";
+  private static final String KEY_TRACE_ID = "traceId";
+  private static final String KEY_ROLE_ID = "roleId";
+  private static final String KEY_ROLE_NAME = "roleName";
+  private static final String RESULT_SUCCESS = "SUCCESS";
 
   /** US-018 A7 (03-design.md §7.2): the fixed {@code actorType} of every break-glass row. */
   private static final String BREAK_GLASS_ACTOR_TYPE = "BREAK_GLASS_CLI";
@@ -167,11 +171,11 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
       Map<String, Object> metadata = new LinkedHashMap<>();
       String traceId = event.requestContext() != null ? event.requestContext().traceId() : null;
       if (traceId != null) {
-        metadata.put("traceId", traceId);
+        metadata.put(KEY_TRACE_ID, traceId);
       }
-      metadata.put("roleId", event.roleId().toString());
+      metadata.put(KEY_ROLE_ID, event.roleId().toString());
       if (event.roleName() != null) {
-        metadata.put("roleName", event.roleName());
+        metadata.put(KEY_ROLE_NAME, event.roleName());
       }
       metadata.put("changedFields", event.changedFields());
       if (event.oldName() != null) {
@@ -185,7 +189,7 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
       }
 
       AuthEvent authEvent =
-          new AuthEvent(uuidGenerator.newId(), AuthEventType.ROLE_UPDATED, "SUCCESS")
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.ROLE_UPDATED, RESULT_SUCCESS)
               .withTenantId(event.tenantId())
               .withIpAddress(event.requestContext() != null ? event.requestContext().ipAddress() : null)
               .withUserAgent(event.requestContext() != null ? event.requestContext().userAgent() : null)
@@ -223,7 +227,7 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
       String metadata = buildMetadataJson(event, actorFieldName);
 
       AuthEvent authEvent =
-          new AuthEvent(uuidGenerator.newId(), eventType, "SUCCESS")
+          new AuthEvent(uuidGenerator.newId(), eventType, RESULT_SUCCESS)
               .withTenantId(event.tenantId())
               .withIpAddress(event.requestContext() != null ? event.requestContext().ipAddress() : null)
               .withUserAgent(event.requestContext() != null ? event.requestContext().userAgent() : null)
@@ -247,13 +251,13 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
     Map<String, Object> metadata = new LinkedHashMap<>();
     String traceId = event.requestContext() != null ? event.requestContext().traceId() : null;
     if (traceId != null) {
-      metadata.put("traceId", traceId);
+      metadata.put(KEY_TRACE_ID, traceId);
     }
     if (event.roleId() != null) {
-      metadata.put("roleId", event.roleId().toString());
+      metadata.put(KEY_ROLE_ID, event.roleId().toString());
     }
     if (event.roleName() != null) {
-      metadata.put("roleName", event.roleName());
+      metadata.put(KEY_ROLE_NAME, event.roleName());
     }
     if (event.permissionId() != null) {
       metadata.put("permissionId", event.permissionId().toString());
@@ -289,7 +293,7 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
       String metadata = buildMetadataJson(event, actorFieldName, null, null, null);
 
       AuthEvent authEvent =
-          new AuthEvent(uuidGenerator.newId(), eventType, "SUCCESS")
+          new AuthEvent(uuidGenerator.newId(), eventType, RESULT_SUCCESS)
               .withUserId(event.targetUserId()) // the subject, matching the LOCKOUT convention
               .withTenantId(event.tenantId())
               .withIpAddress(event.requestContext() != null ? event.requestContext().ipAddress() : null)
@@ -355,7 +359,7 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
   public void recordBreakGlassGrant(BreakGlassAuditEvent event) {
     try {
       AuthEvent authEvent =
-          new AuthEvent(uuidGenerator.newId(), AuthEventType.ROLE_BREAK_GLASS_GRANT, "SUCCESS")
+          new AuthEvent(uuidGenerator.newId(), AuthEventType.ROLE_BREAK_GLASS_GRANT, RESULT_SUCCESS)
               .withUserId(event.targetUserId())
               .withTenantId(event.tenantId())
               .withMetadata(buildBreakGlassMetadataJson(event, null));
@@ -429,9 +433,9 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
         .addKeyValue("event", "RBAC_AUDIT_WRITE_LOST")
         .addKeyValue("tenantId", tenantId)
         .addKeyValue("targetUserId", targetUserId)
-        .addKeyValue("roleId", roleId)
+        .addKeyValue(KEY_ROLE_ID, roleId)
         .addKeyValue("actorUserId", actorUserId)
-        .addKeyValue("traceId", traceId)
+        .addKeyValue(KEY_TRACE_ID, traceId)
         .addKeyValue(KEY_OPERATION, operation)
         .log("RBAC audit write lost: operation={} tenantId={} targetUserId={} roleId={}",
             operation, tenantId, targetUserId, roleId, e);
@@ -452,7 +456,7 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
     log.atError()
         .addKeyValue("event", "RBAC_AUDIT_WRITE_FAILED")
         .addKeyValue("tenantId", tenantId)
-        .addKeyValue("roleId", roleId)
+        .addKeyValue(KEY_ROLE_ID, roleId)
         .addKeyValue("actorUserId", actorUserId)
         .addKeyValue(KEY_OPERATION, operation)
         .log("RBAC audit write failed: operation={} tenantId={} roleId={}",
@@ -479,13 +483,13 @@ public class RbacAuthEventAdapter implements RbacAuditPort {
     Map<String, Object> metadata = new LinkedHashMap<>();
     String traceId = event.requestContext() != null ? event.requestContext().traceId() : null;
     if (traceId != null) {
-      metadata.put("traceId", traceId);
+      metadata.put(KEY_TRACE_ID, traceId);
     }
     if (event.roleId() != null) {
-      metadata.put("roleId", event.roleId().toString());
+      metadata.put(KEY_ROLE_ID, event.roleId().toString());
     }
     if (event.roleName() != null) {
-      metadata.put("roleName", event.roleName());
+      metadata.put(KEY_ROLE_NAME, event.roleName());
     }
     if (reasonName != null) {
       metadata.put("reason", reasonName);

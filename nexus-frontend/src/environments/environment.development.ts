@@ -64,4 +64,13 @@ export const environment = {
    * @default null
    */
   supportContact: null as SupportContact | null,
+
+  /**
+   * Release control for the access management console UI (US-020 design §18, RC-76). On in
+   * development so the console can be built and tested; not an access control.
+   *
+   * @type {boolean}
+   * @default true
+   */
+  accessConsoleEnabled: true,
 } as const;

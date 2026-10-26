@@ -7,6 +7,7 @@ skills:
   - spring-boot-standards
   - angular-standards
   - design-system
+  - critical-decisions
 model: opus
 ---
 
@@ -50,6 +51,13 @@ Save to `docs/features/<FEATURE-ID>/03-design.md`:
 9. **Observability plan** — log fields, metrics, traces, dashboard sketch
 10. **Feature flag strategy** — flag name, default, rollout plan
 11. **Rollout plan** — canary / gradual / instant, with criteria
+12. **Critical decisions** — follow the `critical-decisions` skill:
+    - For every design trigger that fired in `01-requirements.md`: one invariant → mechanism → proof-test row.
+    - If no trigger fired: the single line `none`.
+
+Keep the design proportional:
+- A story with no design triggers gets a short design.
+- Spend detail on the critical decisions, not on restating requirements or code that already exists.
 
 ## Rules
 
@@ -67,3 +75,5 @@ Save to `docs/features/<FEATURE-ID>/03-design.md`:
 - Cargo-cult patterns (microservices, event sourcing, CQRS) without justification
 - Skipping the observability plan
 - Mermaid diagrams that don't render — always sanity-check the syntax
+- Claiming a requirement or AC is satisfied without naming the test that proves it
+- Adding a cache, queue or other new infrastructure without a need from `01-requirements.md` that a lower rung of the `critical-decisions` ladder can't meet
