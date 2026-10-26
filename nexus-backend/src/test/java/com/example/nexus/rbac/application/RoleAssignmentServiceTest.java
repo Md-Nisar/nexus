@@ -3081,6 +3081,26 @@ class RoleAssignmentServiceTest {
   }
 
   @Test
+  void should_assign_when_callerConcurrentlyPromotedToAdministratorWhileAssigningRoleWithPii() {
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+    stubCurrentRolePermissions(PII);
+
+    UUID adminDefiningRoleId = UUID.randomUUID();
+    List<RolePermissionRef> nonAdminHeld = withUserRoleAssign(List.of());
+    List<RolePermissionRef> adminHeld = withUserRoleAssign(wholeCatalogue(adminDefiningRoleId));
+
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(nonAdminHeld)
+        .thenReturn(adminHeld);
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    verify(rbacAuditPort).recordRoleAssigned(any());
+    assertThat(classificationChangedCount("assign")).isZero();
+  }
+
+  @Test
   void should_assign_when_theRoleGainedDirectoryReadWhileWaitingAndTheCallerIsAnAdministrator() {
     stubBenignAssignTarget();
     stubCallerIsAdministrator();

@@ -892,12 +892,21 @@ public class RoleAssignmentService {
     userRoleAssignmentPort
         .lockRolePermissionsForRoles(actor.tenantId(), List.of(role.getId()))
         .forEach(ref -> current.add(ref.permissionId()));
-    boolean isCallerAdmin = callerIsAdministrator(actor, null, heldRolePermissions, target);
+
+    List<RolePermissionRef> effectiveHeld = heldRolePermissions;
+    boolean initialAdmin = callerIsAdministrator(actor, null, heldRolePermissions, target);
+    if (!initialAdmin && current.contains(RbacSeededPermissionIds.USER_DIRECTORY_READ)) {
+      effectiveHeld =
+          userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(
+              actor.userId(), actor.tenantId());
+    }
+    final boolean isCallerAdmin =
+        initialAdmin || RbacAdministrators.isAdministrator(effectiveHeld, target.catalogueIds());
     PiiPermissionGrantRule.Outcome currentPiiGrant =
         piiGrantRule.evaluate(current, () -> isCallerAdmin);
 
     Set<UUID> heldPermissionIds =
-        heldRolePermissions.stream().map(RolePermissionRef::permissionId).collect(Collectors.toSet());
+        effectiveHeld.stream().map(RolePermissionRef::permissionId).collect(Collectors.toSet());
     boolean grantWithinCaller = isCallerAdmin
         || current.stream()
             .filter(p -> !(currentPiiGrant == PiiPermissionGrantRule.Outcome.DELEGATED
