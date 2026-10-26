@@ -72,11 +72,12 @@ describe('PermissionMatrix, read mode (US-020 design §12.3, §13; FR-A6)', () =
     expect(headers.every((th) => th.getAttribute('scope') === 'col')).toBe(true);
   });
 
-  it('starts each resource group with a row header spanning every column', () => {
+  it('starts each resource group with a row-group header spanning every column', () => {
     const groupHeaders = Array.from(table().querySelectorAll('tr[data-group] th'));
     expect(groupHeaders.map((th) => th.textContent?.trim())).toEqual(['Users', 'Roles', 'Other']);
     for (const th of groupHeaders) {
-      expect(th.getAttribute('scope')).toBe('row');
+      // It heads its whole tbody, not just its own row.
+      expect(th.getAttribute('scope')).toBe('rowgroup');
       expect(th.getAttribute('colspan')).toBe('4');
     }
   });

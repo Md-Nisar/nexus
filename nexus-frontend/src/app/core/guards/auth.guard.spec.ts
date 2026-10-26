@@ -26,7 +26,10 @@ import { AppError } from '../../shared/types/app-error';
 describe('authGuard', () => {
   let mockAuthStore: { isAuthenticated: ReturnType<typeof vi.fn> };
   let mockAuthService: { refresh: ReturnType<typeof vi.fn> };
-  let mockUnavailableState: { record: ReturnType<typeof vi.fn> };
+  let mockUnavailableState: {
+    record: ReturnType<typeof vi.fn>;
+    clear: ReturnType<typeof vi.fn>;
+  };
   let mockLogger: { warn: ReturnType<typeof vi.fn> };
 
   const dummyRoute = {} as ActivatedRouteSnapshot;
@@ -44,7 +47,7 @@ describe('authGuard', () => {
   beforeEach(() => {
     mockAuthStore = { isAuthenticated: vi.fn(() => false) };
     mockAuthService = { refresh: vi.fn() };
-    mockUnavailableState = { record: vi.fn() };
+    mockUnavailableState = { record: vi.fn(), clear: vi.fn() };
     mockLogger = { warn: vi.fn() };
 
     TestBed.configureTestingModule({
@@ -79,6 +82,22 @@ describe('authGuard', () => {
     const result = await firstValueFrom(runGuard() as Observable<GuardResult>);
     expect(result).toBe(true);
     expect(mockAuthService.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears the unavailable record once a refresh succeeds (MN-4)', async () => {
+    mockAuthService.refresh.mockReturnValue(of({ accessToken: 'restored-token' }));
+
+    await firstValueFrom(runGuard() as Observable<GuardResult>);
+
+    expect(mockUnavailableState.clear).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the unavailable record when the refresh fails', async () => {
+    mockAuthService.refresh.mockReturnValue(throwError(() => new Error('cookie gone')));
+
+    await firstValueFrom(runGuard() as Observable<GuardResult>);
+
+    expect(mockUnavailableState.clear).not.toHaveBeenCalled();
   });
 
   it('redirects to /auth/login when session is null and refresh cookie is expired/revoked', async () => {

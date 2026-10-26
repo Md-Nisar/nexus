@@ -57,7 +57,8 @@ class DevPersonaSeedIT {
           DevUserSeeder.ROLE_READER_USER_MANAGER_EMAIL,
           DevUserSeeder.AUDITOR_EMAIL,
           DevUserSeeder.TARGET_A_EMAIL,
-          DevUserSeeder.TARGET_B_EMAIL);
+          DevUserSeeder.TARGET_B_EMAIL,
+          DevUserSeeder.HIDDEN_CHARACTER_TARGET_EMAIL);
 
   @Autowired private DevDataInitializer initializer;
   @Autowired private EmailBlindIndexService blindIndex;
@@ -206,7 +207,8 @@ class DevPersonaSeedIT {
         DevUserSeeder.ROLE_READER_USER_MANAGER_EMAIL,
         DevUserSeeder.AUDITOR_EMAIL,
         DevUserSeeder.TARGET_A_EMAIL,
-        DevUserSeeder.TARGET_B_EMAIL);
+        DevUserSeeder.TARGET_B_EMAIL,
+        DevUserSeeder.HIDDEN_CHARACTER_TARGET_EMAIL);
   }
 
   /** Permission names reachable through the user's active assignments to live roles. */

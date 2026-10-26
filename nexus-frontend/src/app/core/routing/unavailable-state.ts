@@ -38,4 +38,9 @@ export class UnavailableState {
       recordedAt: Date.now(),
     });
   }
+
+  /** Forgets the record once a refresh succeeded, so a later visit shows no stale reference. */
+  clear(): void {
+    this.current.set(null);
+  }
 }

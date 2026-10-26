@@ -530,6 +530,47 @@ describe('RoleCreatePage (US-020 design §6.6, §11.3, §12.5)', () => {
       await page.settle();
     });
 
+    it('refuses to leave while the POST is in flight, says why, and lets the create finish (MJ-4)', async () => {
+      ctx = setup();
+      const page = await openCreate(ctx);
+      const prompt = vi.spyOn(TestBed.inject(NxDialog), 'open');
+      const info = vi.spyOn(TestBed.inject(NxToast), 'info').mockImplementation(() => undefined);
+      await fillAndSubmit(page, ['user:read']);
+
+      await expect(ctx.router.navigateByUrl('/admin/access/roles')).resolves.toBe(false);
+
+      expect(prompt).not.toHaveBeenCalled();
+      expect(info).toHaveBeenCalledWith(CONSOLE_COPY.createRole.stillCreating);
+      expect(ctx.router.url).toBe(CREATE);
+      // The page is still there, so the create runs to its end and the list is invalidated.
+      answerCreate(ctx);
+      expectSetGet(ctx).flush({ data: [] }, { headers: { ETag: '"e0"' } });
+      expectPut(ctx).flush(
+        { data: CATALOGUE.filter((p) => p.name === 'user:read') },
+        { headers: { ETag: '"e1"' } },
+      );
+      await page.settle();
+      expect(ctx.invalidate).toHaveBeenCalled();
+      expect(ctx.router.url).toBe(`/admin/access/roles/${NEW_ID}/permissions`);
+      answerRolePage(ctx, ['user:read']);
+      await page.settle();
+    });
+
+    it('invalidates the roles list even when the page goes away with the POST unanswered', async () => {
+      ctx = setup();
+      const page = await openCreate(ctx);
+      await fillAndSubmit(page);
+      ctx.invalidate.mockClear();
+
+      page.harness.fixture.destroy();
+
+      expect(ctx.invalidate).toHaveBeenCalled();
+      const post = ctx.http.expectOne(
+        (candidate) => candidate.method === 'POST' && candidate.url === ROLES_URL,
+      );
+      expect(post.cancelled).toBe(true);
+    });
+
     it('sends a description with markup verbatim and renders nothing of it as HTML (FR-G9)', async () => {
       ctx = setup();
       const { el, settle } = await openCreate(ctx);

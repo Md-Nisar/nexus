@@ -50,7 +50,8 @@ class DevSeedProfileGuardTest {
           DevUserSeeder.ROLE_READER_USER_MANAGER_EMAIL,
           DevUserSeeder.AUDITOR_EMAIL,
           DevUserSeeder.TARGET_A_EMAIL,
-          DevUserSeeder.TARGET_B_EMAIL);
+          DevUserSeeder.TARGET_B_EMAIL,
+          DevUserSeeder.HIDDEN_CHARACTER_TARGET_EMAIL);
   private static final List<String> CATALOGUE_NAMES =
       List.of(
           "role:read",

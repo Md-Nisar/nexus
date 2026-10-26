@@ -13,7 +13,7 @@ import {
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { ReactiveFormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
-import { forkJoin, switchMap, throwError } from 'rxjs';
+import { finalize, forkJoin, switchMap, throwError } from 'rxjs';
 import { AuthStore } from '../../../core/auth/auth.store';
 import { LoggerService } from '../../../core/logging/logger.service';
 import type { PermissionResponse, RoleResponse } from '../../../shared/types/api/rbac';
@@ -452,6 +452,16 @@ export class RoleCreatePage implements OnInit, HasUnsavedChanges {
     return CONSOLE_COPY.createRole.leaveMessage;
   }
 
+  /**
+   * MJ-4: a create in flight (or a partial-create Retry) cannot be abandoned: the server may
+   * already hold the role, and leaving would drop the permissions write and the list refresh.
+   */
+  leaveBlockedMessage(): string | null {
+    const phase = this.phase();
+    const busy = phase.kind === 'creating' || (phase.kind === 'partial' && phase.retrying);
+    return busy ? CONSOLE_COPY.createRole.stillCreating : null;
+  }
+
   protected onToggle(event: MatrixToggle): void {
     if (this.phase().kind !== 'editing') return;
     if (this.affordances().get(event.permissionId)?.kind !== 'enabled') return;
@@ -505,7 +515,12 @@ export class RoleCreatePage implements OnInit, HasUnsavedChanges {
     this.phase.set({ kind: 'creating' });
     this.api
       .createRole({ name, description })
-      .pipe(takeUntilDestroyed(this.destroyRef))
+      .pipe(
+        takeUntilDestroyed(this.destroyRef),
+        // However the POST ends, including the page going away before it answers, the server may
+        // hold a new role: the console's list must be read again.
+        finalize(() => this.roles.invalidate()),
+      )
       .subscribe({
         next: (role) => {
           this.roles.invalidate();

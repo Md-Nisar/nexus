@@ -24,6 +24,9 @@ import org.springframework.transaction.annotation.Transactional;
  * auditor, who sign in, and two ACTIVE assignment targets nobody signs in as: target A holds no
  * role, target B holds one dedicated custom role so its read expectations never move.
  *
+ * <p>The US-020 review adds a PENDING hidden-character target nobody signs in as (RC-68 item 4,
+ * {@link DevUserSeeder#HIDDEN_CHARACTER_TARGET_EMAIL}): no role, never verified.
+ *
  * <p>Runs as one transaction: a partial seed rolls back and completes on the next start. Idempotent
  * through {@link DevUserSeeder} and {@link DevRbacSeeder}. Every persona assignment records the
  * seeded E2E administrator as {@code assigned_by}, never the persona itself, because a
@@ -119,6 +122,11 @@ public class DevDataInitializer implements ApplicationRunner {
     userSeeder.ensureUser(
         defaultTenantId, DevUserSeeder.TARGET_A_EMAIL, DevUserSeeder.State.ACTIVE, report);
     persona(DevUserSeeder.TARGET_B_EMAIL, DevUserSeeder.State.ACTIVE, targetRole, admin, report);
+    userSeeder.ensureUser(
+        defaultTenantId,
+        DevUserSeeder.HIDDEN_CHARACTER_TARGET_EMAIL,
+        DevUserSeeder.State.PENDING,
+        report);
   }
 
   private void persona(

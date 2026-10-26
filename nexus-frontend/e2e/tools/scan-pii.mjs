@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * Fails when any scanned file contains a persona email address or its blind index (US-019 T-027,
- * RC-63(h)), in raw, URL-encoded (`%40`), JSON-escaped (`\u0040`) or HTML-entity form, or a
+ * RC-63(h)), in raw, URL-encoded (`%40`), JSON-escaped (`\u0040`) or HTML-entity form (a non-ASCII
+ * character also as its UTF-8 bytes, JSON escape or percent-encoding), or a
  * generated `e2e-<timestamp>@example.com` registrant address. Zip archives (Playwright traces)
  * and every base64 zip embedded in the HTML report are opened and scanned too.
  *
@@ -141,12 +142,37 @@ function escapeRegExp(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * How a part of an address can appear in a file scanned as latin1: as written, its UTF-8 bytes
+ * (how a non-ASCII character such as the RC-68 target's U+202E really sits in a log or trace),
+ * JSON-escaped (`\u202e`) and URL-encoded (`%e2%80%ae`). Lower-case, as the scan compares.
+ */
+function partForms(part) {
+  const forms = new Set([part]);
+  if (/[^\x00-\x7f]/.test(part)) {
+    forms.add(Buffer.from(part, 'utf8').toString('latin1'));
+    let json = '';
+    for (let i = 0; i < part.length; i += 1) {
+      const unit = part.charCodeAt(i);
+      json += unit < 0x80 ? part[i] : `\\u${unit.toString(16).padStart(4, '0')}`;
+    }
+    forms.add(json);
+    forms.add(
+      [...part].map((ch) => (ch.codePointAt(0) < 0x80 ? ch : encodeURIComponent(ch))).join(''),
+    );
+  }
+  return [...forms].map((form) => form.toLowerCase());
+}
+
 export function needlesFor(emails, key) {
   return [
     ...emails.flatMap((email) => {
       const [local, domain] = email.toLowerCase().split('@');
+      const values = partForms(local).flatMap((l) =>
+        partForms(domain).flatMap((d) => AT_FORMS.map((at) => `${l}${at}${d}`)),
+      );
       return [
-        ...AT_FORMS.map((at) => ({ kind: 'email address', value: `${local}${at}${domain}` })),
+        ...[...new Set(values)].map((value) => ({ kind: 'email address', value })),
         { kind: 'email blind index', value: blindIndex(email, key) },
       ];
     }),

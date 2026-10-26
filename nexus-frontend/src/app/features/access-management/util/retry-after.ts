@@ -25,20 +25,23 @@ const TICK_MS = 1000;
 
 /**
  * A countdown for the control a 429 or 503 refused (design §7.4, FR-X2, FR-X3). There is no
- * automatic retry (RC-63(l)): at zero the control is simply usable again. The timer is cleared
- * when `destroyRef` is destroyed.
+ * automatic retry (RC-63(l)): at zero the control is simply usable again. The seconds left are
+ * computed from a deadline on every tick, so a throttled background tab shows the true wait and
+ * never outlasts the server's window. The timer is cleared when `destroyRef` is destroyed.
  */
 export function createRetryCountdown(destroyRef: DestroyRef): RetryCountdown {
   const remaining = signal(0);
   let handle: ReturnType<typeof setTimeout> | undefined;
+  /** When the wait ends (epoch ms). Every tick reads the clock, so late ticks never drift. */
+  let deadline = 0;
 
   const clear = (): void => {
     if (handle !== undefined) clearTimeout(handle);
     handle = undefined;
   };
   const tick = (): void => {
-    const next = remaining() - 1;
-    remaining.set(Math.max(next, 0));
+    const next = Math.max(Math.ceil((deadline - Date.now()) / TICK_MS), 0);
+    remaining.set(next);
     handle = next > 0 ? setTimeout(tick, TICK_MS) : undefined;
   };
 
@@ -50,6 +53,7 @@ export function createRetryCountdown(destroyRef: DestroyRef): RetryCountdown {
     start(seconds: number): void {
       clear();
       const whole = Math.max(Math.ceil(seconds), 0);
+      deadline = Date.now() + whole * TICK_MS;
       remaining.set(whole);
       if (whole > 0) handle = setTimeout(tick, TICK_MS);
     },

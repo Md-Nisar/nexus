@@ -220,6 +220,32 @@ describe('CatalogueStore (US-020 design §6.4, §6.5)', () => {
       problem(ctx.http.expectOne(url(1)), 500, 'INTERNAL_ERROR');
       expect(ctx.store.state().status).toBe('error');
     });
+
+    it('reads at most 5 pages: up to 500 permissions are read whole', () => {
+      ctx.store.load();
+      ctx.http.expectOne(url(0)).flush(page(['res0:read'], 500));
+
+      const rest = [1, 2, 3, 4].map((n) => ctx.http.expectOne(url(n)));
+      for (const [i, req] of rest.entries()) req.flush(page([`res${i + 1}:read`], 500, i + 1));
+
+      expect(ctx.store.state().status).toBe('ready');
+    });
+
+    it('fails closed with no further request when the server reports more than 5 pages (Low 2)', () => {
+      ctx.store.load();
+      ctx.http.expectOne(url(0)).flush(page(['res0:read'], 100_000));
+
+      // No fan-out to the reported 1,000 pages.
+      ctx.http.expectNone((req) => req.urlWithParams.includes('/v1/permissions'));
+      const state = ctx.store.state();
+      expect(state.status).toBe('error');
+      expect(state.status === 'error' && state.error.code).toBe('CATALOGUE_TOO_LARGE');
+      const tooLarge = ctx.warn.mock.calls.filter(
+        ([, meta]) => meta?.event === 'access_console_catalogue_too_large',
+      );
+      expect(tooLarge).toHaveLength(1);
+      expect(tooLarge[0][1]?.context).toEqual({ area: 'permissions', pages: 1000 });
+    });
   });
 
   describe('unlabelled codes', () => {

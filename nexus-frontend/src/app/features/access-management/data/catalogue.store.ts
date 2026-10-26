@@ -15,6 +15,12 @@ import { RbacApi } from './rbac-api';
 
 /** Permissions per request: the server's maximum page size (design §6.4). */
 const PAGE_SIZE = 100;
+/**
+ * Hard bound on catalogue pages (500 permissions, over fifty times today's nine). A larger
+ * reported count is a faulty or hostile answer, not a catalogue: the load fails closed instead of
+ * fanning out to whatever `totalPages` says (§6.5 request budget).
+ */
+const MAX_PAGES = 5;
 
 /** Permissions of one resource, or `other` for a resource this build has no group label for. */
 export interface PermissionGroup {
@@ -57,7 +63,8 @@ function resourceOf(code: string): string {
  * The permission catalogue for the console (US-020 design §6.4, §6.5), read once per console
  * session: `GET /permissions?page=0&size=100`. The catalogue holds nine entries today, so one
  * request is the norm. If the server reports more than one page, the remaining pages are fetched
- * in parallel and a single defect-signal warn is logged.
+ * in parallel and a single defect-signal warn is logged; more than five pages is an error
+ * (`CATALOGUE_TOO_LARGE`), with no further request, so every change stays off (fail closed).
  *
  * - **All or nothing:** a failing page fails the whole load.
  * - **Unlabelled codes:** a code outside the `Permission` union stays in the data; one warn per
@@ -116,6 +123,10 @@ export class CatalogueStore {
       this.api.listPermissions(0, PAGE_SIZE).subscribe({
         next: (first) => {
           const pages = first.page.totalPages;
+          if (pages > MAX_PAGES) {
+            this.settle(owner, this.tooLarge(pages));
+            return;
+          }
           if (pages <= 1) {
             this.settle(owner, this.toReady([first], first));
             return;
@@ -133,6 +144,19 @@ export class CatalogueStore {
         error: (error: unknown) => this.settle(owner, this.toError(error)),
       }),
     );
+  }
+
+  private tooLarge(pages: number): LoadState<CatalogueData> {
+    const error: AppError = {
+      code: 'CATALOGUE_TOO_LARGE',
+      message: 'The permission catalogue is larger than the console reads.',
+    };
+    this.logger.warn('Access console permission catalogue exceeds the page bound', {
+      event: 'access_console_catalogue_too_large',
+      errorCode: error.code,
+      context: { area: 'permissions', pages },
+    });
+    return { status: 'error', error, failedAt: Date.now() };
   }
 
   private settle(owner: string, state: LoadState<CatalogueData>): void {

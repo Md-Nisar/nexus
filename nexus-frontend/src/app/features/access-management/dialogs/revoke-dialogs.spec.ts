@@ -182,6 +182,7 @@ function setup(options: SetupOptions = {}) {
   const ready = (): boolean => profileStatus() === 'ready';
   const profileStub = {
     state: () => ({ status: profileStatus() }),
+    settled: () => profileStatus() !== 'loading',
     userId: () => (ready() ? callerId : null),
     can: (p: string) => ready() && held.includes(p),
     permissions: () => new Set(ready() ? held : []),
@@ -286,6 +287,13 @@ async function openTab(
   const el = (): HTMLElement => harness.routeNativeElement as HTMLElement;
   const settle = (): Promise<void> => settleAll(harness);
   return { harness, el, settle };
+}
+
+/** MN-1: a completed assign or revoke reads the console's roles list again, exactly once. */
+function answerRolesReread(ctx: Ctx): void {
+  const reread = ctx.http.match(ROLES_URL);
+  expect(reread).toHaveLength(1);
+  reread[0].flush(rolesPage());
 }
 
 type Page = Awaited<ReturnType<typeof openTab>>;
@@ -641,7 +649,7 @@ describe('Revoke dialogs (US-020 design §6.5, §11.4, §12.10; RC-68, D-5, Q16)
   });
 
   describe('request budget (design §6.5)', () => {
-    it('open ×1 GET (0 on a re-open); confirm DELETE ×1, then the list ×1', async () => {
+    it('open ×1 GET (0 on a re-open); confirm DELETE ×1, then the list ×1 and the roles list ×1 (MN-1)', async () => {
       ctx = setup();
       const page = await openTab(ctx);
 
@@ -665,6 +673,7 @@ describe('Revoke dialogs (US-020 design §6.5, §11.4, §12.10; RC-68, D-5, Q16)
       expect(deletes[0].request.method).toBe('DELETE');
       noContent(deletes[0]);
       await page.settle();
+      answerRolesReread(ctx);
       const reread = ctx.http.match(ASSIGNMENTS_URL);
       expect(reread).toHaveLength(1);
       reread[0].flush(assignments(AFTER_SUPPORT));
@@ -684,6 +693,7 @@ describe('Revoke dialogs (US-020 design §6.5, §11.4, §12.10; RC-68, D-5, Q16)
       await page.settle();
       noContent(ctx.http.expectOne(revokeUrl(ID.admin)));
       await page.settle();
+      answerRolesReread(ctx);
       ctx.http.expectOne(ASSIGNMENTS_URL).flush(assignments([assignment(ID.support, 'Support')]));
       await page.settle();
 
@@ -703,6 +713,7 @@ describe('Revoke dialogs (US-020 design §6.5, §11.4, §12.10; RC-68, D-5, Q16)
       await confirmStandard(page, root);
       noContent(ctx.http.expectOne(revokeUrl(ID.support)));
       await page.settle();
+      answerRolesReread(ctx);
       ctx.http.expectOne(ASSIGNMENTS_URL).flush(assignments(AFTER_SUPPORT));
       await page.settle();
 
@@ -717,6 +728,28 @@ describe('Revoke dialogs (US-020 design §6.5, §11.4, §12.10; RC-68, D-5, Q16)
       expect(logged(ctx)).not.toContain('Support');
     });
 
+    it.each([
+      ['204', false],
+      ['404 ROLE_ASSIGNMENT_NOT_FOUND', true],
+    ])('MN-1: re-reads the roles list once after a revoke (%s)', async (_name, converge) => {
+      ctx = setup();
+      const page = await openTab(ctx);
+      const root = await openStandard(ctx, page, ID.support);
+
+      await confirmStandard(page, root);
+      const sent = ctx.http.expectOne(revokeUrl(ID.support));
+      if (converge) problem(sent, 404, 'ROLE_ASSIGNMENT_NOT_FOUND');
+      else noContent(sent);
+      await page.settle();
+
+      const reread = ctx.http.match(ROLES_URL);
+      expect(reread).toHaveLength(1);
+      reread[0].flush(rolesPage());
+      ctx.http.expectOne(ASSIGNMENTS_URL).flush(assignments(AFTER_SUPPORT));
+      await page.settle();
+      ctx.http.expectNone(() => true);
+    });
+
     it('404 ROLE_ASSIGNMENT_NOT_FOUND converges: "already removed" and the same re-read', async () => {
       const setupCtx = setup();
       ctx = setupCtx;
@@ -726,6 +759,7 @@ describe('Revoke dialogs (US-020 design §6.5, §11.4, §12.10; RC-68, D-5, Q16)
       await confirmStandard(page, root);
       problem(ctx.http.expectOne(revokeUrl(ID.support)), 404, 'ROLE_ASSIGNMENT_NOT_FOUND');
       await page.settle();
+      answerRolesReread(ctx);
       ctx.http.expectOne(ASSIGNMENTS_URL).flush(assignments(AFTER_SUPPORT));
       await page.settle();
 
@@ -850,6 +884,7 @@ describe('Revoke dialogs (US-020 design §6.5, §11.4, §12.10; RC-68, D-5, Q16)
       expect(deletes).toHaveLength(1);
       noContent(deletes[0]);
       await page.settle();
+      answerRolesReread(ctx);
       ctx.http.expectOne(ASSIGNMENTS_URL).flush(assignments(AFTER_SUPPORT));
       await page.settle();
     });
@@ -878,6 +913,7 @@ describe('Revoke dialogs (US-020 design §6.5, §11.4, §12.10; RC-68, D-5, Q16)
       await page.settle();
       noContent(ctx.http.expectOne(revokeUrl(ID.admin)));
       await page.settle();
+      answerRolesReread(ctx);
       ctx.http.expectOne(ASSIGNMENTS_URL).flush(assignments([assignment(ID.support, 'Support')]));
       await page.settle();
 
@@ -909,6 +945,7 @@ describe('Revoke dialogs (US-020 design §6.5, §11.4, §12.10; RC-68, D-5, Q16)
       await confirmStandard(page, root);
       noContent(ctx.http.expectOne(revokeUrl(ID.support)));
       await page.settle();
+      answerRolesReread(ctx);
       ctx.http.expectOne(ASSIGNMENTS_URL).flush(assignments(AFTER_SUPPORT));
       await page.settle();
 
@@ -1008,10 +1045,12 @@ describe('own access through the real interceptor chain (RC-65, SD-4)', () => {
     noContent(ctx.http.expectOne(revokeUrl(ID.admin)));
     await settleAll(harness);
 
-    // Both reads leave on the old token and are refused on the bumped epoch.
+    // Every re-read (the list, the profile and, MN-1, the roles list) leaves on the old token and
+    // is refused on the bumped epoch.
     const stale = { code: 'AUTH_003', detail: 'stale', traceId: 't-401' };
     ctx.http.expectOne(ASSIGNMENTS_URL).flush(stale, { status: 401, statusText: 'Unauthorized' });
     ctx.http.expectOne(PROFILE_URL).flush(stale, { status: 401, statusText: 'Unauthorized' });
+    ctx.http.expectOne(ROLES_URL).flush(stale, { status: 401, statusText: 'Unauthorized' });
 
     const refreshes = ctx.http.match((req) => req.method === 'POST' && req.url === REFRESH_URL);
     expect(refreshes).toHaveLength(1);
@@ -1042,6 +1081,9 @@ describe('own access through the real interceptor chain (RC-65, SD-4)', () => {
       permissions: ['user:read'],
       isAdministrator: false,
     });
+    const rolesReplay = ctx.http.expectOne(ROLES_URL);
+    expect(rolesReplay.request.headers.get('Authorization')).toBe('Bearer renewed');
+    rolesReplay.flush(rolesPage());
     await settleAll(harness);
 
     // The one refresh is the interceptor's; the console started none of its own.

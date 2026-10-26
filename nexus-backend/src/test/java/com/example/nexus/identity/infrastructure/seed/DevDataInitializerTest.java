@@ -234,6 +234,18 @@ class DevDataInitializerTest {
   }
 
   @Test
+  void should_seedTheHiddenCharacterTargetPendingWithNoRole_when_seeding() {
+    initializer.run(null);
+
+    User target = userByEmail(DevUserSeeder.HIDDEN_CHARACTER_TARGET_EMAIL, TENANT_ID);
+    assertThat(target.getStatus()).isEqualTo(UserStatus.PENDING);
+    assertThat(rolesHeldBy(DevUserSeeder.HIDDEN_CHARACTER_TARGET_EMAIL)).isEmpty();
+    assertThat(DevUserSeeder.HIDDEN_CHARACTER_TARGET_EMAIL)
+        .contains(Character.toString(0x202E))
+        .endsWith(".invalid");
+  }
+
+  @Test
   void should_leavePendingUserUnverified_when_seeding() {
     initializer.run(null);
 

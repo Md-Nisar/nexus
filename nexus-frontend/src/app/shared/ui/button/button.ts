@@ -59,6 +59,9 @@ import { MatIconModule } from '@angular/material/icon';
  * - `ariaDisabled` is the focusable alternative for a disabled control with a visible reason
  *   (US-020 design §12.0, §13): `aria-disabled="true"`, still in the tab order, activation
  *   swallowed; link the reason text with `ariaDescribedBy`
+ * - `loading` swallows activation the same way, keyboard included (Enter and Space dispatch a
+ *   click on the native button, which `pointer-events: none` does not stop), and sets
+ *   `aria-disabled="true"`, so a busy button can never submit twice
  * - Icon glyphs marked `aria-hidden="true"` prevent semantic duplication
  * - Focus ring via `:focus-visible` pseudo-class ensures visible focus indicator
  * - Loading spinner icon marked `aria-hidden` to avoid duplication of busy state
@@ -77,7 +80,7 @@ export type ButtonSize = 'sm' | 'md' | 'lg';
       [class]="buttonClass()"
       [type]="type()"
       [disabled]="disabled()"
-      [attr.aria-disabled]="ariaDisabled() ? 'true' : null"
+      [attr.aria-disabled]="ariaDisabled() || loading() ? 'true' : null"
       [attr.aria-describedby]="ariaDescribedBy() || null"
       [attr.aria-busy]="loading() ? true : null"
       [attr.aria-label]="ariaLabel() || null"
@@ -171,7 +174,8 @@ export class NxButton {
    *
    * When true:
    * - A spinning icon replaces the `leadingIcon`
-   * - The button may become disabled (via parent logic)
+   * - Activation is swallowed (no `clicked`, no form submission), keyboard included, and
+   *   `aria-disabled="true"` is set; the button stays focusable
    * - `aria-busy="true"` is set for assistive tech
    * - Typically used during async operations (API calls, form submission)
    *
@@ -246,9 +250,9 @@ export class NxButton {
    */
   readonly clicked = output<void>();
 
-  /** Emits `clicked`, unless the button is `ariaDisabled`, which swallows the activation. */
+  /** Emits `clicked`, unless the button is `ariaDisabled` or `loading`: both swallow activation. */
   protected onClick(event: MouseEvent): void {
-    if (this.ariaDisabled()) {
+    if (this.ariaDisabled() || this.loading()) {
       event.preventDefault();
       event.stopPropagation();
       return;

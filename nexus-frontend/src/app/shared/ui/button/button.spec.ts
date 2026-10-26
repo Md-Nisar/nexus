@@ -62,6 +62,57 @@ describe('NxButton', () => {
     expect(icons.some((i) => i.nativeElement.textContent.trim() === 'add')).toBe(true);
   });
 
+  describe('loading swallows activation (keyboard included)', () => {
+    function native(fixture: ReturnType<typeof TestBed.createComponent<NxButton>>) {
+      return fixture.debugElement.query(By.css('[data-testid="nx-button"]'))
+        .nativeElement as HTMLButtonElement;
+    }
+
+    it('does not emit clicked when activated while loading, and marks it aria-disabled', () => {
+      const fixture = TestBed.createComponent(NxButton);
+      fixture.componentRef.setInput('loading', true);
+      fixture.detectChanges();
+      const clicked = vi.fn();
+      const hostClick = vi.fn();
+      fixture.componentInstance.clicked.subscribe(clicked);
+      (fixture.nativeElement as HTMLElement).addEventListener('click', hostClick);
+
+      // Enter or Space on a focused native button dispatches this same click event.
+      native(fixture).click();
+
+      expect(clicked).not.toHaveBeenCalled();
+      expect(hostClick).not.toHaveBeenCalled();
+      expect(native(fixture).getAttribute('aria-disabled')).toBe('true');
+    });
+
+    it('does not submit its form while loading', () => {
+      const fixture = TestBed.createComponent(NxButton);
+      fixture.componentRef.setInput('type', 'submit');
+      fixture.componentRef.setInput('loading', true);
+      fixture.detectChanges();
+      const event = new MouseEvent('click', { bubbles: true, cancelable: true });
+
+      native(fixture).dispatchEvent(event);
+
+      expect(event.defaultPrevented).toBe(true);
+    });
+
+    it('emits clicked again once loading ends', () => {
+      const fixture = TestBed.createComponent(NxButton);
+      fixture.componentRef.setInput('loading', true);
+      fixture.detectChanges();
+      fixture.componentRef.setInput('loading', false);
+      fixture.detectChanges();
+      const clicked = vi.fn();
+      fixture.componentInstance.clicked.subscribe(clicked);
+
+      native(fixture).click();
+
+      expect(clicked).toHaveBeenCalledOnce();
+      expect(native(fixture).hasAttribute('aria-disabled')).toBe(false);
+    });
+  });
+
   describe('ariaDisabled: disabled but focusable (US-020 design §12.0, §13)', () => {
     function native(fixture: ReturnType<typeof TestBed.createComponent<NxButton>>) {
       return fixture.debugElement.query(By.css('[data-testid="nx-button"]'))

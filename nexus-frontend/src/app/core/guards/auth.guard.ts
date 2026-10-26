@@ -59,7 +59,11 @@ export const authGuard: CanActivateFn = (_route, state) => {
   if (authStore.isAuthenticated()) return true;
 
   return authService.refresh().pipe(
-    map(() => true as const),
+    map(() => {
+      // The sign-in is confirmed: an earlier failure's reference and cool-down no longer apply.
+      unavailableState.clear();
+      return true as const;
+    }),
     catchError((error: unknown) => {
       if (isServiceUnavailable(error)) {
         unavailableState.record(error);

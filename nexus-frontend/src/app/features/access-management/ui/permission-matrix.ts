@@ -60,6 +60,7 @@ interface MatrixGroup {
 /** Visible text of each disabled reason (design §14.2). */
 export const AFFORDANCE_REASON_TEXT: Readonly<Record<AffordanceReason, string>> = {
   'profile-unavailable': CONSOLE_COPY.disabledReason.profileUnavailable,
+  'draft-offer-pending': CONSOLE_COPY.disabledReason.draftOfferPending,
   'not-held': CONSOLE_COPY.disabledReason.notHeld,
   'admin-only-directory': CONSOLE_COPY.disabledReason.adminOnlyDirectory,
   'role-exceeds-caller': CONSOLE_COPY.disabledReason.roleExceedsCaller,

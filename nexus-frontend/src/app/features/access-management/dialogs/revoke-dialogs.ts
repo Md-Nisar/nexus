@@ -313,6 +313,9 @@ export class RevokeDialogs {
   /** The propagation lines of a completed revoke (design §9.3), shown by the tab. */
   readonly revoked = output<readonly string[]>();
 
+  /** The person no longer holds the role (a 204 or a convergent 404): member counts changed. */
+  readonly assignmentsChanged = output<void>();
+
   protected readonly copy = CONSOLE_COPY;
   protected readonly titleId = TITLE_ID;
   protected readonly titleStart = TITLE_START;
@@ -511,6 +514,7 @@ export class RevokeDialogs {
     });
     if (!already) this.revoked.emit(propagationFor('revoke'));
     this.store.loadAssignments();
+    this.assignmentsChanged.emit();
     if (active.userId === this.profile.userId()) {
       this.ownAccessChanged(active.variant === 'self');
       return;
@@ -528,9 +532,10 @@ export class RevokeDialogs {
    */
   private ownAccessChanged(leave: boolean): void {
     this.profile.reload('own-access-change');
-    toObservable(this.profile.state, { injector: this.injector })
+    // `settled`, not the state: a re-read keeps the last profile `ready` while it runs.
+    toObservable(this.profile.settled, { injector: this.injector })
       .pipe(
-        first((state) => state.status !== 'loading'),
+        first((settled) => settled),
         takeUntilDestroyed(this.destroyRef),
       )
       .subscribe(() => {

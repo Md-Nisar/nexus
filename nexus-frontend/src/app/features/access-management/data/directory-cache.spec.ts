@@ -76,4 +76,41 @@ describe('DirectoryCache (US-020 design §12.8, FR-X5)', () => {
     authStore.session.set(createAuthSession({ user: createAuthUser({ userId: 'caller-1' }) }));
     expect(cache.email(USER_A)).toBeNull();
   });
+
+  describe('size cap (MN-6)', () => {
+    const id = (n: number): string => `0190a000-0000-7000-8000-${String(n).padStart(12, '0')}`;
+    const many = (from: number, count: number): UserDirectoryEntry[] =>
+      Array.from({ length: count }, (_, i) =>
+        entry(id(from + i), `person-${from + i}@directory.invalid`),
+      );
+
+    it('holds at most 500 addresses, dropping the least recently received first', () => {
+      cache.remember(many(0, 500));
+      cache.remember(many(500, 1));
+
+      expect(cache.email(id(0))).toBeNull();
+      expect(cache.email(id(1))).toBe('person-1@directory.invalid');
+      expect(cache.email(id(500))).toBe('person-500@directory.invalid');
+    });
+
+    it('keeps an address that was received again', () => {
+      cache.remember(many(0, 500));
+      cache.remember([entry(id(0), 'person-0@directory.invalid')]);
+      cache.remember(many(500, 1));
+
+      expect(cache.email(id(0))).toBe('person-0@directory.invalid');
+      expect(cache.email(id(1))).toBeNull();
+    });
+  });
+
+  it("drops the previous user's addresses as soon as the user changes", () => {
+    cache.remember([entry(USER_A, 'a@directory.invalid')]);
+
+    authStore.session.set(createAuthSession({ user: createAuthUser({ userId: 'caller-2' }) }));
+    expect(cache.email(USER_A)).toBeNull();
+    authStore.session.set(createAuthSession({ user: createAuthUser({ userId: 'caller-1' }) }));
+
+    // Gone for good, not merely hidden while someone else was signed in.
+    expect(cache.email(USER_A)).toBeNull();
+  });
 });

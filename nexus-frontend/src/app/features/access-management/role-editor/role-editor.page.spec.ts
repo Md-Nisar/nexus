@@ -122,12 +122,15 @@ function setup(options: SetupOptions = {}) {
   const held = signal<readonly string[]>(options.held ?? ['role:read', 'role:write', 'user:read']);
   const profileStatus = signal<ProfileStatus>(options.profile ?? 'ready');
   const ready = (): boolean => profileStatus() === 'ready';
+  // A re-read of a ready profile keeps its data (stale-while-revalidate) with mutations off.
+  const profileReloading = signal(false);
   const profileStub = {
     state: () => ({ status: profileStatus() }),
+    reloading: profileReloading,
     can: (p: string) => ready() && held().includes(p),
     permissions: () => new Set(ready() ? held() : []),
     isAdministrator: () => ready() && (options.isAdministrator ?? false),
-    mutationsEnabled: () => ready(),
+    mutationsEnabled: () => ready() && !profileReloading(),
     roleIds: () => new Set(ready() ? (options.roleIds ?? []) : []),
     load: vi.fn(),
     reload: vi.fn(),
@@ -200,6 +203,7 @@ function setup(options: SetupOptions = {}) {
     authRefresh,
     profileStub,
     profileStatus,
+    profileReloading,
     held,
     logs,
     announce,
@@ -964,6 +968,31 @@ describe('RoleEditorPage (US-020 design §4.8, §8, §12.4)', () => {
       });
     });
 
+    it('keeps the matrix, the save error and the footer mounted while the profile re-reads (MJ-5)', async () => {
+      const { el, settle } = await stageAndConfirm(['role:write']);
+      refuse(puts()[0], 403, 'RBAC_001', { reason: 'GRANT_EXCEEDS_CALLER' });
+      await settle();
+      const error = inline(el());
+      const matrix = el().querySelector('[data-testid="role-editor"] table');
+      const footer = byTestId(el(), 'role-editor-counts');
+
+      ctx.profileReloading.set(true);
+      await settle();
+
+      expect(byTestId(el(), 'role-editor-loading')).toBeNull();
+      expect(inline(el())).toBe(error);
+      expect(el().querySelector('[data-testid="role-editor"] table')).toBe(matrix);
+      expect(byTestId(el(), 'role-editor-counts')).toBe(footer);
+      // Changes stay off until the re-read answers.
+      expect(box(el(), 'tenant:read')?.getAttribute('aria-disabled')).toBe('true');
+      expect(box(el(), 'role:write')?.getAttribute('aria-disabled')).toBe('true');
+
+      ctx.profileReloading.set(false);
+      await settle();
+      expect(box(el(), 'role:write')?.getAttribute('aria-disabled')).toBeNull();
+      expect(text(byTestId(el(), 'role-editor-counts'))).toBe('1 to add, 0 to remove');
+    });
+
     it('403 ACCESS_DENIED: shows its copy and re-reads the profile', async () => {
       const { el, settle } = await stageAndConfirm(['role:write']);
 
@@ -1220,6 +1249,37 @@ describe('RoleEditorPage (US-020 design §4.8, §8, §12.4)', () => {
       expect(box(el(), 'role:write')?.checked).toBe(false);
       // The pending offer keeps the key.
       expect(stored()).not.toBeNull();
+    });
+
+    it('holds the matrix while the offer is pending, so no new work can be lost or overwritten (MJ-1)', async () => {
+      seedDraft();
+      ctx = setup();
+      const { el, settle } = await openEditor(ctx);
+      const before = sessionStorage.getItem(KEY);
+
+      const row = box(el(), 'role:write') as HTMLInputElement;
+      expect(row.getAttribute('aria-disabled')).toBe('true');
+      const reason = el().querySelector(`[id="${row.getAttribute('aria-describedby')}"]`);
+      expect(text(reason)).toBe(CONSOLE_COPY.disabledReason.draftOfferPending);
+      row.click();
+      await settle();
+
+      expect(text(byTestId(el(), 'role-editor-counts'))).toBe('0 to add, 0 to remove');
+      expect(sessionStorage.getItem(KEY)).toBe(before);
+    });
+
+    it("the offer's Discard releases the matrix and the next change is written as the draft", async () => {
+      seedDraft();
+      ctx = setup();
+      const { el, settle } = await openEditor(ctx);
+
+      button(offer(el()) as HTMLElement, 'role-editor-draft-discard')?.click();
+      await settle();
+      box(el(), 'role:write')?.click();
+      await settle();
+
+      expect(box(el(), 'role:write')?.getAttribute('aria-disabled')).toBeNull();
+      expect(stored()?.add).toEqual([idOf('role:write')]);
     });
 
     it("never offers another user's draft (SD-16)", async () => {

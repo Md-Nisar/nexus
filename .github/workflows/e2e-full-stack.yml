@@ -130,10 +130,12 @@ jobs:
 
   # US-020 T-004 (design 19.6, ADR-0029, RC-72, D-3). Proves through real nginx that a strong ETag
   # and If-Match survive the edge: a PUT with the tag answers 409 RBAC_003 (nothing is written),
-  # and the CI-only negative control (a weak If-Match) answers 428. A separate runner from the
-  # Playwright job, so nginx can own port 2000 here. CI persona mode: the script reads the dev
-  # administrator persona from e2e/fixtures/personas.ts; no secret is used and none is printed.
-  # Nothing is uploaded.
+  # and the local-edge-only negative control (a weak If-Match) answers 428. First, without
+  # credentials, the SPA shell and a static asset must carry CSP frame-ancestors 'none',
+  # X-Frame-Options, nosniff and Referrer-Policy (review H-1). A separate runner from the
+  # Playwright job, so nginx can own port 2000 here. CI persona mode (NEXUS_SMOKE_CI=1 against a
+  # local edge, never the generic CI): the script reads the dev administrator persona from
+  # e2e/fixtures/personas.ts; no secret is used and none is printed. Nothing is uploaded.
   edge-etag-smoke:
     name: edge-etag-smoke
     runs-on: ubuntu-latest
@@ -173,7 +175,7 @@ jobs:
       - name: Run Edge ETag Smoke With Negative Control
         working-directory: nexus-frontend
         env:
-          CI: "true"
+          NEXUS_SMOKE_CI: "1"
         run: node e2e/tools/etag-edge-smoke.mjs --base http://localhost:2000 --negative-control
 
       - name: Stop Stack

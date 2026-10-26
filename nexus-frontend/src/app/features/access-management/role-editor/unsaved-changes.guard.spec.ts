@@ -3,7 +3,13 @@ import { TestBed } from '@angular/core/testing';
 import { ActivatedRouteSnapshot, RouterStateSnapshot } from '@angular/router';
 import { Observable, Subject, firstValueFrom, isObservable } from 'rxjs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { NxDialog } from '../../../shared/ui';
+import { AuthStore } from '../../../core/auth/auth.store';
+import {
+  createAuthSession,
+  createAuthStoreStub,
+  createAuthUser,
+} from '../../../shared/testing/auth.fixtures';
+import { NxDialog, NxToast } from '../../../shared/ui';
 import {
   HasUnsavedChanges,
   beforeUnloadWhileDirty,
@@ -16,8 +22,26 @@ function dialogStub() {
   return { closed, open, dialog: { open } };
 }
 
-function run(component: HasUnsavedChanges, dialog: { open: unknown }) {
-  TestBed.configureTestingModule({ providers: [{ provide: NxDialog, useValue: dialog }] });
+function run(
+  component: HasUnsavedChanges,
+  dialog: { open: unknown },
+  options: { signedIn?: boolean; toast?: { info: unknown } } = {},
+) {
+  TestBed.configureTestingModule({
+    providers: [
+      { provide: NxDialog, useValue: dialog },
+      { provide: NxToast, useValue: options.toast ?? { info: vi.fn() } },
+      {
+        provide: AuthStore,
+        useValue: createAuthStoreStub({
+          session:
+            options.signedIn === false
+              ? null
+              : createAuthSession({ user: createAuthUser({ userId: 'user-1' }) }),
+        }),
+      },
+    ],
+  });
   return runInInjectionContext(TestBed.inject(EnvironmentInjector), () =>
     unsavedChangesGuard(
       component,
@@ -53,6 +77,35 @@ describe('unsavedChangesGuard (US-020 design §4.8)', () => {
     expect(stub.open).toHaveBeenCalledWith(
       expect.objectContaining({ message: 'Nothing is kept.' }),
     );
+  });
+
+  it('leaves without a prompt once the session has ended: logout already deleted the draft (MJ-2)', () => {
+    const stub = dialogStub();
+    const result = run({ hasUnsavedChanges: () => true }, stub.dialog, { signedIn: false });
+    expect(result).toBe(true);
+    expect(stub.open).not.toHaveBeenCalled();
+  });
+
+  it('refuses to leave while a request that cannot be abandoned runs, with a notice (MJ-4)', () => {
+    const stub = dialogStub();
+    const toast = { info: vi.fn() };
+    const result = run(
+      {
+        hasUnsavedChanges: () => true,
+        leaveBlockedMessage: () => 'Still creating the role.',
+      },
+      stub.dialog,
+      { toast },
+    );
+    expect(result).toBe(false);
+    expect(stub.open).not.toHaveBeenCalled();
+    expect(toast.info).toHaveBeenCalledWith('Still creating the role.');
+  });
+
+  it('asks as usual when the page reports nothing blocking', () => {
+    const stub = dialogStub();
+    run({ hasUnsavedChanges: () => true, leaveBlockedMessage: () => null }, stub.dialog);
+    expect(stub.open).toHaveBeenCalledOnce();
   });
 
   it.each([

@@ -534,14 +534,14 @@ Specs are colocated. Pure functions in `copy/` and `util/` have no Angular impor
 | Editor enter | 0 (reuses the detail store's set and ETag) | 0 | `role:write` | Restore re-reads the set ×1 first (§10) |
 | Save | `PUT …/permissions` ×1 (+1 on `RBAC_012`) | — | `role:write` + live `role:read` | 200 returns the new set and ETag; no re-GET. 412: `GET …/permissions` ×1 |
 | Create | `POST /roles` ×1; if any permissions were chosen, + `GET /roles/{id}/permissions` ×1 + `PUT` ×1 | — | `role:write` (+ `role:read`) | Clone: + source `GET …/permissions` ×1 if not cached |
-| Catalogue page | catalogue ×1 if cold | 0 | `role:read` | — |
+| Catalogue page | catalogue ×1 if cold | 0 | `role:read` | More than 5 reported pages is an error with no further request (review Low 2) |
 | Users list | `GET /users?page&size&status` ×1 per page view | — | `user:directory:read` | Lookup: `POST /users/lookup` ×1 per submit only |
-| User page (Roles tab) | `GET /users/{id}` ×1 + `GET /users/{id}/roles?page=0&size=100` ×1 (only with `user:read`) + roles fetch-all (only with `role:read`, reused if `ready`) | 2 | mixed (Q19) | Without `role:read`: no join, a visible note |
-| Assign dialog open | 0 (candidates from `RolesStore`) | 0 | `role:read` for the picker | — |
+| User page (Roles tab) | `GET /users/{id}` ×1 + `GET /users/{id}/roles?page=0&size=100` ×1 (only with `user:read`) + roles fetch-all (only with `role:read`, reused if `ready`) + catalogue ×1 if cold, only for an unverified target and a live profile with `role:read` and `user:role:assign` (review MJ-3: D-4 needs the total) | 2 | mixed (Q19) | Without `role:read`: no join, a visible note |
+| Assign dialog open | 0 (candidates from `RolesStore`) | 0 | `role:read` for the picker | Unverified target after a failed catalogue read: catalogue ×1 (the retry) |
 | Assign: candidate selected | `GET /roles/{id}/permissions` ×1, cached per role id for the dialog's life | 0 for a re-selection | `role:read` | Skipped when the pigeonhole pre-check already disables it (§8.3) |
-| Assign confirm | `POST /users/{id}/roles` ×1 (+1 on `RBAC_012`), then `GET /users/{id}/roles` ×1 | — | `user:role:assign` | — |
+| Assign confirm | `POST /users/{id}/roles` ×1 (+1 on `RBAC_012`), then `GET /users/{id}/roles` ×1 + roles fetch-all ×1 (member counts; only with `role:read`, review MN-1) | — | `user:role:assign` | — |
 | Revoke dialog open | `GET /roles/{id}/permissions` ×1 (only with `role:read`) | 0 if cached | `role:read` | For the "they will lose" summary |
-| Revoke confirm | `DELETE /users/{id}/roles/{roleId}` ×1, then `GET /users/{id}/roles` ×1; self-revoke: + profile ×1 | — | `user:role:assign` | — |
+| Revoke confirm | `DELETE /users/{id}/roles/{roleId}` ×1, then `GET /users/{id}/roles` ×1 + roles fetch-all ×1 (only with `role:read`, review MN-1); self-revoke: + profile ×1 | — | `user:role:assign` | — |
 
 ### 6.6 Forms
 

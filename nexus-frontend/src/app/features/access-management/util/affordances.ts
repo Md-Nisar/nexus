@@ -1,11 +1,16 @@
 import type { RoleResponse } from '../../../shared/types/api/rbac';
+import type { UserDirectoryEntry } from '../../../shared/types/api/user-directory';
 import { isAdminDefiningHint } from './admin-defining-hint';
 
 /**
  * Why a permission row of the editor is disabled (US-020 design §8.3). Each has visible copy.
  */
 export type AffordanceReason =
-  'profile-unavailable' | 'not-held' | 'admin-only-directory' | 'role-exceeds-caller';
+  | 'profile-unavailable'
+  | 'draft-offer-pending'
+  | 'not-held'
+  | 'admin-only-directory'
+  | 'role-exceeds-caller';
 
 /** A row that stays enabled but carries a hint for the Review (Q17: never a block). */
 export type AffordanceHint = 'hint-admin-demotion';
@@ -35,6 +40,11 @@ export interface AffordanceContext {
   readonly directoryReadId: string | null;
   /** The role looks administrator-defining (`isAdminDefiningHint`). */
   readonly adminDefiningHint: boolean;
+  /**
+   * A saved draft is offered for Restore or Discard (editor only, design §10): every row waits,
+   * so new work can neither go unsaved behind the offer nor be replaced by a Restore.
+   */
+  readonly offerPending?: boolean;
 }
 
 const ENABLED: Affordance = { kind: 'enabled' };
@@ -50,7 +60,8 @@ function disabled(reason: AffordanceReason): Affordance {
  * `RoleManagementService.authorizeReplace`:
  *
  * 1. A system role is immutable (`requireMutableRole`): no control at all.
- * 2. The live profile is unavailable: every row disabled (Q8, fail closed).
+ * 2. The live profile is unavailable: every row disabled (Q8, fail closed); then, in the editor,
+ *    a pending draft offer disables every row until Restore or Discard (`draft-offer-pending`).
  * 3. **Add** (the id is not in the role):
  *    - grant-subset: the caller must hold it (`not-held`);
  *    - then the PII rule: only an administrator may add `user:directory:read`
@@ -68,6 +79,7 @@ function disabled(reason: AffordanceReason): Affordance {
 export function permissionAffordance(id: string, ctx: AffordanceContext): Affordance {
   if (ctx.isSystemRole) return NOT_EDITABLE;
   if (!ctx.mutationsEnabled) return disabled('profile-unavailable');
+  if (ctx.offerPending === true) return disabled('draft-offer-pending');
 
   if (!ctx.roleSet.has(id)) {
     if (!ctx.held.has(id)) return disabled('not-held');
@@ -98,7 +110,22 @@ const DIRECTORY_READ = 'user:directory:read';
 
 /** Why a candidate role cannot be assigned (design §8.3 assign table, §14.2). */
 export type AssignReason =
-  'already-assigned' | 'role-needs-more-access' | 'admin-only-directory' | 'pending-admin-role';
+  | 'already-assigned'
+  | 'role-needs-more-access'
+  | 'admin-only-directory'
+  | 'pending-admin-role'
+  | 'pending-catalogue-unknown';
+
+/**
+ * Whether the target gets the unverified-account protections (RC-69 warning and confirm, H-2
+ * block): PENDING, any account whose address is not verified, and an unknown target (fail closed,
+ * so a caller that cannot see the target never gets the standard flow).
+ */
+export function targetNeedsVerification(
+  target: Pick<UserDirectoryEntry, 'status' | 'emailVerified'> | null,
+): boolean {
+  return target === null || target.status === 'PENDING' || !target.emailVerified;
+}
 
 /** Everything the assign rules read. Codes and ids only, never an address. */
 export interface AssignContext {
@@ -109,7 +136,7 @@ export interface AssignContext {
   readonly assignedRoleIds: ReadonlySet<string>;
   /** The catalogue's size, or `null` while it is not known. */
   readonly catalogueTotal: number | null;
-  /** The target has not verified their address (RC-69). */
+  /** The target has not verified their address (RC-69; {@link targetNeedsVerification}). */
   readonly targetIsPending: boolean;
 }
 
@@ -164,8 +191,9 @@ function blocked(reason: AssignReason, missing: readonly string[] = []): AssignA
  * 1. **(a)** the target already holds it: `already-assigned` (a racing `RBAC_004` still converges);
  * 2. **(b) pigeonhole:** the role carries more permissions than the caller holds, so it must carry
  *    one the caller lacks: `role-needs-more-access`, decided **without a request**;
- * 3. **H-2:** a PENDING target and a role treated as administrator-defining (the hint, or every
- *    role while the catalogue total is unknown, D-4): `pending-admin-role`, unless
+ * 3. **H-2:** a PENDING target and a role treated as administrator-defining: while the catalogue
+ *    total is unknown, every role (D-4) with `pending-catalogue-unknown`, as nothing can be
+ *    checked yet; otherwise a hinted role with `pending-admin-role`. Unless
  *    `blockAdminRolesForPending` is off (specs only; after F-4);
  * 4. once `permissions` (the role's codes) are loaded: **(b)** any code the caller does not hold
  *    (`role-needs-more-access` with the codes), then the **PII rule**: `user:directory:read` for a
@@ -187,7 +215,9 @@ export function roleAssignAffordance(
   if (ctx.assignedRoleIds.has(role.id)) return blocked('already-assigned');
   if (role.permissionCount > ctx.held.size) return blocked('role-needs-more-access');
   if (blockAdminRolesForPending && treatedAsAdminForPending(role, ctx)) {
-    return blocked('pending-admin-role');
+    return blocked(
+      knownTotal(ctx.catalogueTotal) === null ? 'pending-catalogue-unknown' : 'pending-admin-role',
+    );
   }
   if (permissions !== null) {
     const missing = permissions.filter((code) => !ctx.held.has(code));

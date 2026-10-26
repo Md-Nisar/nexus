@@ -1,3 +1,4 @@
+import { HttpErrorResponse } from '@angular/common/http';
 import { ErrorHandler, inject, Service } from '@angular/core';
 import { LoggerService } from '../logging/logger.service';
 import { APP_CONFIG } from '../config/app-config';
@@ -5,6 +6,11 @@ import { APP_CONFIG } from '../config/app-config';
 /**
  * Global ErrorHandler that intercepts uncaught runtime exceptions across the application.
  * Normalizes error context and logs the failure to the centralized LoggerService.
+ *
+ * @security The log text is a fixed message: an error's message, a thrown value's content, a
+ * response body or a query string can carry user data, and the logger's redaction only sees
+ * context keys, never the message (RC-73, T-I27). The stack stays in context, which the logger
+ * drops in production.
  */
 @Service()
 export class GlobalErrorHandler implements ErrorHandler {
@@ -33,25 +39,42 @@ export class GlobalErrorHandler implements ErrorHandler {
       return;
     }
 
-    const errorType = this.getErrorType(error);
-    const message = this.getErrorMessage(error);
-    const stack = this.getErrorStack(error);
-
     // In development mode, print the raw error to console for standard developer debugging.
     if (!this.config.production) {
       // eslint-disable-next-line no-console
       console.error(error);
     }
 
-    // Log the error through the structured logging service
-    this.logger.error(`Unhandled runtime exception: ${message}`, {
+    // An HTTP failure that escaped its subscription: status and path only, never the query
+    // string or the server's body.
+    if (error instanceof HttpErrorResponse) {
+      this.logger.error('Unhandled HTTP error response', {
+        event: 'unhandled_exception',
+        outcome: 'FAILURE',
+        errorType: 'HttpErrorResponse',
+        context: { status: error.status, path: this.pathOf(error.url) },
+      });
+      return;
+    }
+
+    this.logger.error('Unhandled runtime exception', {
       event: 'unhandled_exception',
       outcome: 'FAILURE',
-      errorType,
+      errorType: this.getErrorType(error),
       context: {
-        stack: stack || undefined,
+        stack: this.getErrorStack(error) || undefined,
       },
     });
+  }
+
+  /** The path of a request URL, without its origin, query or fragment; `null` when unparsable. */
+  private pathOf(url: string | null): string | null {
+    if (url === null) return null;
+    try {
+      return new URL(url, 'http://path.invalid').pathname;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -79,23 +102,6 @@ export class GlobalErrorHandler implements ErrorHandler {
       return error.constructor.name || 'Object';
     }
     return typeof error;
-  }
-
-  /**
-   * Extracts a safe descriptive message from the error.
-   */
-  private getErrorMessage(error: unknown): string {
-    if (error instanceof Error) {
-      return error.message;
-    }
-    if (typeof error === 'string') {
-      return error;
-    }
-    try {
-      return JSON.stringify(error);
-    } catch {
-      return String(error);
-    }
   }
 
   /**

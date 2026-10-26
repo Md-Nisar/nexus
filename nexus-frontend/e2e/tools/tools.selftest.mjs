@@ -15,6 +15,7 @@ import {
   parseArgs,
   resolveCredentials,
   runSmoke,
+  securityHeaderProblems,
 } from './etag-edge-smoke.mjs';
 import { blindIndex, needlesFor, scan, zipEntries } from './scan-pii.mjs';
 
@@ -104,6 +105,19 @@ test('a URL-encoded, JSON-escaped or entity-encoded address fails', () => {
     const dir = write('access.log', `GET /v1/users?email=${form} 200\n`);
     assert.equal(scan([dir], needles).length, 1, form);
   }
+});
+
+test('an address with a non-ASCII character fails as UTF-8, JSON-escaped or URL-encoded', () => {
+  // U+202E written as an escape: the hidden-character target (RC-68) must be scanned for too.
+  const hidden = needlesFor(['Hidden\u202eTarget@scan.invalid'], KEY);
+  for (const [name, content] of [
+    ['utf8.log', Buffer.from('user hidden\u202etarget@scan.invalid signed in', 'utf8')],
+    ['json.log', '{"email":"hidden\\u202Etarget@scan.invalid"}'],
+    ['url.log', 'GET /x?email=hidden%E2%80%AEtarget%40scan.invalid'],
+  ]) {
+    assert.equal(scan([write(name, content)], hidden).length, 1, name);
+  }
+  assert.deepEqual(scan([write('clean.log', 'hiddentarget@scan.invalid')], hidden), []);
 });
 
 test('a generated registrant address fails in raw and encoded form', () => {
@@ -303,10 +317,18 @@ test('D-3 (a): an administrator or any permission beyond role:read and role:writ
   assert.equal(identityVerdict(null).allowed, false);
 });
 
-test('D-3 (b): --negative-control is refused with CI unset against a remote host', () => {
+test('D-3 (b): --negative-control runs only against a local edge, whatever the environment', () => {
   assert.equal(negativeControlAllowed({}, 'https://edge.nexus.invalid'), false);
   assert.equal(negativeControlAllowed({ CI: 'false' }, 'https://edge.nexus.invalid'), false);
-  assert.equal(negativeControlAllowed({ CI: 'true' }, 'https://edge.nexus.invalid'), true);
+  // A generic CI flag (set by many local tools) or the CI-persona flag never opens a remote host.
+  assert.equal(negativeControlAllowed({ CI: 'true' }, 'https://edge.nexus.invalid'), false);
+  assert.equal(
+    negativeControlAllowed(
+      { CI: 'true', GITHUB_ACTIONS: 'true', NEXUS_SMOKE_CI: '1' },
+      'https://edge.nexus.invalid',
+    ),
+    false,
+  );
   for (const base of [
     'http://localhost:2000',
     'http://127.0.0.1:2000',
@@ -355,19 +377,39 @@ test('a base URL with credentials, a path or plain http to a remote host is refu
   assert.throws(() => parseArgs(['--base', 'http://edge.nexus.invalid']));
 });
 
-test('credentials come only from NEXUS_SMOKE_*, or the persona in CI', async () => {
+test('credentials come only from NEXUS_SMOKE_*, or the persona in the CI workflow', async () => {
   const persona = async () => ({ user: 'persona-user', password: 'persona-pass' });
+  const local = 'http://localhost:2000';
+  const remote = 'https://edge.nexus.invalid';
   assert.deepEqual(
-    await resolveCredentials({ NEXUS_SMOKE_USER: 'u', NEXUS_SMOKE_PASSWORD: 'p' }, persona),
+    await resolveCredentials({ NEXUS_SMOKE_USER: 'u', NEXUS_SMOKE_PASSWORD: 'p' }, remote, persona),
     { mode: 'env', user: 'u', password: 'p' },
   );
-  assert.deepEqual(await resolveCredentials({ CI: 'true' }, persona), {
+  assert.deepEqual(await resolveCredentials({ NEXUS_SMOKE_CI: '1' }, local, persona), {
     mode: 'ci-persona',
     user: 'persona-user',
     password: 'persona-pass',
   });
-  await assert.rejects(resolveCredentials({}, persona));
-  await assert.rejects(resolveCredentials({ CI: 'true', NEXUS_SMOKE_USER: 'u' }, persona));
+  await assert.rejects(resolveCredentials({}, local, persona));
+  await assert.rejects(
+    resolveCredentials({ NEXUS_SMOKE_CI: '1', NEXUS_SMOKE_USER: 'u' }, local, persona),
+  );
+});
+
+test('D-3: a generic CI flag never enables persona mode; the CI flag needs a local edge', async () => {
+  let loaded = 0;
+  const persona = async () => {
+    loaded += 1;
+    return { user: 'persona-user', password: 'persona-pass' };
+  };
+  const local = 'http://localhost:2000';
+  await assert.rejects(resolveCredentials({ CI: 'true' }, local, persona));
+  await assert.rejects(resolveCredentials({ GITHUB_ACTIONS: 'true' }, local, persona));
+  await assert.rejects(resolveCredentials({ NEXUS_SMOKE_CI: 'true' }, local, persona));
+  await assert.rejects(
+    resolveCredentials({ NEXUS_SMOKE_CI: '1' }, 'https://edge.nexus.invalid', persona),
+  );
+  assert.equal(loaded, 0, 'the persona must not even be read outside CI persona mode');
 });
 
 // A fixture edge: answers the smoke's requests the way nginx plus the backend do.
@@ -380,11 +422,22 @@ const SECRET = {
   roleId: '0190a000-0000-7000-8000-00000000a001',
 };
 
+const EDGE_HEADERS = Object.freeze({
+  'content-security-policy': "default-src 'self'; object-src 'none'; frame-ancestors 'none'",
+  'x-frame-options': 'DENY',
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'strict-origin-when-cross-origin',
+});
+const ASSET = '/main-FIXTURE1.js';
+
 function fixtureEdge({
   profile = { permissions: ['role:read', 'role:write'], isAdministrator: false },
   etag = SECRET.etag,
   permissionCount = 9,
   failOn = null,
+  shellHeaders = EDGE_HEADERS,
+  assetHeaders = EDGE_HEADERS,
+  shellBody = `<!doctype html><html><head><base href="/"></head><body><app-root></app-root><script src="${ASSET.slice(1)}" type="module"></script></body></html>`,
 } = {}) {
   const calls = [];
   const permissions = Array.from({ length: permissionCount }, (_, i) => ({
@@ -405,6 +458,18 @@ function fixtureEdge({
     const headers = new Headers(init.headers);
     calls.push({ method, path: pathname, headers, body: init.body });
     if (failOn === pathname) throw new TypeError('fetch failed');
+    if (method === 'GET' && pathname === '/admin/access') {
+      return new Response(shellBody, {
+        status: 200,
+        headers: { 'content-type': 'text/html', ...shellHeaders },
+      });
+    }
+    if (method === 'GET' && pathname === ASSET) {
+      return new Response('export {};', {
+        status: 200,
+        headers: { 'content-type': 'application/javascript', ...assetHeaders },
+      });
+    }
     const authed = headers.get('authorization') === `Bearer ${SECRET.token}`;
     if (method === 'POST' && pathname === '/api/v1/auth/login') {
       const body = JSON.parse(init.body);
@@ -572,5 +637,203 @@ test('fixture run: a failed login sends nothing else', async () => {
     { credentials: { mode: 'env', user: SECRET.user, password: 'wrong-fixture-password' } },
   );
   assert.equal(code, 1);
-  assert.equal(calls.length, 1);
+  assert.equal(calls.filter((c) => c.path.startsWith('/api/')).length, 1);
+});
+
+// ---- US-020 review H-1: every edge response keeps the security headers ----
+
+test('security headers: the full set passes; each missing or weakened one is named', () => {
+  assert.deepEqual(securityHeaderProblems(new Headers(EDGE_HEADERS)), []);
+  for (const name of Object.keys(EDGE_HEADERS)) {
+    const headers = new Headers(EDGE_HEADERS);
+    headers.delete(name);
+    assert.deepEqual(securityHeaderProblems(headers), [name], name);
+  }
+  const framable = new Headers({
+    ...EDGE_HEADERS,
+    'content-security-policy': "default-src 'self'",
+  });
+  assert.deepEqual(securityHeaderProblems(framable), ['content-security-policy']);
+  const sameOrigin = new Headers({ ...EDGE_HEADERS, 'x-frame-options': 'SAMEORIGIN' });
+  assert.deepEqual(securityHeaderProblems(sameOrigin), ['x-frame-options']);
+});
+
+test('fixture run: the SPA shell and a static asset are checked first, without credentials', async () => {
+  const { code, output, calls } = await fixtureRun();
+  assert.equal(code, 0, output);
+  const shell = calls.findIndex((c) => c.path === '/admin/access');
+  const asset = calls.findIndex((c) => c.path === ASSET);
+  const login = calls.findIndex((c) => c.path === '/api/v1/auth/login');
+  assert.ok(shell >= 0 && asset >= 0 && shell < login && asset < login, output);
+  assert.equal(calls[shell].headers.get('authorization'), null);
+  assert.equal(calls[asset].headers.get('authorization'), null);
+  assert.match(output, /edge headers: shell 200, asset 200/);
+});
+
+test('fixture run: a shell without frame-ancestors fails before any login', async () => {
+  const { code, output, calls } = await fixtureRun({
+    shellHeaders: { ...EDGE_HEADERS, 'content-security-policy': "default-src 'self'" },
+  });
+  assert.equal(code, 1);
+  assert.match(output, /shell .*content-security-policy/);
+  assert.ok(!calls.some((c) => c.path.startsWith('/api/')));
+});
+
+test('fixture run: a static asset without X-Frame-Options fails before any login', async () => {
+  const assetHeaders = { ...EDGE_HEADERS };
+  delete assetHeaders['x-frame-options'];
+  const { code, output, calls } = await fixtureRun({ assetHeaders });
+  assert.equal(code, 1);
+  assert.match(output, /asset .*x-frame-options/);
+  assert.ok(!calls.some((c) => c.path.startsWith('/api/')));
+});
+
+test('fixture run: a shell that references no script fails', async () => {
+  const { code, output } = await fixtureRun({ shellBody: '<!doctype html><html></html>' });
+  assert.equal(code, 1);
+  assert.match(output, /no static asset/);
+});
+
+/** Top-level directives of a block body (nested blocks skipped), normalised; quote-aware. */
+function topLevelDirectives(block) {
+  const out = [];
+  let depth = 0;
+  let statement = '';
+  let quote = null;
+  for (const ch of block) {
+    if (quote) {
+      if (depth === 0) statement += ch;
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      if (depth === 0) statement += ch;
+      continue;
+    }
+    if (ch === '{') {
+      if (depth === 0) statement = '';
+      depth += 1;
+      continue;
+    }
+    if (ch === '}') {
+      depth -= 1;
+      statement = '';
+      continue;
+    }
+    if (depth > 0) continue;
+    if (ch === ';') {
+      out.push(statement.trim().split(/\s+/).join(' '));
+      statement = '';
+    } else {
+      statement += ch;
+    }
+  }
+  return out;
+}
+
+/** Every `location <matcher> { body }` of the config, nested ones included. */
+function locationBlocks(conf) {
+  const text = stripNginxComments(conf);
+  const found = [];
+  const open = /(^|[\s;{}])location\s+([^{;]+?)\s*\{/g;
+  for (let match = open.exec(text); match !== null; match = open.exec(text)) {
+    const start = match.index + match[0].length;
+    let depth = 1;
+    for (let i = start; i < text.length; i += 1) {
+      if (text[i] === '{') depth += 1;
+      if (text[i] === '}') depth -= 1;
+      if (depth === 0) {
+        found.push({ matcher: match[2].trim(), body: text.slice(start, i) });
+        break;
+      }
+    }
+  }
+  return found;
+}
+
+function serverBlock(conf) {
+  const text = stripNginxComments(conf);
+  const open = /(^|[\s;{}])server\s*\{/.exec(text);
+  if (!open) return null;
+  const start = open.index + open[0].length;
+  let depth = 1;
+  for (let i = start; i < text.length; i += 1) {
+    if (text[i] === '{') depth += 1;
+    if (text[i] === '}') depth -= 1;
+    if (depth === 0) return text.slice(start, i);
+  }
+  return null;
+}
+
+const SNIPPET_INCLUDE = 'include snippets/nexus-security-headers.conf';
+
+/**
+ * nginx drops every inherited `add_header` in a block that sets one of its own, so the server and
+ * every location that sets a header must include the security snippet. Returns the offenders.
+ */
+function headerInheritanceProblems(conf) {
+  const problems = [];
+  const server = serverBlock(conf);
+  if (server === null || !topLevelDirectives(server).includes(SNIPPET_INCLUDE)) {
+    problems.push('server');
+  }
+  for (const { matcher, body } of locationBlocks(conf)) {
+    const directives = topLevelDirectives(body);
+    if (
+      directives.some((d) => d.startsWith('add_header ')) &&
+      !directives.includes(SNIPPET_INCLUDE)
+    ) {
+      problems.push(`location ${matcher}`);
+    }
+  }
+  return problems;
+}
+
+test('nginx.conf: the server and every location that sets a header include the security snippet', () => {
+  const conf = readFileSync(new URL('../../nginx.conf', import.meta.url), 'utf8');
+  assert.deepEqual(headerInheritanceProblems(conf), []);
+  // The two locations the audit found stripped keep their own Cache-Control.
+  const located = locationBlocks(conf);
+  for (const matcher of ['/', '~* \\.(?:js|css|woff2?)$']) {
+    const block = located.find((l) => l.matcher === matcher);
+    assert.ok(block, `location ${matcher} is missing`);
+    assert.ok(topLevelDirectives(block.body).includes(SNIPPET_INCLUDE), matcher);
+  }
+});
+
+test('a location with its own add_header and no snippet fails the static check', () => {
+  const conf = `
+server {
+    include snippets/nexus-security-headers.conf;
+    location /api/ { proxy_pass http://backend:1000/api/; }
+    location / {
+        add_header Cache-Control "no-store";
+        # include snippets/nexus-security-headers.conf;
+    }
+}
+`;
+  assert.deepEqual(headerInheritanceProblems(conf), ['location /']);
+  assert.deepEqual(headerInheritanceProblems('server { location / { } }'), ['server']);
+});
+
+test('the security snippet sets CSP with frame-ancestors, X-Frame-Options, nosniff and Referrer-Policy', () => {
+  const snippet = stripNginxComments(
+    readFileSync(new URL('../../nginx/nexus-security-headers.conf', import.meta.url), 'utf8'),
+  );
+  const headers = new Headers();
+  for (const directive of topLevelDirectives(snippet)) {
+    const match = /^add_header (\S+) "([^"]*)" always$/.exec(directive);
+    assert.ok(match, `not an "add_header <name> "<value>" always" line: ${directive}`);
+    headers.set(match[1], match[2]);
+  }
+  assert.deepEqual(securityHeaderProblems(headers), []);
+});
+
+test('the image installs the snippet where nginx.conf includes it from', () => {
+  const dockerfile = readFileSync(new URL('../../Dockerfile', import.meta.url), 'utf8');
+  assert.match(
+    dockerfile,
+    /^COPY nginx\/nexus-security-headers\.conf \/etc\/nginx\/snippets\/nexus-security-headers\.conf$/m,
+  );
 });

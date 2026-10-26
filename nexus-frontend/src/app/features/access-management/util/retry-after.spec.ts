@@ -53,6 +53,22 @@ describe('createRetryCountdown', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('counts against a deadline, so a late tick (a throttled background tab) does not drift (MN-11)', () => {
+    const countdown = createRetryCountdown(destroyRef);
+    countdown.start(30);
+
+    // The clock moves on while no timer fires, as in a hidden tab, then one tick runs.
+    vi.setSystemTime(Date.now() + 10_000);
+    vi.advanceTimersByTime(1000);
+
+    expect(countdown.remaining()).toBe(19);
+    vi.setSystemTime(Date.now() + 60_000);
+    vi.advanceTimersByTime(1000);
+    expect(countdown.remaining()).toBe(0);
+    expect(countdown.active()).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('restarts from the new value when started again', () => {
     const countdown = createRetryCountdown(destroyRef);
     countdown.start(5);

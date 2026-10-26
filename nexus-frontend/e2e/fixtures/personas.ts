@@ -14,13 +14,14 @@ export type PersonaKey =
   | 'roleReaderUserManager'
   | 'auditor'
   | 'targetA'
-  | 'targetB';
+  | 'targetB'
+  | 'hiddenCharacterTarget';
 
 export interface Persona {
   readonly email: string;
   /**
    * False when the account cannot obtain a session (locked, pending, second tenant) or must never
-   * be signed in as (the ACTIVE assignment targets, which only receive and lose roles).
+   * be signed in as (the assignment targets, which only receive and lose roles).
    */
   readonly canSignIn: boolean;
 }
@@ -40,6 +41,15 @@ export const PERSONAS: Readonly<Record<PersonaKey, Persona>> = {
   auditor: { email: 'auditor@example.com', canSignIn: true },
   targetA: { email: 'target-a@example.com', canSignIn: false },
   targetB: { email: 'target-b@example.com', canSignIn: false },
+  /**
+   * RC-68 item 4: a PENDING target whose synthetic `.invalid` address carries U+202E (written as
+   * an escape, so this file holds no invisible character). Seeded by `DevUserSeeder`, below the
+   * registration validation, so the e2e never depends on registration accepting it (F-5).
+   */
+  hiddenCharacterTarget: {
+    email: 'e2e-rc68-seeded\u202etxt@hidden-characters.invalid',
+    canSignIn: false,
+  },
 };
 
 /** Personas that can sign in, in a stable order. */

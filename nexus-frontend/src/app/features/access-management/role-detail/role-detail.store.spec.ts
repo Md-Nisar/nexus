@@ -257,6 +257,8 @@ describe('RoleDetailStore (US-020 design §6.5, §7.1, §7.2)', () => {
       ctx.store.refresh();
 
       flushBoth('"v2"');
+      expect(ctx.http.match(roleUrl())).toHaveLength(0);
+      expect(ctx.http.match(setUrl())).toHaveLength(0);
     });
 
     it('switches saving off when the refreshed tag is weak', () => {

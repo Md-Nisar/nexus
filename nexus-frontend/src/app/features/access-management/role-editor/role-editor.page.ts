@@ -413,6 +413,8 @@ export class RoleEditorPage implements HasUnsavedChanges {
       mutationsEnabled: this.profile.mutationsEnabled(),
       directoryReadId: catalogue.byName.get(DIRECTORY_READ)?.id ?? null,
       adminDefiningHint: this.adminDefining(),
+      // MJ-1: while a draft is offered, new work would neither be kept nor survive a Restore.
+      offerPending: this.offer() !== null,
     };
     return new Map([...this.shown().keys()].map((id) => [id, permissionAffordance(id, ctx)]));
   });
@@ -562,6 +564,9 @@ export class RoleEditorPage implements HasUnsavedChanges {
       .subscribe({
         next: (set) => {
           this.restoring.set(false);
+          // The offer goes first: while it is pending every row is held, and the rebase below
+          // keeps only what the rows allow once it is gone.
+          this.draftOffer.set(null);
           this.detail.applySet(roleId, set);
           const result = rebase(
             { add: new Set(draft.add), remove: new Set(draft.remove) },
@@ -569,7 +574,6 @@ export class RoleEditorPage implements HasUnsavedChanges {
             null,
           );
           const { intent, dropped } = this.dropUnchangeable(result.intent);
-          this.draftOffer.set(null);
           this.staged.set({ roleId, intent });
           this.feedback.set({
             roleId,

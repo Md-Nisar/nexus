@@ -25,6 +25,8 @@ export interface AuthorizationProfile {
 interface OwnedState {
   readonly owner: string | null;
   readonly state: LoadState<AuthorizationProfile>;
+  /** A re-read runs while the last `ready` profile stays on screen (stale-while-revalidate). */
+  readonly reloading: boolean;
 }
 
 const IDLE: LoadState<AuthorizationProfile> = { status: 'idle' };
@@ -45,8 +47,12 @@ function isPermission(name: string): name is Permission {
  * - **Lifetime:** provided on the console's layout route. `AccessConsoleLayout` calls {@link load}
  *   once per console entry; child navigation does not, so it is one `GET` per entry (§6.5).
  * - **Coalescing:** one request in flight per user; a `load` or `reload` while it runs joins it.
+ * - **Stale-while-revalidate:** a re-read of a `ready` profile keeps it (the same state object) on
+ *   screen and sets {@link reloading}, so pages do not unmount behind a skeleton and focus is kept.
+ *   Only the first read, or one after a failure, is `loading`.
  * - **Fail closed (Q8):** `mutationsEnabled` is true only while a profile for the signed-in user is
- *   `ready`. Loading, any failure, and a different or absent user all turn every change off.
+ *   `ready` and not being re-read. Loading, reloading, any failure, an answer for another user id,
+ *   and a different or absent user all turn every change off.
  * - **User change (DQ-7):** state is keyed by the `AuthStore` user id, so another user never sees
  *   this profile, even before anything reloads; a read for a new user cancels the old one.
  * - **Never refreshes the session** (RC-65, ADR-0028 decision 5): after an own-access change the
@@ -62,7 +68,7 @@ export class AuthorizationProfileStore {
   private readonly logger = inject(LoggerService);
   private readonly destroyRef = inject(DestroyRef);
 
-  private readonly owned = signal<OwnedState>({ owner: null, state: IDLE });
+  private readonly owned = signal<OwnedState>({ owner: null, state: IDLE, reloading: false });
   private inFlight: { readonly owner: string; readonly subscription: Subscription } | null = null;
 
   private readonly currentUserId = computed(() => this.authStore.currentUser()?.userId ?? null);
@@ -83,8 +89,17 @@ export class AuthorizationProfileStore {
   readonly permissions = computed(() => this.profile()?.permissions ?? NO_PERMISSIONS);
   readonly roleIds = computed(() => this.profile()?.roleIds ?? NO_ROLES);
 
-  /** True only when the live profile is `ready`: every mutating control is off otherwise. */
-  readonly mutationsEnabled = computed(() => this.state().status === 'ready');
+  /** A re-read of the signed-in user's `ready` profile is running; the old data stays shown. */
+  readonly reloading = computed(() => {
+    const { owner, reloading } = this.owned();
+    return reloading && owner !== null && owner === this.currentUserId();
+  });
+
+  /** No read is running for the signed-in user: neither a first load nor a re-read. */
+  readonly settled = computed(() => this.state().status !== 'loading' && !this.reloading());
+
+  /** True only while the live profile is `ready` and settled; every change is off otherwise. */
+  readonly mutationsEnabled = computed(() => this.state().status === 'ready' && !this.reloading());
 
   constructor() {
     this.destroyRef.onDestroy(() => this.cancel());
@@ -114,18 +129,23 @@ export class AuthorizationProfileStore {
     if (owner === null) {
       // Signed out: nothing to read, and nothing may stay visible.
       this.cancel();
-      this.owned.set({ owner: null, state: IDLE });
+      this.owned.set({ owner: null, state: IDLE, reloading: false });
       return;
     }
     if (this.inFlight?.owner === owner) return;
 
     this.cancel();
-    this.owned.set({ owner, state: LOADING });
+    const current = this.owned();
+    if (current.owner === owner && current.state.status === 'ready') {
+      this.owned.set({ owner, state: current.state, reloading: true });
+    } else {
+      this.owned.set({ owner, state: LOADING, reloading: false });
+    }
     const subscription = this.api
       .getMyAuthorization()
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({
-        next: (body) => this.settle(owner, this.toReady(body)),
+        next: (body) => this.settle(owner, this.toReady(owner, body)),
         error: (error: unknown) => this.settle(owner, this.toError(error)),
       });
     if (!subscription.closed) this.inFlight = { owner, subscription };
@@ -133,7 +153,7 @@ export class AuthorizationProfileStore {
 
   private settle(owner: string, state: LoadState<AuthorizationProfile>): void {
     this.inFlight = null;
-    this.owned.set({ owner, state });
+    this.owned.set({ owner, state, reloading: false });
   }
 
   private cancel(): void {
@@ -141,7 +161,23 @@ export class AuthorizationProfileStore {
     this.inFlight = null;
   }
 
-  private toReady(body: CallerAuthorizationResponse): LoadState<AuthorizationProfile> {
+  private toReady(
+    owner: string,
+    body: CallerAuthorizationResponse,
+  ): LoadState<AuthorizationProfile> {
+    if (body.userId !== owner) {
+      // A cache or proxy answered with someone else's profile: show nothing of it (fail closed).
+      const error: AppError = {
+        code: 'PROFILE_OWNER_MISMATCH',
+        message: 'The access profile belongs to another user.',
+      };
+      this.logger.warn('Access console profile belongs to another user', {
+        event: 'access_console_profile_owner_mismatch',
+        errorCode: error.code,
+        context: { area: 'profile' },
+      });
+      return { status: 'error', error, failedAt: Date.now() };
+    }
     const known = body.permissions.filter(isPermission);
     const unknown = body.permissions.filter((name) => !isPermission(name));
     if (unknown.length > 0) {

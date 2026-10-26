@@ -4,8 +4,11 @@ import {
   DestroyRef,
   TemplateRef,
   computed,
+  effect,
   inject,
+  linkedSignal,
   signal,
+  untracked,
   viewChild,
 } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
@@ -37,7 +40,7 @@ import { CatalogueStore } from '../data/catalogue.store';
 import { DirectoryCache } from '../data/directory-cache';
 import type { LoadState } from '../data/load-state';
 import { RbacApi } from '../data/rbac-api';
-import { RolesStore } from '../data/roles.store';
+import { type RolesData, RolesStore } from '../data/roles.store';
 import { RevokeButton, RevokeDialogs } from '../dialogs/revoke-dialogs';
 import { ConsoleErrorPanel } from '../ui/console-error-panel';
 import { SystemRoleBadge } from '../ui/system-role-badge';
@@ -52,6 +55,7 @@ import {
   assignButtonAffordance,
   assignConfirmKind,
   roleAssignAffordance,
+  targetNeedsVerification,
 } from '../util/affordances';
 import { DEFAULT_RETRY_AFTER_SECONDS, createRetryCountdown } from '../util/retry-after';
 import { UserDetailStore } from './user-detail.store';
@@ -93,6 +97,7 @@ const ASSIGN_REASON_COPY: Readonly<
   'already-assigned': CONSOLE_COPY.disabledReason.alreadyAssigned,
   'admin-only-directory': CONSOLE_COPY.disabledReason.adminOnlyDirectory,
   'pending-admin-role': CONSOLE_COPY.disabledReason.pendingAdminRole,
+  'pending-catalogue-unknown': CONSOLE_COPY.disabledReason.pendingCatalogueUnknown,
 };
 
 const ASSIGN_BUTTON_REASON_COPY: Readonly<Record<AssignButtonReason, string | null>> = {
@@ -176,14 +181,21 @@ const REVOKE_COLUMN: TableColumn = {
  *   role that cannot be chosen keeps its visible reason (`roleAssignAffordance`). Choosing one reads
  *   `GET /roles/{id}/permissions` once, cached for the dialog's life; the pigeonhole pre-check and
  *   the other static rules decide without a request.
- * - **H-2 / D-4:** for a PENDING target an admin-looking role, or every role while the catalogue
- *   total is unknown, is disabled. The catalogue total is read from {@link CatalogueStore} only if
- *   it is already loaded; this tab never requests it. The block is the code constant
+ * - **Unverified targets:** PENDING, any account whose address is not verified, and (fail closed)
+ *   an unknown target all get the warning, the danger confirm and the H-2 block.
+ * - **H-2 / D-4:** for such a target an admin-looking role, or every role while the catalogue
+ *   total is unknown (with its own "couldn't check" reason), is disabled. So that the total
+ *   becomes known on a cold page, the tab reads {@link CatalogueStore} once (it coalesces, and is
+ *   a no-op when warm) for such a target when the live profile holds `role:read` and
+ *   `user:role:assign`; opening the dialog re-reads it after a failure, and the dialog offers a
+ *   Retry. A verified target never causes a catalogue read. The block is the code constant
  *   `PENDING_ADMIN_ROLE_BLOCK`; nothing at run time switches it.
  * - **Confirm:** one `POST` (re-sent once on `RBAC_012` in `RbacApi`). A 201 or `RBAC_004`
  *   (convergent) closes the dialog with a toast, shows the grant propagation line on the tab and
- *   re-reads the list. Every other failure stays inline with the dialog open; a 403 also re-reads
- *   the profile, and a 429 holds the confirm for the wait with a countdown (no automatic retry).
+ *   re-reads the list, and the console's roles list (member counts) once, keeping the Type badges
+ *   on screen meanwhile. The confirm is off while the live profile re-reads. Every other failure
+ *   stays inline with the dialog open; a 403 also re-reads the profile, and a 429 holds the
+ *   confirm for the wait with a countdown (no automatic retry).
  *   An administrator assigning to themself re-reads the live profile ("own access").
  * - **PII:** the address is never in a toast, a log or `document.title`; logs carry ids and codes.
  *
@@ -299,12 +311,22 @@ export class UserRolesTab {
 
   protected readonly failedAt = computed(() => this.failure()?.failedAt);
 
-  private readonly joined = computed<ReadonlyMap<string, RoleResponse> | null>(() => {
-    if (!this.canReadRoles()) return null;
-    const state = this.roles.state();
-    return state.status === 'ready'
-      ? new Map(state.data.roles.map((role) => [role.id, role]))
-      : null;
+  /**
+   * The roles join. While the list is read again (after an assign or revoke) the last join stays,
+   * so the Type badges do not blink; a failure or a lost `role:read` drops it.
+   */
+  private readonly joined = linkedSignal<
+    { readonly canRead: boolean; readonly state: LoadState<RolesData> },
+    ReadonlyMap<string, RoleResponse> | null
+  >({
+    source: () => ({ canRead: this.canReadRoles(), state: this.roles.state() }),
+    computation: ({ canRead, state }, previous) => {
+      if (!canRead) return null;
+      if (state.status === 'ready') return new Map(state.data.roles.map((role) => [role.id, role]));
+      return state.status === 'loading' || state.status === 'idle'
+        ? (previous?.value ?? null)
+        : null;
+    },
   });
 
   protected readonly joinFailed = computed(
@@ -339,7 +361,18 @@ export class UserRolesTab {
     return state.status === 'ready' ? state.data : null;
   });
 
-  protected readonly targetIsPending = computed(() => this.target()?.status === 'PENDING');
+  /** Unverified, by status or address, or not known: the RC-69 / H-2 protections apply. */
+  protected readonly targetIsPending = computed(() => targetNeedsVerification(this.target()));
+
+  /** The live profile may assign roles and read the catalogue (which the H-2 check needs). */
+  private readonly checksCatalogue = computed(
+    () => this.profile.can('role:read') && this.profile.can('user:role:assign'),
+  );
+
+  /** An unverified target and a failed catalogue read: no role can be checked (D-4). */
+  protected readonly catalogueFailed = computed(
+    () => this.targetIsPending() && this.catalogue.state().status === 'error',
+  );
 
   /** The "Assign role" button, from the live profile (ADR-0028); JWT only while it loads. */
   protected readonly assignButton = computed(() => {
@@ -488,7 +521,12 @@ export class UserRolesTab {
   protected readonly canConfirm = computed(() => {
     const affordance = this.selectedAffordance();
     return (
-      affordance?.kind === 'enabled' && affordance.checked && !this.assigning() && !this.waiting()
+      affordance?.kind === 'enabled' &&
+      affordance.checked &&
+      !this.assigning() &&
+      !this.waiting() &&
+      // Off while the live profile re-reads (its last answer stays shown meanwhile).
+      this.profile.mutationsEnabled()
     );
   });
 
@@ -510,6 +548,14 @@ export class UserRolesTab {
   constructor() {
     // The join leaves together with the assignments read, and only where a table can show it.
     if (this.store.canReadAssignments() && this.canReadRoles()) this.roles.loadAll();
+    // MJ-3: an unverified target needs the catalogue total, or every role stays blocked (D-4).
+    effect(() => {
+      // Only once the person is read: an unknown target is treated as unverified elsewhere, but
+      // is no reason to read anything.
+      const target = this.target();
+      if (target === null || !targetNeedsVerification(target) || !this.checksCatalogue()) return;
+      untracked(() => this.catalogue.load());
+    });
     this.destroyRef.onDestroy(() => {
       this.cancelPermissionReads();
       this.assignRef?.close();
@@ -529,6 +575,19 @@ export class UserRolesTab {
     this.roles.loadAll();
   }
 
+  protected retryCatalogue(): void {
+    this.catalogue.load();
+  }
+
+  /**
+   * MN-1: an assign or revoke changed a role's member count, so the console's roles list is read
+   * again; here only where the table shows the join, as on entry.
+   */
+  protected refreshRoles(): void {
+    this.roles.invalidate();
+    if (this.store.canReadAssignments() && this.canReadRoles()) this.roles.loadAll();
+  }
+
   /** Opens the Assign dialog, at most once at a time (FR-G5). Opening sends no request. */
   protected openAssign(): void {
     if (this.assignButton().kind !== 'enabled' || this.assignRef !== null) return;
@@ -540,6 +599,8 @@ export class UserRolesTab {
     this.wait.stop();
     // A no-op when the list is ready or loading; reads it only if this page never needed it.
     this.roles.loadAll();
+    // After a failed catalogue read, opening again is the retry (a no-op when it is ready).
+    if (this.targetIsPending() && this.checksCatalogue()) this.catalogue.load();
     const ref = this.dialog.openTemplate<void>(this.assignTemplate(), {
       ariaLabelledBy: ASSIGN_TITLE_ID,
       autoFocus: `#${ASSIGN_TITLE_ID}`,
@@ -652,6 +713,7 @@ export class UserRolesTab {
     });
     this.propagation.set(propagationFor('assign'));
     this.store.loadAssignments();
+    this.refreshRoles();
     if (userId === this.profile.userId()) {
       // The caller's own access changed. The re-read renews the session through the interceptor
       // if the epoch moved; nothing here refreshes it (RC-65).

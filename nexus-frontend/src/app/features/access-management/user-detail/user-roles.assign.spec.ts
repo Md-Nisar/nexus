@@ -187,13 +187,17 @@ function setup(options: SetupOptions = {}) {
   const held = options.held ?? MANAGER;
   const profileStatus = signal<'loading' | 'ready' | 'error'>('ready');
   const ready = (): boolean => profileStatus() === 'ready';
+  // A re-read of a ready profile keeps its data (stale-while-revalidate) with mutations off.
+  const profileReloading = signal(false);
   const profileStub = {
     state: () => ({ status: profileStatus() }),
+    reloading: profileReloading,
+    settled: () => profileStatus() !== 'loading' && !profileReloading(),
     userId: () => (ready() ? (options.callerId ?? CALLER_ID) : null),
     can: (p: string) => ready() && held.includes(p),
     permissions: () => new Set(ready() ? held : []),
     isAdministrator: () => ready() && (options.isAdministrator ?? false),
-    mutationsEnabled: () => ready(),
+    mutationsEnabled: () => ready() && !profileReloading(),
     roleIds: () => new Set<string>(),
     load: vi.fn(),
     reload: vi.fn(),
@@ -260,6 +264,7 @@ function setup(options: SetupOptions = {}) {
     toasts,
     profileStub,
     profileStatus,
+    profileReloading,
     catalogueStub,
   };
 }
@@ -342,6 +347,13 @@ function logged(ctx: Ctx): string {
 
 function toasted(ctx: Ctx): string {
   return JSON.stringify(ctx.toasts.flatMap((spy) => spy.mock.calls));
+}
+
+/** MN-1: a completed assign or revoke reads the console's roles list again, exactly once. */
+function answerRolesReread(ctx: Ctx): void {
+  const reread = ctx.http.match(ROLES_URL);
+  expect(reread).toHaveLength(1);
+  reread[0].flush(rolesPage());
 }
 
 /** Opens the Assign dialog from the tab. */
@@ -431,7 +443,7 @@ describe('Assign dialog (US-020 design §6.5, §8.3, §12.9; RC-68, RC-69, H-2, 
   });
 
   describe('request budget (design §6.5)', () => {
-    it('open 0; a candidate ×1, cached for a re-selection; confirm POST ×1 then the re-read ×1', async () => {
+    it('open 0; a candidate ×1, cached for a re-selection; confirm POST ×1 then the re-reads ×1 each (MN-1)', async () => {
       ctx = setup();
       const page = await openTab(ctx);
 
@@ -461,6 +473,7 @@ describe('Assign dialog (US-020 design §6.5, §8.3, §12.9; RC-68, RC-69, H-2, 
       post.flush(assignment(ID.support, 'Support'), { status: 201, statusText: 'Created' });
       await page.settle();
 
+      answerRolesReread(ctx);
       const reread = ctx.http.match(ASSIGNMENTS_URL);
       expect(reread).toHaveLength(1);
       reread[0].flush(assignments([...HELD, assignment(ID.support, 'Support')]));
@@ -509,6 +522,7 @@ describe('Assign dialog (US-020 design §6.5, §8.3, §12.9; RC-68, RC-69, H-2, 
         .expectOne(ASSIGN_URL)
         .flush(assignment(ID.support, 'Support'), { status: 201, statusText: 'Created' });
       await page.settle();
+      answerRolesReread(ctx);
       ctx.http.expectOne(ASSIGNMENTS_URL).flush(assignments(HELD));
       await page.settle();
     });
@@ -669,6 +683,7 @@ describe('Assign dialog (US-020 design §6.5, §8.3, §12.9; RC-68, RC-69, H-2, 
         .expectOne(ASSIGN_URL)
         .flush(assignment(ID.support, 'Support'), { status: 201, statusText: 'Created' });
       await page.settle();
+      answerRolesReread(ctx);
       ctx.http.expectOne(ASSIGNMENTS_URL).flush(assignments(HELD));
       await page.settle();
     });
@@ -685,19 +700,78 @@ describe('Assign dialog (US-020 design §6.5, §8.3, §12.9; RC-68, RC-69, H-2, 
       ctx.http.expectNone(permissionsUrl(ID.admin));
     });
 
-    it('D-4: with the catalogue total unknown, every role is disabled for a PENDING target', async () => {
+    it('D-4: with the catalogue total unknown, every role is disabled with its own reason', async () => {
       ctx = setup({ held: EVERY, isAdministrator: true, catalogueTotal: null });
       const page = await openTab(ctx, PENDING);
       await openDialog(page);
 
       for (const candidate of ROLES.filter((entry) => entry.id !== ID.held)) {
         expect(radio(candidate.id)?.disabled).toBe(true);
+        // Not the administrator-role copy: a one-permission role is not an administrator role.
         expect(
           text(option(candidate.id)?.querySelector('[data-testid="assign-role-reason"]')),
-        ).toBe(CONSOLE_COPY.disabledReason.pendingAdminRole);
+        ).toBe(CONSOLE_COPY.disabledReason.pendingCatalogueUnknown);
       }
-      // The dialog does not read the catalogue (design §6.5: open 0).
+    });
+
+    it('MJ-3: a PENDING target makes the tab read the catalogue once, so the total becomes known', async () => {
+      ctx = setup({ held: EVERY, isAdministrator: true, catalogueTotal: null });
+      const page = await openTab(ctx, PENDING);
+
+      expect(ctx.catalogueStub.load).toHaveBeenCalledTimes(1);
+      ctx.catalogueStub.state.set({
+        status: 'ready',
+        loadedAt: 0,
+        data: { total: CATALOGUE_TOTAL },
+      });
+      await openDialog(page);
+
+      expect(radio(ID.support)?.disabled).toBe(false);
+      expect(radio(ID.admin)?.disabled).toBe(true);
+      expect(text(option(ID.admin)?.querySelector('[data-testid="assign-role-reason"]'))).toBe(
+        CONSOLE_COPY.disabledReason.pendingAdminRole,
+      );
+    });
+
+    it('MJ-3: a failed catalogue read says so in the dialog, and its Retry reads it again', async () => {
+      ctx = setup({ held: EVERY, isAdministrator: true, catalogueTotal: null });
+      const page = await openTab(ctx, PENDING);
+      ctx.catalogueStub.state.set({
+        status: 'error',
+        error: { code: 'INTERNAL_ERROR', message: 'synthetic' },
+        failedAt: 0,
+      });
+      const root = await openDialog(page);
+      ctx.catalogueStub.load.mockClear();
+
+      const failed = byTestId(root, 'assign-catalogue-error') as HTMLElement;
+      expect(text(failed)).toContain(CONSOLE_COPY.assign.catalogueFailed);
+      failed.querySelector('button')?.click();
+      await page.settle();
+      expect(ctx.catalogueStub.load).toHaveBeenCalledTimes(1);
+    });
+
+    it('MJ-3: a verified target never reads the catalogue (design §6.5: open 0)', async () => {
+      ctx = setup({ held: EVERY, isAdministrator: true, catalogueTotal: null });
+      const page = await openTab(ctx);
+      await openDialog(page);
+
       expect(ctx.catalogueStub.load).not.toHaveBeenCalled();
+      expect(byTestId(document, 'assign-catalogue-error')).toBeNull();
+    });
+
+    it('Low 1: an ACTIVE account that has not verified its address gets the PENDING protections', async () => {
+      ctx = setup({ held: EVERY, isAdministrator: true });
+      const page = await openTab(ctx, { status: 'ACTIVE', emailVerified: false });
+      const root = await openDialog(page);
+
+      expect(byTestId(root, 'assign-pending-warning')).not.toBeNull();
+      expect(radio(ID.admin)?.disabled).toBe(true);
+      expect(text(option(ID.admin)?.querySelector('[data-testid="assign-role-reason"]'))).toBe(
+        CONSOLE_COPY.disabledReason.pendingAdminRole,
+      );
+      await select(ctx, page, ID.support);
+      expect(text(button(root, 'assign-confirm'))).toBe(CONSOLE_COPY.assign.confirmUnverified);
     });
 
     it('with the H-2 block switched off (spec only, post-F-4 path): the typed confirm with the role name', async () => {
@@ -725,6 +799,7 @@ describe('Assign dialog (US-020 design §6.5, §8.3, §12.9; RC-68, RC-69, H-2, 
         .expectOne(ASSIGN_URL)
         .flush(assignment(ID.admin, 'TENANT_ADMIN'), { status: 201, statusText: 'Created' });
       await page.settle();
+      answerRolesReread(ctx);
       ctx.http.expectOne(ASSIGNMENTS_URL).flush(assignments(HELD));
       await page.settle();
     });
@@ -759,6 +834,7 @@ describe('Assign dialog (US-020 design §6.5, §8.3, §12.9; RC-68, RC-69, H-2, 
         .expectOne(ASSIGN_URL)
         .flush(assignment(ID.support, 'Support'), { status: 201, statusText: 'Created' });
       await page.settle();
+      answerRolesReread(ctx);
       ctx.http
         .expectOne(ASSIGNMENTS_URL)
         .flush(assignments([...HELD, assignment(ID.support, 'Support')]));
@@ -771,6 +847,60 @@ describe('Assign dialog (US-020 design §6.5, §8.3, §12.9; RC-68, RC-69, H-2, 
       expect(ctx.profileStub.reload).not.toHaveBeenCalled();
     });
 
+    it('MN-1: re-reads the roles list once after an assign, keeping the Type badges meanwhile', async () => {
+      ctx = setup();
+      const page = await openTab(ctx);
+      expect(text(byTestId(page.el(), 'user-role-type'))).not.toBe(
+        CONSOLE_COPY.userRoles.typeUnknown,
+      );
+      await openDialog(page);
+      await select(ctx, page, ID.support);
+
+      button(document, 'assign-confirm')?.click();
+      await page.settle();
+      ctx.http
+        .expectOne(ASSIGN_URL)
+        .flush(assignment(ID.support, 'Support'), { status: 201, statusText: 'Created' });
+      await page.settle();
+
+      // Member counts changed: the console's roles list is read again, once.
+      const reread = ctx.http.match(ROLES_URL);
+      expect(reread).toHaveLength(1);
+      expect(text(byTestId(page.el(), 'user-role-type'))).not.toBe(
+        CONSOLE_COPY.userRoles.typeUnknown,
+      );
+      reread[0].flush(rolesPage());
+      ctx.http
+        .expectOne(ASSIGNMENTS_URL)
+        .flush(assignments([...HELD, assignment(ID.support, 'Support')]));
+      await page.settle();
+      expect(byTestId(page.el(), 'user-roles-join-error')).toBeNull();
+      ctx.http.expectNone(() => true);
+    });
+
+    it('MJ-5: while the profile re-reads, the picker keeps its reasons and the confirm is off', async () => {
+      ctx = setup();
+      const page = await openTab(ctx);
+      const root = await openDialog(page);
+      await select(ctx, page, ID.support);
+      expect(button(root, 'assign-confirm')?.getAttribute('aria-disabled')).toBeNull();
+
+      ctx.profileReloading.set(true);
+      await page.settle();
+
+      // No pigeonhole flip: what the caller holds is still known.
+      expect(radio(ID.support)?.disabled).toBe(false);
+      expect(option(ID.support)?.querySelector('[data-testid="assign-role-reason"]')).toBeNull();
+      expect(button(root, 'assign-confirm')?.getAttribute('aria-disabled')).toBe('true');
+      button(root, 'assign-confirm')?.click();
+      await page.settle();
+      ctx.http.expectNone(ASSIGN_URL);
+
+      ctx.profileReloading.set(false);
+      await page.settle();
+      expect(button(root, 'assign-confirm')?.getAttribute('aria-disabled')).toBeNull();
+    });
+
     it('RBAC_004 converges: "This person already had this role." and the same re-read', async () => {
       ctx = setup();
       const page = await openTab(ctx);
@@ -781,6 +911,7 @@ describe('Assign dialog (US-020 design §6.5, §8.3, §12.9; RC-68, RC-69, H-2, 
       await page.settle();
       problem(ctx.http.expectOne(ASSIGN_URL), 409, 'RBAC_004');
       await page.settle();
+      answerRolesReread(ctx);
       ctx.http.expectOne(ASSIGNMENTS_URL).flush(assignments(HELD));
       await page.settle();
 
@@ -893,6 +1024,7 @@ describe('Assign dialog (US-020 design §6.5, §8.3, §12.9; RC-68, RC-69, H-2, 
       expect(posts).toHaveLength(1);
       posts[0].flush(assignment(ID.support, 'Support'), { status: 201, statusText: 'Created' });
       await page.settle();
+      answerRolesReread(ctx);
       ctx.http.expectOne(ASSIGNMENTS_URL).flush(assignments(HELD));
       await page.settle();
     });
@@ -909,6 +1041,7 @@ describe('Assign dialog (US-020 design §6.5, §8.3, §12.9; RC-68, RC-69, H-2, 
         .expectOne(ASSIGN_URL)
         .flush(assignment(ID.support, 'Support'), { status: 201, statusText: 'Created' });
       await page.settle();
+      answerRolesReread(ctx);
       ctx.http.expectOne(ASSIGNMENTS_URL).flush(assignments(HELD));
       await page.settle();
 

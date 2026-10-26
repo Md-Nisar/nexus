@@ -68,6 +68,14 @@ describe('UnavailableState', () => {
     expect(state.latest()?.recordedAt).toBe((first?.recordedAt ?? 0) + 12_000);
   });
 
+  it('clear() drops the record, so a later visit shows no stale reference (MN-4)', () => {
+    state.record({ code: 'AUTH_005', message: 'm', traceId: 'trace-1', retryAfterSeconds: 5 });
+
+    state.clear();
+
+    expect(state.latest()).toBeNull();
+  });
+
   it('never writes to localStorage or sessionStorage', () => {
     const setItem = vi.spyOn(Storage.prototype, 'setItem');
     state.record({ code: 'AUTH_005', message: 'm', traceId: 'trace-1', retryAfterSeconds: 5 });

@@ -10,6 +10,7 @@ import {
   assignConfirmKind,
   permissionAffordance,
   roleAssignAffordance,
+  targetNeedsVerification,
 } from './affordances';
 
 const DIRECTORY = 'id-user:directory:read';
@@ -44,6 +45,19 @@ describe('permissionAffordance (design §8.3, Q18: mirror the server)', () => {
         reason: 'profile-unavailable',
       });
     }
+  });
+
+  it('disables every row while a restore offer is pending, with its own reason (MJ-1)', () => {
+    for (const id of ['id-role:read', 'id-user:read']) {
+      expect(permissionAffordance(id, ctx({ offerPending: true }))).toEqual({
+        kind: 'disabled',
+        reason: 'draft-offer-pending',
+      });
+    }
+    // The profile being unavailable is still the reason when both apply.
+    expect(
+      permissionAffordance('id-user:read', ctx({ offerPending: true, mutationsEnabled: false })),
+    ).toMatchObject({ reason: 'profile-unavailable' });
   });
 
   it('enables adding a permission the caller holds', () => {
@@ -322,9 +336,18 @@ describe('roleAssignAffordance (design §8.3 assign table, Q18: mirror the serve
         for (const count of [0, 1, 2]) {
           expect(
             roleAssignAffordance(candidate(count), pending({ catalogueTotal: total }), null),
-          ).toEqual({ kind: 'disabled', reason: 'pending-admin-role', missing: [] });
+          ).toEqual({ kind: 'disabled', reason: 'pending-catalogue-unknown', missing: [] });
         }
       }
+    });
+
+    it('D-4: an unknown total has its own reason, never the administrator-role one (MJ-3)', () => {
+      expect(
+        roleAssignAffordance(candidate(1), pending({ catalogueTotal: null }), null),
+      ).toMatchObject({ reason: 'pending-catalogue-unknown' });
+      expect(
+        roleAssignAffordance(candidate(1), pending({ catalogueTotal: null }), null, false),
+      ).toMatchObject({ kind: 'enabled' });
     });
 
     it('D-4: an unknown total gives an ACTIVE target no hint and no block', () => {
@@ -361,6 +384,22 @@ export const block = APP_CONFIG !== null && sessionStorage.getItem('block') === 
       const [result] = await eslint.lintFiles([AFFORDANCES]);
       expect(offences(result.messages)).toEqual([]);
     });
+  });
+});
+
+describe('targetNeedsVerification (RC-69, H-2: fail closed, Low 1)', () => {
+  it('treats an unknown target as unverified', () => {
+    expect(targetNeedsVerification(null)).toBe(true);
+  });
+
+  it('treats PENDING, or any account without a verified address, as unverified', () => {
+    expect(targetNeedsVerification({ status: 'PENDING', emailVerified: false })).toBe(true);
+    expect(targetNeedsVerification({ status: 'PENDING', emailVerified: true })).toBe(true);
+    expect(targetNeedsVerification({ status: 'ACTIVE', emailVerified: false })).toBe(true);
+  });
+
+  it('treats an ACTIVE, verified account as verified', () => {
+    expect(targetNeedsVerification({ status: 'ACTIVE', emailVerified: true })).toBe(false);
   });
 });
 

@@ -29,7 +29,11 @@
       }
     </div>
   }
-  <app-revoke-dialogs #revoke (revoked)="propagation.set($event)" />
+  <app-revoke-dialogs
+    #revoke
+    (revoked)="propagation.set($event)"
+    (assignmentsChanged)="refreshRoles()"
+  />
   @switch (view()) {
     @case ('no-user-read') {
       <nx-empty-state
@@ -165,6 +169,15 @@
       @if (targetIsPending()) {
         <div data-testid="assign-pending-warning">
           <nx-banner variant="warning" live="assertive" [title]="copy.assign.pendingWarning" />
+        </div>
+      }
+
+      @if (catalogueFailed()) {
+        <div class="assign-dialog__note" role="alert" data-testid="assign-catalogue-error">
+          <p>{{ copy.assign.catalogueFailed }}</p>
+          <nx-button variant="ghost" size="sm" leadingIcon="refresh" (clicked)="retryCatalogue()">{{
+            copy.assign.retry
+          }}</nx-button>
         </div>
       }
 

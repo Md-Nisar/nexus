@@ -220,6 +220,85 @@ describe('AuthorizationProfileStore (US-020 design §6.3)', () => {
     );
   });
 
+  describe('reload keeps the last ready profile on screen (MJ-5: stale-while-revalidate)', () => {
+    beforeEach(() => (ctx = setup()));
+
+    it('stays ready with the old data while reloading, with mutations off until it answers', () => {
+      ctx.store.load();
+      ctx.http.expectOne(PROFILE_URL).flush(profile());
+      const before = ctx.store.state();
+
+      ctx.store.reload('denied-predicted-allowed');
+
+      // The same state object: nothing that renders from it unmounts or re-renders.
+      expect(ctx.store.state()).toBe(before);
+      expect(ctx.store.reloading()).toBe(true);
+      expect(ctx.store.settled()).toBe(false);
+      expect(ctx.store.mutationsEnabled()).toBe(false);
+      expect(ctx.store.can('role:write')).toBe(true);
+      expect([...ctx.store.permissions()]).toEqual(['role:read', 'role:write']);
+
+      ctx.http.expectOne(PROFILE_URL).flush(profile({ permissions: ['role:read'] }));
+
+      expect(ctx.store.reloading()).toBe(false);
+      expect(ctx.store.settled()).toBe(true);
+      expect(ctx.store.mutationsEnabled()).toBe(true);
+      expect(ctx.store.can('role:write')).toBe(false);
+    });
+
+    it('is loading, not reloading, on the first read and after a failure', () => {
+      ctx.store.load();
+      expect(ctx.store.state().status).toBe('loading');
+      expect(ctx.store.reloading()).toBe(false);
+      expect(ctx.store.settled()).toBe(false);
+      problem(ctx.http.expectOne(PROFILE_URL), 500, 'INTERNAL_ERROR');
+
+      ctx.store.reload('denied-predicted-allowed');
+
+      expect(ctx.store.state().status).toBe('loading');
+      expect(ctx.store.reloading()).toBe(false);
+      ctx.http.expectOne(PROFILE_URL).flush(profile());
+    });
+
+    it('never shows the previous user’s data as stale-while-revalidate', () => {
+      ctx.store.load();
+      ctx.http.expectOne(PROFILE_URL).flush(profile());
+
+      ctx.authStore.setSession(createAuthSession({ user: createAuthUser({ userId: USER_B }) }));
+      ctx.store.reload('user-changed');
+
+      expect(ctx.store.state().status).toBe('loading');
+      expect(ctx.store.reloading()).toBe(false);
+      expect(ctx.store.can('role:write')).toBe(false);
+      ctx.http.expectOne(PROFILE_URL).flush(profile({ userId: USER_B }));
+      expect(ctx.store.userId()).toBe(USER_B);
+    });
+  });
+
+  describe('the answer must belong to the signed-in user (Low 6, defence in depth)', () => {
+    beforeEach(() => (ctx = setup()));
+
+    it('settles to error with mutations off when the body is for another user, and logs a code', () => {
+      ctx.store.load();
+      ctx.http.expectOne(PROFILE_URL).flush(profile({ userId: USER_B, isAdministrator: true }));
+
+      const state = ctx.store.state();
+      expect(state.status).toBe('error');
+      expect(state.status === 'error' && state.error.code).toBe('PROFILE_OWNER_MISMATCH');
+      expect(ctx.store.mutationsEnabled()).toBe(false);
+      expect(ctx.store.isAdministrator()).toBe(false);
+      expect(ctx.store.can('role:write')).toBe(false);
+      expect(ctx.logs.warn).toHaveBeenCalledWith(
+        'Access console profile belongs to another user',
+        expect.objectContaining({
+          event: 'access_console_profile_owner_mismatch',
+          errorCode: 'PROFILE_OWNER_MISMATCH',
+        }),
+      );
+      expect(allLogText(ctx.logs)).not.toContain(USER_B);
+    });
+  });
+
   describe('failure: read-only, never a guess (Q8)', () => {
     beforeEach(() => (ctx = setup()));
 

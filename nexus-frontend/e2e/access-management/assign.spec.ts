@@ -19,8 +19,10 @@ test.use({ trace: 'off' });
  *   no page of that context is open (one page at a time per persona context, `fixtures/test.ts`).
  * - PII: addresses are typed with `enterAddress` and never asserted as text; rows, badges, tokens
  *   and the dialog identity line are asserted by test id and attribute.
- * - RC-68 (O-2): a synthetic address containing U+202E is registered in `beforeAll`. If the server
- *   refuses it, the test fails with that finding (evidence for F-5), never silently.
+ * - RC-68 item 4: the hidden-character target is the PENDING persona `hiddenCharacterTarget`,
+ *   seeded by the dev seeder below the registration validation. The suite never registers such an
+ *   address, so it neither depends on nor pins registration accepting U+202E: when F-5 makes
+ *   registration reject it, this suite stays green (review Medium on F-5).
  */
 const ASSIGNER: PersonaKey = 'roleReaderUserManager';
 
@@ -38,17 +40,6 @@ const UUID = '[0-9a-f-]{36}';
 /** Role ids this worker created, and the target-A assignments made with them. */
 const createdRoles: string[] = [];
 const madeAssignments: { userId: string; roleId: string }[] = [];
-
-/**
- * A synthetic, per-worker address with a right-to-left override in its local part. `.invalid`
- * never resolves, and the same address is re-registered on every run (the server acknowledges a
- * duplicate silently), so runs do not add accounts.
- */
-const RIGHT_TO_LEFT_OVERRIDE = String.fromCodePoint(0x202e);
-
-function hiddenCharacterAddress(): string {
-  return `e2e-rc68-w${test.info().parallelIndex}${RIGHT_TO_LEFT_OVERRIDE}txt@hidden-characters.invalid`;
-}
 
 interface AdminClient {
   createRole(codes: readonly Code[]): Promise<{ id: string; name: string }>;
@@ -198,26 +189,6 @@ async function admin(personaContext: (key: PersonaKey) => Promise<BrowserContext
 }
 
 test.describe('assign dialog', () => {
-  test.beforeAll(async ({ playwright }) => {
-    // RC-68 (O-2): the hidden-character target, registered through the public API.
-    const anonymous = await playwright.request.newContext();
-    try {
-      const response = await anonymous.post(`${apiBase}/api/v1/auth/register`, {
-        data: {
-          email: hiddenCharacterAddress(),
-          password: `Rc68-${Math.random().toString(36).slice(2, 10)}-Passphrase_9!`,
-          consentAccepted: true,
-        },
-      });
-      expect(
-        response.status(),
-        'O-2: registration refused an address containing U+202E; report to the Platform Security Owner as F-5 evidence',
-      ).toBe(201);
-    } finally {
-      await anonymous.dispose();
-    }
-  });
-
   test.afterAll(async ({ personaContext }) => {
     const client = await admin(personaContext);
     for (const { userId, roleId } of madeAssignments.splice(0)) {
@@ -328,7 +299,7 @@ test.describe('assign dialog', () => {
     personaContext,
   }) => {
     await withPage(personaContext, ASSIGNER, async (page) => {
-      const result = await lookUp(page, hiddenCharacterAddress());
+      const result = await lookUp(page, PERSONAS.hiddenCharacterTarget.email);
       const row = result.getByTestId('user-row-email');
       await expect(row.getByTestId('user-text-hidden-badge')).toHaveCount(1);
       await expect(row.getByTestId('user-text-hidden-token')).toHaveText('⟨U+202E⟩');
@@ -352,7 +323,7 @@ test.describe('assign dialog', () => {
         'data-verified',
         'false',
       );
-      // RC-69: the registrant has not verified, so the risk warning is an alert.
+      // RC-69: the target has not verified, so the risk warning is an alert.
       await expect(dialog.getByTestId('assign-pending-warning').getByRole('alert')).toBeVisible();
 
       await dialog.getByTestId('assign-cancel').getByRole('button').click();

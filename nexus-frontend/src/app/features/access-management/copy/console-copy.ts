@@ -59,6 +59,11 @@ export const CONSOLE_COPY = {
     roleNeedsMoreAccessUnlisted: "This role includes access you don't hold.",
     pendingAdminRole:
       "Administrator roles can't be given to an unverified account. Ask the person to verify and sign in first.",
+    /** D-4 with the catalogue size unknown: no role can be checked yet (not the admin-role copy). */
+    pendingCatalogueUnknown:
+      "We couldn't check yet whether this role is safe for an unverified account.",
+    /** Editor rows while a saved draft waits for Restore or Discard (§10). */
+    draftOfferPending: 'Restore or discard your unsaved changes first.',
     /** The picker lists roles and reads what they grant, which needs `role:read` (FR-C3, Q19). */
     noRoleRead: "Choosing a role needs permission to read roles, which you don't have.",
   },
@@ -198,6 +203,8 @@ export const CONSOLE_COPY = {
     noMatches: 'No roles match your search',
     loadingRoles: 'Loading roles',
     rolesFailed: "Roles couldn't be loaded.",
+    catalogueFailed:
+      "We couldn't read the permission list, so no role can be checked for an unverified account.",
     retry: 'Retry',
     chooseRole: 'Choose a role to see what it grants.',
     loadingPermissions: 'Loading what this role grants',
@@ -414,6 +421,7 @@ export const CONSOLE_COPY = {
     notCopiedItem: '{label}: {reason}',
     summaryTitle: 'Some details need fixing',
     leaveMessage: "The role hasn't been created yet, so nothing is kept.",
+    stillCreating: 'The role is still being created. Wait until it finishes, then leave.',
     errors: {
       nameRequired: 'Enter a role name',
       nameTooLong: 'Use 64 characters or fewer',

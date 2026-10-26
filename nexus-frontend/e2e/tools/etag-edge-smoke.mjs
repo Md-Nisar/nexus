@@ -3,6 +3,10 @@
  * Edge ETag smoke (US-020 T-004; design §19.6; ADR-0029; threat model RC-72, D-3). Proves that a
  * strong `ETag` and `If-Match` survive the edge in front of `/api/` without mutating anything:
  *
+ *   0. without credentials, GET the SPA shell (`/admin/access`) and the first script it references:
+ *      both must carry CSP with `frame-ancestors 'none'`, `X-Frame-Options: DENY`,
+ *      `X-Content-Type-Options: nosniff` and the Referrer-Policy (review H-1: a location with its
+ *      own add_header drops the server's);
  *   1. log in through the base URL;
  *   2. find the system role that carries the whole permission catalogue;
  *   3. GET its permission set with `Accept-Encoding: gzip`: the `ETag` must be strong and the body
@@ -14,20 +18,29 @@
  * Usage: node etag-edge-smoke.mjs --base <url> [--negative-control]
  *
  * Credentials come only from NEXUS_SMOKE_USER and NEXUS_SMOKE_PASSWORD, never from argv. With
- * both unset and `CI` set, the e2e administrator persona is used (CI persona mode, dev data
- * only). Outside that mode the identity must not be an administrator and must hold nothing beyond
- * role:read and role:write, or the script logs out and exits 2 (D-3 (a)). `--negative-control` is
- * refused unless `CI` is set or the base host is loopback or the compose service (D-3 (b)), so a
- * release check never trips the `precondition_required` alert.
+ * both unset, `NEXUS_SMOKE_CI=1` (set only by the edge-etag-smoke workflow job, never the generic
+ * `CI`, which many local tools set) and a loopback or compose base, the e2e administrator persona
+ * is used (CI persona mode, dev data only). Outside that mode the identity must not be an
+ * administrator and must hold nothing beyond role:read and role:write, or the script logs out and
+ * exits 2 (D-3 (a)). `--negative-control` is refused unless the base host is loopback or the
+ * compose service, whatever the environment (D-3 (b)), so a release check never trips the
+ * `precondition_required` alert.
  *
- * Output is step names, HTTP status, problem codes and tag classes only: never a credential,
- * token, cookie, tag value, id or response body. Exit codes: 0 passed, 1 smoke failed, 2 refused.
+ * Output is step names, HTTP status, header names, problem codes and tag classes only: never a
+ * credential, token, cookie, tag value, id or response body. Exit codes: 0 passed, 1 smoke failed, 2 refused.
  */
 import { pathToFileURL } from 'node:url';
 
 export const ALLOWED_SMOKE_PERMISSIONS = Object.freeze(['role:read', 'role:write']);
 /** nginx `gzip_min_length`: a smaller body would never be compressed, so it proves nothing. */
 export const MIN_MEANINGFUL_BYTES = 1024;
+/** Exact values the edge must send; the CSP must forbid framing (H-1, clickjacking). */
+const REQUIRED_HEADERS = Object.freeze({
+  'x-frame-options': 'DENY',
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'strict-origin-when-cross-origin',
+});
+const SHELL_PATH = '/admin/access';
 /** The compose service of the nginx edge (docker-compose.yml `frontend`). */
 const COMPOSE_EDGE_HOST = 'frontend';
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -69,11 +82,6 @@ export function identityVerdict(profile) {
   return { allowed: true, reason: 'the identity holds only role:read and role:write' };
 }
 
-function ciSet(env) {
-  const value = (env.CI ?? '').trim().toLowerCase();
-  return value !== '' && value !== 'false' && value !== '0';
-}
-
 function isLocalHost(hostname) {
   const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
   return (
@@ -84,9 +92,31 @@ function isLocalHost(hostname) {
   );
 }
 
-/** D-3 (b): the weak-tag control runs only in CI or against a local edge. */
-export function negativeControlAllowed(env, base) {
-  return ciSet(env) || isLocalHost(new URL(base).hostname);
+/** D-3 (b): the weak-tag control runs only against a local edge, in CI as anywhere else. */
+export function negativeControlAllowed(_env, base) {
+  return isLocalHost(new URL(base).hostname);
+}
+
+/** CI persona mode: the workflow's own flag and a local edge (D-3 (a)); never the generic `CI`. */
+function ciPersonaMode(env, base) {
+  return env.NEXUS_SMOKE_CI === '1' && isLocalHost(new URL(base).hostname);
+}
+
+/** The names of the required security headers that are missing or weakened (H-1). */
+export function securityHeaderProblems(headers) {
+  const problems = [];
+  const csp = headers.get('content-security-policy') ?? '';
+  const frameAncestors = csp
+    .split(';')
+    .map((directive) => directive.trim().toLowerCase())
+    .find((directive) => directive.startsWith('frame-ancestors'));
+  if (frameAncestors !== "frame-ancestors 'none'") problems.push('content-security-policy');
+  for (const [name, expected] of Object.entries(REQUIRED_HEADERS)) {
+    if ((headers.get(name) ?? '').trim().toLowerCase() !== expected.toLowerCase()) {
+      problems.push(name);
+    }
+  }
+  return problems;
 }
 
 export function isMeaningful(byteLength) {
@@ -137,16 +167,16 @@ export function parseArgs(argv) {
 }
 
 /** `loadPersona` supplies the e2e administrator persona; it is called only in CI persona mode. */
-export async function resolveCredentials(env, loadPersona) {
+export async function resolveCredentials(env, base, loadPersona) {
   const user = env.NEXUS_SMOKE_USER ?? '';
   const password = env.NEXUS_SMOKE_PASSWORD ?? '';
   if (user !== '' && password !== '') return { mode: 'env', user, password };
-  if (user === '' && password === '' && ciSet(env)) {
+  if (user === '' && password === '' && ciPersonaMode(env, base)) {
     const persona = await loadPersona();
     return { mode: 'ci-persona', user: persona.user, password: persona.password };
   }
   throw new SmokeError(
-    'set both NEXUS_SMOKE_USER and NEXUS_SMOKE_PASSWORD (only CI may use the e2e persona)',
+    'set both NEXUS_SMOKE_USER and NEXUS_SMOKE_PASSWORD (only the CI job, against a local edge, may use the e2e persona)',
     EXIT.REFUSED,
   );
 }
@@ -165,6 +195,32 @@ async function describe(response) {
   return code ? `${response.status} ${code}` : String(response.status);
 }
 
+/** Step 0 (H-1): the shell and one static asset keep every security header. No credentials. */
+async function checkEdgeHeaders(send, base, log) {
+  const shell = await send('edge headers', SHELL_PATH, { headers: { accept: 'text/html' } });
+  if (shell.status !== 200) throw new SmokeError(`edge headers: shell ${shell.status}`);
+  const shellProblems = securityHeaderProblems(shell.headers);
+  if (shellProblems.length > 0) {
+    throw new SmokeError(`edge headers: shell is missing ${shellProblems.join(', ')}`);
+  }
+  const html = await shell.text();
+  const script = /<script\b[^>]*\bsrc="([^"]+\.js)"/i.exec(html)?.[1];
+  if (script === undefined)
+    throw new SmokeError('edge headers: the shell references no static asset');
+  const assetUrl = new URL(script, `${base}/`);
+  if (assetUrl.origin !== base) {
+    throw new SmokeError('edge headers: the shell references no static asset on this edge');
+  }
+  const asset = await send('edge headers', assetUrl.pathname);
+  if (asset.status !== 200) throw new SmokeError(`edge headers: asset ${asset.status}`);
+  const assetProblems = securityHeaderProblems(asset.headers);
+  if (assetProblems.length > 0) {
+    throw new SmokeError(`edge headers: asset is missing ${assetProblems.join(', ')}`);
+  }
+  await asset.arrayBuffer();
+  log(`edge headers: shell ${shell.status}, asset ${asset.status}`);
+}
+
 async function readJson(response, step) {
   try {
     return await response.json();
@@ -179,7 +235,7 @@ async function readJson(response, step) {
  */
 export async function runSmoke({ base, negativeControl, env, credentials, fetchImpl, log }) {
   if (negativeControl && !negativeControlAllowed(env, base)) {
-    log('refused: --negative-control runs only in CI or against a loopback or compose edge');
+    log('refused: --negative-control runs only against a loopback or compose edge');
     return EXIT.REFUSED;
   }
   const send = async (step, path, init = {}) => {
@@ -198,6 +254,8 @@ export async function runSmoke({ base, negativeControl, env, credentials, fetchI
   let session = null;
   let exitCode = EXIT.PASSED;
   try {
+    await checkEdgeHeaders(send, base, log);
+
     const login = await send('login', '/api/v1/auth/login', {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: 'application/json' },
@@ -324,7 +382,7 @@ async function main(argv, env) {
   const log = (line) => console.log(`etag-edge-smoke: ${line}`);
   try {
     const { base, negativeControl } = parseArgs(argv);
-    const credentials = await resolveCredentials(env, loadCiPersona);
+    const credentials = await resolveCredentials(env, base, loadCiPersona);
     return await runSmoke({ base, negativeControl, env, credentials, fetchImpl: fetch, log });
   } catch (error) {
     log(error instanceof SmokeError ? error.message : 'failed: unexpected error');
