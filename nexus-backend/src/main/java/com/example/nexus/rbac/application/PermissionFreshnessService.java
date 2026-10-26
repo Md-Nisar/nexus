@@ -26,9 +26,9 @@ import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -202,6 +202,7 @@ public final class PermissionFreshnessService {
   private static final String EVENT_BUMP_FAILED = "RBAC_EPOCH_BUMP_FAILED";
   private static final String LAST_SEEN_DROPPED_DESCRIPTION =
       "Locally-seen epochs not recorded because a bound of the map was reached";
+  private static final int ROLE_READ_QUEUE_CAPACITY = 1000;
 
   private final PermissionEpochPort epochPort;
   private final BiFunction<String, String, Counter> bumpFailedCounters;
@@ -243,7 +244,7 @@ public final class PermissionFreshnessService {
   private final Map<UUID, Instant> lostRevocations = new ConcurrentHashMap<>();
   private volatile Instant lostAllUntil = Instant.MIN;
   private final int lastSeenBumpCeiling;
-  private final ExecutorService roleReadExecutor;
+  private final ThreadPoolExecutor roleReadExecutor;
   private final AtomicReference<RoleRead> currentRoleRead = new AtomicReference<>();
   private final Map<UUID, UnparseableWindow> unparseableWindows = new ConcurrentHashMap<>();
 
@@ -424,11 +425,18 @@ public final class PermissionFreshnessService {
         .tag(TAG_REASON, REASON_CAPACITY)
         .register(meterRegistry);
     this.lastSeenDroppedBump = lastSeenCounter(meterRegistry, "bump_dropped");
-    this.roleReadExecutor = Executors.newSingleThreadExecutor(runnable -> {
-      Thread thread = new Thread(runnable, "epoch-role-replay-read");
-      thread.setDaemon(true);
-      return thread;
-    });
+    this.roleReadExecutor = new ThreadPoolExecutor(
+        1,
+        1,
+        0L,
+        TimeUnit.MILLISECONDS,
+        new LinkedBlockingQueue<>(ROLE_READ_QUEUE_CAPACITY),
+        runnable -> {
+          Thread thread = new Thread(runnable, "epoch-role-replay-read");
+          thread.setDaemon(true);
+          return thread;
+        },
+        new ThreadPoolExecutor.AbortPolicy());
     // Each tenant's share of both queues is the same percentage as its last-seen share (L-2).
     this.replayQueue = new EpochReplayQueue(
         replayCapacityUsers, Math.max(1, replayCapacityUsers * lastSeenTenantPercent / 100));
@@ -471,6 +479,11 @@ public final class PermissionFreshnessService {
   /** Test hook: occupies the replay thread, to leave a role read queued behind it. */
   Future<Void> runOnRoleReadThread(Runnable task) {
     return roleReadExecutor.submit(task, null);
+  }
+
+  /** Test hook: capacity of the role read executor queue. */
+  int roleReadQueueCapacity() {
+    return ROLE_READ_QUEUE_CAPACITY;
   }
 
   /** Returns the outage state of this instance. */
@@ -1343,7 +1356,7 @@ public final class PermissionFreshnessService {
       while (!roleReplayQueue.isEmpty()) {
       Instant now = clock.instant();
       Optional<RoleReplayQueue.Entry> polled =
-          roleReplayQueue.poll(now, now.minus(lastSeenTtl));
+          roleReplayQueue.poll(now.minus(lastSeenTtl));
       if (polled.isEmpty()) {
         return;
       }
