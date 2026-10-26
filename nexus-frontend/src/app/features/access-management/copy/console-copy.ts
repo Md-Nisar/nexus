@@ -175,6 +175,7 @@ export const CONSOLE_COPY = {
       type: 'Type',
       assigned: 'Assigned',
       assignedBy: 'Assigned by',
+      actions: 'Actions',
     },
   },
 
@@ -209,6 +210,31 @@ export const CONSOLE_COPY = {
     /** The typed confirm for an admin-looking role and a PENDING target (reachable after F-4). */
     typedTitle: 'Assign {role} to an unverified account?',
     success: 'Role assigned.',
+    wait: 'Try again in {n} seconds.',
+  },
+
+  /**
+   * The Revoke dialogs (§12.10, §14.2; RC-68, D-5). `{role}` is a role name and `{person}` the
+   * address: in the standard title both render through `UserText`, never formatted into a string.
+   * `{labels}` are permission labels joined by `save.listSeparator`; `{n}` a number of seconds.
+   */
+  revoke: {
+    /** The row button and its accessible name. */
+    open: 'Remove',
+    openLabel: 'Remove {role}',
+    title: 'Remove {role} from {person}?',
+    loses: 'They will lose: {labels}.',
+    losesGeneric: 'They will lose the access this role grants.',
+    loadingLoss: 'Loading what this role grants',
+    adminWarning:
+      'This role grants every permission. If no other administrator would remain, Nexus will refuse this change.',
+    cancel: 'Cancel',
+    confirm: 'Remove role',
+    success: 'Role removed.',
+    /** The typed self-revoke (§12.10); the shell adds "Type {role} to confirm". */
+    selfTitle: 'Remove your own {role} role?',
+    selfMessage: 'You will lose access to this page.',
+    selfConfirm: 'Remove my role',
     wait: 'Try again in {n} seconds.',
   },
 

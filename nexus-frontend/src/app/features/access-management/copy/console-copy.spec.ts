@@ -406,7 +406,23 @@ describe('CONSOLE_COPY (user page strings, design §12.8, §14.2; Q19)', () => {
       type: 'Type',
       assigned: 'Assigned',
       assignedBy: 'Assigned by',
+      actions: 'Actions',
     });
+  });
+
+  it('has the D3 Revoke strings (§12.10, §14.2)', () => {
+    const { revoke } = CONSOLE_COPY;
+    expect(revoke.title).toBe('Remove {role} from {person}?');
+    expect(revoke.loses).toBe('They will lose: {labels}.');
+    expect(revoke.losesGeneric).toBe('They will lose the access this role grants.');
+    expect(revoke.adminWarning).toBe(
+      'This role grants every permission. If no other administrator would remain, Nexus will refuse this change.',
+    );
+    expect(revoke.confirm).toBe('Remove role');
+    expect(revoke.success).toBe('Role removed.');
+    expect(revoke.selfTitle).toBe('Remove your own {role} role?');
+    expect(revoke.selfMessage).toBe('You will lose access to this page.');
+    expect(revoke.selfConfirm).toBe('Remove my role');
   });
 
   it('never puts an address placeholder in the breadcrumb or the title copy', () => {

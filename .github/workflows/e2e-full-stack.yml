@@ -22,9 +22,9 @@ permissions:
 
 env:
   COMPOSE: docker compose -f docker-compose.yml -f docker-compose.e2e.yml
-  # Floor for executed tests; `playwright test --list` reports 108. Raise it when specs are added
+  # Floor for executed tests; `playwright test --list` reports 114. Raise it when specs are added
   # so that a spec that stops running cannot go unnoticed.
-  E2E_MIN_TESTS: "108"
+  E2E_MIN_TESTS: "114"
 
 jobs:
   e2e:

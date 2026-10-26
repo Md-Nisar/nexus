@@ -60,8 +60,8 @@
 }
 
 /* 320 px (design §12.8, WCAG 1.4.10): one card per assignment (role, then type and date, then
-   who assigned it), no sideways scroll. nx-table renders Material table cells and has no card
-   mode, so the card layout reaches into its cells, as the users list does. */
+   who assigned it, then a full-width Remove), no sideways scroll. nx-table renders Material table
+   cells and has no card mode, so the card layout reaches into its cells, as the users list does. */
 @media (max-width: 599px) {
   :host ::ng-deep .user-roles__table {
     .nx-table-wrapper {
@@ -89,10 +89,8 @@
       grid-template-columns: auto 1fr;
       grid-template-areas:
         'role role'
-        'type assigned'
-        'assignedBy assignedBy';
+        'type assigned';
       gap: var(--nx-space-1) var(--nx-space-3);
-      justify-items: start;
       margin-block-end: var(--nx-space-3);
       padding: var(--nx-space-3);
       border: 1px solid var(--nx-color-outline-variant);
@@ -118,8 +116,10 @@
       grid-area: assigned;
     }
 
-    td.mat-column-assignedBy {
-      grid-area: assignedBy;
+    /* Full-width rows after the named areas, in column order (Remove fills its card). */
+    td.mat-column-assignedBy,
+    td.mat-column-revoke {
+      grid-column: 1 / -1;
     }
 
     .user-roles__label {

@@ -29,6 +29,7 @@
       }
     </div>
   }
+  <app-revoke-dialogs #revoke (revoked)="propagation.set($event)" />
   @switch (view()) {
     @case ('no-user-read') {
       <nx-empty-state
@@ -117,6 +118,15 @@
                 }
               </span>
             }
+          </ng-template>
+          <ng-template nxTableCell="revoke" let-raw>
+            <app-revoke-button
+              [attr.data-role-id]="row(raw).roleId"
+              [dialogs]="revoke"
+              [target]="row(raw)"
+              [label]="row(raw).revokeLabel"
+              data-testid="user-role-revoke"
+            />
           </ng-template>
         </nx-table>
       </div>

@@ -547,4 +547,66 @@ describe('RbacApi', () => {
         .flush(CREATED, { status: 201, statusText: 'Created' });
     });
   });
+
+  describe('revokeRole (design §7.1, §11.4; FR-C5, FR-G3)', () => {
+    const USER_ID = '0190a000-0000-7000-8000-000000000042';
+    const ROLE_ID = '0190a000-0000-7000-8000-0000000000b1';
+    const URL = `${API}/v1/users/${USER_ID}/roles/${ROLE_ID}`;
+
+    function revoke() {
+      let completed = false;
+      let emitted = 0;
+      let failure: unknown;
+      api.revokeRole(USER_ID, ROLE_ID).subscribe({
+        next: () => (emitted += 1),
+        complete: () => (completed = true),
+        error: (error: unknown) => (failure = error),
+      });
+      return {
+        completed: () => completed,
+        emitted: () => emitted,
+        failure: () => failure as AppError | undefined,
+      };
+    }
+
+    it('DELETEs the assignment with the console context and completes on the 204', () => {
+      const outcome = revoke();
+
+      const req = http.expectOne(URL);
+      expect(req.request.method).toBe('DELETE');
+      expect(req.request.body).toBeNull();
+      expect(req.request.context.get(SKIP_ACCESS_DENIED_REDIRECT)).toBe(true);
+      req.flush(null, { status: 204, statusText: 'No Content' });
+
+      expect(outcome.emitted()).toBe(1);
+      expect(outcome.completed()).toBe(true);
+      http.expectNone(URL);
+    });
+
+    it.each([
+      ['RBAC_002', 409],
+      ['ROLE_ASSIGNMENT_NOT_FOUND', 404],
+      ['RBAC_001', 403],
+      ['RBAC_011', 429],
+      ['RBAC_012', 409],
+      ['AUTH_005', 503],
+    ] as const)('surfaces %s without re-sending', (code, status) => {
+      const outcome = revoke();
+
+      http
+        .expectOne(URL)
+        .flush({ code, detail: 'Server detail', traceId: 'trace-1' }, { status, statusText: code });
+
+      http.expectNone(URL);
+      expect(outcome.failure()?.code).toBe(code);
+    });
+
+    it('encodes both ids as one path segment each', () => {
+      api.revokeRole('../x', 'a/b').subscribe();
+
+      http
+        .expectOne(`${API}/v1/users/%2E%2E%2Fx/roles/a%2Fb`)
+        .flush(null, { status: 204, statusText: 'No Content' });
+    });
+  });
 });

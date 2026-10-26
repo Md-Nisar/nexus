@@ -212,4 +212,23 @@ export class RbacApi {
       this.logger,
     );
   }
+
+  /**
+   * `DELETE /users/{id}/roles/{roleId}`: revokes one active assignment (`user:role:assign`, us012
+   * flag; design §7.1, §11.4). Emits once on the 204, then completes. Both ids are one path
+   * segment each.
+   *
+   * Never re-sent. Everything surfaces for the dialog: 403 with its reason (always before any 409,
+   * so a caller who may not revoke never learns that a role guards the last administrator), 404
+   * `ROLE_ASSIGNMENT_NOT_FOUND` (already removed: convergent), 409 `RBAC_002` (the last
+   * administrator: nothing changed), 429 `RBAC_011`, 503. A 401 is renewed and replayed by
+   * `authInterceptor`.
+   */
+  revokeRole(userId: string, roleId: string): Observable<void> {
+    return this.http
+      .delete<null>(`${this.base}/users/${pathSegment(userId)}/roles/${pathSegment(roleId)}`, {
+        context: consoleHttpContext(),
+      })
+      .pipe(map((): void => undefined));
+  }
 }

@@ -38,6 +38,7 @@ import { DirectoryCache } from '../data/directory-cache';
 import type { LoadState } from '../data/load-state';
 import { RbacApi } from '../data/rbac-api';
 import { RolesStore } from '../data/roles.store';
+import { RevokeButton, RevokeDialogs } from '../dialogs/revoke-dialogs';
 import { ConsoleErrorPanel } from '../ui/console-error-panel';
 import { SystemRoleBadge } from '../ui/system-role-badge';
 import { TargetIdentity } from '../ui/target-identity';
@@ -69,6 +70,8 @@ interface AssignmentRow extends Record<string, unknown> {
   readonly assignedByEmail: string | null;
   /** From the roles join; `null` when the role's details are not available. */
   readonly isSystemRole: boolean | null;
+  /** The accessible name of the row's Remove button. */
+  readonly revokeLabel: string;
 }
 
 /** What the tab shows. */
@@ -135,6 +138,11 @@ const ASSIGNED_BY_COLUMN: TableColumn = {
   header: CONSOLE_COPY.userRoles.columns.assignedBy,
   type: 'custom',
 };
+const REVOKE_COLUMN: TableColumn = {
+  key: 'revoke',
+  header: CONSOLE_COPY.userRoles.columns.actions,
+  type: 'custom',
+};
 
 /**
  * The roles a person holds (US-020 design §6.1, §6.5 "User page", §12.8; Q19, FR-C2, FR-X5).
@@ -179,7 +187,10 @@ const ASSIGNED_BY_COLUMN: TableColumn = {
  *   An administrator assigning to themself re-reads the live profile ("own access").
  * - **PII:** the address is never in a toast, a log or `document.title`; logs carry ids and codes.
  *
- * Revoke arrives in T-018.
+ * **Revoke** (T-018): a Remove button per row, shown exactly when "Assign role" is (the live
+ * profile's `user:role:assign`, the JWT while it loads), opens {@link RevokeDialogs}: the standard
+ * dialog with the identity line and what the person will lose, or the typed self variant chosen by
+ * user id (D-5). Its propagation line shows here like the assign one.
  *
  * @security UX only. The server decides every request.
  */
@@ -196,6 +207,8 @@ const ASSIGNED_BY_COLUMN: TableColumn = {
     NxBanner,
     NxSearchField,
     ConsoleErrorPanel,
+    RevokeButton,
+    RevokeDialogs,
     SystemRoleBadge,
     TargetIdentity,
     UserText,
@@ -310,14 +323,15 @@ export class UserRolesTab {
       assignedByEmail:
         assignment.assignedBy === null ? null : this.cache.email(assignment.assignedBy),
       isSystemRole: joined?.get(assignment.roleId)?.isSystemRole ?? null,
+      revokeLabel: format(CONSOLE_COPY.revoke.openLabel, { role: assignment.roleName }),
     }));
   });
 
-  protected readonly columns = computed<TableColumn[]>(() =>
-    this.rows().some((row) => row.assignedBy !== null)
-      ? [...BASE_COLUMNS, ASSIGNED_BY_COLUMN]
-      : [...BASE_COLUMNS],
-  );
+  protected readonly columns = computed<TableColumn[]>(() => [
+    ...BASE_COLUMNS,
+    ...(this.rows().some((row) => row.assignedBy !== null) ? [ASSIGNED_BY_COLUMN] : []),
+    ...(this.assignShown() ? [REVOKE_COLUMN] : []),
+  ]);
 
   /** The person the page is about, once read. */
   protected readonly target = computed(() => {
