@@ -396,6 +396,51 @@ class EpochReplayQueueTest {
         .isInstanceOf(IllegalArgumentException.class);
   }
 
+  @Test
+  void should_round_robin_tenants_on_individual_replay_failure() {
+    EpochReplayQueue queue = new EpochReplayQueue(10);
+    UUID tenantA = UUID.fromString("00000000-0000-7000-8000-0000000000aa");
+    UUID tenantB = UUID.fromString("00000000-0000-7000-8000-0000000000ab");
+    UUID userA = UUID.fromString("00000000-0000-7000-8000-0000000000a1");
+    UUID userB = UUID.fromString("00000000-0000-7000-8000-0000000000b1");
+
+    queue.offer(tenantA, List.of(userA), T);
+    queue.offer(tenantB, List.of(userB), T);
+
+    Batch batchA = queue.poll(10, NEVER_EXPIRED).orElseThrow();
+    assertThat(batchA.tenantId()).isEqualTo(tenantA);
+
+    queue.requeue(batchA);
+
+    Batch batchB = queue.poll(10, NEVER_EXPIRED).orElseThrow();
+    assertThat(batchB.tenantId()).isEqualTo(tenantB);
+
+    Batch batchASecond = queue.poll(10, NEVER_EXPIRED).orElseThrow();
+    assertThat(batchASecond.tenantId()).isEqualTo(tenantA);
+  }
+
+  @Test
+  void should_round_robin_tenants_when_tenantHasMoreUsersThanBatchMax() {
+    EpochReplayQueue queue = new EpochReplayQueue(10);
+    UUID tenantA = UUID.fromString("00000000-0000-7000-8000-0000000000aa");
+    UUID tenantB = UUID.fromString("00000000-0000-7000-8000-0000000000ab");
+    UUID userA1 = UUID.fromString("00000000-0000-7000-8000-0000000000a1");
+    UUID userA2 = UUID.fromString("00000000-0000-7000-8000-0000000000a2");
+    UUID userB1 = UUID.fromString("00000000-0000-7000-8000-0000000000b1");
+
+    queue.offer(tenantA, List.of(userA1, userA2), T);
+    queue.offer(tenantB, List.of(userB1), T);
+
+    Batch first = queue.poll(1, NEVER_EXPIRED).orElseThrow();
+    assertThat(first.tenantId()).isEqualTo(tenantA);
+
+    Batch second = queue.poll(1, NEVER_EXPIRED).orElseThrow();
+    assertThat(second.tenantId()).isEqualTo(tenantB);
+
+    Batch third = queue.poll(1, NEVER_EXPIRED).orElseThrow();
+    assertThat(third.tenantId()).isEqualTo(tenantA);
+  }
+
   private static List<UUID> users(int count) {
     return IntStream.range(0, count).mapToObj(i -> UUID.randomUUID()).toList();
   }
