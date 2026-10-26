@@ -165,12 +165,26 @@ public class RedisPermissionEpochAdapter implements PermissionEpochPort {
     }
   }
 
+  static final int BUMP_BATCH_SIZE = 100;
+
   @Override
   public Map<UUID, Long> bump(UUID tenantId, Collection<UUID> userIds) {
     if (!templates.bumpReady()) {
       throw new RedisConnectionFailureException("permission epoch store is not connected yet");
     }
     List<UUID> users = List.copyOf(userIds);
+    if (users.isEmpty()) {
+      return Map.of();
+    }
+    Map<UUID, Long> epochs = HashMap.newHashMap(users.size());
+    for (int from = 0; from < users.size(); from += BUMP_BATCH_SIZE) {
+      List<UUID> batch = users.subList(from, Math.min(from + BUMP_BATCH_SIZE, users.size()));
+      epochs.putAll(bumpBatch(tenantId, batch));
+    }
+    return epochs;
+  }
+
+  private Map<UUID, Long> bumpBatch(UUID tenantId, List<UUID> users) {
     List<String> epochKeys = new ArrayList<>(users.size());
     List<Object> args = new ArrayList<>(1 + users.size() * 2);
     args.add(keyTtlSeconds);
