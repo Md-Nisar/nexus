@@ -688,6 +688,23 @@ class PermissionFreshnessServiceTest {
   }
 
   @Test
+  void should_notEnterHealthy_when_sustainElapsedButReplayQueueNotEmpty() {
+    tripAtT();
+    clock.set(T.plusSeconds(100));
+    recoverNow();
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+
+    when(port.bump(any(), any())).thenThrow(new org.springframework.data.redis.RedisConnectionFailureException("bump down"));
+    service.invalidateHolders(TENANT, List.of(UUID.randomUUID()), "detach");
+
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+    clock.set(T.plusSeconds(160));
+    service.check(TENANT, USER, EPOCH);
+
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+  }
+
+  @Test
   void should_restartSustain_when_singleFailureInRecovering() {
     tripAtT();
     clock.set(T.plusSeconds(100));

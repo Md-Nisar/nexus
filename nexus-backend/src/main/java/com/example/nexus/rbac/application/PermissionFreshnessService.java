@@ -719,7 +719,8 @@ public final class PermissionFreshnessService {
     }
     synchronized (lock) {
       if (state == DegradedState.RECOVERING
-          && !Duration.between(recoverySince, now).minus(recoverySustain).isNegative()) {
+          && !Duration.between(recoverySince, now).minus(recoverySustain).isNegative()
+          && drainComplete()) {
         t0 = null;
         recentFailures.clear();
         moveTo(DegradedState.HEALTHY, "sustained_health", false, now);
