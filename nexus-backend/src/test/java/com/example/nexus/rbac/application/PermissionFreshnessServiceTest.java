@@ -738,6 +738,20 @@ class PermissionFreshnessServiceTest {
   }
 
   @Test
+  void should_remainFailClosed_during_recoveringStateFailures_when_previouslyClosed() {
+    tripAtT();
+    clock.set(T.plus(WINDOW).plusSeconds(10));
+    service.check(TENANT, USER, EPOCH);
+    assertThat(service.state()).isEqualTo(DegradedState.DEGRADED_CLOSED);
+
+    recoverNow();
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+
+    failRead();
+    assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.UNAVAILABLE);
+  }
+
+  @Test
   void should_relapse_when_threeProbeFailuresInRecovering() {
     tripAtT();
     clock.set(T.plusSeconds(100));

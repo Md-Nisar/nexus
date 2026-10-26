@@ -250,6 +250,7 @@ public final class PermissionFreshnessService {
   private volatile DegradedState state = DegradedState.HEALTHY;
   private Instant t0;
   private Instant recoverySince;
+  private volatile boolean recoveringFromClosed;
   private final Deque<Instant> recentFailures = new ArrayDeque<>();
   private final Deque<Instant> recentEntries = new ArrayDeque<>();
 
@@ -561,7 +562,11 @@ public final class PermissionFreshnessService {
         if (current.isEmpty()) {
           // Also an adapter that is not connected yet: it answers empty at once (design §9.5).
           recordReadFailure(now);
-          yield unverified(key, tokenEpoch, issuedAt, FreshnessVerdict.SKIPPED_ERROR, now);
+          FreshnessVerdict fallback =
+              (state == DegradedState.RECOVERING && (recoveringFromClosed || (t0 != null && windowElapsed(now))))
+                  ? FreshnessVerdict.UNAVAILABLE
+                  : FreshnessVerdict.SKIPPED_ERROR;
+          yield unverified(key, tokenEpoch, issuedAt, fallback, now);
         }
         recordReadSuccess(now);
         remember(key, current.getAsLong(), now, false);
@@ -749,6 +754,13 @@ public final class PermissionFreshnessService {
   private void moveTo(DegradedState target, String cause, boolean entry, Instant now) {
     DegradedState from = state;
     state = target;
+    if (target == DegradedState.HEALTHY || target == DegradedState.DEGRADED_OPEN) {
+      recoveringFromClosed = false;
+    } else if (target == DegradedState.DEGRADED_CLOSED) {
+      recoveringFromClosed = true;
+    } else if (target == DegradedState.RECOVERING) {
+      recoveringFromClosed = (from == DegradedState.DEGRADED_CLOSED || (t0 != null && windowElapsed(now)));
+    }
     if (target == DegradedState.HEALTHY) {
       log.atInfo()
           .addKeyValue(LOG_KEY_EVENT, "RBAC_EPOCH_DEGRADED_EXIT")
