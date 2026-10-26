@@ -16,7 +16,8 @@ Steps:
    - Edge cases (empty, null, boundary values)
    - Error paths (each thrown exception, each error response)
    - Authorization (each role × each endpoint)
-   - Concurrent access (where relevant)
+   - Concurrent access — wherever the code has check-then-act, `@Version`, `REQUIRES_NEW`, a bulk revoke or a shared in-flight request
+   - Weak proof tests — tests backing a guarantee that break `docs/TESTING.md` → *Tests that prove a guarantee*
    - Frontend: loading / error / empty states
 
 4. Add missing tests, one logical addition at a time. Follow:
