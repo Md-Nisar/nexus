@@ -1342,7 +1342,8 @@ public final class PermissionFreshnessService {
     try {
       while (!roleReplayQueue.isEmpty()) {
       Instant now = clock.instant();
-      Optional<RoleReplayQueue.Entry> polled = roleReplayQueue.poll(now.minus(lastSeenTtl));
+      Optional<RoleReplayQueue.Entry> polled =
+          roleReplayQueue.poll(now, now.minus(lastSeenTtl));
       if (polled.isEmpty()) {
         return;
       }
@@ -1351,7 +1352,7 @@ public final class PermissionFreshnessService {
       try {
         holders = readHoldersBounded(entry.roleId());
       } catch (RuntimeException e) {
-        roleReplayQueue.requeue(entry);
+        roleReplayQueue.requeue(entry, now);
         bumpFailedCounter(OPERATION_ROLE_REPLAY, REASON_HOLDER_READ).increment();
         log.atError()
             .addKeyValue(LOG_KEY_EVENT, "RBAC_HOLDER_READ_FAILED")

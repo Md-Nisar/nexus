@@ -92,7 +92,7 @@ final class RoleReplayQueue {
     if (roles.size() >= borrowLimit && queuedFor(tenantId) >= tenantCapacity) {
       return false;
     }
-    roles.put(key, new Times(failedAt, failedAt));
+    roles.put(key, new Times(failedAt, failedAt, 0, null));
     return true;
   }
 
@@ -105,14 +105,35 @@ final class RoleReplayQueue {
    * @return the entry, or empty when nothing live is queued
    */
   synchronized Optional<Entry> poll(Instant expiredAtOrBefore) {
+    return poll(Instant.MAX, expiredAtOrBefore);
+  }
+
+  /**
+   * Removes the oldest queued role eligible for retry under backoff.
+   *
+   * @param now current time for evaluating retry backoff
+   * @param expiredAtOrBefore entries with {@code newestFailedAt} not after this are discarded
+   * @return the entry, or empty when nothing live and eligible is queued
+   */
+  synchronized Optional<Entry> poll(Instant now, Instant expiredAtOrBefore) {
     Iterator<Map.Entry<RoleKey, Times>> it = roles.entrySet().iterator();
     while (it.hasNext()) {
       Map.Entry<RoleKey, Times> next = it.next();
-      it.remove();
-      if (next.getValue().newest().isAfter(expiredAtOrBefore)) {
-        RoleKey key = next.getKey();
-        return Optional.of(new Entry(
-            key.tenantId(), key.roleId(), next.getValue().oldest(), next.getValue().newest()));
+      if (!next.getValue().newest().isAfter(expiredAtOrBefore)) {
+        it.remove();
+        continue;
+      }
+      RoleKey key = next.getKey();
+      Entry entry = new Entry(
+          key.tenantId(),
+          key.roleId(),
+          next.getValue().oldest(),
+          next.getValue().newest(),
+          next.getValue().attempts(),
+          next.getValue().lastAttemptAt());
+      if (entry.isEligibleForRetry(now)) {
+        it.remove();
+        return Optional.of(entry);
       }
     }
     return Optional.empty();
@@ -126,13 +147,33 @@ final class RoleReplayQueue {
    * @param entry the entry returned by {@link #poll}
    */
   synchronized void requeue(Entry entry) {
+    requeue(entry, entry.newestFailedAt());
+  }
+
+  /**
+   * Puts a polled entry back after its replay failed, recording the attempt timestamp.
+   *
+   * @param entry the entry returned by {@link #poll}
+   * @param attemptedAt timestamp when the replay attempt failed
+   */
+  synchronized void requeue(Entry entry, Instant attemptedAt) {
     RoleKey key = new RoleKey(entry.tenantId(), entry.roleId());
     Times queued = roles.get(key);
-    roles.put(
-        key,
-        queued == null
-            ? new Times(entry.oldestFailedAt(), entry.newestFailedAt())
-            : queued.merge(entry.oldestFailedAt(), entry.newestFailedAt()));
+    int newAttempts = entry.attempts() + 1;
+    if (queued == null) {
+      roles.put(key, new Times(
+          entry.oldestFailedAt(), entry.newestFailedAt(), newAttempts, attemptedAt));
+    } else {
+      roles.put(
+          key,
+          new Times(
+              entry.oldestFailedAt().isBefore(queued.oldest())
+                  ? entry.oldestFailedAt() : queued.oldest(),
+              entry.newestFailedAt().isAfter(queued.newest())
+                  ? entry.newestFailedAt() : queued.newest(),
+              Math.max(queued.attempts(), newAttempts),
+              attemptedAt));
+    }
   }
 
   /** Bounded by the capacity, at most 1,000 in practice, and only reached for a new role. */
@@ -172,15 +213,41 @@ final class RoleReplayQueue {
 
   private record RoleKey(UUID tenantId, UUID roleId) {}
 
-  private record Times(Instant oldest, Instant newest) {
+  private record Times(
+      Instant oldest, Instant newest, int attempts, Instant lastAttemptAt) {
 
     Times merge(Instant otherOldest, Instant otherNewest) {
       return new Times(
           otherOldest.isBefore(oldest) ? otherOldest : oldest,
-          otherNewest.isAfter(newest) ? otherNewest : newest);
+          otherNewest.isAfter(newest) ? otherNewest : newest,
+          this.attempts,
+          this.lastAttemptAt);
     }
   }
 
-  /** One queued role: when its first and its latest holder read failed. */
-  record Entry(UUID tenantId, UUID roleId, Instant oldestFailedAt, Instant newestFailedAt) {}
+  /** One queued role: failure window and backoff state. */
+  record Entry(
+      UUID tenantId,
+      UUID roleId,
+      Instant oldestFailedAt,
+      Instant newestFailedAt,
+      int attempts,
+      Instant lastAttemptAt) {
+
+    Entry(UUID tenantId, UUID roleId, Instant oldestFailedAt, Instant newestFailedAt) {
+      this(tenantId, roleId, oldestFailedAt, newestFailedAt, 0, null);
+    }
+
+    Duration backoffDuration() {
+      long seconds = Math.min(60, (long) Math.pow(2, attempts));
+      return Duration.ofSeconds(seconds);
+    }
+
+    boolean isEligibleForRetry(Instant now) {
+      if (lastAttemptAt == null || attempts == 0) {
+        return true;
+      }
+      return !now.isBefore(lastAttemptAt.plus(backoffDuration()));
+    }
+  }
 }
