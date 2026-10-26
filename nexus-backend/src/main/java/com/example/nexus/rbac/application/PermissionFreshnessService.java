@@ -262,7 +262,7 @@ public final class PermissionFreshnessService {
    * @param meterRegistry registry for the signals listed on the class
    * @param clock the time source of the state machine and the locally-seen map
    * @param failOpenWindow {@code nexus.rbac.epoch.fail-open-window}: time from {@code t0} until
-   *     degraded-open becomes degraded-closed
+   *     degraded-open becomes degraded-closed; zero fails closed at once (the prod default)
    * @param entryFailureThreshold {@code nexus.rbac.epoch.entry-failure-threshold}: failures in
    *     the window that enter (or relapse into) a degraded state
    * @param entryFailureWindow {@code nexus.rbac.epoch.entry-failure-window}: the sliding window
@@ -276,8 +276,8 @@ public final class PermissionFreshnessService {
    *     roles whose holder read is queued for replay
    * @param lastSeenTenantPercent {@code nexus.rbac.epoch.last-seen-tenant-percent}: the share of
    *     the locally-seen map one tenant may fill, 1 to 100
-   * @throws IllegalArgumentException if the threshold is below 1, a duration is not positive or
-   *     the percentage is outside 1 to 100
+   * @throws IllegalArgumentException if the threshold is below 1, the fail-open window is
+   *     negative, another duration is not positive or the percentage is outside 1 to 100
    */
   public PermissionFreshnessService(
       PermissionEpochPort epochPort,
@@ -294,7 +294,7 @@ public final class PermissionFreshnessService {
       @Value("${nexus.rbac.epoch.replay-capacity-roles:1000}") int replayCapacityRoles,
       @Value("${nexus.rbac.epoch.last-seen-tenant-percent:10}") int lastSeenTenantPercent) {
     if (entryFailureThreshold < 1
-        || !failOpenWindow.isPositive()
+        || failOpenWindow.isNegative()
         || !entryFailureWindow.isPositive()
         || !recoverySustain.isPositive()
         || keyTtlSeconds < 1

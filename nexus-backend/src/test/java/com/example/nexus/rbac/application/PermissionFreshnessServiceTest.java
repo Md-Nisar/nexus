@@ -939,6 +939,31 @@ class PermissionFreshnessServiceTest {
   }
 
   @Test
+  void should_rejectNegativeFailOpenWindow_when_constructed() {
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> new PermissionFreshnessService(
+            port, userRoles, cachePort, registry, clock, Duration.ofSeconds(-1), 3,
+            Duration.ofSeconds(10), Duration.ofSeconds(60), KEY_TTL_SECONDS, REPLAY_CAPACITY,
+            ROLE_REPLAY_CAPACITY, TENANT_PERCENT))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void should_failClosedOnNextCheck_when_failOpenWindowIsZero() {
+    // OR-3.3-02: application-prod.yml defaults fail-open-window to PT0S; the context must start.
+    service = new PermissionFreshnessService(
+        port, userRoles, cachePort, registry, clock, Duration.ZERO, 3, Duration.ofSeconds(10),
+        Duration.ofSeconds(60), KEY_TTL_SECONDS, REPLAY_CAPACITY, ROLE_REPLAY_CAPACITY,
+        TENANT_PERCENT);
+    failRead();
+    failedCheckAt(0);
+    failedCheckAt(4);
+    failedCheckAt(8);
+
+    assertThat(failedCheckAt(9)).isEqualTo(FreshnessVerdict.UNAVAILABLE);
+    assertThat(service.state()).isEqualTo(DegradedState.DEGRADED_CLOSED);
+  }
+
+  @Test
   void should_rejectNonPositiveReplayCapacity_when_constructed() {
     org.assertj.core.api.Assertions.assertThatThrownBy(() -> newService(registry, 0))
         .isInstanceOf(IllegalArgumentException.class);

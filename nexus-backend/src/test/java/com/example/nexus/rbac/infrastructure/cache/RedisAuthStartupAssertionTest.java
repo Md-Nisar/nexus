@@ -303,6 +303,14 @@ class RedisAuthStartupAssertionTest {
     assertThat(resolveProperty(REQUIRE_SSL, "dev")).isFalse();
   }
 
+  @Test
+  void should_configureRedisInReadinessProbeAndZeroFailOpenWindow_when_prodProfileActive() {
+    assertThat(resolveProperty("management.health.redis.enabled", "prod")).isTrue();
+    assertThat(resolvePropertyString("nexus.rbac.epoch.fail-open-window", "prod")).isEqualTo("PT0S");
+    assertThat(resolvePropertyString("management.endpoint.health.group.readiness.include", "prod"))
+        .contains("redis");
+  }
+
   /**
    * Resolves the property from the real {@code application*.yml} files through Boot's config-data
    * loading only: an empty configuration, no auto-configuration, no web server, and no logging
@@ -324,6 +332,20 @@ class RedisAuthStartupAssertionTest {
 
   private static Boolean resolveRequireAuth(String... profiles) {
     return resolveProperty(REQUIRE_AUTH, profiles);
+  }
+
+  private static String resolvePropertyString(String property, String... profiles) {
+    SpringApplication app = new SpringApplication(EmptyConfig.class);
+    app.setWebApplicationType(WebApplicationType.NONE);
+    app.setRegisterShutdownHook(false);
+    app.setLogStartupInfo(false);
+    app.setListeners(app.getListeners().stream()
+        .filter(listener -> !(listener instanceof LoggingApplicationListener))
+        .toList());
+    app.setAdditionalProfiles(profiles);
+    try (ConfigurableApplicationContext context = app.run("--spring.main.banner-mode=off")) {
+      return context.getEnvironment().getProperty(property);
+    }
   }
 
   /** Deliberately empty: only the environment is under test. */
