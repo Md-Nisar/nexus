@@ -556,6 +556,33 @@ describe('RoleCreatePage (US-020 design §6.6, §11.3, §12.5)', () => {
       await page.settle();
     });
 
+    it('stops refusing to leave once the request has stalled for 15 seconds (no way out otherwise)', async () => {
+      ctx = setup();
+      const page = await openCreate(ctx);
+      const info = vi.spyOn(TestBed.inject(NxToast), 'info').mockImplementation(() => undefined);
+      await fillAndSubmit(page, ['user:read']);
+      await expect(ctx.router.navigateByUrl('/admin/access/roles')).resolves.toBe(false);
+      expect(info).toHaveBeenCalledWith(CONSOLE_COPY.createRole.stillCreating);
+
+      // The POST has now been unanswered for longer than the bound: backdate its start.
+      const instance = page.harness.routeDebugElement?.componentInstance as {
+        busySince: number;
+        leaveBlockedMessage(): string | null;
+      };
+      expect(instance.leaveBlockedMessage()).toBe(CONSOLE_COPY.createRole.stillCreating);
+      instance.busySince -= 15_001;
+      expect(instance.leaveBlockedMessage()).toBeNull();
+      answerCreate(ctx);
+      expectSetGet(ctx).flush({ data: [] }, { headers: { ETag: '"e0"' } });
+      expectPut(ctx).flush(
+        { data: CATALOGUE.filter((p) => p.name === 'user:read') },
+        { headers: { ETag: '"e1"' } },
+      );
+      await page.settle();
+      answerRolePage(ctx, ['user:read']);
+      await page.settle();
+    });
+
     it('invalidates the roles list even when the page goes away with the POST unanswered', async () => {
       ctx = setup();
       const page = await openCreate(ctx);

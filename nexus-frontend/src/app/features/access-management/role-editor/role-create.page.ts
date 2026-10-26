@@ -114,6 +114,8 @@ const GONE: ReadonlySet<string> = new Set(['ROLE_NOT_FOUND', 'VALIDATION_FAILED'
 const FIELDS: ReadonlySet<string> = new Set<Field>(['name', 'description']);
 const DIRECTORY_READ = 'user:directory:read';
 const NO_IDS: ReadonlySet<string> = new Set<string>();
+/** How long a create in flight may refuse a leave before the user is let go. */
+const LEAVE_REFUSAL_MS = 15_000;
 
 const NAME_ID = 'role-create-name';
 const NAME_COUNTER_ID = 'role-create-name-counter';
@@ -216,6 +218,7 @@ export class RoleCreatePage implements OnInit, HasUnsavedChanges {
   });
 
   protected readonly phase = signal<Phase>({ kind: 'editing' });
+  private busySince = 0;
   private readonly source = signal<SourceState>({ kind: 'none' });
   /** Ids the user (or the Clone) staged; shown and sent only while their row is enabled. */
   private readonly staged = signal<ReadonlySet<string>>(NO_IDS);
@@ -459,7 +462,11 @@ export class RoleCreatePage implements OnInit, HasUnsavedChanges {
   leaveBlockedMessage(): string | null {
     const phase = this.phase();
     const busy = phase.kind === 'creating' || (phase.kind === 'partial' && phase.retrying);
-    return busy ? CONSOLE_COPY.createRole.stillCreating : null;
+    // Bounded: the app has no HTTP timeout, so a request that never answers must not trap the user.
+    // Past the bound leaving is allowed; destroying the page cancels the request and refreshes the list.
+    return busy && Date.now() - this.busySince < LEAVE_REFUSAL_MS
+      ? CONSOLE_COPY.createRole.stillCreating
+      : null;
   }
 
   protected onToggle(event: MatrixToggle): void {
@@ -512,6 +519,7 @@ export class RoleCreatePage implements OnInit, HasUnsavedChanges {
 
     const ids = this.chosen();
     const { name, description } = this.form.getRawValue();
+    this.busySince = Date.now();
     this.phase.set({ kind: 'creating' });
     this.api
       .createRole({ name, description })
@@ -538,6 +546,7 @@ export class RoleCreatePage implements OnInit, HasUnsavedChanges {
   protected retry(): void {
     const phase = this.phase();
     if (phase.kind !== 'partial' || phase.retrying || this.waiting()) return;
+    this.busySince = Date.now();
     this.phase.set({ ...phase, retrying: true });
     this.applyPermissions(phase.role, phase.ids);
   }
