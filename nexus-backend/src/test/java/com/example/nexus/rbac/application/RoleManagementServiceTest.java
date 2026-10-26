@@ -1921,12 +1921,66 @@ class RoleManagementServiceTest {
         new RolePermissionRef(roleId, P2),
         new RolePermissionRef(otherAdminRoleId, P1),
         new RolePermissionRef(otherAdminRoleId, P2));
+    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId))
+        .thenReturn(
+            List.of(
+                new RolePermissionRef(otherAdminRoleId, P1),
+                new RolePermissionRef(otherAdminRoleId, P2),
+                new RolePermissionRef(roleId, P1),
+                new RolePermissionRef(roleId, P2)));
+    List<UUID> lockSet =
+        RoleAssignmentService.buildAscendingLockSet(Set.of(otherAdminRoleId), roleId);
+    when(userRoleAssignmentPort.lockActiveAssignmentHolders(tenantId, lockSet))
+        .thenReturn(List.of(lockedRow(actorId, otherAdminRoleId, actorId)));
+    when(userRoleAssignmentPort.lockRolePermissionsForRoles(tenantId, lockSet))
+        .thenReturn(
+            List.of(
+                new RolePermissionRef(otherAdminRoleId, P1),
+                new RolePermissionRef(otherAdminRoleId, P2),
+                new RolePermissionRef(roleId, P1),
+                new RolePermissionRef(roleId, P2)));
     when(roleManagementPort.detachPermission(roleId, P1)).thenReturn(1);
     when(roleManagementPort.findPermission(P1)).thenReturn(Optional.of(benignPermission()));
 
     service.detachPermission(actor, roleId, P1, ctx);
 
     verify(roleManagementPort).detachPermission(roleId, P1);
+  }
+
+  @Test
+  void should_deny403_when_detachDemotesAdminRoleAndUnderLockCallerLacksAnotherAdminRole() {
+    UUID otherAdminRoleId = UUID.randomUUID();
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(customRole(tenantId)));
+    stubRolePermissions(CATALOGUE);
+    stubCallerHoldsRefs(
+        new RolePermissionRef(roleId, P1),
+        new RolePermissionRef(roleId, P2),
+        new RolePermissionRef(otherAdminRoleId, P1),
+        new RolePermissionRef(otherAdminRoleId, P2));
+    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId))
+        .thenReturn(
+            List.of(
+                new RolePermissionRef(otherAdminRoleId, P1),
+                new RolePermissionRef(otherAdminRoleId, P2),
+                new RolePermissionRef(roleId, P1),
+                new RolePermissionRef(roleId, P2)));
+    List<UUID> lockSet =
+        RoleAssignmentService.buildAscendingLockSet(Set.of(otherAdminRoleId), roleId);
+    when(userRoleAssignmentPort.lockActiveAssignmentHolders(tenantId, lockSet))
+        .thenReturn(List.of(lockedRow(actorId, roleId, actorId)));
+    when(userRoleAssignmentPort.lockRolePermissionsForRoles(tenantId, lockSet))
+        .thenReturn(
+            List.of(
+                new RolePermissionRef(otherAdminRoleId, P1),
+                new RolePermissionRef(roleId, P1),
+                new RolePermissionRef(roleId, P2)));
+
+    assertThatThrownBy(() -> service.detachPermission(actor, roleId, P1, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    verify(roleManagementPort, never()).detachPermission(any(), any());
   }
 
   /** The administrator requirement applies only to admin-defining roles: a plain subset suffices. */

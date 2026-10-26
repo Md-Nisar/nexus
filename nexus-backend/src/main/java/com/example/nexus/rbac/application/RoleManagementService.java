@@ -450,7 +450,18 @@ public class RoleManagementService {
     RoleView role = resolveRoleInTenant(roleId, actor, ROLE_WRITE, OPERATION_DETACH);
     requireMutableRole(role);
 
-    requireRoleSubset(actor, role, OPERATION_DETACH);
+    SubsetCheck subset = requireRoleSubset(actor, role, OPERATION_DETACH);
+
+    if (!roleManagementPort.lockRoleRow(role.id(), actor.tenantId())) {
+      throw new ResourceNotFoundException(CODE_ROLE_NOT_FOUND, MESSAGE_NO_SUCH_ROLE);
+    }
+
+    if (subset.adminDefining()) {
+      SetLockRows setLock = acquireSetLock(actor, role, subset.catalogueIds());
+      Set<UUID> adminDefiningNow = adminDefiningNow(actor, setLock, subset.catalogueIds());
+      requireAdministratorThroughAnotherLockedRole(
+          actor, role, setLock, adminDefiningNow, OPERATION_DETACH);
+    }
 
     // One read serves the audit's permissionName.
     Optional<PermissionView> permission = roleManagementPort.findPermission(permissionId);
@@ -486,6 +497,9 @@ public class RoleManagementService {
           // pre-commit permission set. Holders are read after commit, so an assignment committed
           // before this read is included; one committed after it mints fresh, because its role set
           // changed.
+          if (subset.adminDefining()) {
+            signalRoleCeasedAdminDefining(actor, role, Optional.empty());
+          }
           readAfterCommit(
                   actor.tenantId(),
                   role.id(),
