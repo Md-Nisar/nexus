@@ -32,9 +32,9 @@ final class RbacRedisKeys {
     this.rbacPrefix = keyPrefix + ":rbac:";
   }
 
-  /** The user's permission-epoch key. */
+  /** The user's permission-epoch key. Uses Redis cluster hash tag `{tenantId}` (OR-2.3-01). */
   String epoch(UUID tenantId, UUID userId) {
-    return rbacPrefix + "epoch:" + tenantId + ":" + userId;
+    return rbacPrefix + "epoch:{" + tenantId + "}:" + userId;
   }
 
   /** The cached role-name set computed under {@code epoch}. */
@@ -49,17 +49,17 @@ final class RbacRedisKeys {
 
   /** {@link #roleset} without the epoch; a script appends the epoch it read. */
   String rolesetStem(UUID tenantId, UUID userId) {
-    return rbacPrefix + "roleset:" + tenantId + ":" + userId + ":";
+    return rbacPrefix + "roleset:{" + tenantId + "}:" + userId + ":";
   }
 
   /** {@link #permset} without the epoch; a script appends the epoch it read. */
   String permsetStem(UUID tenantId, UUID userId) {
-    return rbacPrefix + "permset:" + tenantId + ":" + userId + ":";
+    return rbacPrefix + "permset:{" + tenantId + "}:" + userId + ":";
   }
 
   /** The actor's denial-throttle sliding window (US-018 B8). */
   String throttle(UUID tenantId, UUID actorUserId) {
-    return rbacPrefix + "throttle:" + tenantId + ":" + actorUserId;
+    return rbacPrefix + "throttle:{" + tenantId + "}:" + actorUserId;
   }
 
   /** The actor's throttled-until marker; present exactly while the actor is throttled. */

@@ -145,7 +145,7 @@ class RefreshTokenPermissionResolutionIT {
     LoginResult refreshed = refreshTokenUseCase.execute(seedRefreshToken(user), "127.0.0.1");
     long minted = jwtPort.verify(refreshed.accessToken()).permEpoch();
 
-    String stem = keyPrefix + ":rbac:permset:" + TENANT_ID + ":" + user.getId() + ":";
+    String stem = keyPrefix + ":rbac:permset:{" + TENANT_ID + "}:" + user.getId() + ":";
     assertThat(minted).isPositive();
     assertThat(redisTemplate.opsForSet().members(stem + minted)).containsExactly("user:read");
     assertThat(redisTemplate.hasKey(stem + "0")).isFalse();

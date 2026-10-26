@@ -143,7 +143,7 @@ class RedisRoleChangeThrottleAdapterIT {
 
     denyTimes(replica, tenantId, actorId, MAX_DENIALS + 1);
 
-    String windowKey = "nexus-test:rbac:throttle:" + tenantId + ":" + actorId;
+    String windowKey = "nexus-test:rbac:throttle:{" + tenantId + "}:" + actorId;
     assertThat(redisTemplate.hasKey(windowKey)).isTrue();
     assertThat(redisTemplate.getExpire(windowKey)).isBetween(1L, (long) WINDOW_SECONDS);
     assertThat(redisTemplate.getExpire(windowKey + ":until")).isBetween(1L, (long) WINDOW_SECONDS);
@@ -161,14 +161,14 @@ class RedisRoleChangeThrottleAdapterIT {
     assertThat(replicaB.recordSuppressedDenial(tenantId, actorId))
         .as("the second suppressed denial in the window, on another replica, does not log")
         .isEqualTo(2);
-    assertThat(redisTemplate.getExpire("nexus-test:rbac:throttle:" + tenantId + ":" + actorId + ":suppressed"))
+    assertThat(redisTemplate.getExpire("nexus-test:rbac:throttle:{" + tenantId + "}:" + actorId + ":suppressed"))
         .isBetween(1L, (long) WINDOW_SECONDS);
   }
 
   // US-019 B7 (design §9.3): one PTTL on the throttled-until marker answers both questions.
 
   private static String untilKey(UUID tenantId, UUID actorId) {
-    return KEY_PREFIX + ":rbac:throttle:" + tenantId + ":" + actorId + ":until";
+    return KEY_PREFIX + ":rbac:throttle:{" + tenantId + "}:" + actorId + ":until";
   }
 
   @Test
