@@ -1153,6 +1153,21 @@ class PermissionFreshnessServiceTest {
   }
 
   @Test
+  void should_autoHealRegressedEpochInStore_when_regressionDetected() {
+    clock.set(T);
+    when(port.bump(TENANT, List.of(USER))).thenReturn(Map.of(USER, PAST));
+    service.invalidateUser(TENANT, USER, "revoke");
+
+    // Redis regressed (e.g. following Sentinel failover to stale replica)
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(0L));
+    when(port.bump(TENANT, List.of(USER))).thenReturn(Map.of(USER, PAST + 10));
+
+    service.check(TENANT, USER, PAST);
+
+    verify(port, times(2)).bump(TENANT, List.of(USER));
+  }
+
+  @Test
   void should_enforceLocalBound_when_storeLosesTheKeyOfASeenUser() {
     clock.set(T);
     when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(PAST));

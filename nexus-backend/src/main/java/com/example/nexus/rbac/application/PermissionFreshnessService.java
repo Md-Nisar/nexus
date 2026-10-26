@@ -471,6 +471,9 @@ public final class PermissionFreshnessService {
         if (known != null && (known.epoch() > read.getAsLong() || known.failedBumpAt() != null)) {
           if (known.epoch() > read.getAsLong()) {
             storeRegressedCounter.increment();
+            if (known.ownBump()) {
+              autoHealRegressedEpoch(tenantId, userId);
+            }
           }
           return new MintEpoch(Math.max(known.epoch(), read.getAsLong()), false);
         }
@@ -567,6 +570,9 @@ public final class PermissionFreshnessService {
         SeenEpoch known = lastSeenEntry(key, now);
         if (known != null && known.epoch() > current.getAsLong()) {
           storeRegressedCounter.increment();
+          if (known.ownBump()) {
+            autoHealRegressedEpoch(key.tenantId(), key.userId());
+          }
         }
         yield tokenEpoch < current.getAsLong() || staleByLocalKnowledge(known, tokenEpoch, issuedAt)
             ? FreshnessVerdict.STALE
@@ -1002,11 +1008,33 @@ public final class PermissionFreshnessService {
    * After a successful bump: exactly what the store wrote (H-2). A user the store did not report,
    * which a conforming store never does, gets the lower bound instead.
    */
+  private void autoHealRegressedEpoch(UUID tenantId, UUID userId) {
+    try {
+      Written written = bump(tenantId, List.of(userId));
+      if (written.epochs() != null && written.epochs().containsKey(userId)) {
+        rememberBump(tenantId, List.of(userId), written);
+        Long repairedEpoch = written.epochs().get(userId);
+        log.atWarn()
+            .addKeyValue(LOG_KEY_EVENT, "RBAC_EPOCH_REGRESSION_AUTO_HEALED")
+            .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
+            .addKeyValue("userId", userId)
+            .addKeyValue("repairedEpoch", repairedEpoch)
+            .log("Auto-healed regressed Redis epoch following store regression/failover");
+      }
+    } catch (RuntimeException e) {
+      log.atWarn()
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_EPOCH_AUTO_HEAL_FAILED")
+          .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
+          .addKeyValue("userId", userId)
+          .log("Failed to auto-heal regressed Redis epoch", e);
+    }
+  }
+
   private void rememberBump(UUID tenantId, Collection<UUID> userIds, Written written) {
     Instant now = clock.instant();
     for (UUID userId : userIds) {
       UserKey key = new UserKey(tenantId, userId);
-      Long epoch = written.epochs().get(userId);
+      Long epoch = written.epochs() != null ? written.epochs().get(userId) : null;
       remember(key, epoch != null ? epoch : lowerBound(key, now), now, true);
     }
   }
