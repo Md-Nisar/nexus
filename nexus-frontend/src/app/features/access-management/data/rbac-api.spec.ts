@@ -15,6 +15,7 @@ import type {
   CallerAuthorizationResponse,
   PermissionListResponse,
   PermissionPageResponse,
+  RoleAssignmentListResponse,
   RoleListResponse,
   RoleResponse,
 } from '../../../shared/types/api/rbac';
@@ -393,6 +394,54 @@ describe('RbacApi', () => {
 
       http.expectNone(URL);
       expect(failure?.code).toBe(code);
+    });
+  });
+
+  describe('listAssignments (design §7.1, T-016)', () => {
+    const USER_ID = '0190a000-0000-7000-8000-000000000042';
+    const LIST: RoleAssignmentListResponse = {
+      data: [
+        {
+          userId: USER_ID,
+          roleId: '0190a000-0000-7000-8000-0000000000b1',
+          roleName: 'Support',
+          assignedAt: '2026-01-01T00:00:00Z',
+          assignedBy: null,
+        },
+      ],
+      page: { size: 100, number: 0, totalElements: 1, totalPages: 1 },
+      links: { next: null, prev: null },
+    };
+
+    it('GETs /v1/users/{id}/roles with page and size, the console context, and emits the body', () => {
+      let received: RoleAssignmentListResponse | undefined;
+      api.listAssignments(USER_ID, 0, 100).subscribe((body) => (received = body));
+
+      const req = http.expectOne(`${API}/v1/users/${USER_ID}/roles?page=0&size=100`);
+      expect(req.request.method).toBe('GET');
+      expect(req.request.context.get(SKIP_ACCESS_DENIED_REDIRECT)).toBe(true);
+      req.flush(LIST);
+
+      expect(received).toEqual(LIST);
+    });
+
+    it('encodes the id as one path segment', () => {
+      api.listAssignments('../x/..', 0, 100).subscribe();
+
+      http.expectOne(`${API}/v1/users/%2E%2E%2Fx%2F%2E%2E/roles?page=0&size=100`).flush(LIST);
+    });
+
+    it('surfaces a 403 as an AppError, never retrying a read', () => {
+      let failure: AppError | undefined;
+      api.listAssignments(USER_ID, 0, 100).subscribe({
+        error: (error: AppError) => (failure = error),
+      });
+
+      const url = `${API}/v1/users/${USER_ID}/roles?page=0&size=100`;
+      http.expectOne(url).flush({ code: 'RBAC_001' }, { status: 403, statusText: 'Forbidden' });
+
+      http.expectNone(url);
+      expect(failure?.code).toBe('RBAC_001');
     });
   });
 });

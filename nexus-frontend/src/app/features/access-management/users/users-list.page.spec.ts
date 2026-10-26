@@ -28,6 +28,7 @@ import type {
 } from '../../../shared/types/api/user-directory';
 import { CONSOLE_COPY } from '../copy/console-copy';
 import { AuthorizationProfileStore } from '../data/authorization-profile.store';
+import { DirectoryCache } from '../data/directory-cache';
 import { UsersListPage } from './users-list.page';
 import { UsersListStore } from './users-list.store';
 
@@ -119,6 +120,7 @@ function setup() {
           path: 'admin/access/users',
           component: UsersListPage,
           providers: [
+            DirectoryCache,
             UsersListStore,
             { provide: AuthorizationProfileStore, useValue: { userId: profileUserId } },
           ],

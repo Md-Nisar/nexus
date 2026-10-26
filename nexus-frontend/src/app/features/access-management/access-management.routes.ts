@@ -4,11 +4,13 @@ import { AuthStore } from '../../core/auth/auth.store';
 import { permissionGuard } from '../../core/guards/permission.guard';
 import { AuthorizationProfileStore } from './data/authorization-profile.store';
 import { CatalogueStore } from './data/catalogue.store';
+import { DirectoryCache } from './data/directory-cache';
 import { RolesStore } from './data/roles.store';
 import { AccessConsoleLayout } from './layout/access-console-layout';
 import { CONSOLE_AREAS } from './layout/console-areas';
 import { RoleDetailStore } from './role-detail/role-detail.store';
 import { unsavedChangesGuard } from './role-editor/unsaved-changes.guard';
+import { UserDetailStore } from './user-detail/user-detail.store';
 import { UsersListStore } from './users/users-list.store';
 
 /** Where a user who holds none of the areas' permissions would go; the parent guard denies them first. */
@@ -47,12 +49,16 @@ export const firstAreaRedirect: CanActivateFn = () => {
  *   `roles/:roleId`.
  * - `users` (`user:directory:read`) scopes {@link UsersListStore} to the users list; its static
  *   title keeps every address out of `document.title` and history.
+ * - `users/:userId` (`user:directory:read`) scopes {@link UserDetailStore} to one user page and
+ *   has no title of its own; its `roles` tab has a static title and **no guard**, because it
+ *   degrades without `user:read` or `role:read` (Q6, Q19). {@link DirectoryCache} sits on the
+ *   layout, so addresses the users list received outlive its route.
  */
 export const ACCESS_MANAGEMENT_ROUTES: Routes = [
   {
     path: '',
     component: AccessConsoleLayout,
-    providers: [AuthorizationProfileStore, RolesStore, CatalogueStore],
+    providers: [AuthorizationProfileStore, RolesStore, CatalogueStore, DirectoryCache],
     children: [
       {
         path: '',
@@ -120,6 +126,22 @@ export const ACCESS_MANAGEMENT_ROUTES: Routes = [
         data: { permission: 'user:directory:read' },
         providers: [UsersListStore],
         loadComponent: () => import('./users/users-list.page').then((m) => m.UsersListPage),
+      },
+      {
+        path: 'users/:userId',
+        canActivate: [permissionGuard],
+        data: { permission: 'user:directory:read' },
+        providers: [UserDetailStore],
+        loadComponent: () => import('./user-detail/user-detail.page').then((m) => m.UserDetailPage),
+        children: [
+          { path: '', pathMatch: 'full', redirectTo: 'roles' },
+          {
+            // No guard: the tab degrades without user:read or role:read (design §4.2, Q19).
+            path: 'roles',
+            title: 'User roles',
+            loadComponent: () => import('./user-detail/user-roles.tab').then((m) => m.UserRolesTab),
+          },
+        ],
       },
     ],
   },

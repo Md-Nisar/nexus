@@ -122,6 +122,51 @@ export const CONSOLE_COPY = {
     },
   },
 
+  /**
+   * The user page (§12.8, §14.2). `{date}` is a formatted date. No string carries the address:
+   * it renders only through `UserText` in the `h1`.
+   */
+  userDetail: {
+    breadcrumbRoot: 'Access management',
+    breadcrumbUsers: 'Users',
+    /** The last crumb: static, so the address never reaches the breadcrumb. */
+    breadcrumbCurrent: 'User',
+    /** The `h1` while the user is on their way; the address replaces it. */
+    loadingTitle: 'Loading user',
+    /** The `h1` when the user could not be read for a reason other than "not found". */
+    fallbackTitle: 'User',
+    loading: 'Loading user',
+    joined: 'Joined {date}',
+    /** Info banner by status (§14.2 "Status notes"); ACTIVE has none. */
+    statusNotes: {
+      LOCKED: "This person is locked out and can't sign in until the lock ends.",
+      DISABLED: 'This account is disabled.',
+      PENDING: "This person hasn't verified their email address yet.",
+    },
+    backToUsers: 'Back to Users',
+    tabsLabel: 'User sections',
+    tabRoles: 'Roles',
+  },
+
+  /** The user page's Roles tab (§12.8, §14.2; Q19). */
+  userRoles: {
+    caption: 'Roles held',
+    loading: 'Loading roles',
+    empty: 'No roles assigned',
+    noUserRead: "You need permission to read users' roles to see this.",
+    noRoleRead: "Role details are hidden because you can't read roles.",
+    joinFailed: "Role details couldn't be loaded.",
+    retryJoin: 'Retry',
+    /** The Type cell when the role's details are not available. */
+    typeUnknown: '—',
+    columns: {
+      role: 'Role',
+      type: 'Type',
+      assigned: 'Assigned',
+      assignedBy: 'Assigned by',
+    },
+  },
+
   /** The roles list (§12.2, §14.2). */
   roles: {
     title: 'Roles',

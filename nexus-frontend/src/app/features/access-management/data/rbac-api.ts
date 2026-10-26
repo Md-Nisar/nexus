@@ -11,6 +11,7 @@ import type {
   PermissionPageResponse,
   PermissionResponse,
   ReplaceRolePermissionsRequest,
+  RoleAssignmentListResponse,
   RoleListResponse,
   RoleResponse,
 } from '../../../shared/types/api/rbac';
@@ -167,5 +168,21 @@ export class RbacApi {
       params: { page, size },
       context: consoleHttpContext(),
     });
+  }
+
+  /**
+   * `GET /users/{id}/roles?page&size`: one page of a user's active role assignments (`user:read`,
+   * us012 flag; design §7.1). `assignedBy` is `null` where the caller may not see it. A missing
+   * and another tenant's user are the same 404 `USER_NOT_FOUND`. The id is one path segment.
+   */
+  listAssignments(
+    userId: string,
+    page: number,
+    size: number,
+  ): Observable<RoleAssignmentListResponse> {
+    return this.http.get<RoleAssignmentListResponse>(
+      `${this.base}/users/${pathSegment(userId)}/roles`,
+      { params: { page, size }, context: consoleHttpContext() },
+    );
   }
 }

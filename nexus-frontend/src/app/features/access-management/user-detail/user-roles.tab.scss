@@ -1,0 +1,132 @@
+:host {
+  display: block;
+  min-width: 0;
+  padding-block-start: var(--nx-space-4);
+}
+
+.user-roles {
+  display: grid;
+  gap: var(--nx-space-3);
+  min-width: 0;
+}
+
+.user-roles__note {
+  margin: 0;
+  color: var(--nx-color-on-surface-muted);
+}
+
+.user-roles__join-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nx-space-2);
+}
+
+.user-roles__role {
+  display: inline-flex;
+  min-width: 0;
+  font-weight: var(--nx-weight-medium);
+}
+
+.user-roles__link {
+  min-width: 0;
+  color: var(--nx-color-primary-text);
+  text-decoration: underline;
+}
+
+.user-roles__date {
+  font-variant-numeric: tabular-nums;
+}
+
+.user-roles__id {
+  font-family: var(--nx-font-family-mono);
+  font-size: var(--nx-text-sm);
+  overflow-wrap: anywhere;
+}
+
+.user-roles__loading {
+  display: grid;
+  gap: var(--nx-space-3);
+}
+
+.user-roles__skeleton {
+  display: block;
+  height: var(--nx-space-10);
+}
+
+/* Column labels exist only for the card layout, where the header row is hidden. */
+.user-roles__label {
+  display: none;
+}
+
+/* 320 px (design §12.8, WCAG 1.4.10): one card per assignment (role, then type and date, then
+   who assigned it), no sideways scroll. nx-table renders Material table cells and has no card
+   mode, so the card layout reaches into its cells, as the users list does. */
+@media (max-width: 599px) {
+  :host ::ng-deep .user-roles__table {
+    .nx-table-wrapper {
+      overflow-x: visible;
+      border: 0;
+    }
+
+    /* The header row stays for assistive technology and is hidden visually. */
+    tr.mat-mdc-header-row {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+    }
+
+    table,
+    tbody {
+      display: block;
+    }
+
+    tr.mat-mdc-row {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      grid-template-areas:
+        'role role'
+        'type assigned'
+        'assignedBy assignedBy';
+      gap: var(--nx-space-1) var(--nx-space-3);
+      justify-items: start;
+      margin-block-end: var(--nx-space-3);
+      padding: var(--nx-space-3);
+      border: 1px solid var(--nx-color-outline-variant);
+      border-radius: var(--nx-radius-md);
+    }
+
+    td.mat-mdc-cell {
+      display: block;
+      min-width: 0;
+      padding: 0;
+      border: 0;
+    }
+
+    td.mat-column-role {
+      grid-area: role;
+    }
+
+    td.mat-column-type {
+      grid-area: type;
+    }
+
+    td.mat-column-assigned {
+      grid-area: assigned;
+    }
+
+    td.mat-column-assignedBy {
+      grid-area: assignedBy;
+    }
+
+    .user-roles__label {
+      display: inline;
+      margin-inline-end: var(--nx-space-1);
+      font-size: var(--nx-text-xs);
+      color: var(--nx-color-on-surface-muted);
+    }
+  }
+}

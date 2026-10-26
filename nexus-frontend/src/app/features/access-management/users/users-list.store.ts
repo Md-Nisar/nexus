@@ -9,6 +9,7 @@ import type {
 } from '../../../shared/types/api/user-directory';
 import { AppError, isAppError } from '../../../shared/types/app-error';
 import { DirectoryApi } from '../data/directory-api';
+import { DirectoryCache } from '../data/directory-cache';
 import type { LoadState } from '../data/load-state';
 import { createRetryCountdown, retryAfterSeconds } from '../util/retry-after';
 
@@ -68,6 +69,8 @@ function toAppError(error: unknown, message: string): AppError {
  *   nothing is sent by itself (RC-63(l)). The address is a parameter only; it is never kept.
  * - **User change:** both states are keyed by the signed-in user id, so another user never sees
  *   them (design §6.2).
+ * - **Directory cache:** every page and lookup hit received is handed to {@link DirectoryCache},
+ *   so the user page can show an "Assigned by" address without fetching it (FR-X5).
  * - **RC-73:** every failure is caught into `error`; an `AppError` never reaches `ErrorHandler`,
  *   and logs carry codes and ids only, never an address or the lookup text.
  *
@@ -80,6 +83,7 @@ export class UsersListStore {
   private readonly api = inject(DirectoryApi);
   private readonly authStore = inject(AuthStore);
   private readonly logger = inject(LoggerService);
+  private readonly cache = inject(DirectoryCache);
 
   private readonly list = signal<OwnedList>({
     owner: null,
@@ -148,13 +152,15 @@ export class UsersListStore {
       ...(query.status === null ? {} : { status: query.status }),
     });
     this.listRequest = request.subscribe({
-      next: (data) =>
+      next: (data) => {
+        this.cache.remember(data.data);
         this.list.set({
           owner,
           query,
           state: { status: 'ready', data, loadedAt: Date.now() },
           previous: null,
-        }),
+        });
+      },
       error: (error: unknown) => {
         const appError = toAppError(error, 'The users could not be read.');
         this.logFailure('access_console_users_load_failed', 'load', appError);
@@ -182,6 +188,7 @@ export class UsersListStore {
     this.lookupRequest = this.api.lookupUser(address).subscribe({
       next: (response) => {
         const entry = response.data[0];
+        if (entry !== undefined) this.cache.remember([entry]);
         this.found.set({
           owner,
           state: entry === undefined ? { status: 'miss' } : { status: 'hit', entry },

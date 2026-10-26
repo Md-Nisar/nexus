@@ -29,9 +29,11 @@ import { permissionGuard } from '../../core/guards/permission.guard';
 import { ACCESS_MANAGEMENT_ROUTES, firstAreaRedirect } from './access-management.routes';
 import { AuthorizationProfileStore } from './data/authorization-profile.store';
 import { CatalogueStore } from './data/catalogue.store';
+import { DirectoryCache } from './data/directory-cache';
 import { RolesStore } from './data/roles.store';
 import { RoleDetailStore } from './role-detail/role-detail.store';
 import { unsavedChangesGuard } from './role-editor/unsaved-changes.guard';
+import { UserDetailStore } from './user-detail/user-detail.store';
 import { UsersListStore } from './users/users-list.store';
 import { CONSOLE_AREAS } from './layout/console-areas';
 import { AccessConsoleLayout } from './layout/access-console-layout';
@@ -213,6 +215,47 @@ describe('ACCESS_MANAGEMENT_ROUTES (US-020 design §4.2)', () => {
       expect(route.title).toBe('Users');
       expect(route.component).toBeUndefined();
       expect(route.loadComponent).toBeTypeOf('function');
+    });
+  });
+
+  describe('user page (T-016, design §4.2)', () => {
+    function userRoute(): Route {
+      const route = layoutRoute().children?.find((child) => child.path === 'users/:userId');
+      expect(route).toBeDefined();
+      return route as Route;
+    }
+
+    it('is guarded by permissionGuard with user:directory:read and has no title of its own', () => {
+      const route = userRoute();
+      expect(route.canActivate).toEqual([permissionGuard]);
+      expect(route.data).toEqual({ permission: 'user:directory:read' });
+      expect(route.title).toBeUndefined();
+      expect(route.canActivateChild).toBeUndefined();
+      expect(route.component).toBeUndefined();
+      expect(route.loadComponent).toBeTypeOf('function');
+    });
+
+    it('scopes the UserDetailStore to the user route', () => {
+      expect(userRoute().providers).toEqual([UserDetailStore]);
+      expect(layoutRoute().providers).not.toContain(UserDetailStore);
+    });
+
+    it('sends the bare user path to the roles tab, a lazy, unguarded child with a static title', () => {
+      const [redirect, roles, ...rest] = userRoute().children ?? [];
+      expect(rest).toEqual([]);
+      expect(redirect).toEqual({ path: '', pathMatch: 'full', redirectTo: 'roles' });
+      expect(roles.path).toBe('roles');
+      // Static: the address never reaches document.title or history (DQ-26).
+      expect(roles.title).toBe('User roles');
+      expect(roles.loadComponent).toBeTypeOf('function');
+      // No guard: the tab degrades without user:read or role:read (Q6, Q19).
+      expect(roles.canActivate).toBeUndefined();
+      expect(roles.data).toBeUndefined();
+    });
+
+    it('keeps the directory cache on the layout, so it outlives the users list (FR-X5)', () => {
+      expect(layoutRoute().providers).toContain(DirectoryCache);
+      expect(userRoute().providers).not.toContain(DirectoryCache);
     });
   });
 

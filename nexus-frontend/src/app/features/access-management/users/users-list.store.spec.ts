@@ -18,6 +18,7 @@ import type {
   UserDirectoryEntry,
   UserDirectoryPage,
 } from '../../../shared/types/api/user-directory';
+import { DirectoryCache } from '../data/directory-cache';
 import { UsersListStore, UsersQuery } from './users-list.store';
 
 const API = 'http://localhost:1000/api';
@@ -79,6 +80,7 @@ function setup() {
       provideRouter([]),
       provideHttpClient(withInterceptors([apiErrorInterceptor])),
       provideHttpClientTesting(),
+      DirectoryCache,
       UsersListStore,
     ],
   });
@@ -93,6 +95,7 @@ function setup() {
   ];
   return {
     store: TestBed.inject(UsersListStore),
+    cache: TestBed.inject(DirectoryCache),
     http: TestBed.inject(HttpTestingController),
     authStore,
     handleError,
@@ -110,6 +113,26 @@ describe('UsersListStore (US-020 design §6.2, §6.5, §7.4)', () => {
     // RC-73: no failure of this store reaches the global error handler.
     expect(ctx.handleError).not.toHaveBeenCalled();
     vi.useRealTimers();
+  });
+
+  describe('directory cache (T-016, FR-X5)', () => {
+    it('remembers the addresses of a loaded page for the user page\'s "Assigned by"', () => {
+      ctx.store.load(FIRST);
+      ctx.http.expectOne(listUrl(FIRST)).flush(pageOf([entry(1), entry(2)]));
+
+      expect(ctx.cache.email(entry(1).userId)).toBe(entry(1).email);
+      expect(ctx.cache.email(entry(2).userId)).toBe(entry(2).email);
+    });
+
+    it('remembers a lookup hit, and nothing for a miss', () => {
+      ctx.store.lookup(ADDRESS);
+      ctx.http.expectOne(LOOKUP_URL).flush({ data: [entry(7, { email: ADDRESS })] });
+      expect(ctx.cache.email(entry(7).userId)).toBe(ADDRESS);
+
+      ctx.store.lookup('nobody@directory.invalid');
+      ctx.http.expectOne(LOOKUP_URL).flush({ data: [] });
+      expect(ctx.cache.email(entry(8).userId)).toBeNull();
+    });
   });
 
   describe('list', () => {

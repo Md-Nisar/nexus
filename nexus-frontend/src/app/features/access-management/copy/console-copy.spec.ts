@@ -383,3 +383,33 @@ describe('CONSOLE_COPY (users list strings, design §12.7, §14.2; RC-68)', () =
     expect(format(badges.hiddenCharacterName, { hex: '202E' })).toBe('hidden character U+202E');
   });
 });
+
+describe('CONSOLE_COPY (user page strings, design §12.8, §14.2; Q19)', () => {
+  it('has the D3 status notes, keyed by the statuses that get one', () => {
+    expect(CONSOLE_COPY.userDetail.statusNotes).toEqual({
+      LOCKED: "This person is locked out and can't sign in until the lock ends.",
+      DISABLED: 'This account is disabled.',
+      PENDING: "This person hasn't verified their email address yet.",
+    });
+    expect(format(CONSOLE_COPY.userDetail.joined, { date: 'Jan 2, 2026' })).toBe(
+      'Joined Jan 2, 2026',
+    );
+  });
+
+  it('has the D3 Roles tab strings, including both degraded notes', () => {
+    const { userRoles } = CONSOLE_COPY;
+    expect(userRoles.empty).toBe('No roles assigned');
+    expect(userRoles.noUserRead).toBe("You need permission to read users' roles to see this.");
+    expect(userRoles.noRoleRead).toBe("Role details are hidden because you can't read roles.");
+    expect(userRoles.columns).toEqual({
+      role: 'Role',
+      type: 'Type',
+      assigned: 'Assigned',
+      assignedBy: 'Assigned by',
+    });
+  });
+
+  it('never puts an address placeholder in the breadcrumb or the title copy', () => {
+    for (const value of strings(CONSOLE_COPY.userDetail)) expect(value).not.toContain('{email');
+  });
+});
