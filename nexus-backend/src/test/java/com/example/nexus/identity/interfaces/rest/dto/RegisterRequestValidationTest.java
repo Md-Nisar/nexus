@@ -40,7 +40,14 @@ class RegisterRequestValidationTest {
         0x2028, // line separator
         0x2029, // paragraph separator
         0x3164, // hangul filler
-        0x034F); // combining grapheme joiner
+        0x034F, // combining grapheme joiner
+        0x0007, // control character
+        0xE000, // private use
+        0x2800, // braille blank
+        0xFFFC, // object replacement character
+        0xFE0F, // variation selector
+        0xE0100, // variation selector supplement
+        0x0378); // unassigned code point
   }
 
   @ParameterizedTest
