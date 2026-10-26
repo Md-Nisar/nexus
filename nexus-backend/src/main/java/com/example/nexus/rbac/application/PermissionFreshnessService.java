@@ -465,10 +465,27 @@ public final class PermissionFreshnessService {
         .register(meterRegistry);
   }
 
-  /** Stops the thread that reads role holders for the replay. */
+  /** Stops the thread that reads role holders for the replay with graceful termination. */
   @PreDestroy
   void shutdown() {
     roleReadExecutor.shutdownNow();
+    try {
+      if (!roleReadExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+        log.warn("roleReadExecutor did not terminate within timeout");
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  /** Test hook: whether the executor has initiated shutdown. */
+  boolean isExecutorShutdown() {
+    return roleReadExecutor.isShutdown();
+  }
+
+  /** Test hook: whether all tasks have finished after shutdown. */
+  boolean isExecutorTerminated() {
+    return roleReadExecutor.isTerminated();
   }
 
   /** Test hook: a role holder read is running on the replay thread. */
