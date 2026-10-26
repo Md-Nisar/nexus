@@ -3065,6 +3065,19 @@ class RoleAssignmentServiceTest {
   }
 
   @Test
+  void should_abortAssignWithRoleClassificationChanged_when_roleGainedPermissionCallerLacksWhileAssigning() {
+    stubBenignAssignTarget();
+    stubInsertOnly();
+    stubCurrentRolePermissions(P1);
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(RoleClassificationChangedException.class);
+
+    verify(userRoleAssignmentPort, never()).findActiveAssignmentView(any(), any(), any());
+    verifyNoInteractions(rbacAuditPort);
+  }
+
+  @Test
   void should_assign_when_theRoleGainedDirectoryReadWhileWaitingAndTheCallerIsAnAdministrator() {
     stubBenignAssignTarget();
     stubCallerIsAdministrator();
