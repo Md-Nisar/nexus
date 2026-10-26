@@ -56,11 +56,11 @@ import org.springframework.transaction.support.TransactionTemplate;
  * this path: the insert's foreign-key check already takes a shared lock on the target's {@code
  * users} row after the set lock, in the same order. Nothing is retried (ADR-0018 D6).
  *
- * <p><b>Who counts as an administrator (A-6, O-7).</b> A holder of an admin-defining role (the one
- * definition, ADR-0021 D3: a role carrying every permission of the catalogue), whatever its name.
- * For break-glass only, such a holder whose user is DISABLED is not an administrator, so a tenant
- * whose only administrators are DISABLED is recoverable (owner decision 2026-10-15). Every other status (ACTIVE, PENDING, and a
- * temporarily LOCKED lockout), and a holder whose status is not returned, still counts. The
+ * <p><b>Who counts as an administrator (A-6, O-7, [OR-2.2-01]).</b> A holder of an admin-defining role
+ * (the one definition, ADR-0021 D3: a role carrying every permission of the catalogue), whatever its
+ * name. For break-glass only, such a holder whose user is DISABLED or LOCKED is not an administrator,
+ * so a tenant whose only administrators are DISABLED or LOCKED is recoverable. Every other status
+ * (ACTIVE, PENDING), and a holder whose status is not returned, still counts. The
  * last-admin lockout, the assign and revoke guards and the zero-admin health indicator are
  * unchanged.
  *
@@ -233,11 +233,14 @@ public class BootstrapAdminService {
     if (statuses.get(targetUserId) != DirectoryUserStatus.ACTIVE) {
       return new BreakGlassOutcome.Refused(BreakGlassRefusalReason.TARGET_USER_NOT_ACTIVE);
     }
-    // O-7 (owner decision 2026-10-15), for A7 only: a DISABLED holder is not an administrator. A
+    // O-7, [OR-2.2-01], for A7 only: a DISABLED or LOCKED holder is not an administrator. A
     // holder of any other status, or whose status was not returned, still counts (fail closed).
     List<ActiveAssignmentHolder> administratorCandidates =
         lockedHolders.stream()
-            .filter(holder -> statuses.get(holder.userId()) != DirectoryUserStatus.DISABLED)
+            .filter(holder -> {
+              DirectoryUserStatus status = statuses.get(holder.userId());
+              return status != DirectoryUserStatus.DISABLED && status != DirectoryUserStatus.LOCKED;
+            })
             .toList();
     if (!RoleAssignmentService.wouldLeaveTenantWithoutAdministrator(
         administratorCandidates, null, adminDefiningRoleIds)) {
