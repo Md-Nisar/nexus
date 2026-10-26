@@ -3,6 +3,7 @@ import { HttpClient } from '@angular/common/http';
 import { finalize, map, Observable, switchMap, tap } from 'rxjs';
 import { APP_CONFIG } from '../../core/config/app-config';
 import { AuthStore } from '../../core/auth/auth.store';
+import { SessionScopedStorage } from '../../core/storage/session-scoped-storage';
 import { AuthSession } from '../../shared/types/auth';
 
 /**
@@ -37,12 +38,17 @@ interface MeApiResponse {
  * - Login and refresh use `withCredentials: true` for secure HTTP-only cookie handling.
  * - Tokens are extracted and stored in AuthStore after successful authentication.
  * - Session expiration is calculated and stored for client-side expiry tracking.
+ * - Session-scoped `sessionStorage` (US-020 RC-74, D-6): logout's `finalize` removes every
+ *   `nexus.session.` key, even when the POST fails; a session established for a user removes
+ *   any other user's access-console drafts. `AuthStore.clearSession()` never sweeps, because it
+ *   also runs on a refresh failure and the same user must find their draft after signing in again.
  */
 @Service()
 export class AuthService {
   private readonly http = inject(HttpClient);
   private readonly config = inject(APP_CONFIG);
   private readonly authStore = inject(AuthStore);
+  private readonly sessionStorage = inject(SessionScopedStorage);
 
   /**
    * Constructs the base URL for authentication endpoints.
@@ -110,7 +116,7 @@ export class AuthService {
             map((me) => this.buildSession(loginResp, me)),
           ),
         ),
-        tap((session) => this.authStore.setSession(session)),
+        tap((session) => this.establish(session)),
       );
   }
 
@@ -149,14 +155,18 @@ export class AuthService {
    *
    * Security notes:
    * - Uses `withCredentials: true` to send refresh token for server-side revocation.
-   * - Relies on finalize() to guarantee AuthStore cleanup.
+   * - Relies on finalize() to guarantee AuthStore cleanup and the `nexus.session.` sweep, so a
+   *   shared machine keeps no draft after an explicit logout whatever the response (D-6).
    *
    * @returns Observable that completes on success or error (session is cleared either way).
    */
   logout(): Observable<void> {
-    return this.http
-      .post<void>(`${this.base}/logout`, null, { withCredentials: true })
-      .pipe(finalize(() => this.authStore.clearSession()));
+    return this.http.post<void>(`${this.base}/logout`, null, { withCredentials: true }).pipe(
+      finalize(() => {
+        this.authStore.clearSession();
+        this.sessionStorage.clearSessionScopedStorage();
+      }),
+    );
   }
 
   /**
@@ -178,8 +188,17 @@ export class AuthService {
             map((me) => this.buildSession(loginResp, me)),
           ),
         ),
-        tap((session) => this.authStore.setSession(session)),
+        tap((session) => this.establish(session)),
       );
+  }
+
+  /**
+   * Stores a session from login or refresh. Another user's drafts are removed first, so nothing
+   * of theirs is readable once this user's session exists (RC-74 item 1).
+   */
+  private establish(session: AuthSession): void {
+    this.sessionStorage.removeDraftsNotOwnedBy(session.user.userId);
+    this.authStore.setSession(session);
   }
 
   /**

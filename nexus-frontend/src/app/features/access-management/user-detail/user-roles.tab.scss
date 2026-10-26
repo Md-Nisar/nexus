@@ -1,0 +1,256 @@
+:host {
+  display: block;
+  min-width: 0;
+  padding-block-start: var(--nx-space-4);
+}
+
+.user-roles {
+  display: grid;
+  gap: var(--nx-space-3);
+  min-width: 0;
+}
+
+.user-roles__note {
+  margin: 0;
+  color: var(--nx-color-on-surface-muted);
+}
+
+.user-roles__join-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nx-space-2);
+}
+
+.user-roles__role {
+  display: inline-flex;
+  min-width: 0;
+  font-weight: var(--nx-weight-medium);
+}
+
+.user-roles__link {
+  min-width: 0;
+  color: var(--nx-color-primary-text);
+  text-decoration: underline;
+}
+
+.user-roles__date {
+  font-variant-numeric: tabular-nums;
+}
+
+.user-roles__id {
+  font-family: var(--nx-font-family-mono);
+  font-size: var(--nx-text-sm);
+  overflow-wrap: anywhere;
+}
+
+.user-roles__loading {
+  display: grid;
+  gap: var(--nx-space-3);
+}
+
+.user-roles__skeleton {
+  display: block;
+  height: var(--nx-space-10);
+}
+
+/* Column labels exist only for the card layout, where the header row is hidden. */
+.user-roles__label {
+  display: none;
+}
+
+/* 320 px (design §12.8, WCAG 1.4.10): one card per assignment (role, then type and date, then
+   who assigned it, then a full-width Remove), no sideways scroll. nx-table renders Material table
+   cells and has no card mode, so the card layout reaches into its cells, as the users list does. */
+@media (max-width: 599px) {
+  :host ::ng-deep .user-roles__table {
+    .nx-table-wrapper {
+      overflow-x: visible;
+      border: 0;
+    }
+
+    /* The header row stays for assistive technology and is hidden visually. */
+    tr.mat-mdc-header-row {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      overflow: hidden;
+      clip-path: inset(50%);
+    }
+
+    table,
+    tbody {
+      display: block;
+    }
+
+    tr.mat-mdc-row {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      grid-template-areas:
+        'role role'
+        'type assigned';
+      gap: var(--nx-space-1) var(--nx-space-3);
+      margin-block-end: var(--nx-space-3);
+      padding: var(--nx-space-3);
+      border: 1px solid var(--nx-color-outline-variant);
+      border-radius: var(--nx-radius-md);
+    }
+
+    td.mat-mdc-cell {
+      display: block;
+      min-width: 0;
+      padding: 0;
+      border: 0;
+    }
+
+    td.mat-column-role {
+      grid-area: role;
+    }
+
+    td.mat-column-type {
+      grid-area: type;
+    }
+
+    td.mat-column-assigned {
+      grid-area: assigned;
+    }
+
+    /* Full-width rows after the named areas, in column order (Remove fills its card). */
+    td.mat-column-assignedBy,
+    td.mat-column-revoke {
+      grid-column: 1 / -1;
+    }
+
+    .user-roles__label {
+      display: inline;
+      margin-inline-end: var(--nx-space-1);
+      font-size: var(--nx-text-xs);
+      color: var(--nx-color-on-surface-muted);
+    }
+  }
+}
+
+.user-roles__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nx-space-2) var(--nx-space-3);
+}
+
+.user-roles__propagation {
+  display: grid;
+  gap: var(--nx-space-1);
+}
+
+// The Assign dialog renders in the overlay; its nodes still carry this component's scope.
+.assign-dialog,
+.assign-dialog__content,
+.assign-dialog__selected {
+  display: grid;
+  gap: var(--nx-space-4);
+  min-width: 0;
+}
+
+.assign-dialog {
+  padding: var(--nx-space-6);
+  color: var(--nx-color-on-surface);
+}
+
+.assign-dialog__title {
+  margin: 0;
+  font-size: var(--nx-text-lg);
+  font-weight: var(--nx-weight-semibold);
+  overflow-wrap: anywhere;
+}
+
+.assign-dialog__content {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.assign-dialog__selected {
+  gap: var(--nx-space-2);
+}
+
+.assign-dialog p,
+.assign-dialog__legend {
+  margin: 0;
+}
+
+.assign-dialog__note,
+.assign-dialog__count,
+.assign-dialog__reason,
+.assign-dialog__hint,
+.assign-dialog__wait {
+  color: var(--nx-color-on-surface-muted);
+}
+
+.assign-dialog__list,
+.assign-dialog__option-body {
+  display: grid;
+  gap: var(--nx-space-1);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.assign-dialog__option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--nx-space-3);
+  padding: var(--nx-space-2) var(--nx-space-3);
+  border: 1px solid var(--nx-color-outline-variant);
+  border-radius: var(--nx-radius-md);
+
+  &:has(:checked) {
+    border-color: var(--nx-color-primary);
+  }
+}
+
+.assign-dialog__radio {
+  margin: var(--nx-space-1) 0 0;
+  accent-color: var(--nx-color-primary);
+}
+
+.assign-dialog__option-line,
+.assign-dialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nx-space-2);
+  min-width: 0;
+}
+
+.assign-dialog__name {
+  min-width: 0;
+  font-weight: var(--nx-weight-medium);
+}
+
+.assign-dialog__grants,
+.assign-dialog__id {
+  overflow-wrap: anywhere;
+}
+
+.assign-dialog__error {
+  padding: var(--nx-space-3);
+  border-radius: var(--nx-radius-md);
+  background-color: var(--nx-color-error-surface);
+}
+
+.assign-dialog__error-title {
+  font-weight: var(--nx-weight-semibold);
+}
+
+.assign-dialog__id {
+  font-family: var(--nx-font-family-mono);
+}
+
+.assign-dialog__actions {
+  justify-content: flex-end;
+}
+
+.assign-dialog__wait {
+  margin-inline-end: auto;
+}

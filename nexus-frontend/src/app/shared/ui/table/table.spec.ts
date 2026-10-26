@@ -190,3 +190,39 @@ describe('NxTable A4 additions', () => {
     await expect(expectNoAxeViolations(fixture.nativeElement)).resolves.toBeUndefined();
   });
 });
+
+@Component({
+  imports: [NxTable],
+  template: `<nx-table
+    [columns]="columns"
+    [rows]="rows"
+    [pageable]="true"
+    [totalCount]="45"
+    [pageSize]="20"
+    [pageSizeOptions]="[20]"
+    [pageIndex]="pageIndex()"
+  />`,
+})
+class PageIndexHost {
+  readonly columns: TableColumn[] = [{ key: 'x', header: 'X' }];
+  readonly rows = [{ x: 1 }];
+  readonly pageIndex = signal(2);
+}
+
+describe('NxTable pageIndex', () => {
+  beforeEach(() => {
+    TestBed.configureTestingModule({ providers: [provideAnimationsAsync()] });
+  });
+
+  it('shows the given page in the paginator and follows later changes', async () => {
+    const fixture = TestBed.createComponent(PageIndexHost);
+    await fixture.whenStable();
+    const range = (): string =>
+      fixture.nativeElement.querySelector('.mat-mdc-paginator-range-label')?.textContent?.trim();
+    expect(range()).toBe('41 – 45 of 45');
+
+    fixture.componentInstance.pageIndex.set(0);
+    await fixture.whenStable();
+    expect(range()).toBe('1 – 20 of 45');
+  });
+});

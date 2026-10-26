@@ -6,7 +6,12 @@ import { APP_CONFIG, AppConfig } from '../config/app-config';
 describe('LoggerService', () => {
   function setup(logLevel: AppConfig['logLevel'], production = false) {
     TestBed.configureTestingModule({
-      providers: [{ provide: APP_CONFIG, useValue: { production, apiBaseUrl: '/api', logLevel } }],
+      providers: [
+        {
+          provide: APP_CONFIG,
+          useValue: { production, apiBaseUrl: '/api', logLevel, accessConsoleEnabled: false },
+        },
+      ],
     });
     return TestBed.inject(LoggerService);
   }
@@ -76,6 +81,20 @@ describe('LoggerService', () => {
     expect(loggedParams.context?.nested?.token).toBe('[REDACTED]');
     expect(loggedParams.context?.nested?.safeKey).toBe('safe-value');
   });
+
+  it.each(['email', 'query', 'search', 'description', 'Email', 'SEARCH', 'userDescription'])(
+    'should redact the %s key',
+    (key) => {
+      const logger = setup('debug', false);
+      const spy = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
+
+      logger.debug('keyed log', { context: { [key]: 'synthetic-value', safeKey: 'kept' } });
+
+      const loggedParams = spy.mock.calls[0][1] as { context: Record<string, string> };
+      expect(loggedParams.context[key]).toBe('[REDACTED]');
+      expect(loggedParams.context['safeKey']).toBe('kept');
+    },
+  );
 
   it('should strip stack traces from context in production mode', () => {
     const logger = setup('warn', true);

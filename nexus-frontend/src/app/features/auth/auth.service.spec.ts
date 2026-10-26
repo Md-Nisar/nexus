@@ -8,8 +8,14 @@ import { apiErrorInterceptor } from '../../core/http/api-error.interceptor';
 import { AppError } from '../../shared/types/app-error';
 import { AuthStore } from '../../core/auth/auth.store';
 import { AuthSession } from '../../shared/types/auth';
+import { ACCESS_DRAFT_PREFIX } from '../../core/storage/session-scoped-storage';
 
-const TEST_CONFIG = { production: false, apiBaseUrl: '/api', logLevel: 'debug' } as const;
+const TEST_CONFIG = {
+  production: false,
+  apiBaseUrl: '/api',
+  logLevel: 'debug',
+  accessConsoleEnabled: false,
+} as const;
 
 const VALID_TOKEN = 'a'.repeat(64);
 const USER_PASS = 'Passphrase99!'; // EXAMPLE — not a real credential
@@ -349,5 +355,145 @@ describe('AuthService — login/logout/refresh', () => {
 
     expect(result).toEqual(EXPECTED_SESSION);
     expect(mockAuthStore.setSession).toHaveBeenCalledWith(EXPECTED_SESSION);
+  });
+});
+
+/**
+ * Draft hygiene (US-020 RC-74 items 1 and 2, D-6): the logout `finalize` sweeps every
+ * `nexus.session.` key even when the POST fails, and a session for another user removes the
+ * previous user's draft keys. `AuthStore.clearSession()` never sweeps (it also runs on a refresh
+ * failure, and FR-G4 restores the draft after the same user signs in again). The refresh request
+ * pattern is unchanged (RC-65).
+ */
+describe('AuthService — session-scoped storage (US-020 RC-74, D-6)', () => {
+  const USER_A = '0190a000-0000-7000-8000-0000000000a1';
+  const USER_B = '0190a000-0000-7000-8000-0000000000b2';
+  const ROLE = '0190a000-0000-7000-8000-0000000000c1';
+  const DRAFT_A = `${ACCESS_DRAFT_PREFIX}${USER_A}.${ROLE}`;
+  const DRAFT_B = `${ACCESS_DRAFT_PREFIX}${USER_B}.${ROLE}`;
+  // Not an address: the service passes the sign-in name through untouched.
+  const SIGN_IN = 'sign-in-name';
+
+  let service: AuthService;
+  let controller: HttpTestingController;
+  let store: AuthStore;
+
+  const loginBody = (userId: string) => ({
+    accessToken: 'access-token-xyz',
+    tokenType: 'Bearer',
+    expiresIn: 3600,
+    userId,
+  });
+  const meBody = (userId: string) => ({
+    userId,
+    emailVerified: true,
+    tenantId: 'tenant-1',
+    roles: ['USER'],
+    permissions: [],
+    tokenVersion: 1,
+  });
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [
+        provideHttpClient(withInterceptors([apiErrorInterceptor])),
+        provideHttpClientTesting(),
+        { provide: APP_CONFIG, useValue: TEST_CONFIG },
+      ],
+    });
+    service = TestBed.inject(AuthService);
+    controller = TestBed.inject(HttpTestingController);
+    store = TestBed.inject(AuthStore);
+    sessionStorage.setItem(DRAFT_A, '{"v":1}');
+    sessionStorage.setItem('nexus.session.other', 'x');
+    sessionStorage.setItem('nx-theme', 'dark');
+  });
+
+  afterEach(() => {
+    controller.verify();
+    sessionStorage.clear();
+  });
+
+  const keys = (): string[] => Object.keys(sessionStorage).sort();
+
+  it('logout() sweeps every nexus.session. key on success', () => {
+    service.logout().subscribe();
+    controller.expectOne('/api/v1/auth/logout').flush(null);
+
+    expect(keys()).toEqual(['nx-theme']);
+  });
+
+  it('logout() sweeps every nexus.session. key when the POST fails (D-6)', () => {
+    let failed = false;
+    service.logout().subscribe({ error: () => (failed = true) });
+    controller
+      .expectOne('/api/v1/auth/logout')
+      .flush({ code: 'SERVER_ERROR' }, { status: 500, statusText: 'Internal Server Error' });
+
+    expect(failed).toBe(true);
+    expect(store.session()).toBeNull();
+    expect(keys()).toEqual(['nx-theme']);
+  });
+
+  it('logout() sweeps when the network is down', () => {
+    service.logout().subscribe({ error: () => undefined });
+    controller.expectOne('/api/v1/auth/logout').error(new ProgressEvent('error'));
+
+    expect(keys()).toEqual(['nx-theme']);
+  });
+
+  it("login() as another user removes the previous user's draft keys and keeps the rest", () => {
+    sessionStorage.setItem(DRAFT_B, '{"v":1}');
+
+    service.login(SIGN_IN, USER_PASS).subscribe();
+    controller.expectOne('/api/v1/auth/login').flush(loginBody(USER_B));
+    controller.expectOne('/api/v1/users/me').flush(meBody(USER_B));
+
+    expect(store.currentUser()?.userId).toBe(USER_B);
+    expect(keys()).toEqual([DRAFT_B, 'nexus.session.other', 'nx-theme']);
+  });
+
+  it("login() as the same user keeps that user's draft (FR-G4)", () => {
+    service.login(SIGN_IN, USER_PASS).subscribe();
+    controller.expectOne('/api/v1/auth/login').flush(loginBody(USER_A));
+    controller.expectOne('/api/v1/users/me').flush(meBody(USER_A));
+
+    expect(keys()).toEqual([DRAFT_A, 'nexus.session.other', 'nx-theme']);
+  });
+
+  it('a failed login sweeps nothing', () => {
+    service.login(SIGN_IN, USER_PASS).subscribe({ error: () => undefined });
+    controller
+      .expectOne('/api/v1/auth/login')
+      .flush({ code: 'AUTH_001' }, { status: 401, statusText: 'Unauthorized' });
+
+    expect(keys()).toEqual([DRAFT_A, 'nexus.session.other', 'nx-theme']);
+  });
+
+  it('refresh() for another user removes the draft keys with exactly one refresh and one me read (RC-65)', () => {
+    service.refresh().subscribe();
+    const refreshes = controller.match('/api/v1/auth/refresh');
+    expect(refreshes).toHaveLength(1);
+    refreshes[0].flush(loginBody(USER_B));
+    const reads = controller.match('/api/v1/users/me');
+    expect(reads).toHaveLength(1);
+    reads[0].flush(meBody(USER_B));
+
+    controller.expectNone('/api/v1/auth/refresh');
+    expect(keys()).toEqual(['nexus.session.other', 'nx-theme']);
+  });
+
+  it('a failed refresh sweeps nothing', () => {
+    service.refresh().subscribe({ error: () => undefined });
+    controller
+      .expectOne('/api/v1/auth/refresh')
+      .flush({ code: 'AUTH_002' }, { status: 401, statusText: 'Unauthorized' });
+
+    expect(keys()).toEqual([DRAFT_A, 'nexus.session.other', 'nx-theme']);
+  });
+
+  it('AuthStore.clearSession() does not sweep (a draft must survive a session expiry)', () => {
+    store.clearSession();
+    expect(keys()).toEqual([DRAFT_A, 'nexus.session.other', 'nx-theme']);
   });
 });

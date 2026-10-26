@@ -43,6 +43,20 @@ public class DevUserSeeder {
   static final String LOCKED_EMAIL = "locked@example.com";
   static final String PENDING_EMAIL = "pending@example.com";
   static final String SECOND_TENANT_ADMIN_EMAIL = "other-tenant-admin@example.com";
+  static final String ROLE_READER_USER_MANAGER_EMAIL = "role-reader-user-manager@example.com";
+  static final String AUDITOR_EMAIL = "auditor@example.com";
+  static final String TARGET_A_EMAIL = "target-a@example.com";
+  static final String TARGET_B_EMAIL = "target-b@example.com";
+
+  /**
+   * US-020 RC-68 item 4: a never-verified target whose synthetic {@code .invalid} address carries
+   * U+202E RIGHT-TO-LEFT OVERRIDE in its local part, for the console's hidden-character e2e. Seeded
+   * here, below the registration validation, so the e2e does not depend on registration accepting
+   * the address: once F-5 rejects such addresses at registration, this row stays and the e2e stays
+   * green. Written with a code point, so the source holds no invisible character.
+   */
+  static final String HIDDEN_CHARACTER_TARGET_EMAIL =
+      "e2e-rc68-seeded" + Character.toString(0x202E) + "txt@hidden-characters.invalid";
 
   /**
    * Fixture-only second tenant. Login resolves its tenant from the configured default, so these

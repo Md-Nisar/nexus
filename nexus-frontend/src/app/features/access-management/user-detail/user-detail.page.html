@@ -1,0 +1,75 @@
+<div class="user-detail" data-testid="user-detail-page">
+  <header class="user-detail__header">
+    <nx-breadcrumb [items]="crumbs" />
+
+    <h1 class="user-detail__title" tabindex="-1" data-testid="user-detail-title">
+      @if (user(); as current) {
+        <app-user-text [text]="current.email" mode="email" />
+        @if (isSelf()) {
+          <span class="user-detail__you" data-testid="user-you">{{ copy.badges.you }}</span>
+        }
+      } @else {
+        {{ fallbackTitle() }}
+      }
+    </h1>
+
+    @if (user(); as current) {
+      <div class="user-detail__meta">
+        <app-user-status-badge [status]="current.status" />
+        <nx-badge
+          [variant]="verified().variant"
+          [attr.data-verified]="current.emailVerified"
+          data-testid="user-verified"
+        >
+          <nx-icon [name]="verified().icon" />
+          {{ verified().label }}
+        </nx-badge>
+        <span class="user-detail__joined" data-testid="user-detail-joined">
+          <time [attr.datetime]="joinedIso()">{{ joinedText() }}</time>
+        </span>
+      </div>
+    }
+  </header>
+
+  @if (statusNote(); as note) {
+    <div [attr.data-status]="note.status" data-testid="user-status-banner">
+      <nx-banner variant="info" [title]="note.text" />
+    </div>
+  }
+
+  @switch (status()) {
+    @case ('ready') {
+      <nx-tabs [tabs]="tabs()" [ariaLabel]="copy.userDetail.tabsLabel">
+        <router-outlet />
+      </nx-tabs>
+    }
+    @case ('error') {
+      @if (notFound()) {
+        <section class="user-detail__not-found" data-testid="user-not-found">
+          <p class="user-detail__not-found-body">{{ notFoundCopy.body }}</p>
+          <a
+            class="user-detail__back"
+            routerLink="/admin/access/users"
+            data-testid="user-not-found-back"
+            >{{ copy.userDetail.backToUsers }}</a
+          >
+        </section>
+      } @else if (errorView(); as view) {
+        <app-console-error-panel
+          [view]="view"
+          [recordedAt]="failedAt()"
+          (retry)="retry()"
+          data-testid="user-detail-error"
+        />
+      }
+    }
+    @default {
+      <div class="user-detail__loading" aria-busy="true" data-testid="user-detail-loading">
+        <p class="user-detail__loading-text" role="status">{{ copy.userDetail.loading }}</p>
+        @for (row of skeletonRows; track row) {
+          <nx-skeleton class="user-detail__skeleton" variant="rect" />
+        }
+      </div>
+    }
+  }
+</div>

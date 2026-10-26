@@ -1,0 +1,162 @@
+:host {
+  display: block;
+}
+
+.role-detail {
+  display: grid;
+  gap: var(--nx-space-4);
+  min-width: 0;
+}
+
+.role-detail__header {
+  display: grid;
+  gap: var(--nx-space-2);
+  min-width: 0;
+}
+
+.role-detail__heading-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--nx-space-4);
+}
+
+.role-detail__heading {
+  display: grid;
+  gap: var(--nx-space-2);
+  flex: 1 1 calc(var(--nx-space-24) * 3);
+  min-width: 0;
+}
+
+.role-detail__title {
+  margin: 0;
+  font-size: var(--nx-text-3xl);
+  font-weight: var(--nx-weight-semibold);
+  color: var(--nx-color-on-surface);
+  overflow-wrap: anywhere;
+
+  &:focus-visible {
+    outline: 2px solid var(--nx-color-primary);
+    outline-offset: var(--nx-space-1);
+  }
+}
+
+.role-detail__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nx-space-3);
+}
+
+.role-detail__counts {
+  color: var(--nx-color-on-surface-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.role-detail__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--nx-space-3);
+  min-width: 0;
+}
+
+.role-detail__action {
+  display: grid;
+  justify-items: start;
+  gap: var(--nx-space-1);
+  max-width: calc(var(--nx-space-24) * 3);
+}
+
+.role-detail__reason {
+  margin: 0;
+  font-size: var(--nx-text-sm);
+  color: var(--nx-color-on-surface-muted);
+}
+
+.role-detail__description {
+  margin: 0;
+  color: var(--nx-color-on-surface-muted);
+  unicode-bidi: isolate;
+  overflow-wrap: anywhere;
+}
+
+.role-detail__none {
+  font-style: italic;
+}
+
+.role-detail__freshness {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--nx-space-2);
+  font-size: var(--nx-text-sm);
+  color: var(--nx-color-on-surface-muted);
+}
+
+.role-detail__refresh-error {
+  padding: var(--nx-space-3);
+  border: 1px solid var(--nx-color-error);
+  border-radius: var(--nx-radius-md);
+  background-color: var(--nx-color-error-surface);
+  color: var(--nx-color-on-surface);
+}
+
+.role-detail__refresh-error-title {
+  margin: 0;
+  font-weight: var(--nx-weight-semibold);
+}
+
+.role-detail__refresh-error-body {
+  margin: var(--nx-space-1) 0 0;
+}
+
+.role-detail__banner-text {
+  margin: 0;
+}
+
+.role-detail__reference {
+  font-family: var(--nx-font-family-mono);
+  overflow-wrap: anywhere;
+}
+
+.role-detail__not-found {
+  display: grid;
+  gap: var(--nx-space-3);
+  justify-items: start;
+}
+
+.role-detail__not-found-body {
+  margin: 0;
+  color: var(--nx-color-on-surface-muted);
+}
+
+.role-detail__back {
+  color: var(--nx-color-primary-text);
+  text-decoration: underline;
+}
+
+.role-detail__loading {
+  display: grid;
+  gap: var(--nx-space-3);
+}
+
+.role-detail__loading-text {
+  margin: 0;
+  color: var(--nx-color-on-surface-muted);
+}
+
+.role-detail__skeleton {
+  display: block;
+  height: var(--nx-space-10);
+}
+
+/* 320 px (design §12.3): the header actions wrap below the title, full width. */
+@media (max-width: 599px) {
+  .role-detail__actions,
+  .role-detail__action {
+    width: 100%;
+    max-width: none;
+  }
+}

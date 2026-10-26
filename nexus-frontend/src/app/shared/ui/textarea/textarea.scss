@@ -1,0 +1,30 @@
+:host {
+  display: block;
+}
+
+.nx-textarea {
+  width: 100%;
+  --mdc-outlined-text-field-container-shape: var(--nx-radius-sm);
+}
+
+.nx-textarea__field {
+  resize: vertical;
+}
+
+.nx-textarea__hint,
+.nx-textarea__counter,
+.nx-textarea__error {
+  margin: var(--nx-space-1) 0 0;
+  font-size: var(--nx-text-xs);
+  line-height: var(--nx-leading-normal);
+  overflow-wrap: anywhere;
+}
+
+.nx-textarea__hint,
+.nx-textarea__counter {
+  color: var(--nx-color-on-surface-muted);
+}
+
+.nx-textarea__error {
+  color: var(--nx-color-error-text);
+}

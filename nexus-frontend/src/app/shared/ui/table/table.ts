@@ -275,6 +275,7 @@ export interface TableColumn {
         <mat-paginator
           [length]="totalCount()"
           [pageSize]="pageSize()"
+          [pageIndex]="pageIndex()"
           [pageSizeOptions]="pageSizeOptions()"
           showFirstLastButtons
           (page)="pageChange.emit($event)"
@@ -355,6 +356,14 @@ export class NxTable<T extends Record<string, unknown> = Record<string, unknown>
    * @default 20
    */
   readonly pageSize = input(20);
+
+  /**
+   * Zero-based index of the page the paginator shows. Set it when the page lives outside the
+   * table (for example in the URL), so the paginator follows Back and Forward.
+   * Only used when `pageable=true`.
+   * @default 0
+   */
+  readonly pageIndex = input(0);
 
   /**
    * Array of page size options shown in the paginator dropdown.

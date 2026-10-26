@@ -1,0 +1,54 @@
+<div class="console" data-testid="access-console-layout">
+  <nx-tabs class="console__areas" [tabs]="areas()" [ariaLabel]="copy.areasLabel">
+    @if (notice()) {
+      <nx-banner
+        class="console__banner"
+        variant="warning"
+        live="polite"
+        [title]="copy.readOnly.title"
+        data-testid="access-console-read-only"
+      >
+        <p class="console__banner-text">{{ copy.readOnly.body }}</p>
+        @if (failureReference(); as reference) {
+          <p class="console__banner-text" data-testid="access-console-read-only-reference">
+            {{ copy.readOnly.reference }} <span class="console__reference">{{ reference }}</span>
+          </p>
+        }
+        @if (failure()) {
+          <nx-button
+            slot="actions"
+            variant="secondary"
+            size="sm"
+            [loading]="retrying()"
+            [ariaDisabled]="retrying()"
+            (clicked)="retry()"
+            data-testid="access-console-read-only-retry"
+            >{{ copy.readOnly.retry }}</nx-button
+          >
+        }
+      </nx-banner>
+    }
+
+    @if (unavailable(); as notice) {
+      <section
+        class="console__unavailable"
+        aria-labelledby="access-console-unavailable-title"
+        data-testid="access-console-unavailable"
+      >
+        <h1 id="access-console-unavailable-title" class="console__unavailable-title" tabindex="-1">
+          {{ copy.unavailable.title }}
+        </h1>
+        <p class="console__unavailable-body">{{ copy.unavailable.body }}</p>
+        <nx-unavailable-notice
+          [reference]="notice.reference"
+          [retryAfterSeconds]="notice.retryAfterSeconds"
+          [recordedAt]="notice.recordedAt"
+          [retrying]="retrying()"
+          (retry)="retry()"
+        />
+      </section>
+    } @else {
+      <router-outlet />
+    }
+  </nx-tabs>
+</div>

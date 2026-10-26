@@ -1,10 +1,19 @@
+import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { TestBed } from '@angular/core/testing';
+import { Title } from '@angular/platform-browser';
+import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
 import { Route, Router, Routes, provideRouter } from '@angular/router';
+import { RouterTestingHarness } from '@angular/router/testing';
 import { describe, it, expect } from 'vitest';
 import { routes } from './app.routes';
 import { AuthStore } from './core/auth/auth.store';
+import { APP_CONFIG, AppConfig } from './core/config/app-config';
+import { accessConsoleEnabledGuard } from './core/guards/access-console-enabled.guard';
+import { anyPermissionGuard } from './core/guards/any-permission.guard';
 import { authGuard } from './core/guards/auth.guard';
-import { createAuthSession } from './shared/testing/auth.fixtures';
+import { ACCESS_CONSOLE_ANY_OF } from './core/layout/nav.config';
+import { createAuthSession, createAuthStoreStub } from './shared/testing/auth.fixtures';
 import { permissionGuard } from './core/guards/permission.guard';
 import { PERMISSIONS } from './shared/types/permission';
 
@@ -98,7 +107,7 @@ describe('route table permissionGuard contract', () => {
 });
 
 describe('route tree shape (US-019 A2)', () => {
-  const PUBLIC_PATHS = ['auth', 'access-denied', 'design-system'];
+  const PUBLIC_PATHS = ['auth', 'access-denied', 'design-system', 'unavailable'];
 
   it('declares the public layout before the guarded shell', () => {
     const publicIndex = routes.findIndex((r) => r.children?.some((c) => c.path === 'auth'));
@@ -108,16 +117,39 @@ describe('route tree shape (US-019 A2)', () => {
     expect(routes[0]).toMatchObject({ path: '', redirectTo: 'dashboard' });
   });
 
-  it('keeps auth, access-denied and design-system under an unguarded, data-free public layout', () => {
+  it('keeps the public pages under an unguarded, data-free public layout', () => {
     const layout = routes.find((r) => r.children?.some((c) => c.path === 'auth')) as Route;
     expect(layout.canActivate).toBeUndefined();
     expect(layout.data).toBeUndefined();
     expect(layout.children?.map((c) => c.path)).toEqual(expect.arrayContaining(PUBLIC_PATHS));
   });
 
-  it('pins the public layout children to exactly auth, access-denied and design-system', () => {
+  it('pins the public layout children to exactly auth, access-denied, design-system and unavailable (US-020 TM §4.2)', () => {
+    // An exact set, deliberately widened from three to four paths for the unavailable view
+    // (RC-63(i), H-1). A fifth public path must fail this spec and go through security review.
     const layout = routes.find((r) => r.children?.some((c) => c.path === 'auth')) as Route;
-    expect((layout.children ?? []).map((c) => c.path).sort()).toEqual([...PUBLIC_PATHS].sort());
+    const paths = (layout.children ?? []).map((c) => c.path);
+    expect(paths).toHaveLength(4);
+    expect([...paths].sort()).toEqual(
+      ['access-denied', 'auth', 'design-system', 'unavailable'].sort(),
+    );
+  });
+
+  it('declares unavailable with no guard of any kind and only selfManagedFocus as data', () => {
+    const layout = routes.find((r) => r.children?.some((c) => c.path === 'auth')) as Route;
+    const unavailable = layout.children?.find((c) => c.path === 'unavailable') as Route;
+    expect(unavailable).toBeDefined();
+    expect(unavailable.canActivate).toBeUndefined();
+    expect(unavailable.canActivateChild).toBeUndefined();
+    expect(unavailable.canMatch).toBeUndefined();
+    expect(unavailable.canDeactivate).toBeUndefined();
+    expect(unavailable.resolve).toBeUndefined();
+    expect(unavailable.providers).toBeUndefined();
+    expect(unavailable.children).toBeUndefined();
+    expect(unavailable.loadChildren).toBeUndefined();
+    expect(unavailable.data).toEqual({ selfManagedFocus: true });
+    expect(unavailable.title).toBe('Service unavailable');
+    expect(typeof unavailable.loadComponent).toBe('function');
   });
 
   it('declares canActivateChild with authGuard on no route (RC-65: refresh-reuse logout)', async () => {
@@ -132,6 +164,19 @@ describe('route tree shape (US-019 A2)', () => {
       return found;
     }
     expect(await offenders(routes)).toEqual([]);
+  });
+
+  it('declares canActivateChild on no route at all, lazy children included (US-020 RC-65)', async () => {
+    async function withChildGuards(table: Routes, prefix = ''): Promise<string[]> {
+      const found: string[] = [];
+      for (const route of table) {
+        const path = `${prefix}/${route.path ?? ''}`.replace(/\/+/g, '/');
+        if (route.canActivateChild !== undefined) found.push(path);
+        found.push(...(await withChildGuards(await childrenOf(route), path)));
+      }
+      return found;
+    }
+    expect(await withChildGuards(routes)).toEqual([]);
   });
 
   it('does not place any public path inside the shell', () => {
@@ -180,5 +225,119 @@ describe('route titles (US-019 A8)', () => {
     const layout = routes.find((r) => r.children?.some((c) => c.path === 'auth')) as Route;
     const denied = layout.children?.find((c) => c.path === 'access-denied');
     expect(denied?.data?.['selfManagedFocus']).toBe(true);
+  });
+
+  it('marks unavailable as self-managing its focus', () => {
+    const layout = routes.find((r) => r.children?.some((c) => c.path === 'auth')) as Route;
+    const unavailable = layout.children?.find((c) => c.path === 'unavailable');
+    expect(unavailable?.data?.['selfManagedFocus']).toBe(true);
+  });
+});
+
+describe('access console entry route (US-020 T-001)', () => {
+  function shell(): Route {
+    return routes.find((r) => r.canActivate?.includes(authGuard)) as Route;
+  }
+
+  function consoleRoute(): Route | undefined {
+    return shell().children?.find((c) => c.path === 'admin/access');
+  }
+
+  it('declares admin/access under the shell, before the ** catch-all', () => {
+    const paths = (shell().children ?? []).map((c) => c.path);
+    expect(paths).toContain('admin/access');
+    expect(paths.indexOf('admin/access')).toBeLessThan(paths.indexOf('**'));
+  });
+
+  it('gates admin/access with the kill switch, anyPermissionGuard and ACCESS_CONSOLE_ANY_OF', () => {
+    const route = consoleRoute() as Route;
+    expect(route.canMatch).toEqual([accessConsoleEnabledGuard]);
+    expect(route.canActivate).toEqual([anyPermissionGuard]);
+    expect(route.data?.['anyOf']).toBe(ACCESS_CONSOLE_ANY_OF);
+    expect(route.data?.['permission']).toBeUndefined();
+    expect(typeof route.loadChildren).toBe('function');
+    expect(route.title).toBe('Access management');
+  });
+
+  it('declares no canActivateChild on admin/access (RC-65)', () => {
+    expect(consoleRoute()?.canActivateChild).toBeUndefined();
+  });
+
+  describe('real router', () => {
+    function setup(accessConsoleEnabled: boolean, permissions: readonly string[]): void {
+      const config: AppConfig = {
+        production: false,
+        apiBaseUrl: '/api',
+        logLevel: 'debug',
+        supportContact: null,
+        accessConsoleEnabled,
+      };
+      TestBed.configureTestingModule({
+        providers: [
+          { provide: APP_CONFIG, useValue: config },
+          {
+            provide: AuthStore,
+            useValue: createAuthStoreStub({ session: createAuthSession(), permissions }),
+          },
+          provideAnimationsAsync(),
+          provideHttpClient(),
+          provideHttpClientTesting(),
+          provideRouter(routes),
+        ],
+      });
+    }
+
+    async function visit(url: string): Promise<{ root: HTMLElement; url: string }> {
+      const harness = await RouterTestingHarness.create();
+      await harness.navigateByUrl(url);
+      harness.detectChanges();
+      return { root: harness.routeNativeElement as HTMLElement, url: TestBed.inject(Router).url };
+    }
+
+    function heading(root: HTMLElement): string | undefined {
+      return root.querySelector('h1')?.textContent?.trim();
+    }
+
+    it('renders Not Found and keeps the URL when the console is switched off', async () => {
+      setup(false, [...PERMISSIONS]);
+      const { root, url } = await visit('/admin/access');
+      expect(url).toBe('/admin/access');
+      expect(heading(root)).toBe('Page not found');
+    });
+
+    it('sends a member (no any-of permission) to /access-denied when switched on', async () => {
+      setup(true, ['user:read']);
+      const { root, url } = await visit('/admin/access');
+      expect(url).toBe('/access-denied');
+      expect(root.querySelector('[data-testid="access-denied-root"]')).not.toBeNull();
+    });
+
+    it('renders the roles page at /admin/access/roles for a role reader (T-007)', async () => {
+      setup(true, ['role:read']);
+      const { root, url } = await visit('/admin/access/roles');
+      expect(url).toBe('/admin/access/roles');
+      expect(heading(root)).toBe('Roles');
+      expect(TestBed.inject(Title).getTitle()).toBe('Roles');
+    });
+
+    it('sends a member without role:read from /admin/access/roles to /access-denied (T-007)', async () => {
+      setup(true, ['user:directory:read']);
+      const { url } = await visit('/admin/access/roles');
+      expect(url).toBe('/access-denied');
+    });
+
+    it('sends an entitled /admin/access to its first area: roles for a role reader (T-006)', async () => {
+      // The console layout's empty path never renders on its own: firstAreaRedirect moves the
+      // user to the first area they hold. Replaces T-001's empty-main pin (C-1).
+      setup(true, ['role:read', 'user:directory:read']);
+      const { url } = await visit('/admin/access');
+      expect(url).toBe('/admin/access/roles');
+    });
+
+    it('sends a directory-only reader on /admin/access to users (T-006)', async () => {
+      setup(true, ['user:directory:read']);
+      const { url } = await visit('/admin/access');
+      expect(url).toBe('/admin/access/users');
+    });
   });
 });

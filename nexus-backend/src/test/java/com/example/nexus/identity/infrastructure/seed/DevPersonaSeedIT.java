@@ -33,6 +33,11 @@ import org.springframework.test.context.ActiveProfiles;
  * second tenant's administrator counts as an administrator under {@link RbacAdministrators}, no
  * tenant of the seed is left without an active administrator, persona assignments are never
  * self-assigned, and the seed logs no email.
+ *
+ * <p>US-020 T-014 (design §19.4): the role-reader user manager and the auditor hold exactly their
+ * designed permissions and neither is an administrator; both assignment targets are ACTIVE, target
+ * A holds no role and target B holds its one custom role, assigned by the seeded administrator.
+ * Their absence under {@code dev,prod} (RC-77) is proved in {@link DevSeedProfileGuardTest}.
  */
 @SpringBootTest
 @Import(TestcontainersConfiguration.class)
@@ -48,7 +53,12 @@ class DevPersonaSeedIT {
           DevUserSeeder.ROLE_MANAGER_EMAIL,
           DevUserSeeder.USER_MANAGER_EMAIL,
           DevUserSeeder.LOCKED_EMAIL,
-          DevUserSeeder.PENDING_EMAIL);
+          DevUserSeeder.PENDING_EMAIL,
+          DevUserSeeder.ROLE_READER_USER_MANAGER_EMAIL,
+          DevUserSeeder.AUDITOR_EMAIL,
+          DevUserSeeder.TARGET_A_EMAIL,
+          DevUserSeeder.TARGET_B_EMAIL,
+          DevUserSeeder.HIDDEN_CHARACTER_TARGET_EMAIL);
 
   @Autowired private DevDataInitializer initializer;
   @Autowired private EmailBlindIndexService blindIndex;
@@ -119,6 +129,61 @@ class DevPersonaSeedIT {
   }
 
   @Test
+  void should_grantExactlyTheDesignedPermissions_when_newPersonasSeeded() {
+    assertThat(effectivePermissionNames(DevUserSeeder.ROLE_READER_USER_MANAGER_EMAIL))
+        .containsExactlyInAnyOrder(
+            "role:read", "user:read", "user:role:assign", "user:directory:read");
+    assertThat(effectivePermissionNames(DevUserSeeder.AUDITOR_EMAIL))
+        .containsExactlyInAnyOrder("role:read", "audit:read");
+    assertThat(effectivePermissionNames(DevUserSeeder.TARGET_A_EMAIL)).isEmpty();
+    assertThat(effectivePermissionNames(DevUserSeeder.TARGET_B_EMAIL)).containsExactly("role:read");
+  }
+
+  @Test
+  void should_notTreatTheNewPersonasAsAdministrators_when_checkedAgainstTheCatalogue() {
+    Set<UUID> catalogue = userRoleAssignmentPort.findCatalogueIds();
+
+    for (String email :
+        List.of(DevUserSeeder.ROLE_READER_USER_MANAGER_EMAIL, DevUserSeeder.AUDITOR_EMAIL)) {
+      List<RolePermissionRef> held =
+          userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(
+              userId(email), defaultTenantId);
+      assertThat(held).isNotEmpty();
+      assertThat(RbacAdministrators.isAdministrator(held, catalogue)).isFalse();
+    }
+  }
+
+  @Test
+  void should_seedBothTargetsActive_when_devProfileStarts() {
+    for (String email : List.of(DevUserSeeder.TARGET_A_EMAIL, DevUserSeeder.TARGET_B_EMAIL)) {
+      String status =
+          jdbc.queryForObject(
+              "SELECT status FROM users WHERE tenant_id = ? AND email_hmac = ?",
+              String.class,
+              uuidBytes(defaultTenantId),
+              blindIndex.blindIndex(email));
+      assertThat(status).isEqualTo("ACTIVE");
+    }
+  }
+
+  @Test
+  void should_recordTheSeededAdministratorAsAssigner_when_targetBHoldsItsRole() {
+    List<byte[]> assigners =
+        jdbc.queryForList(
+            """
+            SELECT ur.assigned_by FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+            WHERE ur.user_id = ? AND ur.revoked_at IS NULL AND r.name = ?
+            """,
+            byte[].class,
+            uuidBytes(userId(DevUserSeeder.TARGET_B_EMAIL)),
+            DevDataInitializer.TARGET_ROLE);
+
+    assertThat(assigners)
+        .singleElement()
+        .isEqualTo(uuidBytes(userId(DevUserSeeder.E2E_EMAIL)));
+  }
+
+  @Test
   void should_logNoSeededEmail_when_seedingRunsAgain() {
     initializer.run(null);
 
@@ -138,7 +203,37 @@ class DevPersonaSeedIT {
         DevUserSeeder.USER_MANAGER_EMAIL,
         DevUserSeeder.LOCKED_EMAIL,
         DevUserSeeder.PENDING_EMAIL,
-        DevUserSeeder.SECOND_TENANT_ADMIN_EMAIL);
+        DevUserSeeder.SECOND_TENANT_ADMIN_EMAIL,
+        DevUserSeeder.ROLE_READER_USER_MANAGER_EMAIL,
+        DevUserSeeder.AUDITOR_EMAIL,
+        DevUserSeeder.TARGET_A_EMAIL,
+        DevUserSeeder.TARGET_B_EMAIL,
+        DevUserSeeder.HIDDEN_CHARACTER_TARGET_EMAIL);
+  }
+
+  /** Permission names reachable through the user's active assignments to live roles. */
+  private List<String> effectivePermissionNames(String email) {
+    return jdbc.queryForList(
+        """
+        SELECT DISTINCT p.name FROM user_roles ur
+        JOIN roles r ON r.id = ur.role_id AND r.deleted_at IS NULL
+        JOIN role_permissions rp ON rp.role_id = r.id
+        JOIN permissions p ON p.id = rp.permission_id
+        WHERE ur.user_id = ? AND ur.revoked_at IS NULL
+        """,
+        String.class,
+        uuidBytes(userId(email)));
+  }
+
+  private UUID userId(String email) {
+    byte[] id =
+        jdbc.queryForObject(
+            "SELECT id FROM users WHERE tenant_id = ? AND email_hmac = ?",
+            byte[].class,
+            uuidBytes(defaultTenantId),
+            blindIndex.blindIndex(email));
+    ByteBuffer buffer = ByteBuffer.wrap(id);
+    return new UUID(buffer.getLong(), buffer.getLong());
   }
 
   private int userCount(UUID tenantId, String email) {

@@ -1,0 +1,11 @@
+{
+  "detail" : "Request validation failed.",
+  "status" : 400,
+  "title" : "Bad Request",
+  "code" : "VALIDATION_FAILED",
+  "traceId" : "0190a000-0000-7000-8000-0000000000ff",
+  "details" : [ {
+    "message" : "must be a valid role name",
+    "field" : "name"
+  } ]
+}

@@ -1,0 +1,343 @@
+<div class="user-roles" data-testid="user-roles-tab">
+  @if (assignShown()) {
+    <div class="user-roles__actions">
+      <nx-button
+        variant="primary"
+        leadingIcon="person_add"
+        [ariaDisabled]="assignOff()"
+        [loading]="assignBusy()"
+        [ariaDescribedBy]="assignDescribedBy()"
+        (clicked)="openAssign()"
+        data-testid="user-roles-assign"
+        >{{ copy.assign.open }}</nx-button
+      >
+      @if (assignButtonReason(); as reason) {
+        <p
+          class="user-roles__note"
+          [id]="assignButtonReasonId"
+          data-testid="user-roles-assign-reason"
+        >
+          {{ reason }}
+        </p>
+      }
+    </div>
+  }
+  @if (propagation().length > 0) {
+    <div class="user-roles__propagation" role="status" data-testid="user-roles-propagation">
+      @for (line of propagation(); track line) {
+        <p class="user-roles__note">{{ line }}</p>
+      }
+    </div>
+  }
+  <app-revoke-dialogs
+    #revoke
+    (revoked)="propagation.set($event)"
+    (assignmentsChanged)="refreshRoles()"
+  />
+  @switch (view()) {
+    @case ('no-user-read') {
+      <nx-empty-state
+        icon="lock"
+        [title]="copy.userRoles.noUserRead"
+        data-testid="user-roles-no-user-read"
+      />
+    }
+    @case ('error') {
+      @if (errorView(); as failure) {
+        <app-console-error-panel
+          [view]="failure"
+          [recordedAt]="failedAt()"
+          (retry)="retry()"
+          data-testid="user-roles-error"
+        />
+      }
+    }
+    @case ('empty') {
+      <nx-empty-state icon="badge" [title]="copy.userRoles.empty" data-testid="user-roles-empty" />
+    }
+    @case ('table') {
+      @if (!canReadRoles()) {
+        <p class="user-roles__note" data-testid="user-roles-no-role-read">
+          {{ copy.userRoles.noRoleRead }}
+        </p>
+      }
+      @if (joinFailed()) {
+        <div class="user-roles__join-error" role="status" data-testid="user-roles-join-error">
+          <p class="user-roles__note">{{ copy.userRoles.joinFailed }}</p>
+          <nx-button
+            variant="ghost"
+            size="sm"
+            leadingIcon="refresh"
+            (clicked)="retryJoin()"
+            data-testid="user-roles-join-retry"
+            >{{ copy.userRoles.retryJoin }}</nx-button
+          >
+        </div>
+      }
+      <div data-testid="user-roles-table">
+        <nx-table
+          class="user-roles__table"
+          [columns]="columns()"
+          [rows]="rows()"
+          [caption]="copy.userRoles.caption"
+          [captionVisuallyHidden]="true"
+        >
+          <ng-template nxTableCell="role" let-raw>
+            <span class="user-roles__role" data-testid="user-role-name">
+              @if (canReadRoles()) {
+                <a class="user-roles__link" [routerLink]="['/admin/access/roles', row(raw).roleId]">
+                  <app-user-text [text]="row(raw).roleName" [maxLines]="2" />
+                </a>
+              } @else {
+                <app-user-text [text]="row(raw).roleName" [maxLines]="2" />
+              }
+            </span>
+          </ng-template>
+          <ng-template nxTableCell="type" let-raw>
+            <span class="user-roles__label">{{ copy.userRoles.columns.type }}</span>
+            <span data-testid="user-role-type">
+              @if (row(raw).isSystemRole === null) {
+                {{ copy.userRoles.typeUnknown }}
+              } @else {
+                <app-system-role-badge [isSystemRole]="row(raw).isSystemRole === true" />
+              }
+            </span>
+          </ng-template>
+          <ng-template nxTableCell="assigned" let-raw>
+            <span class="user-roles__label">{{ copy.userRoles.columns.assigned }}</span>
+            <span class="user-roles__date" data-testid="user-role-assigned">{{
+              row(raw).assignedAt | date: 'mediumDate'
+            }}</span>
+          </ng-template>
+          <ng-template nxTableCell="assignedBy" let-raw>
+            @if (row(raw).assignedBy; as assignerId) {
+              <span class="user-roles__label">{{ copy.userRoles.columns.assignedBy }}</span>
+              <span class="user-roles__assigner" data-testid="user-role-assigned-by">
+                @if (row(raw).assignedByEmail; as address) {
+                  <app-user-text [text]="address" mode="email" [maxLines]="2" />
+                } @else {
+                  <code class="user-roles__id" data-testid="user-role-assigned-by-id">{{
+                    assignerId
+                  }}</code>
+                }
+              </span>
+            }
+          </ng-template>
+          <ng-template nxTableCell="revoke" let-raw>
+            <app-revoke-button
+              [attr.data-role-id]="row(raw).roleId"
+              [dialogs]="revoke"
+              [target]="row(raw)"
+              [label]="row(raw).revokeLabel"
+              data-testid="user-role-revoke"
+            />
+          </ng-template>
+        </nx-table>
+      </div>
+    }
+    @default {
+      <div class="user-roles__loading" aria-busy="true" data-testid="user-roles-loading">
+        <p class="user-roles__note" role="status">{{ copy.userRoles.loading }}</p>
+        @for (skeleton of skeletonRows; track skeleton) {
+          <nx-skeleton class="user-roles__skeleton" variant="rect" />
+        }
+      </div>
+    }
+  }
+</div>
+
+<ng-template #assignDialog>
+  <div class="assign-dialog" data-testid="assign-dialog">
+    <h2
+      class="assign-dialog__title"
+      [id]="assignTitleId"
+      tabindex="-1"
+      data-testid="assign-dialog-title"
+    >
+      {{ assignTitleBefore }}
+      @if (target(); as person) {
+        <app-user-text [text]="person.email" mode="email" />
+      } @else {
+        {{ copy.assign.person }}
+      }
+      {{ assignTitleAfter }}
+    </h2>
+
+    <div class="assign-dialog__content">
+      <app-target-identity [target]="target()" />
+
+      @if (targetIsPending()) {
+        <div data-testid="assign-pending-warning">
+          <nx-banner variant="warning" live="assertive" [title]="copy.assign.pendingWarning" />
+        </div>
+      }
+
+      @if (catalogueFailed()) {
+        <div class="assign-dialog__note" role="alert" data-testid="assign-catalogue-error">
+          <p>{{ copy.assign.catalogueFailed }}</p>
+          <nx-button variant="ghost" size="sm" leadingIcon="refresh" (clicked)="retryCatalogue()">{{
+            copy.assign.retry
+          }}</nx-button>
+        </div>
+      }
+
+      <nx-search-field
+        [label]="copy.assign.searchLabel"
+        [debounceMs]="150"
+        (search)="assignSearch.set($event)"
+        (cleared)="assignSearch.set('')"
+      />
+
+      @switch (rolesView()) {
+        @case ('loading') {
+          <p class="assign-dialog__note" role="status" data-testid="assign-roles-loading">
+            {{ copy.assign.loadingRoles }}
+          </p>
+        }
+        @case ('error') {
+          <div class="assign-dialog__note" role="alert" data-testid="assign-roles-error">
+            <p>{{ copy.assign.rolesFailed }}</p>
+            <nx-button variant="ghost" size="sm" leadingIcon="refresh" (clicked)="retryRoles()">{{
+              copy.assign.retry
+            }}</nx-button>
+          </div>
+        }
+        @default {
+          @if (candidates().length === 0) {
+            <p class="assign-dialog__note" data-testid="assign-no-match">
+              {{ copy.assign.noMatches }}
+            </p>
+          } @else {
+            <fieldset class="assign-dialog__list" data-testid="assign-role-list">
+              <legend class="assign-dialog__legend">{{ copy.assign.listLabel }}</legend>
+              @for (candidate of candidates(); track candidate.role.id) {
+                <label
+                  class="assign-dialog__option"
+                  [attr.data-role-id]="candidate.role.id"
+                  data-testid="assign-role-option"
+                >
+                  <input
+                    class="assign-dialog__radio"
+                    type="radio"
+                    name="assign-role"
+                    [value]="candidate.role.id"
+                    [checked]="selectedRoleId() === candidate.role.id"
+                    [disabled]="candidate.disabled"
+                    [attr.aria-describedby]="candidate.reason === null ? null : candidate.reasonId"
+                    (change)="selectRole(candidate.role.id)"
+                  />
+                  <span class="assign-dialog__option-body">
+                    <span class="assign-dialog__option-line">
+                      <span class="assign-dialog__name">
+                        <app-user-text [text]="candidate.role.name" [maxLines]="2" />
+                      </span>
+                      @if (candidate.role.isSystemRole) {
+                        <app-system-role-badge [isSystemRole]="true" />
+                      }
+                      <span class="assign-dialog__count">{{ candidate.countText }}</span>
+                    </span>
+                    @if (candidate.reason; as reason) {
+                      <span
+                        class="assign-dialog__reason"
+                        [id]="candidate.reasonId"
+                        data-testid="assign-role-reason"
+                        >{{ reason }}</span
+                      >
+                    }
+                  </span>
+                </label>
+              }
+            </fieldset>
+          }
+        }
+      }
+
+      <section class="assign-dialog__selected" aria-live="polite" data-testid="assign-selected">
+        @switch (selectedView().kind) {
+          @case ('none') {
+            <p class="assign-dialog__note">{{ copy.assign.chooseRole }}</p>
+          }
+          @case ('loading') {
+            <div aria-busy="true" data-testid="assign-selected-loading">
+              <p class="assign-dialog__note">{{ copy.assign.loadingPermissions }}</p>
+              <nx-skeleton variant="text" />
+            </div>
+          }
+          @case ('error') {
+            <div class="assign-dialog__note" data-testid="assign-selected-error">
+              <p>{{ copy.assign.permissionsFailed }}</p>
+              <nx-button
+                variant="ghost"
+                size="sm"
+                leadingIcon="refresh"
+                (clicked)="retryPermissions()"
+                >{{ copy.assign.retry }}</nx-button
+              >
+            </div>
+          }
+          @case ('ready') {
+            @if (selectedView(); as panel) {
+              @if (panel.kind === 'ready') {
+                @if (panel.grants !== '') {
+                  <p class="assign-dialog__grants" data-testid="assign-selected-grants">
+                    {{ panel.grants }}
+                  </p>
+                }
+                @if (panel.reason; as reason) {
+                  <p
+                    class="assign-dialog__reason"
+                    [id]="selectedReasonId"
+                    data-testid="assign-selected-reason"
+                  >
+                    {{ reason }}
+                  </p>
+                }
+                @if (panel.hint; as hint) {
+                  <p class="assign-dialog__hint" data-testid="assign-selected-hint">{{ hint }}</p>
+                }
+              }
+            }
+          }
+        }
+      </section>
+
+      @if (assignError(); as failure) {
+        <div class="assign-dialog__error" role="alert" data-testid="assign-error">
+          <p class="assign-dialog__error-title">{{ failure.title }}</p>
+          @if (!failure.showsWait) {
+            <p>{{ failure.body }}</p>
+          }
+          @if (failure.reference; as reference) {
+            <p>
+              {{ copy.reference }} <span class="assign-dialog__id">{{ reference }}</span>
+            </p>
+          }
+        </div>
+      }
+    </div>
+
+    <div class="assign-dialog__actions">
+      @if (waiting()) {
+        <p class="assign-dialog__wait" [id]="assignWaitId" data-testid="assign-wait">
+          {{ waitText() }}
+        </p>
+      }
+      <nx-button
+        variant="secondary"
+        [disabled]="assigning()"
+        (clicked)="closeAssign()"
+        data-testid="assign-cancel"
+        >{{ copy.assign.cancel }}</nx-button
+      >
+      <nx-button
+        [variant]="confirmVariant()"
+        [loading]="assigning()"
+        [ariaDisabled]="!canConfirm()"
+        [ariaDescribedBy]="confirmDescribedBy()"
+        (clicked)="confirmAssign()"
+        data-testid="assign-confirm"
+        >{{ confirmLabel() }}</nx-button
+      >
+    </div>
+  </div>
+</ng-template>

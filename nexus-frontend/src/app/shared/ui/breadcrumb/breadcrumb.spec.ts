@@ -46,6 +46,17 @@ describe('NxBreadcrumb', () => {
     expect(el().querySelector('[aria-current="page"]')?.textContent?.trim()).toBe('End');
   });
 
+  it('isolates every label in <bdi> and renders it as text, so a user-authored label cannot reorder the trail', async () => {
+    const label = '<img src=x onerror=alert(1)>\u202Eevil';
+    fixture.componentRef.setInput('items', [{ label: 'Home', path: '/' }, { label }]);
+    await fixture.whenStable();
+
+    const bdis = Array.from(el().querySelectorAll('li bdi'));
+    expect(bdis.map((node) => node.textContent)).toEqual(['Home', label]);
+    expect(el().querySelector('[aria-current="page"] bdi')?.textContent).toBe(label);
+    expect(el().querySelector('img')).toBeNull();
+  });
+
   it('renders nothing for an empty list', async () => {
     fixture.componentRef.setInput('items', []);
     await fixture.whenStable();

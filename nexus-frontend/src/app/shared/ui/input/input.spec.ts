@@ -49,10 +49,62 @@ describe('NxInput', () => {
     expect(input.disabled).toBe(true);
   });
 
+  it('appends describedBy ids to the input aria-describedby, beside the hint', async () => {
+    const fixture = TestBed.createComponent(NxInput);
+    fixture.componentRef.setInput('hint', 'Letters only');
+    fixture.componentRef.setInput('describedBy', 'name-counter name-error');
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    const input: HTMLInputElement = fixture.debugElement.query(
+      By.css('[data-testid="nx-input"]'),
+    ).nativeElement;
+    const ids = (input.getAttribute('aria-describedby') ?? '').split(' ');
+    expect(ids).toContain('name-counter');
+    expect(ids).toContain('name-error');
+    expect(ids.some((id) => id.startsWith('mat-mdc-hint'))).toBe(true);
+  });
+
+  it('focus() moves focus to the input', () => {
+    const fixture = TestBed.createComponent(NxInput);
+    fixture.detectChanges();
+    fixture.componentInstance.focus();
+    expect(document.activeElement?.getAttribute('data-testid')).toBe('nx-input');
+  });
+
   it('shows hint text when provided', () => {
     const fixture = TestBed.createComponent(NxInput);
     fixture.componentRef.setInput('hint', 'Enter your email');
     fixture.detectChanges();
     expect(fixture.nativeElement.textContent).toContain('Enter your email');
+  });
+
+  it('shows the error message and marks the input invalid when error is set', async () => {
+    const fixture = TestBed.createComponent(NxInput);
+    fixture.componentRef.setInput('error', 'Enter a valid email address');
+    fixture.componentRef.setInput('hint', 'We never share it');
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    const text = fixture.nativeElement.textContent as string;
+    expect(text).toContain('Enter a valid email address');
+    expect(text).not.toContain('We never share it');
+    const input: HTMLInputElement = fixture.debugElement.query(
+      By.css('[data-testid="nx-input"]'),
+    ).nativeElement;
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+  });
+
+  it('shows the hint and no invalid state when error is empty', async () => {
+    const fixture = TestBed.createComponent(NxInput);
+    fixture.componentRef.setInput('hint', 'We never share it');
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(fixture.nativeElement.textContent).toContain('We never share it');
+    const input: HTMLInputElement = fixture.debugElement.query(
+      By.css('[data-testid="nx-input"]'),
+    ).nativeElement;
+    expect(input.getAttribute('aria-invalid')).not.toBe('true');
   });
 });
