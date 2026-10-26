@@ -636,6 +636,75 @@ class PermissionFreshnessServiceTest {
   }
 
   @Test
+  void should_require_hysteresis_threshold_before_recovering() {
+    PermissionFreshnessService hysteresisService = new PermissionFreshnessService(
+        port, userRoles, cachePort, registry, clock, WINDOW, 3, Duration.ofSeconds(10), Duration.ofSeconds(60),
+        KEY_TTL_SECONDS, REPLAY_CAPACITY, ROLE_REPLAY_CAPACITY, TENANT_PERCENT, 5);
+
+    // Trip into DEGRADED_OPEN
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.empty());
+    for (int i = 0; i < 3; i++) {
+      clock.set(T.plusSeconds(i));
+      hysteresisService.check(TENANT, USER, EPOCH);
+    }
+    assertThat(hysteresisService.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+
+    when(port.probe()).thenReturn(true);
+
+    // 4 successful probes: must remain DEGRADED_OPEN
+    for (int i = 0; i < 4; i++) {
+      clock.set(T.plusSeconds(10 + i));
+      hysteresisService.probe();
+      assertThat(hysteresisService.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+    }
+
+    // 5th successful probe: now transitions to RECOVERING
+    clock.set(T.plusSeconds(14));
+    hysteresisService.probe();
+    assertThat(hysteresisService.state()).isEqualTo(DegradedState.RECOVERING);
+  }
+
+  @Test
+  void should_reset_hysteresis_counter_when_probe_fails_before_threshold() {
+    PermissionFreshnessService hysteresisService = new PermissionFreshnessService(
+        port, userRoles, cachePort, registry, clock, WINDOW, 3, Duration.ofSeconds(10), Duration.ofSeconds(60),
+        KEY_TTL_SECONDS, REPLAY_CAPACITY, ROLE_REPLAY_CAPACITY, TENANT_PERCENT, 3);
+
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.empty());
+    for (int i = 0; i < 3; i++) {
+      clock.set(T.plusSeconds(i));
+      hysteresisService.check(TENANT, USER, EPOCH);
+    }
+    assertThat(hysteresisService.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+
+    // 2 successful probes
+    when(port.probe()).thenReturn(true);
+    clock.set(T.plusSeconds(10));
+    hysteresisService.probe();
+    clock.set(T.plusSeconds(11));
+    hysteresisService.probe();
+    assertThat(hysteresisService.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+
+    // 1 probe fails: resets count
+    when(port.probe()).thenReturn(false);
+    clock.set(T.plusSeconds(12));
+    hysteresisService.probe();
+    assertThat(hysteresisService.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+
+    // Needs 3 consecutive successes again
+    when(port.probe()).thenReturn(true);
+    clock.set(T.plusSeconds(13));
+    hysteresisService.probe();
+    clock.set(T.plusSeconds(14));
+    hysteresisService.probe();
+    assertThat(hysteresisService.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+
+    clock.set(T.plusSeconds(15));
+    hysteresisService.probe();
+    assertThat(hysteresisService.state()).isEqualTo(DegradedState.RECOVERING);
+  }
+
+  @Test
   void should_stayDegraded_when_probeFails() {
     tripAtT();
     when(port.probe()).thenReturn(false);
@@ -819,6 +888,8 @@ class PermissionFreshnessServiceTest {
     clock.set(T.plusSeconds(150));
     service.invalidateUser(TENANT, USER, "revoke");
     when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+    bumpsSucceed();
+    service.probe();
 
     clock.set(T.plusSeconds(160));
     service.check(TENANT, USER, EPOCH);
@@ -2254,6 +2325,9 @@ class PermissionFreshnessServiceTest {
     clock.set(T.plusSeconds(160));
     service.probe();
 
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+    bumpsSucceed();
+    service.probe();
     assertThat(service.state()).isEqualTo(DegradedState.HEALTHY);
   }
 

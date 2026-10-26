@@ -46,6 +46,7 @@ nexus:
   rbac:
     epoch:
       fail-open-window: ${NEXUS_RBAC_EPOCH_FAIL_OPEN_WINDOW:PT0S}
+      recovery-probe-threshold: ${NEXUS_RBAC_EPOCH_RECOVERY_PROBE_THRESHOLD:5}
     redis:
       require-auth: true
       require-ssl: true
