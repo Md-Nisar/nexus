@@ -793,6 +793,77 @@ class PermissionFreshnessServiceTest {
   }
 
   @Test
+  void should_tolerate_isolated_timeout_outlier() {
+    PermissionFreshnessService outlierTolerantService = new PermissionFreshnessService(
+        port, userRoles, cachePort, registry, clock, WINDOW, 3, Duration.ofSeconds(10),
+        Duration.ofSeconds(60), KEY_TTL_SECONDS, REPLAY_CAPACITY, ROLE_REPLAY_CAPACITY,
+        TENANT_PERCENT, 1, 2);
+
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.empty());
+    for (int i = 0; i < 3; i++) {
+      clock.set(T.plusSeconds(i));
+      outlierTolerantService.check(TENANT, USER, EPOCH);
+    }
+    assertThat(outlierTolerantService.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+
+    when(port.probe()).thenReturn(true);
+    clock.set(T.plusSeconds(100));
+    outlierTolerantService.probe();
+    assertThat(outlierTolerantService.state()).isEqualTo(DegradedState.RECOVERING);
+
+    // 1 isolated timeout failure at T+130
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.empty());
+    clock.set(T.plusSeconds(130));
+    outlierTolerantService.check(TENANT, USER, EPOCH);
+
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+
+    // Sustain window of 60s from T+100 completes at T+160 (tolerated 1 outlier)
+    clock.set(T.plusSeconds(160));
+    outlierTolerantService.check(TENANT, USER, EPOCH);
+    assertThat(outlierTolerantService.state()).isEqualTo(DegradedState.HEALTHY);
+  }
+
+  @Test
+  void should_restartSustain_when_failuresReachRecoveryRestartThreshold() {
+    PermissionFreshnessService outlierTolerantService = new PermissionFreshnessService(
+        port, userRoles, cachePort, registry, clock, WINDOW, 3, Duration.ofSeconds(10),
+        Duration.ofSeconds(60), KEY_TTL_SECONDS, REPLAY_CAPACITY, ROLE_REPLAY_CAPACITY,
+        TENANT_PERCENT, 1, 2);
+
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.empty());
+    for (int i = 0; i < 3; i++) {
+      clock.set(T.plusSeconds(i));
+      outlierTolerantService.check(TENANT, USER, EPOCH);
+    }
+    assertThat(outlierTolerantService.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+
+    when(port.probe()).thenReturn(true);
+    clock.set(T.plusSeconds(100));
+    outlierTolerantService.probe();
+    assertThat(outlierTolerantService.state()).isEqualTo(DegradedState.RECOVERING);
+
+    // 2 read failures within entryFailureWindow at T+130: reaches recoveryRestartThreshold
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.empty());
+    clock.set(T.plusSeconds(130));
+    outlierTolerantService.check(TENANT, USER, EPOCH);
+    clock.set(T.plusSeconds(131));
+    outlierTolerantService.check(TENANT, USER, EPOCH);
+
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+
+    // At T+160: only 29s since restart at T+131, must still be RECOVERING
+    clock.set(T.plusSeconds(160));
+    outlierTolerantService.check(TENANT, USER, EPOCH);
+    assertThat(outlierTolerantService.state()).isEqualTo(DegradedState.RECOVERING);
+
+    // At T+191: 60s since restart at T+131, now transitions to HEALTHY
+    clock.set(T.plusSeconds(191));
+    outlierTolerantService.check(TENANT, USER, EPOCH);
+    assertThat(outlierTolerantService.state()).isEqualTo(DegradedState.HEALTHY);
+  }
+
+  @Test
   void should_relapseToOpenKeepingT0_when_threeFailuresInRecoveringBeforeWindow() {
     tripAtT();
     clock.set(T.plusSeconds(100));

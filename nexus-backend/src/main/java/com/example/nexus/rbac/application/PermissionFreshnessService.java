@@ -211,6 +211,7 @@ public final class PermissionFreshnessService {
   private final Duration entryFailureWindow;
   private final Duration recoverySustain;
   private final int recoveryProbeThreshold;
+  private final int recoveryRestartThreshold;
   private int consecutiveProbeSuccesses;
   private final Duration lastSeenTtl;
   private final Map<FreshnessVerdict, Counter> outcomeCounters;
@@ -310,6 +311,28 @@ public final class PermissionFreshnessService {
       PermissionCachePort permissionCachePort,
       MeterRegistry meterRegistry,
       Clock clock,
+      Duration failOpenWindow,
+      int entryFailureThreshold,
+      Duration entryFailureWindow,
+      Duration recoverySustain,
+      long keyTtlSeconds,
+      int replayCapacityUsers,
+      int replayCapacityRoles,
+      int lastSeenTenantPercent,
+      int recoveryProbeThreshold) {
+    this(
+        epochPort, userRoleAssignmentPort, permissionCachePort, meterRegistry, clock,
+        failOpenWindow, entryFailureThreshold, entryFailureWindow, recoverySustain,
+        keyTtlSeconds, replayCapacityUsers, replayCapacityRoles, lastSeenTenantPercent,
+        recoveryProbeThreshold, 1);
+  }
+
+  public PermissionFreshnessService(
+      PermissionEpochPort epochPort,
+      UserRoleAssignmentPort userRoleAssignmentPort,
+      PermissionCachePort permissionCachePort,
+      MeterRegistry meterRegistry,
+      Clock clock,
       @Value("${nexus.rbac.epoch.fail-open-window}") Duration failOpenWindow,
       @Value("${nexus.rbac.epoch.entry-failure-threshold}") int entryFailureThreshold,
       @Value("${nexus.rbac.epoch.entry-failure-window}") Duration entryFailureWindow,
@@ -318,9 +341,11 @@ public final class PermissionFreshnessService {
       @Value("${nexus.rbac.epoch.replay-capacity-users}") int replayCapacityUsers,
       @Value("${nexus.rbac.epoch.replay-capacity-roles:1000}") int replayCapacityRoles,
       @Value("${nexus.rbac.epoch.last-seen-tenant-percent:10}") int lastSeenTenantPercent,
-      @Value("${nexus.rbac.epoch.recovery-probe-threshold:1}") int recoveryProbeThreshold) {
+      @Value("${nexus.rbac.epoch.recovery-probe-threshold:1}") int recoveryProbeThreshold,
+      @Value("${nexus.rbac.epoch.recovery-restart-threshold:2}") int recoveryRestartThreshold) {
     if (entryFailureThreshold < 1
         || recoveryProbeThreshold < 1
+        || recoveryRestartThreshold < 1
         || failOpenWindow.isNegative()
         || !entryFailureWindow.isPositive()
         || !recoverySustain.isPositive()
@@ -329,7 +354,8 @@ public final class PermissionFreshnessService {
         || replayCapacityRoles < 1
         || lastSeenTenantPercent < 1
         || lastSeenTenantPercent > 100) {
-      throw new IllegalArgumentException("permission epoch outage policy settings must be positive");
+      throw new IllegalArgumentException(
+          "permission epoch outage policy settings must be positive");
     }
     this.epochPort = epochPort;
     this.userRoleAssignmentPort = userRoleAssignmentPort;
@@ -348,6 +374,7 @@ public final class PermissionFreshnessService {
     this.entryFailureWindow = entryFailureWindow;
     this.recoverySustain = recoverySustain;
     this.recoveryProbeThreshold = recoveryProbeThreshold;
+    this.recoveryRestartThreshold = recoveryRestartThreshold;
     this.lastSeenTtl = Duration.ofSeconds(keyTtlSeconds);
     this.outcomeCounters = new EnumMap<>(FreshnessVerdict.class);
     for (FreshnessVerdict verdict : FreshnessVerdict.values()) {
@@ -717,15 +744,16 @@ public final class PermissionFreshnessService {
       if (current != DegradedState.HEALTHY && current != DegradedState.RECOVERING) {
         return;
       }
-      if (current == DegradedState.RECOVERING) {
-        recoverySince = now;
-      }
       while (!recentFailures.isEmpty()
           && !Duration.between(recentFailures.peekFirst(), now).minus(entryFailureWindow)
               .isNegative()) {
         recentFailures.removeFirst();
       }
       recentFailures.addLast(now);
+      if (current == DegradedState.RECOVERING
+          && recentFailures.size() >= recoveryRestartThreshold) {
+        recoverySince = now;
+      }
       if (recentFailures.size() < entryFailureThreshold) {
         return;
       }
