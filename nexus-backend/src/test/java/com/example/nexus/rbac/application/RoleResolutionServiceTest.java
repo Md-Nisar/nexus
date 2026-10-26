@@ -18,6 +18,8 @@ import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 @Tag("UnitTest")
 class RoleResolutionServiceTest {
@@ -245,5 +247,13 @@ class RoleResolutionServiceTest {
 
     assertThat(resolved.permissions()).containsExactly("role:read", "user:read");
     verify(userRoleQueryPort).findActivePermissionNames(userId, tenantId);
+  }
+
+  @Test
+  void should_configureRequiresNewTransactionalAnnotation_toAvoidRepeatableReadSnapshotLeak() {
+    Transactional tx = RoleResolutionService.class.getAnnotation(Transactional.class);
+    assertThat(tx).isNotNull();
+    assertThat(tx.readOnly()).isTrue();
+    assertThat(tx.propagation()).isEqualTo(Propagation.REQUIRES_NEW);
   }
 }
