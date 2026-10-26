@@ -187,7 +187,7 @@ public class RoleAssignmentService {
     // bound, so the detector's read runs in a new read-only transaction.
     this.holderReadTransaction = new TransactionTemplate(transactionManager);
     this.holderReadTransaction.setPropagationBehavior(
-        TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        TransactionDefinition.PROPAGATION_NOT_SUPPORTED);
     this.holderReadTransaction.setReadOnly(true);
     this.meterRegistry = meterRegistry;
     this.throttlePort = throttlePort;

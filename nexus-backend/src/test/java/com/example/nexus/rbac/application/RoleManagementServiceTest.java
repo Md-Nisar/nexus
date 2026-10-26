@@ -2170,7 +2170,7 @@ class RoleManagementServiceTest {
     order.verify(transactionManager).commit(any());
     order.verify(permissionFreshness).invalidateHolders(tenantId, holders, "detach");
     assertThat(definition.getValue().getPropagationBehavior())
-        .isEqualTo(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        .isEqualTo(TransactionDefinition.PROPAGATION_NOT_SUPPORTED);
     assertThat(definition.getValue().isReadOnly()).isTrue();
   }
 
@@ -2229,7 +2229,7 @@ class RoleManagementServiceTest {
     order.verify(transactionManager).commit(any());
     order.verify(permissionCachePort).evict(tenantId, holders);
     assertThat(definition.getValue().getPropagationBehavior())
-        .isEqualTo(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        .isEqualTo(TransactionDefinition.PROPAGATION_NOT_SUPPORTED);
     assertThat(definition.getValue().isReadOnly()).isTrue();
   }
 

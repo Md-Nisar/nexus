@@ -187,7 +187,7 @@ public class RoleManagementService {
     // is guaranteed a fresh read of the committed rows (TransactionSynchronization#afterCommit).
     this.holderReadTransaction = new TransactionTemplate(transactionManager);
     this.holderReadTransaction.setPropagationBehavior(
-        TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        TransactionDefinition.PROPAGATION_NOT_SUPPORTED);
     this.holderReadTransaction.setReadOnly(true);
     this.meterRegistry = meterRegistry;
     this.piiGrantRule = piiGrantRule;
