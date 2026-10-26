@@ -2,6 +2,7 @@ package com.example.nexus.rbac.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
@@ -41,6 +42,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -1871,6 +1873,30 @@ class PermissionFreshnessServiceTest {
     service.probe();
     assertThat(roleQueueSize()).isZero();
     verify(port).bump(TENANT, List.of(USER));
+  }
+
+  @Test
+  void should_bound_role_read_executor_queue() throws Exception {
+    CountDownLatch blockerStarted = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    service.runOnRoleReadThread(() -> {
+      blockerStarted.countDown();
+      try {
+        release.await(30, TimeUnit.SECONDS);
+      } catch (InterruptedException ignored) {
+        Thread.currentThread().interrupt();
+      }
+    });
+    assertThat(blockerStarted.await(5, TimeUnit.SECONDS)).isTrue();
+
+    for (int i = 0; i < service.roleReadQueueCapacity(); i++) {
+      service.runOnRoleReadThread(() -> {});
+    }
+
+    assertThatThrownBy(() -> service.runOnRoleReadThread(() -> {}))
+        .isInstanceOf(RejectedExecutionException.class);
+
+    release.countDown();
   }
 
   // --- tenant slot accounting under concurrency (coordinator review, finding 2) ---
