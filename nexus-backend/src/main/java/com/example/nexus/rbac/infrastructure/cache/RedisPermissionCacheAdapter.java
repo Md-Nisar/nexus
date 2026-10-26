@@ -56,6 +56,19 @@ public class RedisPermissionCacheAdapter implements PermissionCachePort {
 
   // KEYS[i] = epoch key of user i; ARGV[2i-1] / ARGV[2i] = that user's roleset / permset stem.
   // The epoch is formatted as the bump script writes it and as Long.toString renders it.
+  // KEYS[1] = cache set key; ARGV[1] = ttlSeconds; ARGV[2..N] = members.
+  // Executes DEL, SADD and EXPIRE atomically in a single RTT, preventing unexpired keys (OR-3.1-03).
+  private static final RedisScript<Long> WRITE_SET_SCRIPT = RedisScript.of("""
+      local key = KEYS[1]
+      local ttl = tonumber(ARGV[1])
+      redis.call('DEL', key)
+      if #ARGV >= 2 then
+        redis.call('SADD', key, unpack(ARGV, 2))
+      end
+      redis.call('EXPIRE', key, ttl)
+      return 1
+      """, Long.class);
+
   private static final RedisScript<Long> EVICT_SCRIPT = RedisScript.of("""
       for i, key in ipairs(KEYS) do
         local epoch = string.format('%.0f', tonumber(redis.call('GET', key) or '0') or 0)
@@ -150,12 +163,13 @@ public class RedisPermissionCacheAdapter implements PermissionCachePort {
   }
 
   private void writeSet(String key, List<String> values) {
-    redisTemplate.delete(key);
+    List<Object> args = new ArrayList<>(1 + (values.isEmpty() ? 1 : values.size()));
+    args.add(Long.toString(ttl.toSeconds()));
     if (!values.isEmpty()) {
-      redisTemplate.opsForSet().add(key, values.toArray(new String[0]));
+      args.addAll(values);
     } else {
-      redisTemplate.opsForSet().add(key, EMPTY_MARKER);
+      args.add(EMPTY_MARKER);
     }
-    redisTemplate.expire(key, ttl);
+    redisTemplate.execute(WRITE_SET_SCRIPT, List.of(key), args.toArray());
   }
 }
