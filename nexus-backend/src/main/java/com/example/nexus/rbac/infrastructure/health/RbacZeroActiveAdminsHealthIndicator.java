@@ -54,6 +54,7 @@ import org.springframework.stereotype.Component;
 @Component("rbacZeroActiveAdmins")
 public class RbacZeroActiveAdminsHealthIndicator implements HealthIndicator {
 
+  private static final String KEY_ISSUE = "issue";
   private static final Logger log =
       LoggerFactory.getLogger(RbacZeroActiveAdminsHealthIndicator.class);
 
@@ -100,7 +101,7 @@ public class RbacZeroActiveAdminsHealthIndicator implements HealthIndicator {
                 .withDetail("deletedRoleActiveAssignments", deletedRoleActiveAssignments);
         if (!affectedTenantIds.isEmpty()) {
           down.withDetail(
-              "issue",
+              KEY_ISSUE,
               "one or more tenants have at least one admin-defining role (a role carrying every"
                   + " permission of the catalogue) but zero active holders of any of them —"
                   + " privileged actions in these tenants have no reachable administrator;"
@@ -108,7 +109,7 @@ public class RbacZeroActiveAdminsHealthIndicator implements HealthIndicator {
                   + " affected tenant ids");
         } else {
           down.withDetail(
-              "issue",
+              KEY_ISSUE,
               "one or more active role assignments reference a soft-deleted role — the delete"
                   + " invariant (a deleted role has no active holders) is broken; see the runbook");
         }
@@ -120,7 +121,7 @@ public class RbacZeroActiveAdminsHealthIndicator implements HealthIndicator {
       // reported as UNKNOWN, not treated as either a pass or a lockout finding.
       log.warn("zero-active-admins self-check failed to execute: {}", e.getMessage());
       return Health.unknown()
-          .withDetail("issue", "zero-active-admins self-check could not run: " + e.getMessage())
+          .withDetail(KEY_ISSUE, "zero-active-admins self-check could not run: " + e.getMessage())
           .build();
     }
   }

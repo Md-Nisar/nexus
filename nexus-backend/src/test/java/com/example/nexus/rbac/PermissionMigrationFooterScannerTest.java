@@ -266,7 +266,7 @@ class PermissionMigrationFooterScannerTest {
    * statement (a) in sorted lower-case order, so layout and id order do not matter.
    */
   static String normalise(String statement) {
-    String compact = statement.strip().replaceAll("\\s+", " ").replaceAll("\\s*([(),])\\s*", "$1");
+    String compact = statement.strip().replaceAll("\\s+", " ").replaceAll("\\s*+([(),])\\s*+", "$1");
     Matcher list = ID_LIST.matcher(compact);
     StringBuilder out = new StringBuilder();
     while (list.find()) {

@@ -90,6 +90,9 @@ public class BootstrapAdminService {
 
   private static final Logger log = LoggerFactory.getLogger(BootstrapAdminService.class);
 
+  private static final String LOG_KEY_EVENT = "event";
+  private static final String LOG_KEY_TENANT_ID = "tenantId";
+
   private final UserDirectoryPort userDirectoryPort;
   private final UserRoleAssignmentPort userRoleAssignmentPort;
   private final RbacAuditPort rbacAuditPort;
@@ -153,15 +156,15 @@ public class BootstrapAdminService {
       // The grant has rolled back. No retry and no extra lock (ADR-0018); the runbook allows one
       // invocation per tenant at a time.
       log.atWarn()
-          .addKeyValue("event", "RBAC_BREAK_GLASS_CONFLICT")
-          .addKeyValue("tenantId", tenantId)
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_BREAK_GLASS_CONFLICT")
+          .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
           .log("Break-glass grant lost a lock race and rolled back: tenantId={}", tenantId);
       return refuse(
           tenantId, targetUserId, changeRef, BreakGlassRefusalReason.CONCURRENT_INVOCATION);
     } catch (RuntimeException e) {
       log.atWarn()
-          .addKeyValue("event", "RBAC_BREAK_GLASS_GRANT_FAILED")
-          .addKeyValue("tenantId", tenantId)
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_BREAK_GLASS_GRANT_FAILED")
+          .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
           .setCause(e)
           .log("Break-glass grant failed and rolled back: tenantId={}", tenantId);
       return refuse(tenantId, targetUserId, changeRef, BreakGlassRefusalReason.UNEXPECTED_ERROR);
@@ -263,8 +266,8 @@ public class BootstrapAdminService {
               changeRef.value()));
     } catch (RuntimeException e) {
       log.atError()
-          .addKeyValue("event", "RBAC_BREAK_GLASS_ALERT_FAILED")
-          .addKeyValue("tenantId", granted.tenantId())
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_BREAK_GLASS_ALERT_FAILED")
+          .addKeyValue(LOG_KEY_TENANT_ID, granted.tenantId())
           .setCause(e)
           .log(
               "Break-glass grant committed but its page failed: tenantId={}", granted.tenantId());
@@ -296,8 +299,8 @@ public class BootstrapAdminService {
       // L-1: best effort, like the GRANTED page. The FAILURE row is already written; the refusal
       // keeps its own exit code. No argument value (target, change reference) is logged.
       log.atError()
-          .addKeyValue("event", "RBAC_BREAK_GLASS_ALERT_FAILED")
-          .addKeyValue("tenantId", tenantId)
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_BREAK_GLASS_ALERT_FAILED")
+          .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
           .addKeyValue("reason", reason.name())
           .setCause(e)
           .log("Break-glass refusal recorded but its page failed: reason={}", reason.name());
