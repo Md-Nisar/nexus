@@ -79,6 +79,47 @@ export const CONSOLE_COPY = {
     hiddenCharacters: 'Contains hidden characters',
     hiddenCharactersExplanation:
       'This text contains characters that are invisible or change text direction. Check it carefully.',
+    /** The badge's explanation next to an email address (§14.2, RC-68). */
+    hiddenCharactersEmailExplanation:
+      'This address contains characters that are invisible or change text direction. Check it carefully before giving access.',
+    /** One hidden code point in an address: visible token and accessible name (§14.2, RC-68). */
+    hiddenCharacterToken: '⟨U+{hex}⟩',
+    hiddenCharacterName: 'hidden character U+{hex}',
+    verified: 'Verified',
+    unverified: 'Unverified email',
+    you: '(you)',
+    /** Account status labels (§14.2). */
+    status: {
+      ACTIVE: 'Active',
+      PENDING: 'Pending',
+      LOCKED: 'Locked',
+      DISABLED: 'Disabled',
+    },
+  },
+
+  /** The users list (§12.7, §14.1, §14.2). `{n}` is a number of seconds. */
+  users: {
+    title: 'Users',
+    caption: 'Users',
+    statusLabel: 'Status',
+    statusAll: 'All',
+    lookupLabel: 'Find by email',
+    lookupHint: 'Enter a full email address',
+    lookupSubmit: 'Find',
+    lookupCaption: 'Lookup result',
+    lookupLoading: 'Looking up the address',
+    lookupMiss: 'No one in your organisation has this email address.',
+    lookupWait: 'Try again in {n} seconds.',
+    lookupWaitOne: 'Try again in 1 second.',
+    loading: 'Loading users',
+    emptyFilter: 'No users match this filter',
+    firstPage: 'Go to the first page',
+    columns: {
+      email: 'Email',
+      status: 'Status',
+      verified: 'Verified',
+      joined: 'Joined',
+    },
   },
 
   /** The roles list (§12.2, §14.2). */

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hasHiddenCharacters } from './hidden-characters';
+import { hasHiddenCharacters, splitHiddenCharacters } from './hidden-characters';
 
 describe('hasHiddenCharacters (threat model D-1, RC-68)', () => {
   it.each([
@@ -34,5 +34,73 @@ describe('hasHiddenCharacters (threat model D-1, RC-68)', () => {
     ['paragraph separator U+2029', 'a b'],
   ])('is true for %s', (_name, text) => {
     expect(hasHiddenCharacters(text)).toBe(true);
+  });
+});
+
+describe('splitHiddenCharacters (threat model D-1, RC-68)', () => {
+  /** Joins the segments by their raw text: the split loses nothing. */
+  function rejoin(segments: ReturnType<typeof splitHiddenCharacters>): string {
+    return segments.map((segment) => segment.text).join('');
+  }
+
+  it.each([
+    ['right-to-left override', 'ab\u202Ecd', '202E'],
+    ['zero-width joiner', 'ab\u200Dcd', '200D'],
+    ['byte-order mark', 'ab\uFEFFcd', 'FEFF'],
+    ['Hangul filler', 'ab\u3164cd', '3164'],
+    ['no-break space', 'ab\u00A0cd', '00A0'],
+    ['variation selector-16', 'ab\uFE0Fcd', 'FE0F'],
+    ['line separator', 'ab\u2028cd', '2028'],
+  ])('splits out a %s as one hidden segment', (_name, text, hex) => {
+    const segments = splitHiddenCharacters(text);
+
+    expect(segments).toEqual([
+      { kind: 'text', text: 'ab' },
+      { kind: 'hidden', text: String.fromCodePoint(Number.parseInt(hex, 16)), codePoint: hex },
+      { kind: 'text', text: 'cd' },
+    ]);
+    expect(rejoin(segments)).toBe(text);
+  });
+
+  it('keeps a supplementary code point whole (U+E0100), never two surrogate halves', () => {
+    const text = 'a\u{E0100}b';
+    const segments = splitHiddenCharacters(text);
+
+    expect(segments).toEqual([
+      { kind: 'text', text: 'a' },
+      { kind: 'hidden', text: '\u{E0100}', codePoint: 'E0100' },
+      { kind: 'text', text: 'b' },
+    ]);
+    expect(rejoin(segments)).toBe(text);
+  });
+
+  it('returns a clean address as one text segment', () => {
+    const text = 'clean.address+tag@directory.invalid';
+    expect(splitHiddenCharacters(text)).toEqual([{ kind: 'text', text }]);
+  });
+
+  it('does not flag a plain space', () => {
+    expect(splitHiddenCharacters('a b')).toEqual([{ kind: 'text', text: 'a b' }]);
+  });
+
+  it('gives one segment per hidden code point, adjacent ones included, at either end', () => {
+    const text = '\u202Ea\u200B\u200Cb\u2066';
+    const segments = splitHiddenCharacters(text);
+
+    expect(
+      segments.map((segment) => (segment.kind === 'hidden' ? segment.codePoint : 'text')),
+    ).toEqual(['202E', 'text', '200B', '200C', 'text', '2066']);
+    expect(rejoin(segments)).toBe(text);
+  });
+
+  it('returns no segment for the empty string', () => {
+    expect(splitHiddenCharacters('')).toEqual([]);
+  });
+
+  it('agrees with hasHiddenCharacters', () => {
+    for (const text of ['abc', 'a\u202Eb', 'a\u00A0b', 'a b', '\u3164']) {
+      const flagged = splitHiddenCharacters(text).some((segment) => segment.kind === 'hidden');
+      expect(flagged).toBe(hasHiddenCharacters(text));
+    }
   });
 });

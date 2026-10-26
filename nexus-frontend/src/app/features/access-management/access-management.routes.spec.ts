@@ -32,6 +32,7 @@ import { CatalogueStore } from './data/catalogue.store';
 import { RolesStore } from './data/roles.store';
 import { RoleDetailStore } from './role-detail/role-detail.store';
 import { unsavedChangesGuard } from './role-editor/unsaved-changes.guard';
+import { UsersListStore } from './users/users-list.store';
 import { CONSOLE_AREAS } from './layout/console-areas';
 import { AccessConsoleLayout } from './layout/access-console-layout';
 
@@ -188,6 +189,33 @@ describe('ACCESS_MANAGEMENT_ROUTES (US-020 design §4.2)', () => {
     });
   });
 
+  describe('users area (T-015)', () => {
+    function usersRoute(): Route {
+      const route = layoutRoute().children?.find((child) => child.path === 'users');
+      expect(route).toBeDefined();
+      return route as Route;
+    }
+
+    it('is guarded by permissionGuard with the permission its console area requires', () => {
+      const route = usersRoute();
+      const area = CONSOLE_AREAS.find((candidate) => candidate.id === 'users');
+      expect(route.canActivate).toEqual([permissionGuard]);
+      expect(route.data).toEqual({ permission: area?.permission });
+      expect(area?.permission).toBe('user:directory:read');
+      expect(area?.path).toBe('/admin/access/users');
+      expect(route.canActivateChild).toBeUndefined();
+    });
+
+    it('scopes the UsersListStore to the users route, has a static title and is lazy', () => {
+      const route = usersRoute();
+      expect(route.providers).toEqual([UsersListStore]);
+      expect(layoutRoute().providers).not.toContain(UsersListStore);
+      expect(route.title).toBe('Users');
+      expect(route.component).toBeUndefined();
+      expect(route.loadComponent).toBeTypeOf('function');
+    });
+  });
+
   describe('roles area (T-007)', () => {
     function rolesRoute(): Route {
       const route = layoutRoute().children?.find((child) => child.path === 'roles');
@@ -282,7 +310,7 @@ describe('console entry with the real router', () => {
                   ...layout,
                   children: [
                     ...(layout.children ?? []).filter(
-                      (child) => child.path !== 'roles' && child.path !== 'permissions',
+                      (child) => !['roles', 'permissions', 'users'].includes(child.path ?? ''),
                     ),
                     { path: 'roles', title: 'Roles', component: FixturePage },
                     { path: 'permissions', title: 'Permissions', component: FixturePage },

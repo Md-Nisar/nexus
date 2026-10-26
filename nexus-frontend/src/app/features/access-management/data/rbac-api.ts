@@ -36,7 +36,7 @@ export interface VersionedPermissionSet {
  * link could otherwise carry `/` or `..` into the API path; `.` is encoded too, because
  * `encodeURIComponent` leaves it, and a `..` segment would resolve to the parent path.
  */
-function pathSegment(id: string): string {
+export function pathSegment(id: string): string {
   return encodeURIComponent(id).replaceAll('.', '%2E');
 }
 

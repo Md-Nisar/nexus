@@ -9,6 +9,7 @@ import { AccessConsoleLayout } from './layout/access-console-layout';
 import { CONSOLE_AREAS } from './layout/console-areas';
 import { RoleDetailStore } from './role-detail/role-detail.store';
 import { unsavedChangesGuard } from './role-editor/unsaved-changes.guard';
+import { UsersListStore } from './users/users-list.store';
 
 /** Where a user who holds none of the areas' permissions would go; the parent guard denies them first. */
 const FALLBACK_AREA = '/admin/access/users';
@@ -44,6 +45,8 @@ export const firstAreaRedirect: CanActivateFn = () => {
  *   title (the children have static ones), so a role name never reaches `document.title`.
  * - `roles/new` (Create and Clone, `role:write`, `unsavedChangesGuard`) is declared before
  *   `roles/:roleId`.
+ * - `users` (`user:directory:read`) scopes {@link UsersListStore} to the users list; its static
+ *   title keeps every address out of `document.title` and history.
  */
 export const ACCESS_MANAGEMENT_ROUTES: Routes = [
   {
@@ -108,6 +111,15 @@ export const ACCESS_MANAGEMENT_ROUTES: Routes = [
         canActivate: [permissionGuard],
         data: { permission: 'role:read' },
         loadComponent: () => import('./catalogue/catalogue.page').then((m) => m.CataloguePage),
+      },
+      {
+        // `permission` is the users entry of CONSOLE_AREAS (pinned by the routes spec).
+        path: 'users',
+        title: 'Users',
+        canActivate: [permissionGuard],
+        data: { permission: 'user:directory:read' },
+        providers: [UsersListStore],
+        loadComponent: () => import('./users/users-list.page').then((m) => m.UsersListPage),
       },
     ],
   },

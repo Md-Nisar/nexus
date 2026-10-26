@@ -35,3 +35,14 @@
   clip-path: inset(50%);
   white-space: nowrap;
 }
+
+/* A hidden character shown as a visible token (RC-68): marked off so it reads as one unit. */
+.user-text__token {
+  padding-inline: var(--nx-space-1);
+  border-radius: var(--nx-radius-xs);
+  background-color: var(--nx-color-warning-surface);
+  color: var(--nx-color-on-surface);
+  font-family: var(--nx-font-family-mono);
+  font-size: var(--nx-text-xs);
+  white-space: nowrap;
+}

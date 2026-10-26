@@ -350,3 +350,36 @@ describe('CONSOLE_COPY (draft strings, design §10, §14.2; D-6)', () => {
     expect(draft.restoredTitle.length).toBeGreaterThan(0);
   });
 });
+
+describe('CONSOLE_COPY (users list strings, design §12.7, §14.2; RC-68)', () => {
+  it('has the D3 users list, lookup and badge strings', () => {
+    const { users, badges } = CONSOLE_COPY;
+    expect(users.title).toBe('Users');
+    expect(users.lookupLabel).toBe('Find by email');
+    expect(users.lookupHint).toBe('Enter a full email address');
+    expect(users.lookupCaption).toBe('Lookup result');
+    expect(users.lookupMiss).toBe('No one in your organisation has this email address.');
+    expect(users.emptyFilter).toBe('No users match this filter');
+    expect(format(users.lookupWait, { n: 4 })).toBe('Try again in 4 seconds.');
+    expect(badges.status).toEqual({
+      ACTIVE: 'Active',
+      PENDING: 'Pending',
+      LOCKED: 'Locked',
+      DISABLED: 'Disabled',
+    });
+    expect([badges.verified, badges.unverified, badges.you]).toEqual([
+      'Verified',
+      'Unverified email',
+      '(you)',
+    ]);
+  });
+
+  it('has the RC-68 address explanation, token text and token accessible name', () => {
+    const { badges } = CONSOLE_COPY;
+    expect(badges.hiddenCharactersEmailExplanation).toBe(
+      'This address contains characters that are invisible or change text direction. Check it carefully before giving access.',
+    );
+    expect(format(badges.hiddenCharacterToken, { hex: '202E' })).toBe('⟨U+202E⟩');
+    expect(format(badges.hiddenCharacterName, { hex: '202E' })).toBe('hidden character U+202E');
+  });
+});
