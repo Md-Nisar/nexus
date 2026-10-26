@@ -3078,6 +3078,39 @@ class RoleManagementServiceTest {
   }
 
   @Test
+  void should_throw403GrantExceedsCaller_when_callerStrippedOfAddedPermissionUnderLock() {
+    stubReplace(Set.of(P1), P1, P2);
+    stubLockedState(Set.of(P1));
+
+    List<RolePermissionRef> snapshotHeld =
+        List.of(
+            new RolePermissionRef(UUID.randomUUID(), ROLE_READ_ID),
+            new RolePermissionRef(UUID.randomUUID(), ROLE_WRITE_ID),
+            new RolePermissionRef(UUID.randomUUID(), P1),
+            new RolePermissionRef(UUID.randomUUID(), P2));
+    List<RolePermissionRef> lockedHeld =
+        List.of(
+            new RolePermissionRef(UUID.randomUUID(), ROLE_READ_ID),
+            new RolePermissionRef(UUID.randomUUID(), ROLE_WRITE_ID),
+            new RolePermissionRef(UUID.randomUUID(), P1));
+
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(snapshotHeld)
+        .thenReturn(lockedHeld);
+
+    assertThatThrownBy(() -> replace(Set.of(P1, P2), versionOf(Set.of(P1))))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .satisfies(
+            e -> {
+              InsufficientPermissionException denial = (InsufficientPermissionException) e;
+              assertThat(denial.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER);
+              assertThat(denial.getRequiredPermission()).isEqualTo(ROLE_WRITE);
+            });
+    verifyNoWrite();
+    assertThat(replaceCount("denied", "role_row")).isEqualTo(1.0);
+  }
+
+  @Test
   void should_throwRoleNotFound_when_theRoleRowIsGoneAtLockTime() {
     stubReplace(Set.of(P1), P1, P2);
     when(roleManagementPort.lockRoleRow(roleId, tenantId)).thenReturn(false);
