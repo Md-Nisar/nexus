@@ -581,8 +581,8 @@ public class RoleManagementService {
     // carries the whole catalogue), so "before" is exactly a demotion.
     ReplacePlan plan =
         new ReplacePlan(
-            target, adds, removes, snapshotVersion, before, !before && after, catalogueIds,
-            piiGrant);
+            snapshot, target, adds, removes, snapshotVersion, before, !before && after,
+            catalogueIds, piiGrant);
     String lockPath = plan.needsSetLock() ? LOCK_PATH_SET_LOCK : LOCK_PATH_ROLE_ROW;
     if (!roleManagementPort.lockRoleRow(role.id(), actor.tenantId())) {
       throw new ResourceNotFoundException(CODE_ROLE_NOT_FOUND, MESSAGE_NO_SUCH_ROLE);
@@ -612,6 +612,7 @@ public class RoleManagementService {
    * outcome.
    */
   private record ReplacePlan(
+      Set<UUID> snapshot,
       Set<UUID> target,
       Set<UUID> adds,
       Set<UUID> removes,
@@ -645,6 +646,8 @@ public class RoleManagementService {
       countReplace(OUTCOME_PRECONDITION_FAILED, lockPath);
       throw new PreconditionFailedException();
     }
+
+    requireCallerHoldsSubsetUnderLock(actor, role, plan, setLock, lockPath);
 
     if (setLock != null) {
       requireSetLockInvariants(actor, role, plan, setLock);
@@ -834,6 +837,66 @@ public class RoleManagementService {
     }
     warn.log("Role ceased to be admin-defining");
     Counter.builder(COUNTER_ROLE_CEASED_ADMIN_DEFINING).register(meterRegistry).increment();
+  }
+
+  /**
+   * Re-verifies caller subset under lock (OR-04) to prevent race conditions where a concurrent
+   * transaction stripped permissions from the caller while waiting for the role row / set lock.
+   */
+  private void requireCallerHoldsSubsetUnderLock(
+      RoleChangeActor actor,
+      RoleView role,
+      ReplacePlan plan,
+      SetLockRows setLock,
+      String lockPath) {
+    if (plan.adds().isEmpty() && (setLock != null || plan.removes().isEmpty())) {
+      return;
+    }
+    List<RolePermissionRef> held =
+        userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(
+            actor.userId(), actor.tenantId());
+    Set<UUID> heldPermissionIds = new HashSet<>();
+    held.forEach(ref -> heldPermissionIds.add(ref.permissionId()));
+
+    if (!heldPermissionIds.contains(RbacSeededPermissionIds.ROLE_WRITE)) {
+      log.atWarn()
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_ENDPOINT_PERMISSION_NOT_HELD")
+          .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+          .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+          .addKeyValue(LOG_KEY_ROLE_ID, role.id())
+          .addKeyValue("stage", "locked")
+          .log("Blocked a permission-set replace: under lock caller lacks endpoint permission");
+      countReplace(OUTCOME_DENIED, lockPath);
+      throw new InsufficientPermissionException(ROLE_WRITE, DenialReason.PERMISSION_ABSENT);
+    }
+
+    if (!plan.adds().isEmpty() && !heldPermissionIds.containsAll(plan.adds())) {
+      log.atWarn()
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_REPLACE_EXCEEDS_CALLER")
+          .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+          .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+          .addKeyValue(LOG_KEY_ROLE_ID, role.id())
+          .addKeyValue("stage", "locked")
+          .log("Blocked a permission-set replace: under lock caller lacks added permission");
+      countReplace(OUTCOME_DENIED, lockPath);
+      throw new InsufficientPermissionException(ROLE_WRITE, DenialReason.GRANT_EXCEEDS_CALLER);
+    }
+
+    if (setLock == null
+        && !plan.removes().isEmpty()
+        && !heldPermissionIds.containsAll(plan.snapshot())) {
+      log.atWarn()
+          .addKeyValue(LOG_KEY_EVENT, EVENT_SUBSET_DENIED)
+          .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+          .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+          .addKeyValue(LOG_KEY_ROLE_ID, role.id())
+          .addKeyValue("operation", OPERATION_REPLACE)
+          .addKeyValue("stage", "locked")
+          .log("Blocked a role definition change: under lock caller does not hold the role's"
+              + " permissions");
+      countReplace(OUTCOME_DENIED, lockPath);
+      throw new InsufficientPermissionException(ROLE_WRITE, DenialReason.GRANT_EXCEEDS_CALLER);
+    }
   }
 
   /**
