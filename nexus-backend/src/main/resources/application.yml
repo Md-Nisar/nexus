@@ -99,6 +99,7 @@ management:
       probes:
         enabled: true
       show-details: when-authorized
+      roles: SYSTEM_ADMIN
       # 07-security-review.md M-2: /actuator/health/** is permitAll and carries no rate limit,
       # and US-012's rbacZeroActiveAdmins indicator runs a cross-tenant roles scan on every hit.
       # Without a cache TTL, an anonymous caller looping this endpoint forces an unbounded number
