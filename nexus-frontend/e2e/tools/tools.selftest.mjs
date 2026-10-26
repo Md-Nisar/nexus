@@ -837,3 +837,25 @@ test('the image installs the snippet where nginx.conf includes it from', () => {
     /^COPY nginx\/nexus-security-headers\.conf \/etc\/nginx\/snippets\/nexus-security-headers\.conf$/m,
   );
 });
+
+test('check-index-csp: flags an inline script, an inline handler and a print-media swap', async () => {
+  const { inlineScriptViolations } = await import('./check-index-csp.mjs');
+  assert.equal(inlineScriptViolations('<script>run()</script>').length, 1);
+  assert.equal(
+    inlineScriptViolations(
+      '<link rel="stylesheet" href="s.css" media="print" onload="this.media=\'all\'">',
+    ).length,
+    2,
+  );
+  assert.deepEqual(inlineScriptViolations('<script src="main.js" type="module"></script>'), []);
+});
+
+test('check-index-csp: the production build output has no inline script (when built)', async () => {
+  const { existsSync } = await import('node:fs');
+  const built = fileURLToPath(
+    new URL('../../dist/nexus-frontend/browser/index.html', import.meta.url),
+  );
+  if (!existsSync(built)) return;
+  const { inlineScriptViolations } = await import('./check-index-csp.mjs');
+  assert.deepEqual(inlineScriptViolations(readFileSync(built, 'utf8')), []);
+});
