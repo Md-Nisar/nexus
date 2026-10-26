@@ -13,7 +13,6 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.dao.DataAccessException;
 import org.springframework.dao.InvalidDataAccessResourceUsageException;
 import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.connection.RedisConnection;
@@ -113,9 +112,9 @@ public class RedisPermissionEpochAdapter implements PermissionEpochPort {
     String value;
     try {
       value = templates.read().opsForValue().get(keys.epoch(tenantId, userId));
-    } catch (DataAccessException e) {
-      // One line per failed request at DEBUG only; the signal is the nexus.rbac.epoch.check
-      // counter with outcome skipped_error.
+    } catch (RuntimeException e) {
+      // Any failure, not only DataAccessException: returns empty so PermissionFreshnessService
+      // records the read failure and enters degraded state instead of crashing with unhandled driver exception.
       log.debug("permission epoch read failed exception={}", e.getClass().getSimpleName());
       return OptionalLong.empty();
     }
