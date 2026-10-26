@@ -434,6 +434,28 @@ public class RoleAssignmentService {
         }
       }
 
+      if (setLock == null) {
+        Set<UUID> current = new HashSet<>();
+        userRoleAssignmentPort
+            .lockRolePermissionsForRoles(actor.tenantId(), List.of(role.getId()))
+            .forEach(r -> current.add(r.permissionId()));
+        if (RbacAdministrators.isAdminDefining(current, target.catalogueIds())) {
+          log.atInfo()
+              .addKeyValue(LOG_KEY_EVENT, "RBAC_ROLE_CLASSIFICATION_CHANGED")
+              .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+              .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+              .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
+              .addKeyValue(LOG_KEY_ROLE_ID, role.getId())
+              .addKeyValue(LOG_KEY_OPERATION, OPERATION_REVOKE)
+              .log("Rolled back a revoke: the role changed class while the revoke waited");
+          Counter.builder(COUNTER_ROLE_CLASSIFICATION_CHANGED)
+              .tag(LOG_KEY_OPERATION, OPERATION_REVOKE)
+              .register(meterRegistry)
+              .increment();
+          throw new RoleClassificationChangedException();
+        }
+      }
+
       // App-side clamp, not a DB-side FUNCTION('now', 6): this codebase's pinned Hibernate
       // version rejects that HQL construct at parse time. max(now, assignedAt) can never violate
       // the revoked_at >= assigned_at CHECK constraint, by construction.

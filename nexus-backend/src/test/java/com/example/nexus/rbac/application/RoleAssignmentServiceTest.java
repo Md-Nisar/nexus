@@ -1523,6 +1523,19 @@ class RoleAssignmentServiceTest {
     verifyNoInteractions(permissionCachePort, rbacAuditPort);
   }
 
+  @Test
+  void should_abortRevocationWithRoleClassificationChanged_when_rolePromotedConcurrentlyWhileRevoking() {
+    ActiveAssignmentRef ref = stubBenignRevokeTarget();
+    when(userRoleAssignmentPort.lockRolePermissionsForRoles(tenantId, List.of(roleId)))
+        .thenReturn(wholeCatalogue(roleId));
+
+    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(RoleClassificationChangedException.class);
+
+    verify(userRoleAssignmentPort, never()).revoke(eq(ref.id()), any());
+    verifyNoInteractions(rbacAuditPort);
+  }
+
   /** Fail closed on revoke: a failing classification read is never treated as "allow". */
   @Test
   void should_propagateAndWriteNothing_when_revokeClassificationReadThrows() {
