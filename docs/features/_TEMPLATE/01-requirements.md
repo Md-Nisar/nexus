@@ -30,6 +30,7 @@
 - Performance / scale — expected and peak RPS, p95 latency budget, data volume and growth:
 - Hot path (peak > 10 RPS, or on every request)? yes/no — **yes** requires a load test in the owning slice in `04-tasks.md`:
 - Observability (metrics, logs, audit events):
+- Design triggers (T1–T9, `feature-discovery` skill §4a) — each that fires with one line of evidence, or `none`:
 
 ## Business rules & constraints
 
