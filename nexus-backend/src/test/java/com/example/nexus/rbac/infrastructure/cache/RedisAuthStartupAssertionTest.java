@@ -23,6 +23,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.connection.RedisPassword;
 import org.springframework.data.redis.connection.RedisSentinelConfiguration;
 import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
+import org.springframework.data.redis.connection.lettuce.LettuceClientConfiguration;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 
 /**
@@ -35,6 +36,7 @@ import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactor
 class RedisAuthStartupAssertionTest {
 
   private static final String REQUIRE_AUTH = "nexus.rbac.redis.require-auth";
+  private static final String REQUIRE_SSL = "nexus.rbac.redis.require-ssl";
 
   private static final String[] EPOCH_PROPERTIES = {
       "nexus.rbac.epoch.command-timeout=50ms",
@@ -120,6 +122,27 @@ class RedisAuthStartupAssertionTest {
   void should_start_when_requireAuthFalseAndPasswordsBlank() {
     assertThatCode(() -> RedisAuthStartupAssertion.verify(
             false, standalone(null, null), standalone(null, ""), standalone("nexus", null)))
+        .doesNotThrowAnyException();
+  }
+
+  @Test
+  void should_failStartup_when_requireSslAndFactoryDoesNotUseSsl() {
+    assertThatThrownBy(() -> RedisAuthStartupAssertion.verify(
+            false, true, standalone(null, password), standalone(null, password),
+            standalone(null, password)))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("require-ssl=true")
+        .hasMessageContaining("does not use SSL/TLS");
+  }
+
+  @Test
+  void should_start_when_requireSslAndAllFactoriesUseSsl() {
+    LettuceConnectionFactory ssl1 = standaloneWithSsl("nexus", password);
+    LettuceConnectionFactory ssl2 = standaloneWithSsl("nexus", password);
+    LettuceConnectionFactory ssl3 = standaloneWithSsl("nexus", password);
+
+    assertThatCode(() -> RedisAuthStartupAssertion.verify(
+            true, true, ssl1, ssl2, ssl3))
         .doesNotThrowAnyException();
   }
 
@@ -270,12 +293,22 @@ class RedisAuthStartupAssertionTest {
     assertThat(resolveRequireAuth("test")).isFalse();
   }
 
+  @Test
+  void should_resolveRequireSslTrue_when_prodProfileActive() {
+    assertThat(resolveProperty(REQUIRE_SSL, "prod")).isTrue();
+  }
+
+  @Test
+  void should_resolveRequireSslFalse_when_devProfileActive() {
+    assertThat(resolveProperty(REQUIRE_SSL, "dev")).isFalse();
+  }
+
   /**
    * Resolves the property from the real {@code application*.yml} files through Boot's config-data
    * loading only: an empty configuration, no auto-configuration, no web server, and no logging
    * re-initialisation (the prod file switches console logging to ECS).
    */
-  private static Boolean resolveRequireAuth(String... profiles) {
+  private static Boolean resolveProperty(String property, String... profiles) {
     SpringApplication app = new SpringApplication(EmptyConfig.class);
     app.setWebApplicationType(WebApplicationType.NONE);
     app.setRegisterShutdownHook(false);
@@ -285,8 +318,12 @@ class RedisAuthStartupAssertionTest {
         .toList());
     app.setAdditionalProfiles(profiles);
     try (ConfigurableApplicationContext context = app.run("--spring.main.banner-mode=off")) {
-      return context.getEnvironment().getProperty(REQUIRE_AUTH, Boolean.class);
+      return context.getEnvironment().getProperty(property, Boolean.class);
     }
+  }
+
+  private static Boolean resolveRequireAuth(String... profiles) {
+    return resolveProperty(REQUIRE_AUTH, profiles);
   }
 
   /** Deliberately empty: only the environment is under test. */
@@ -307,6 +344,15 @@ class RedisAuthStartupAssertionTest {
     config.setUsername(username);
     config.setPassword(RedisPassword.of(password));
     return new LettuceConnectionFactory(config);
+  }
+
+  private static LettuceConnectionFactory standaloneWithSsl(String username, String password) {
+    RedisStandaloneConfiguration config = new RedisStandaloneConfiguration("redis.internal", 6379);
+    config.setUsername(username);
+    config.setPassword(RedisPassword.of(password));
+    LettuceClientConfiguration clientConfig =
+        LettuceClientConfiguration.builder().useSsl().build();
+    return new LettuceConnectionFactory(config, clientConfig);
   }
 
   private static LettuceConnectionFactory sentinel(

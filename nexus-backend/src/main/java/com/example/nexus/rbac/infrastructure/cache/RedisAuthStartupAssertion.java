@@ -38,18 +38,31 @@ final class RedisAuthStartupAssertion {
    */
   static void verify(
       boolean requireAuth,
+      boolean requireSsl,
       LettuceConnectionFactory main,
       LettuceConnectionFactory read,
       LettuceConnectionFactory bump) {
-    if (!requireAuth) {
-      return;
+    if (requireAuth) {
+      verifyAuth("main", main);
+      verifyAuth("epoch-read", read);
+      verifyAuth("epoch-bump", bump);
     }
-    verify("main", main);
-    verify("epoch-read", read);
-    verify("epoch-bump", bump);
+    if (requireSsl) {
+      verifySsl("main", main);
+      verifySsl("epoch-read", read);
+      verifySsl("epoch-bump", bump);
+    }
   }
 
-  private static void verify(String name, LettuceConnectionFactory factory) {
+  static void verify(
+      boolean requireAuth,
+      LettuceConnectionFactory main,
+      LettuceConnectionFactory read,
+      LettuceConnectionFactory bump) {
+    verify(requireAuth, false, main, read, bump);
+  }
+
+  private static void verifyAuth(String name, LettuceConnectionFactory factory) {
     RedisSentinelConfiguration sentinel = factory.getSentinelConfiguration();
     if (sentinel != null) {
       requirePassword(name, "password", sentinel.getPassword(), PASSWORD_SOURCES);
@@ -59,6 +72,14 @@ final class RedisAuthStartupAssertion {
     }
     requirePassword(
         name, "password", factory.getStandaloneConfiguration().getPassword(), PASSWORD_SOURCES);
+  }
+
+  private static void verifySsl(String name, LettuceConnectionFactory factory) {
+    if (!factory.getClientConfiguration().isUseSsl()) {
+      throw new IllegalStateException(
+          "nexus.rbac.redis.require-ssl=true but the \"" + name + "\" Redis connection does not "
+              + "use SSL/TLS; set spring.data.redis.ssl.enabled=true (OR-3.3-01)");
+    }
   }
 
   private static void requirePassword(
