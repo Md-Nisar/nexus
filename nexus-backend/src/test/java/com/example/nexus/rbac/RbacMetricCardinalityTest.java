@@ -83,6 +83,7 @@ class RbacMetricCardinalityTest {
     when(assignmentPort.findRole(roleId)).thenReturn(Optional.of(role));
     when(assignmentPort.findCatalogueIds()).thenReturn(Set.of(P1));
     when(assignmentPort.findPermissionIdsForRole(any(), any())).thenReturn(Optional.of(Set.of()));
+    when(assignmentPort.lockRoleRow(any(), any())).thenReturn(true);
     when(assignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
         .thenReturn(List.of(new RolePermissionRef(UUID.randomUUID(), RbacSeededPermissionIds.USER_ROLE_ASSIGN)));
     when(assignmentPort.assign(targetId, roleId, tenantId, actorId)).thenReturn(UUID.randomUUID());

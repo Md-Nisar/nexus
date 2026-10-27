@@ -2418,6 +2418,34 @@ class RoleManagementServiceTest {
   }
 
   @Test
+  void should_reclassifyAsAdminDefiningUnderLockAndAcquireSetLock_when_roleBecameAdminDefiningConcurrently() {
+    RoleView role = customRole(tenantId);
+    when(roleManagementPort.findRole(roleId)).thenReturn(Optional.of(role));
+    // Snapshot had only P1
+    stubRolePermissions(Set.of(P1));
+    stubCallerHoldsRefs(new RolePermissionRef(UUID.randomUUID(), P1));
+    // Under lock, role became admin-defining (has CATALOGUE)
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(Set.of(P1)), Optional.of(CATALOGUE));
+    when(userRoleAssignmentPort.findRolePermissionIdsForTenantRoles(tenantId))
+        .thenReturn(List.of(new RolePermissionRef(roleId, P1), new RolePermissionRef(roleId, P2)));
+    List<UUID> lockSet = RoleAssignmentService.buildAscendingLockSet(Set.of(), roleId);
+    when(userRoleAssignmentPort.lockActiveAssignmentHolders(tenantId, lockSet))
+        .thenReturn(List.of(lockedRow(actorId, roleId, actorId)));
+    when(userRoleAssignmentPort.lockRolePermissionsForRoles(tenantId, lockSet))
+        .thenReturn(List.of(new RolePermissionRef(roleId, P1), new RolePermissionRef(roleId, P2)));
+    when(roleManagementPort.softDeleteRole(any(), any(), any())).thenReturn(1);
+
+    assertThatThrownBy(() -> service.softDeleteRole(actor, roleId, ctx))
+        .isInstanceOfSatisfying(
+            InsufficientPermissionException.class,
+            e -> assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
+
+    verify(userRoleAssignmentPort).findRolePermissionIdsForTenantRoles(tenantId);
+    verify(rbacAuditPort, never()).recordRoleDeleted(any());
+  }
+
+  @Test
   void should_notTakeTheSetLock_when_deletedRoleIsNotAdminDefining() {
     stubDeletableBenignRole();
     when(roleManagementPort.softDeleteRole(eq(roleId), eq(tenantId), any(Instant.class)))
@@ -2582,7 +2610,7 @@ class RoleManagementServiceTest {
             InsufficientPermissionException.class,
             e -> assertThat(e.getReason()).isEqualTo(DenialReason.GRANT_EXCEEDS_CALLER));
 
-    verify(userRoleAssignmentPort, never()).lockActiveAssignmentHolders(tenantId, List.of(roleId));
+    verify(userRoleAssignmentPort).findRolePermissionIdsForTenantRoles(tenantId);
     verifyNoInteractions(rbacAuditPort);
   }
 

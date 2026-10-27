@@ -322,6 +322,11 @@ public class RoleAssignmentService {
         captureIndependentAdministratorCheck(actor, role, callerIsAdministrator);
       }
 
+      if (preLockClassified == null
+          && !userRoleAssignmentPort.lockRoleRow(role.getId(), actor.tenantId())) {
+        throw new ResourceNotFoundException("ROLE_NOT_FOUND", MESSAGE_NO_SUCH_ROLE);
+      }
+
       // assignedBy is ALWAYS actor.userId(), never derived from targetUserId or any
       // request-supplied value (T-S3).
       userRoleAssignmentPort.assign(targetUserId, roleId, actor.tenantId(), actor.userId());

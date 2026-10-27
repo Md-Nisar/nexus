@@ -1205,8 +1205,21 @@ public class RoleManagementService {
       throw new ResourceNotFoundException(CODE_ROLE_NOT_FOUND, MESSAGE_NO_SUCH_ROLE);
     }
 
+    Set<UUID> catalogueIds =
+        subset.catalogueIds().isEmpty()
+            ? userRoleAssignmentPort.findCatalogueIds()
+            : subset.catalogueIds();
+    boolean adminDefining = subset.adminDefining();
+    if (!adminDefining) {
+      Set<UUID> currentPermissions =
+          userRoleAssignmentPort
+              .findPermissionIdsForRole(role.id(), actor.tenantId())
+              .orElse(Set.of());
+      adminDefining = RbacAdministrators.isAdminDefining(currentPermissions, catalogueIds);
+    }
+
     SetLockRows setLock =
-        subset.adminDefining() ? acquireSetLock(actor, role, subset.catalogueIds()) : null;
+        adminDefining ? acquireSetLock(actor, role, catalogueIds) : null;
 
     if (roleManagementPort.softDeleteRole(role.id(), actor.tenantId(), Instant.now()) == 0) {
       throw new ResourceNotFoundException(CODE_ROLE_NOT_FOUND, MESSAGE_NO_SUCH_ROLE);
@@ -1220,7 +1233,7 @@ public class RoleManagementService {
           actor,
           role,
           setLock,
-          adminDefiningNow(actor, setLock, subset.catalogueIds()),
+          adminDefiningNow(actor, setLock, catalogueIds),
           OPERATION_DELETE);
     }
 
@@ -1241,15 +1254,20 @@ public class RoleManagementService {
         new RoleAuditEvent(
             actor.tenantId(), role.id(), role.name(), null, null, actor.userId(), ctx, null));
 
+    final boolean wasAdminDefining = adminDefining;
     registerPostCommitSideEffects(
-        () ->
-            log.atInfo()
-                .addKeyValue(LOG_KEY_EVENT, "ROLE_DELETED")
-                .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
-                .addKeyValue(LOG_KEY_ROLE_ID, role.id())
-                .addKeyValue(LOG_KEY_ROLE_NAME, role.name())
-                .addKeyValue("deletedBy", actor.userId())
-                .log("Role deleted"));
+        () -> {
+          log.atInfo()
+              .addKeyValue(LOG_KEY_EVENT, "ROLE_DELETED")
+              .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+              .addKeyValue(LOG_KEY_ROLE_ID, role.id())
+              .addKeyValue(LOG_KEY_ROLE_NAME, role.name())
+              .addKeyValue("deletedBy", actor.userId())
+              .log("Role deleted");
+          if (wasAdminDefining) {
+            signalRoleCeasedAdminDefining(actor, role, Optional.of(0));
+          }
+        });
   }
 
   /**
