@@ -91,6 +91,13 @@ class DirectoryPageRequestTest {
         "page");
   }
 
+  @Test
+  void should_prevent_integer_overflow_bypass() {
+    assertRejected(
+        () -> DirectoryPageRequest.parse(null, "300000", "100", null, null),
+        "page");
+  }
+
   // ── email on GET ──────────────────────────────────────────────────────────────────────
 
   @ParameterizedTest
