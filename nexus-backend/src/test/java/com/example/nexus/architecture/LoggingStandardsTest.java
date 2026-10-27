@@ -2,6 +2,8 @@ package com.example.nexus.architecture;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
+import com.tngtech.archunit.base.DescribedPredicate;
+import com.tngtech.archunit.core.domain.JavaMethodCall;
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
@@ -38,4 +40,20 @@ class LoggingStandardsTest {
       noClasses()
           .should().dependOnClassesThat().resideInAPackage("org.apache.commons.logging..")
           .allowEmptyShould(true);
+
+  @ArchTest
+  static final ArchRule should_not_leak_raw_user_identifiers_in_trace_logs =
+      noClasses()
+          .should()
+          .callMethodWhere(
+              DescribedPredicate.describe(
+                  "calls Logger.trace or atTrace",
+                  (JavaMethodCall call) ->
+                      (call.getTargetOwner().isAssignableTo(org.slf4j.Logger.class)
+                              || call.getTargetOwner()
+                                  .isAssignableTo(org.slf4j.spi.LoggingEventBuilder.class))
+                          && (call.getName().equals("trace") || call.getName().equals("atTrace"))))
+          .because(
+              "Trace level logging is disallowed to prevent leaking raw user identifiers"
+                  + " in unstructured trace logs");
 }
