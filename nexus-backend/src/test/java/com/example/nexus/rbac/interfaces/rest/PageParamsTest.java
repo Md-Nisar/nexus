@@ -35,6 +35,18 @@ class PageParamsTest {
   }
 
   @Test
+  void should_reject_negative_page_with_400() {
+    assertThatThrownBy(() -> PageParams.parse("-1", "20"))
+        .isInstanceOfSatisfying(
+            FieldValidationException.class,
+            e -> {
+              assertThat(e.code()).isEqualTo("VALIDATION_FAILED");
+              assertThat(e.field()).isEqualTo("page");
+              assertThat(e.getMessage()).contains("must be 0 or greater");
+            });
+  }
+
+  @Test
   void should_reject_size_exceeding_maximum_allowed_limit_preventing_unbounded_allocation() {
     assertThatThrownBy(() -> PageParams.parse("0", "1000000"))
         .isInstanceOfSatisfying(
