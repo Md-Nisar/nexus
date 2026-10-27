@@ -145,9 +145,7 @@ class RoleAssignmentServiceTest {
         .when(userRoleAssignmentPort.findPermissionIdsForRole(any(), any()))
         .thenReturn(Optional.of(Set.of()));
     Mockito.lenient().when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(CATALOGUE);
-    Mockito.lenient()
-        .when(userRoleAssignmentPort.lockRoleRow(any(), any()))
-        .thenReturn(true);
+    Mockito.lenient().when(userRoleAssignmentPort.lockRoleRow(any(), any())).thenReturn(true);
   }
 
   // ---------------------------------------------------------------------------------------
@@ -530,6 +528,22 @@ class RoleAssignmentServiceTest {
   }
 
   /** Row 1 and 4: an admin-defining target is classified, then M10' and M11 run before any decision. */
+  @Test
+  void should_throw404RoleNotFound_when_assigningToRoleSoftDeletedUnderLock() {
+    stubTargetUserAndRole(targetUserId, role("NON_ADMIN"));
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(withUserRoleAssign(List.of(ref(UUID.randomUUID(), P1))));
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(Set.of(P1)));
+    when(userRoleAssignmentPort.lockRoleRow(roleId, tenantId)).thenReturn(false);
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND");
+
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+  }
+
   @Test
   void should_lockRoleRowsInAscendingOrderBeforeSetLock_when_targetIsAdminDefining() {
     stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
