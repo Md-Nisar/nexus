@@ -106,6 +106,19 @@ class JpaUserRoleAssignmentAdapterTest {
   }
 
   @Test
+  void should_delegateToRoleRepository_when_lockingRoleRow() {
+    when(roleRepository.lockLiveRoleRow(any(byte[].class), any(byte[].class)))
+        .thenReturn(List.of(new byte[16]));
+
+    assertThat(adapter.lockRoleRow(roleId, tenantId)).isTrue();
+
+    when(roleRepository.lockLiveRoleRow(any(byte[].class), any(byte[].class)))
+        .thenReturn(List.of());
+
+    assertThat(adapter.lockRoleRow(roleId, tenantId)).isFalse();
+  }
+
+  @Test
   void should_returnTrue_when_activeAssignmentCountIsPositive() {
     when(userRoleRepository.countActiveByUserAndRole(userId, roleId)).thenReturn(1L);
 

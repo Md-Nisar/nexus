@@ -531,6 +531,21 @@ class RoleAssignmentServiceTest {
 
   /** Row 1 and 4: an admin-defining target is classified, then M10' and M11 run before any decision. */
   @Test
+  void should_lockRoleRowsInAscendingOrderBeforeSetLock_when_targetIsAdminDefining() {
+    stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(holder(actorId, roleId)));
+    stubCallerIsAdministrator();
+    stubSuccessfulInsert();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    InOrder inOrder = Mockito.inOrder(userRoleAssignmentPort);
+    inOrder.verify(userRoleAssignmentPort).findRolePermissionIdsForTenantRoles(tenantId);
+    inOrder.verify(userRoleAssignmentPort).lockRoleRow(eq(roleId), eq(tenantId));
+    inOrder.verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), any());
+  }
+
+  @Test
   void should_takeM10PrimeThenM11BeforeEveryDecisionRead_when_targetIsAdminDefining() {
     stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
     stubAdminDefiningTarget(List.of(holder(actorId, roleId)));
