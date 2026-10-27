@@ -67,7 +67,7 @@ ORDER BY created_at DESC;
 
 ## 3. Proposed alerts
 
-All thresholds below are proposals from design section 17 (RC-61.1, RC-56.4, RC-60.2, RC-63(f)), adjusted to the names that shipped. Ops confirms or replaces them (P-1).
+All thresholds below are proposals from design section 17 (RC-61.1, RC-56.4, RC-60.2, RC-63(f)), adjusted to the names that shipped. Ops confirms or replaces them (P-1). **Note 2026-10-27:** accepted as initial guesses by Md Nisar Ahmed; they have no measured baseline and must be re-tuned from real traffic before the first production deployment.
 
 | Alert | Proposed condition | Severity |
 |---|---|---|
