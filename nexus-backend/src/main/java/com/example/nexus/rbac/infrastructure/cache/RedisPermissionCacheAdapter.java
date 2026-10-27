@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -114,11 +115,17 @@ public class RedisPermissionCacheAdapter implements PermissionCachePort {
   @Override
   public void put(UUID tenantId, UUID userId, long epoch, ResolvedPermissions resolved) {
     try {
-      writeSet(keys.roleset(tenantId, userId, epoch), resolved.roles());
-      writeSet(keys.permset(tenantId, userId, epoch), resolved.permissions());
+      long ttlWithJitter = calculateTtlSeconds();
+      writeSet(keys.roleset(tenantId, userId, epoch), resolved.roles(), ttlWithJitter);
+      writeSet(keys.permset(tenantId, userId, epoch), resolved.permissions(), ttlWithJitter);
     } catch (Exception e) {
       log.warn("RBAC_PERMISSION_CACHE_UNAVAILABLE operation=put", e);
     }
+  }
+
+  private long calculateTtlSeconds() {
+    long jitter = ThreadLocalRandom.current().nextLong(-60, 61);
+    return Math.max(1, ttl.toSeconds() + jitter);
   }
 
   @Override
@@ -162,9 +169,9 @@ public class RedisPermissionCacheAdapter implements PermissionCachePort {
     return members.stream().filter(m -> !EMPTY_MARKER.equals(m)).sorted().toList();
   }
 
-  private void writeSet(String key, List<String> values) {
+  private void writeSet(String key, List<String> values, long ttlSeconds) {
     List<Object> args = new ArrayList<>(1 + (values.isEmpty() ? 1 : values.size()));
-    args.add(Long.toString(ttl.toSeconds()));
+    args.add(Long.toString(ttlSeconds));
     if (!values.isEmpty()) {
       args.addAll(values);
     } else {
