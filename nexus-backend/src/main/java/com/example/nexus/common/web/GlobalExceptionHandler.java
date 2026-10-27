@@ -10,6 +10,7 @@ import com.example.nexus.common.domain.PreconditionFailedException;
 import com.example.nexus.common.domain.PreconditionRequiredException;
 import com.example.nexus.common.domain.RateLimitException;
 import com.example.nexus.common.domain.ResourceNotFoundException;
+import com.example.nexus.common.domain.TenantSuspendedException;
 import com.example.nexus.common.domain.TokenExpiredException;
 import com.example.nexus.common.security.AuthenticationDetailKeys;
 import com.example.nexus.common.security.CallerFacingDenialReason;
@@ -146,6 +147,12 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler(AccountNotVerifiedException.class)
   ProblemDetail handleAccountNotVerified(AccountNotVerifiedException e) {
+    logHandledException(e, "WARN", e.code());
+    return problem(HttpStatus.FORBIDDEN, e.code(), e.getMessage());
+  }
+
+  @ExceptionHandler(TenantSuspendedException.class)
+  ProblemDetail handleTenantSuspended(TenantSuspendedException e) {
     logHandledException(e, "WARN", e.code());
     return problem(HttpStatus.FORBIDDEN, e.code(), e.getMessage());
   }

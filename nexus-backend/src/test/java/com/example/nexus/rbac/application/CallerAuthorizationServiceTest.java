@@ -7,6 +7,9 @@ import static org.mockito.Mockito.when;
 
 import com.example.nexus.rbac.application.CallerAuthorizationService.CallerAuthorization;
 import com.example.nexus.rbac.application.port.out.PermissionCachePort;
+import com.example.nexus.common.domain.ResourceNotFoundException;
+import com.example.nexus.rbac.application.port.out.DirectoryUser;
+import com.example.nexus.rbac.application.port.out.UserDirectoryPort;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.application.port.out.UserRoleQueryPort;
 import com.example.nexus.rbac.domain.RoleChangeActor;
@@ -16,11 +19,13 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Constructor;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+import com.example.nexus.common.domain.TenantSuspendedException;
 
 /**
  * US-019 T-008 (design §6.2, T-S13): the caller's live authorization profile. The administrator
@@ -40,14 +45,38 @@ class CallerAuthorizationServiceTest {
   private UserRoleQueryPort userRoleQueryPort;
   private UserRoleAssignmentPort userRoleAssignmentPort;
   private SimpleMeterRegistry registry;
+  private UserDirectoryPort userDirectoryPort;
   private CallerAuthorizationService service;
 
   @BeforeEach
   void setUp() {
     userRoleQueryPort = mock(UserRoleQueryPort.class);
     userRoleAssignmentPort = mock(UserRoleAssignmentPort.class);
+    userDirectoryPort = mock(UserDirectoryPort.class);
+    when(userDirectoryPort.findUser(USER)).thenReturn(Optional.of(new DirectoryUser(TENANT, true)));
     registry = new SimpleMeterRegistry();
-    service = new CallerAuthorizationService(userRoleQueryPort, userRoleAssignmentPort, registry);
+    service =
+        new CallerAuthorizationService(
+            userRoleQueryPort, userRoleAssignmentPort, registry, userDirectoryPort);
+  }
+
+  @Test
+  void should_throwAccessDeniedException_when_callerTenantIsSuspended() {
+    when(userDirectoryPort.findUser(USER)).thenReturn(Optional.of(new DirectoryUser(TENANT, false)));
+
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.read(ACTOR))
+        .isInstanceOf(TenantSuspendedException.class)
+        .hasMessage("Tenant suspended or disabled");
+  }
+
+  @Test
+  void should_throwResourceNotFoundException_when_callerTenantMismatch() {
+    UUID otherTenant = UUID.randomUUID();
+    when(userDirectoryPort.findUser(USER))
+        .thenReturn(Optional.of(new DirectoryUser(otherTenant, true)));
+
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.read(ACTOR))
+        .isInstanceOf(ResourceNotFoundException.class);
   }
 
   @Test
