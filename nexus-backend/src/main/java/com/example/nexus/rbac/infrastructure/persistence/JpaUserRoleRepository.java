@@ -95,6 +95,25 @@ public interface JpaUserRoleRepository
       @Param("userId") UUID userId, @Param("tenantId") UUID tenantId);
 
   /**
+   * OR-3.1-05 — fetches active role names and active permission names in a single query roundtrip.
+   */
+  @Query(
+      """
+      SELECT DISTINCT r.name, p.name
+      FROM UserRole ur
+      JOIN Role r ON ur.roleId = r.id
+      LEFT JOIN RolePermission rp ON rp.id.roleId = r.id
+      LEFT JOIN Permission p ON rp.id.permissionId = p.id
+      WHERE ur.userId = :userId
+        AND ur.tenantId = :tenantId
+        AND r.tenantId = :tenantId
+        AND r.deletedAt IS NULL
+        AND ur.revokedAt IS NULL
+      """)
+  List<Object[]> findActiveRoleAndPermissionNamesComposite(
+      @Param("userId") UUID userId, @Param("tenantId") UUID tenantId);
+
+  /**
    * M11 (US-017 D6) — locks (PESSIMISTIC_WRITE) and returns the (assignmentId, userId) pair for
    * every ACTIVE assignment of ANY role in {@code roleIds} within {@code tenantId}. Supersedes and
    * REPLACES the removed M1 {@code lockActiveAssignmentsByRole} — a singleton {@code roleIds} is a

@@ -28,6 +28,19 @@ class JpaUserRoleQueryAdapterTest {
   }
 
   @Test
+  void should_aggregateCompositeRoleAndPermissionResults() {
+    when(repository.findActiveRoleAndPermissionNamesComposite(userId, tenantId))
+        .thenReturn(List.of(
+            new Object[] {"MEMBER", "user:read"},
+            new Object[] {"VIEWER", null}));
+
+    var resolved = adapter.findActiveRoleAndPermissionNames(userId, tenantId);
+
+    assertThat(resolved.roles()).containsExactly("MEMBER", "VIEWER");
+    assertThat(resolved.permissions()).containsExactly("user:read");
+  }
+
+  @Test
   void should_delegatePermissionRolePairsWithTheTenant_when_findingEffectivePermissions() {
     PermissionViaRole row = new PermissionViaRole("audit:read", UUID.randomUUID());
     when(repository.findActivePermissionsViaRoles(userId, tenantId)).thenReturn(List.of(row));
