@@ -83,9 +83,11 @@ final class RoleReplayQueue {
       List<Entry> loaded = store.loadAll();
       if (loaded != null) {
         for (Entry e : loaded) {
-          roles.put(
-              new RoleKey(e.tenantId(), e.roleId()),
-              new Times(e.oldestFailedAt(), e.newestFailedAt(), e.attempts(), e.lastAttemptAt()));
+          if (e != null && e.tenantId() != null && e.roleId() != null) {
+            roles.put(
+                new RoleKey(e.tenantId(), e.roleId()),
+                new Times(e.oldestFailedAt(), e.newestFailedAt(), e.attempts(), e.lastAttemptAt()));
+          }
         }
       }
     }
@@ -100,6 +102,9 @@ final class RoleReplayQueue {
    * @return {@code false} if the role is new and the queue is full (the role is not queued)
    */
   synchronized boolean offer(UUID tenantId, UUID roleId, Instant failedAt) {
+    if (tenantId == null || roleId == null || failedAt == null) {
+      return false;
+    }
     evictStale(failedAt.minus(maxRetention));
     RoleKey key = new RoleKey(tenantId, roleId);
     Times queued = roles.get(key);
@@ -193,6 +198,9 @@ final class RoleReplayQueue {
    * @param attemptedAt timestamp when the replay attempt failed
    */
   synchronized void requeue(Entry entry, Instant attemptedAt) {
+    if (entry == null || entry.tenantId() == null || entry.roleId() == null) {
+      return;
+    }
     RoleKey key = new RoleKey(entry.tenantId(), entry.roleId());
     Times queued = roles.get(key);
     int newAttempts = entry.attempts() + 1;
@@ -218,9 +226,12 @@ final class RoleReplayQueue {
 
   /** Bounded by the capacity, at most 1,000 in practice, and only reached for a new role. */
   private int queuedFor(UUID tenantId) {
+    if (tenantId == null) {
+      return 0;
+    }
     int count = 0;
     for (RoleKey key : roles.keySet()) {
-      if (key.tenantId().equals(tenantId)) {
+      if (key.tenantId() != null && key.tenantId().equals(tenantId)) {
         count++;
       }
     }

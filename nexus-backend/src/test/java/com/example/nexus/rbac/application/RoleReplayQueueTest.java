@@ -245,4 +245,27 @@ class RoleReplayQueueTest {
     assertThat(entry.tenantId()).isEqualTo(OTHER_TENANT);
     assertThat(entry.roleId()).isEqualTo(OTHER_ROLE);
   }
+
+  @Test
+  void should_handle_corrupted_entries_gracefully() {
+    RoleReplayQueue.RoleReplayStore storeWithCorruptEntry =
+        new RoleReplayQueue.RoleReplayStore() {
+          @Override
+          public void save(
+              UUID tenantId, UUID roleId, Instant oldestFailedAt, Instant newestFailedAt) {}
+
+          @Override
+          public void remove(UUID tenantId, UUID roleId) {}
+
+          @Override
+          public List<RoleReplayQueue.Entry> loadAll() {
+            return List.of(new RoleReplayQueue.Entry(null, ROLE, T, T));
+          }
+        };
+
+    RoleReplayQueue queue = new RoleReplayQueue(10, 5, Duration.ofHours(1), storeWithCorruptEntry);
+    assertThat(queue.offer(TENANT, ROLE, T)).isTrue();
+    assertThat(queue.offer(null, ROLE, T)).isFalse();
+    queue.requeue(new Entry(null, ROLE, T, T));
+  }
 }
