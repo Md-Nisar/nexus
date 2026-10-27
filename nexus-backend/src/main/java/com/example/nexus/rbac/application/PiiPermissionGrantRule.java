@@ -5,10 +5,12 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.annotation.PostConstruct;
 import java.util.Collection;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -57,12 +59,22 @@ public class PiiPermissionGrantRule {
 
   private final boolean enforced;
   private final Counter delegatedCounter;
+  private final Set<UUID> piiPermissionIds;
 
+  @Autowired
   public PiiPermissionGrantRule(
       @Value("${" + PROPERTY + ":true}") boolean enforced, MeterRegistry meterRegistry) {
+    this(enforced, meterRegistry, Set.of(RbacSeededPermissionIds.USER_DIRECTORY_READ));
+  }
+
+  public PiiPermissionGrantRule(
+      boolean enforced, MeterRegistry meterRegistry, Set<UUID> piiPermissionIds) {
     this.enforced = enforced;
-    // Registered up front, so the ticket alert's series exists at 0 before the first delegation.
     this.delegatedCounter = Counter.builder(COUNTER_DELEGATED).register(meterRegistry);
+    this.piiPermissionIds =
+        piiPermissionIds == null || piiPermissionIds.isEmpty()
+            ? Set.of(RbacSeededPermissionIds.USER_DIRECTORY_READ)
+            : Set.copyOf(piiPermissionIds);
   }
 
   /** RC-66.4: switching the rule off is never silent. */
@@ -84,7 +96,8 @@ public class PiiPermissionGrantRule {
    * the set lock's rows), and a missing answer must mean {@code false}.
    */
   Outcome evaluate(Collection<UUID> grantedPermissionIds, BooleanSupplier callerIsAdministrator) {
-    if (!grantedPermissionIds.contains(RbacSeededPermissionIds.USER_DIRECTORY_READ)) {
+    if (grantedPermissionIds == null
+        || grantedPermissionIds.stream().noneMatch(piiPermissionIds::contains)) {
       return Outcome.NOT_A_PII_GRANT;
     }
     if (callerIsAdministrator.getAsBoolean()) {
