@@ -5,7 +5,9 @@ import com.example.nexus.rbac.application.BootstrapAdminService;
 import com.example.nexus.rbac.application.BreakGlassOutcome;
 import com.example.nexus.rbac.application.BreakGlassRefusalReason;
 import com.example.nexus.rbac.application.ChangeRef;
+import java.io.PrintStream;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -56,6 +58,7 @@ public class BreakGlassAdminRunner
   private final BootstrapAdminService bootstrapAdminService;
   private final WebApplicationType webApplicationType;
   private final Duration logFlushWait;
+  private final PrintStream out;
 
   /** Reset to 1 at the start of every run, so a failed run cannot report success. */
   private int exitCode = BreakGlassRefusalReason.UNEXPECTED_ERROR.exitCode();
@@ -71,9 +74,18 @@ public class BreakGlassAdminRunner
       BootstrapAdminService bootstrapAdminService,
       ApplicationContext applicationContext,
       @Value("${nexus.rbac.break-glass.log-flush-wait}") Duration logFlushWait) {
+    this(bootstrapAdminService, applicationContext, logFlushWait, defaultOut());
+  }
+
+  BreakGlassAdminRunner(
+      BootstrapAdminService bootstrapAdminService,
+      ApplicationContext applicationContext,
+      Duration logFlushWait,
+      PrintStream out) {
     this.bootstrapAdminService = bootstrapAdminService;
     this.webApplicationType = effectiveWebApplicationType(applicationContext);
     this.logFlushWait = logFlushWait;
+    this.out = out != null ? out : defaultOut();
   }
 
   /**
@@ -125,7 +137,22 @@ public class BreakGlassAdminRunner
         targetUserId.isPresent() && changeRef.isPresent()
             ? bootstrapAdminService.grantFirstAdmin(targetUserId.get(), changeRef.get())
             : bootstrapAdminService.recordInvalidArgument();
+    emitCompletionJson(outcome);
     return outcome.exitCode();
+  }
+
+  private void emitCompletionJson(BreakGlassOutcome outcome) {
+    String timestamp = Instant.now().toString();
+    String level = outcome.exitCode() == 0 ? "INFO" : "WARN";
+    String eventOutcome = outcome.exitCode() == 0 ? "success" : "failure";
+    int code = outcome.exitCode();
+    String json =
+        String.format(
+            "{\"@timestamp\":\"%s\",\"log.level\":\"%s\",\"message\":\"Break-glass"
+                + " execution finished\",\"event\":{\"action\":\"break_glass\","
+                + "\"outcome\":\"%s\"},\"process\":{\"exit_code\":%d}}",
+            timestamp, level, eventOutcome, code);
+    out.println(json);
   }
 
   private void waitForLogFlush() {
@@ -170,5 +197,11 @@ public class BreakGlassAdminRunner
       return WebApplicationType.REACTIVE;
     }
     return WebApplicationType.NONE;
+  }
+  private static PrintStream defaultOut() {
+    return new PrintStream(
+        new java.io.FileOutputStream(java.io.FileDescriptor.out),
+        false,
+        java.nio.charset.StandardCharsets.UTF_8);
   }
 }

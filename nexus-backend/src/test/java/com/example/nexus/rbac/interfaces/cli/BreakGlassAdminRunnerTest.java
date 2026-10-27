@@ -98,6 +98,28 @@ class BreakGlassAdminRunnerTest {
   // ── Exit codes ──────────────────────────────────────────────────────────────────────────
 
   @Test
+  void should_emit_structured_json_to_stdout() throws Exception {
+    java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+    java.io.PrintStream testOut =
+        new java.io.PrintStream(baos, true, java.nio.charset.StandardCharsets.UTF_8);
+    BreakGlassAdminRunner customRunner =
+        new BreakGlassAdminRunner(service, new GenericApplicationContext(), Duration.ZERO, testOut);
+
+    UUID target = UUID.fromString(VALID_TARGET);
+    when(service.grantFirstAdmin(target, new ChangeRef(VALID_REF)))
+        .thenReturn(new BreakGlassOutcome.Granted(UUID.randomUUID(), target, UUID.randomUUID()));
+
+    customRunner.run(args("--target-user-id=" + VALID_TARGET, "--change-ref=" + VALID_REF));
+
+    String stdout = baos.toString(java.nio.charset.StandardCharsets.UTF_8);
+    assertThat(stdout)
+        .contains("\"@timestamp\"")
+        .contains("\"log.level\":\"INFO\"")
+        .contains("\"event\":{\"action\":\"break_glass\",\"outcome\":\"success\"}")
+        .contains("\"process\":{\"exit_code\":0}");
+  }
+
+  @Test
   void should_exit0_when_serviceGrants() throws Exception {
     UUID target = UUID.fromString(VALID_TARGET);
     when(service.grantFirstAdmin(target, new ChangeRef(VALID_REF)))
