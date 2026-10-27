@@ -25,6 +25,7 @@ import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
@@ -85,6 +86,16 @@ public class GlobalExceptionHandler {
     logHandledException(e, LEVEL_DEBUG, e.code());
     Counter.builder("nexus.domain.conflict").tag("code", e.code()).register(meterRegistry).increment();
     return problem(HttpStatus.CONFLICT, e.code(), e.getMessage());
+  }
+
+  @ExceptionHandler(DataIntegrityViolationException.class)
+  ProblemDetail handleDataIntegrityViolation(DataIntegrityViolationException e) {
+    logHandledException(e, "WARN", "CONFLICT");
+    Counter.builder("nexus.domain.conflict")
+        .tag("code", "CONFLICT")
+        .register(meterRegistry)
+        .increment();
+    return problem(HttpStatus.CONFLICT, "CONFLICT", "A resource conflict occurred.");
   }
 
   /**
