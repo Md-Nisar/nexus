@@ -231,4 +231,22 @@ class RedisRoleChangeThrottleAdapterIT {
       deadFactory.destroy();
     }
   }
+
+  @Test
+  void should_use_server_time_to_prevent_clock_drift() {
+    UUID tenantId = UUID.randomUUID();
+    UUID actorId = UUID.randomUUID();
+    RedisRoleChangeThrottleAdapter replicaA = newReplica();
+    RedisRoleChangeThrottleAdapter replicaB = newReplica();
+
+    replicaA.recordDenial(tenantId, actorId);
+    replicaB.recordDenial(tenantId, actorId);
+
+    String windowKey = "nexus-test:rbac:throttle:{" + tenantId + "}:" + actorId;
+    var scores = redisTemplate.opsForZSet().rangeWithScores(windowKey, 0, -1);
+    assertThat(scores).hasSize(2);
+    for (var score : scores) {
+      assertThat(score.getScore()).isNotNull().isGreaterThan(1_700_000_000_000.0);
+    }
+  }
 }
