@@ -224,6 +224,33 @@ class RedisPermissionCacheAdapterTest {
   }
 
   @Test
+  void should_only_evict_affected_role_holders() {
+    UUID affectedUser1 = UUID.randomUUID();
+    UUID affectedUser2 = UUID.randomUUID();
+    UUID unaffectedUser = UUID.randomUUID();
+
+    adapter.evict(TENANT_ID, List.of(affectedUser1, affectedUser2));
+
+    ArgumentCaptor<List<String>> keys = keysCaptor();
+    ArgumentCaptor<Object[]> args = ArgumentCaptor.forClass(Object[].class);
+    verify(redisTemplate).execute(any(RedisScript.class), keys.capture(), args.capture());
+
+    List<String> targetKeys = keys.getValue();
+    assertThat(targetKeys)
+        .containsExactly(
+            KEY_PREFIX + ":rbac:epoch:{" + TENANT_ID + "}:" + affectedUser1,
+            KEY_PREFIX + ":rbac:epoch:{" + TENANT_ID + "}:" + affectedUser2)
+        .doesNotContain(KEY_PREFIX + ":rbac:epoch:{" + TENANT_ID + "}:" + unaffectedUser)
+        .noneMatch(k -> k.contains("*"));
+
+    List<Object> stems = List.of(args.getValue());
+    assertThat(stems)
+        .contains(KEY_PREFIX + ":rbac:roleset:{" + TENANT_ID + "}:" + affectedUser1 + ":")
+        .doesNotContain(KEY_PREFIX + ":rbac:roleset:{" + TENANT_ID + "}:" + unaffectedUser + ":")
+        .noneMatch(s -> s.toString().contains("*"));
+  }
+
+  @Test
   void should_evictInBatchesOf500_when_evictingHolders() {
     List<UUID> holders = users(1001);
 
