@@ -1,6 +1,7 @@
 package com.example.nexus.identity.infrastructure.security;
 
 import com.example.nexus.common.domain.AuthenticationException;
+import com.example.nexus.common.domain.TenantSuspendedException;
 import com.example.nexus.identity.application.port.out.JwtPort;
 import com.example.nexus.identity.domain.AccessTokenResult;
 import com.example.nexus.identity.domain.AuthConstants;
@@ -114,6 +115,9 @@ public class JwtRs256Service implements JwtPort {
   @Override
   @SuppressWarnings("java:S2143")
   public AccessTokenResult issue(User user) {
+    if (user.getStatus() != UserStatus.ACTIVE && user.getStatus() != UserStatus.PENDING) {
+      throw new TenantSuspendedException("Tenant or user is not active: " + user.getTenantId());
+    }
     Instant now = clock.instant();
     String jti = uuidGenerator.newId().toString();
     MintEpoch mintEpoch = permissionFreshnessService.mintEpoch(user.getTenantId(), user.getId());
