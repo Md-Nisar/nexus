@@ -34,7 +34,7 @@ public interface UserRoleAssignmentPort {
   /**
    * Locks the live role row (X-lock) in roles. Follows universal locking order
    * (roles -> user_roles -> role_permissions) to eliminate gap-lock next-key deadlocks on
-   * first admin assignment.
+   * first admin assignment (OR-4.1-02).
    */
   boolean lockRoleRow(UUID roleId, UUID tenantId);
 

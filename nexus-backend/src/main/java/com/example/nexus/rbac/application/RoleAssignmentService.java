@@ -623,6 +623,9 @@ public class RoleAssignmentService {
     Set<UUID> adminDefiningRoleIds =
         resolveAdminDefiningRoleIds(userRoleAssignmentPort, actor.tenantId(), target.catalogueIds());
     List<UUID> lockSet = buildAscendingLockSet(adminDefiningRoleIds, role.getId());
+    for (UUID roleIdInSet : lockSet) {
+      userRoleAssignmentPort.lockRoleRow(roleIdInSet, actor.tenantId());
+    }
     List<ActiveAssignmentHolder> lockedHolders =
         userRoleAssignmentPort.lockActiveAssignmentHolders(actor.tenantId(), lockSet);
     recordLockSetSize(lockedHolders.size());
