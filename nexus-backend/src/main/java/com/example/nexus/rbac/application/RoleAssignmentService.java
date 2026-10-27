@@ -264,6 +264,10 @@ public class RoleAssignmentService {
     // throttled actor is blocked only on the paths that take the set lock or target themself.
     TargetClassification target = classifyTarget(actor, role, OPERATION_ASSIGN);
     boolean throttled = evaluateThrottle(actor, targetUserId, target, OPERATION_ASSIGN);
+    if (target.adminDefining()
+        && !userRoleAssignmentPort.lockRoleRow(role.getId(), actor.tenantId())) {
+      throw new ResourceNotFoundException("ROLE_NOT_FOUND", MESSAGE_NO_SUCH_ROLE);
+    }
     SetLock preLockClassified = target.adminDefining() ? acquireSetLock(actor, target, role) : null;
     Timer.Sample lockHoldSample = preLockClassified == null ? null : preLockClassified.holdTimer();
 

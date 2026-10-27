@@ -145,6 +145,9 @@ class RoleAssignmentServiceTest {
         .when(userRoleAssignmentPort.findPermissionIdsForRole(any(), any()))
         .thenReturn(Optional.of(Set.of()));
     Mockito.lenient().when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(CATALOGUE);
+    Mockito.lenient()
+        .when(userRoleAssignmentPort.lockRoleRow(any(), any()))
+        .thenReturn(true);
   }
 
   // ---------------------------------------------------------------------------------------

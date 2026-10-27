@@ -70,6 +70,11 @@ public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
   }
 
   @Override
+  public boolean lockRoleRow(UUID roleId, UUID tenantId) {
+    return !roleRepository.lockLiveRoleRow(toBytes(roleId), toBytes(tenantId)).isEmpty();
+  }
+
+  @Override
   public boolean hasActiveAssignment(UUID userId, UUID roleId) {
     return userRoleRepository.countActiveByUserAndRole(userId, roleId) > 0;
   }
