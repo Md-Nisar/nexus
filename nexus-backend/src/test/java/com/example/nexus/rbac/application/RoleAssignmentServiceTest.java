@@ -460,6 +460,20 @@ class RoleAssignmentServiceTest {
    * returns.
    */
   @Test
+  void should_execute_side_effects_when_transaction_synchronization_inactive() {
+    assertThat(TransactionSynchronizationManager.isSynchronizationActive())
+        .as("sanity check: a plain unit test has no active transaction synchronization")
+        .isFalse();
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    verify(permissionCachePort, times(1)).evict(tenantId, targetUserId);
+    verify(rbacAuditPort, times(1)).recordRoleAssigned(any());
+  }
+
+  @Test
   void should_fireSideEffectsInlineSynchronously_when_noActiveTransactionSynchronization() {
     assertThat(TransactionSynchronizationManager.isSynchronizationActive())
         .as("sanity check: a plain unit test has no active transaction synchronization")
