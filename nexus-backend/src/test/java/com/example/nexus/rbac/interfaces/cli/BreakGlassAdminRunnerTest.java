@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -466,5 +467,15 @@ class BreakGlassAdminRunnerTest {
 
   private static Logger runnerLogger() {
     return (Logger) LoggerFactory.getLogger(BreakGlassAdminRunner.class);
+  }
+  @Test
+  void should_verify_flush_completion_before_exit() throws Exception {
+    Runnable logFlusher = mock(Runnable.class);
+    BreakGlassAdminRunner customRunner =
+        new BreakGlassAdminRunner(service, new GenericApplicationContext(), Duration.ZERO, null, logFlusher);
+
+    customRunner.run(args());
+
+    verify(logFlusher, atLeastOnce()).run();
   }
 }
