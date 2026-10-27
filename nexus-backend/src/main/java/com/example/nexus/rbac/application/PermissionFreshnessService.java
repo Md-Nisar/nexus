@@ -1,5 +1,6 @@
 package com.example.nexus.rbac.application;
 
+import com.example.nexus.rbac.application.event.PermissionFreshnessStateTransitionEvent;
 import com.example.nexus.rbac.application.port.out.EpochUnparseableException;
 import com.example.nexus.rbac.application.port.out.PermissionCachePort;
 import com.example.nexus.rbac.application.port.out.PermissionEpochPort;
@@ -26,6 +27,8 @@ import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -39,6 +42,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.ApplicationEventPublisherAware;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -129,7 +134,7 @@ import org.springframework.stereotype.Service;
  * tenant per minute with the number of occurrences it suppressed (M7 part 2 review L-2).
  */
 @Service
-public final class PermissionFreshnessService {
+public class PermissionFreshnessService implements ApplicationEventPublisherAware {
 
   private static final Logger log = LoggerFactory.getLogger(PermissionFreshnessService.class);
 
@@ -260,6 +265,8 @@ public final class PermissionFreshnessService {
   private final AtomicBoolean isDrainingRole = new AtomicBoolean(false);
   private final Deque<Instant> recentFailures = new ArrayDeque<>();
   private final Deque<Instant> recentEntries = new ArrayDeque<>();
+  private ApplicationEventPublisher eventPublisher;
+  private Executor eventExecutor = ForkJoinPool.commonPool();
 
   /**
    * Creates the service.
@@ -468,6 +475,15 @@ public final class PermissionFreshnessService {
   }
 
   /** Stops the thread that reads role holders for the replay with graceful termination. */
+  @Override
+  public void setApplicationEventPublisher(ApplicationEventPublisher eventPublisher) {
+    this.eventPublisher = eventPublisher;
+  }
+
+  public void setEventExecutor(Executor eventExecutor) {
+    this.eventExecutor = (eventExecutor != null) ? eventExecutor : ForkJoinPool.commonPool();
+  }
+
   @PreDestroy
   void shutdown() {
     roleReadExecutor.shutdownNow();
@@ -856,6 +872,17 @@ public final class PermissionFreshnessService {
       consecutiveProbeSuccesses = 0;
     } else if (target == DegradedState.RECOVERING) {
       recoveringFromClosed = (from == DegradedState.DEGRADED_CLOSED || (t0 != null && windowElapsed(now)));
+    }
+    if (from != target && eventPublisher != null) {
+      PermissionFreshnessStateTransitionEvent event =
+          new PermissionFreshnessStateTransitionEvent(from, target, cause, now);
+      eventExecutor.execute(() -> {
+        try {
+          eventPublisher.publishEvent(event);
+        } catch (Exception e) {
+          log.warn("Failed to publish freshness state transition event", e);
+        }
+      });
     }
     if (target == DegradedState.HEALTHY) {
       log.atInfo()

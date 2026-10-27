@@ -241,4 +241,19 @@
         <Class name="com.example.nexus.identity.interfaces.rest.UserDirectoryController" />
         <Bug pattern="EI_EXPOSE_REP2" />
     </Match>
+    <!--
+      OR-2.1-09: JwtRs256Service and JwtAuthenticationFilter constructor-inject the Spring-managed
+      singleton PermissionFreshnessService and store it directly, per the constructor-injection-only
+      convention (CLAUDE.md). SpotBugs' mutability heuristic counts PermissionFreshnessService as
+      mutable once it has the setApplicationEventPublisher/setEventExecutor setters; it is a
+      singleton service, not a value object, with no sensible defensive copy. Same rationale as
+      RoleController and PermissionController above.
+    -->
+    <Match>
+        <Or>
+            <Class name="com.example.nexus.identity.infrastructure.security.JwtRs256Service" />
+            <Class name="com.example.nexus.identity.infrastructure.web.JwtAuthenticationFilter" />
+        </Or>
+        <Bug pattern="EI_EXPOSE_REP2" />
+    </Match>
 </FindBugsFilter>
