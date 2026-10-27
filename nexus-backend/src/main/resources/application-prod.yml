@@ -34,3 +34,8 @@ nexus:
   rbac:
     redis:
       require-auth: true
+    throttle:
+      require-shared-store: true
+  security:
+    rate-limit:
+      store-type: redis
