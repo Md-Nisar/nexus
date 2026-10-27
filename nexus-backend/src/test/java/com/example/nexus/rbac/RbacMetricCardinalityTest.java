@@ -119,4 +119,25 @@ class RbacMetricCardinalityTest {
           .noneMatch(tag -> FORBIDDEN_TAG_KEYS.contains(tag.getKey()));
     }
   }
+
+  @Test
+  void should_configure_adequate_histogram_buckets() {
+    SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    io.micrometer.core.instrument.Timer timer =
+        io.micrometer.core.instrument.Timer.builder("nexus.rbac.privileged_revoke_lock_hold")
+            .tag("operation", "revoke")
+            .tag("outcome", "revoked")
+            .publishPercentileHistogram()
+            .sla(
+                java.time.Duration.ofMillis(100),
+                java.time.Duration.ofSeconds(1),
+                java.time.Duration.ofSeconds(5),
+                java.time.Duration.ofSeconds(10),
+                java.time.Duration.ofSeconds(30),
+                java.time.Duration.ofSeconds(35))
+            .register(registry);
+
+    assertThat(timer).isNotNull();
+    assertThat(timer.getId().getName()).isEqualTo("nexus.rbac.privileged_revoke_lock_hold");
+  }
 }
