@@ -8,6 +8,7 @@ import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.RoleRef;
 import com.example.nexus.rbac.domain.UserViaRole;
 import com.example.nexus.rbac.domain.UserRole;
+import jakarta.persistence.QueryHint;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
@@ -17,6 +18,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.jpa.repository.QueryHints;
 import org.springframework.data.repository.query.Param;
 
 /**
@@ -125,6 +127,7 @@ public interface JpaUserRoleRepository
    * {@link ActiveAssignmentHolder} before they escape the persistence boundary, preserving the
    * "ids only" contract above.
    */
+  @QueryHints({@QueryHint(name = "jakarta.persistence.query.timeout", value = "5000")})
   @Query(
       value =
           """
