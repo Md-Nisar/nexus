@@ -3293,4 +3293,53 @@ class PermissionFreshnessServiceTest {
       return now;
     }
   }
+  @Test
+  void should_increment_epoch_atomically_in_fallback() throws Exception {
+    PermissionEpochPort epochPort = mock(PermissionEpochPort.class);
+    when(epochPort.bump(any(), any())).thenThrow(new QueryTimeoutException("store down"));
+    when(epochPort.current(any(), any())).thenReturn(OptionalLong.empty());
+
+    PermissionFreshnessService service = new PermissionFreshnessService(
+        epochPort,
+        mock(UserRoleAssignmentPort.class),
+        mock(PermissionCachePort.class),
+        new SimpleMeterRegistry(),
+        Clock.systemUTC(),
+        Duration.ofSeconds(30),
+        1000,
+        Duration.ofSeconds(10),
+        Duration.ofSeconds(60),
+        3600,
+        1000,
+        1000,
+        10);
+
+    UUID tenantId = UUID.randomUUID();
+    UUID userId = UUID.randomUUID();
+
+    int concurrency = 50;
+    ExecutorService executor = Executors.newFixedThreadPool(10);
+    CountDownLatch startLatch = new CountDownLatch(1);
+    CountDownLatch doneLatch = new CountDownLatch(concurrency);
+
+    for (int i = 0; i < concurrency; i++) {
+      executor.submit(() -> {
+        try {
+          startLatch.await();
+          service.invalidateUser(tenantId, userId, "revoke");
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        } finally {
+          doneLatch.countDown();
+        }
+      });
+    }
+
+    startLatch.countDown();
+    assertThat(doneLatch.await(10, TimeUnit.SECONDS)).isTrue();
+    executor.shutdown();
+
+    PermissionFreshnessService.MintEpoch mint = service.mintEpoch(tenantId, userId);
+    assertThat(mint.epoch()).isEqualTo(concurrency);
+  }
 }

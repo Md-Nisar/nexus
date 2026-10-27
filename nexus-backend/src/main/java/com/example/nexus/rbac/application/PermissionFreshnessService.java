@@ -1170,21 +1170,51 @@ public class PermissionFreshnessService implements ApplicationEventPublisherAwar
     for (UUID userId : userIds) {
       UserKey key = new UserKey(tenantId, userId);
       Long epoch = written.epochs() != null ? written.epochs().get(userId) : null;
-      remember(key, epoch != null ? epoch : lowerBound(key, now), now, true);
+      if (epoch != null) {
+        remember(key, epoch, now, true);
+      } else {
+        rememberIncrement(key, now);
+      }
     }
   }
 
   /**
-   * After a failed bump (L-5): {@code seen + 1}. It can never exceed what the store holds or will
-   * hold, so it cannot make a token the store would accept look stale; it does make stale every
-   * token minted below what this instance has seen, and, for a user it has not seen, a token with
-   * epoch 0.
+   * After a failed bump (L-5): atomic increment in fallback mode ([OR-2.1-10]).
    */
   private void rememberFailedBump(UUID tenantId, Collection<UUID> userIds) {
     Instant now = clock.instant();
     for (UUID userId : userIds) {
       UserKey key = new UserKey(tenantId, userId);
-      remember(key, lowerBound(key, now), now, true, now);
+      rememberIncrement(key, now);
+    }
+  }
+
+  private void rememberIncrement(UserKey key, Instant now) {
+    Counter[] dropped = {null};
+    boolean[] moveRefused = {false};
+    lastSeen.compute(key, (k, old) -> {
+      if (old == null || !now.isBefore(old.expiresAt())) {
+        if (old != null) {
+          release(k.tenantId(), old.ownBump());
+        }
+        dropped[0] = claim(k.tenantId(), true);
+        if (dropped[0] != null) {
+          return null;
+        }
+        return new SeenEpoch(1L, now.plus(lastSeenTtl), true, now);
+      }
+      long nextEpoch = old.epoch() + 1;
+      SeenEpoch fresh = new SeenEpoch(nextEpoch, now.plus(lastSeenTtl), true, now);
+      return merge(k, old, fresh, moveRefused);
+    });
+    if (dropped[0] != null) {
+      dropped[0].increment();
+      if (dropped[0] == lastSeenDroppedBump) {
+        markRevocationLost(key.tenantId(), now);
+      }
+    }
+    if (moveRefused[0]) {
+      lastSeenDroppedBump.increment();
     }
   }
 
