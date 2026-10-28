@@ -20,6 +20,8 @@ logging:
   structured:
     format:
       console: ecs
+  level:
+    com.example.nexus: INFO
 
 # No API documentation exposure in production
 springdoc:
