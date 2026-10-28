@@ -10,6 +10,7 @@ import static org.mockito.Mockito.when;
 
 import com.example.nexus.common.domain.AuthenticationException;
 import com.example.nexus.common.domain.TenantSuspendedException;
+import com.example.nexus.common.security.AuthenticationDetailKeys;
 import com.example.nexus.identity.domain.AccessTokenResult;
 import com.example.nexus.identity.domain.JwtClaims;
 import com.example.nexus.identity.domain.UserStatus;
@@ -758,5 +759,16 @@ class JwtRs256ServiceTest {
         meterRegistry.find("nexus.auth.token_rejected").tag("reason", reason).counter();
     assertThat(counter).as("token_rejected{reason=%s}", reason).isNotNull();
     assertThat(counter.count()).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_use_constant_for_epoch_claim() {
+    assertThat(AuthenticationDetailKeys.EPOCH).isEqualTo("perm_epoch");
+
+    JwtRs256Service svc = service(Clock.systemUTC());
+    User user = activeUser();
+    AccessTokenResult result = svc.issue(user);
+    JwtClaims claims = svc.verify(result.token());
+    assertThat(claims.permEpoch()).isZero();
   }
 }

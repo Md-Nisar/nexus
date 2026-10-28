@@ -126,6 +126,23 @@ class EpochRedisConfigTest {
   }
 
   @Test
+  void should_configure_ping_interval_greater_than_socket_timeout() {
+    LettuceConnectionFactory read =
+        EpochRedisConfig.dedicatedFactory(
+            standalone("localhost", 6379, 0, null, null),
+            plainMain(),
+            clientResources,
+            Duration.ofMillis(50));
+
+    ClientOptions options = read.getClientConfiguration().getClientOptions().orElseThrow();
+    Duration socketTimeout = options.getSocketOptions().getConnectTimeout();
+    Duration pingInterval = options.getSocketOptions().getKeepAlive().getInterval();
+
+    assertThat(pingInterval).isGreaterThan(socketTimeout);
+    assertThat(pingInterval).isGreaterThanOrEqualTo(Duration.ofMillis(2000));
+  }
+
+  @Test
   void should_useSentinel_when_connectionDetailsDeclareSentinel() {
     DataRedisConnectionDetails details = new DataRedisConnectionDetails() {
       @Override

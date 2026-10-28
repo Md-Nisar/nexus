@@ -55,6 +55,9 @@ public final class EpochRedisConfig {
   /** Minimum gap between the epoch-key TTL and the longer of the token and cache TTLs. */
   static final long MIN_KEY_TTL_MARGIN_SECONDS = 60;
 
+  /** Redis keep-alive probe interval; configured above driver timeout to prevent overlap. */
+  public static final Duration REDIS_PING_INTERVAL = Duration.ofMillis(2000);
+
   /**
    * Fails startup unless the epoch key outlives every token and cache entry that could carry an
    * older epoch by at least {@value #MIN_KEY_TTL_MARGIN_SECONDS} s (T-E37). A token is accepted up
@@ -133,7 +136,16 @@ public final class EpochRedisConfig {
     Optional<ClientOptions> mainOptions = mainClient.getClientOptions();
     ClientOptions.Builder options =
         mainOptions.map(ClientOptions::mutate).orElseGet(ClientOptions::builder)
-            .socketOptions(SocketOptions.builder().connectTimeout(timeout).build())
+            .socketOptions(
+                SocketOptions.builder()
+                    .connectTimeout(timeout)
+                    .keepAlive(
+                        SocketOptions.KeepAliveOptions.builder()
+                            .enable()
+                            .interval(REDIS_PING_INTERVAL)
+                            .build())
+                    .build())
+            .pingBeforeActivateConnection(true)
             .timeoutOptions(TimeoutOptions.enabled(timeout))
             .disconnectedBehavior(ClientOptions.DisconnectedBehavior.REJECT_COMMANDS);
     LettuceClientConfiguration.LettuceClientConfigurationBuilder client =
