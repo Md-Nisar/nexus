@@ -140,4 +140,21 @@ class RbacMetricCardinalityTest {
     assertThat(timer).isNotNull();
     assertThat(timer.getId().getName()).isEqualTo("nexus.rbac.privileged_revoke_lock_hold");
   }
+
+  @Test
+  void should_not_include_tenant_tag_in_prometheus_metrics() {
+    SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    io.micrometer.core.instrument.Counter counter =
+        io.micrometer.core.instrument.Counter.builder("nexus.rbac.role_change")
+            .tag("operation", "attach")
+            .tag("outcome", "success")
+            .register(registry);
+
+    counter.increment();
+
+    for (Meter meter : registry.getMeters()) {
+      assertThat(meter.getId().getTags())
+          .noneMatch(tag -> FORBIDDEN_TAG_KEYS.contains(tag.getKey()));
+    }
+  }
 }
