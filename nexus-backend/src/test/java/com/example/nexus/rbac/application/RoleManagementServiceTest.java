@@ -2170,7 +2170,7 @@ class RoleManagementServiceTest {
     order.verify(transactionManager).commit(any());
     order.verify(permissionFreshness).invalidateHolders(tenantId, holders, "detach");
     assertThat(definition.getValue().getPropagationBehavior())
-        .isEqualTo(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        .isEqualTo(TransactionDefinition.PROPAGATION_NOT_SUPPORTED);
     assertThat(definition.getValue().isReadOnly()).isTrue();
   }
 
@@ -2229,7 +2229,7 @@ class RoleManagementServiceTest {
     order.verify(transactionManager).commit(any());
     order.verify(permissionCachePort).evict(tenantId, holders);
     assertThat(definition.getValue().getPropagationBehavior())
-        .isEqualTo(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        .isEqualTo(TransactionDefinition.PROPAGATION_NOT_SUPPORTED);
     assertThat(definition.getValue().isReadOnly()).isTrue();
   }
 
@@ -2497,6 +2497,7 @@ class RoleManagementServiceTest {
     service.softDeleteRole(actor, roleId, ctx);
 
     InOrder order = inOrder(userRoleAssignmentPort, roleManagementPort, rbacAuditPort);
+    order.verify(roleManagementPort).lockRoleRow(roleId, tenantId);
     order.verify(userRoleAssignmentPort).findRolePermissionIdsForTenantRoles(tenantId);
     ArgumentCaptor<List<UUID>> lockSet = ArgumentCaptor.forClass(List.class);
     order.verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), lockSet.capture());
@@ -3351,8 +3352,8 @@ class RoleManagementServiceTest {
     assertThat(result.version()).isEqualTo(versionOf(Set.of(P2, P3, ROLE_READ_ID, ROLE_WRITE_ID)));
     InOrder order = inOrder(userRoleAssignmentPort, roleManagementPort);
     order.verify(userRoleAssignmentPort).findHeldRolePermissionIdsForAuthorization(actorId, tenantId);
-    order.verify(userRoleAssignmentPort).lockActiveAssignmentHolders(tenantId, lockSet);
     order.verify(roleManagementPort).lockRoleRow(roleId, tenantId);
+    order.verify(userRoleAssignmentPort).lockActiveAssignmentHolders(tenantId, lockSet);
     order.verify(roleManagementPort).lockPermissionIdsForRole(roleId);
     order.verify(userRoleAssignmentPort).lockRolePermissionsForRoles(tenantId, lockSet);
     order.verify(roleManagementPort).detachPermissions(roleId, Set.of(P1));

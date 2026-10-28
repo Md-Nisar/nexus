@@ -32,6 +32,13 @@ public interface UserRoleAssignmentPort {
   Optional<Role> findRole(UUID roleId);
 
   /**
+   * Locks the live role row (X-lock) in roles. Follows universal locking order
+   * (roles -> user_roles -> role_permissions) to eliminate gap-lock next-key deadlocks on
+   * first admin assignment.
+   */
+  boolean lockRoleRow(UUID roleId, UUID tenantId);
+
+  /**
    * M2 — does this user currently hold an ACTIVE assignment of this role? Deliberately NOT
    * tenant-scoped: it must mirror {@code uq_user_role_active (user_id, role_id)} exactly, or a row
    * with a drifted {@code user_roles.tenant_id} could slip past this pre-check and surface as an

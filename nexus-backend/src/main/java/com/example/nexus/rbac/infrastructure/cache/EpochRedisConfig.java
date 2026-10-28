@@ -102,12 +102,13 @@ public final class EpochRedisConfig {
       ClientResources clientResources,
       @Value("${nexus.rbac.epoch.command-timeout}") Duration commandTimeout,
       @Value("${nexus.rbac.epoch.bump-timeout}") Duration bumpTimeout,
-      @Value("${nexus.rbac.redis.require-auth}") boolean requireAuth) {
+      @Value("${nexus.rbac.redis.require-auth}") boolean requireAuth,
+      @Value("${nexus.rbac.redis.require-ssl:false}") boolean requireSsl) {
     LettuceConnectionFactory read =
         dedicatedFactory(connectionDetails, mainFactory, clientResources, commandTimeout);
     LettuceConnectionFactory bump =
         dedicatedFactory(connectionDetails, mainFactory, clientResources, bumpTimeout);
-    RedisAuthStartupAssertion.verify(requireAuth, mainFactory, read, bump);
+    RedisAuthStartupAssertion.verify(requireAuth, requireSsl, mainFactory, read, bump);
     return new EpochTemplates(read, bump);
   }
 

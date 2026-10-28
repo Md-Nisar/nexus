@@ -187,7 +187,7 @@ public class RoleManagementService {
     // is guaranteed a fresh read of the committed rows (TransactionSynchronization#afterCommit).
     this.holderReadTransaction = new TransactionTemplate(transactionManager);
     this.holderReadTransaction.setPropagationBehavior(
-        TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        TransactionDefinition.PROPAGATION_NOT_SUPPORTED);
     this.holderReadTransaction.setReadOnly(true);
     this.meterRegistry = meterRegistry;
     this.piiGrantRule = piiGrantRule;
@@ -584,14 +584,12 @@ public class RoleManagementService {
             target, adds, removes, snapshotVersion, before, !before && after, catalogueIds,
             piiGrant);
     String lockPath = plan.needsSetLock() ? LOCK_PATH_SET_LOCK : LOCK_PATH_ROLE_ROW;
-    SetLockRows setLockFirst = plan.demotion() ? acquireSetLock(actor, role, catalogueIds) : null;
     if (!roleManagementPort.lockRoleRow(role.id(), actor.tenantId())) {
       throw new ResourceNotFoundException(CODE_ROLE_NOT_FOUND, MESSAGE_NO_SUCH_ROLE);
     }
     Timer.Sample lockHold = Timer.start(meterRegistry);
     try {
-      SetLockRows setLock =
-          plan.promotion() ? acquireSetLock(actor, role, catalogueIds) : setLockFirst;
+      SetLockRows setLock = plan.needsSetLock() ? acquireSetLock(actor, role, catalogueIds) : null;
       return replaceUnderLocks(actor, role, plan, setLock, lockPath, lockHold, ctx);
     } catch (PreconditionFailedException e) {
       stopLockHoldTimer(lockHold, OUTCOME_PRECONDITION_FAILED);
@@ -1125,6 +1123,10 @@ public class RoleManagementService {
     RoleView role = resolveRoleInTenant(roleId, actor, ROLE_WRITE, OPERATION_DELETE);
     SubsetCheck subset = requireRoleSubset(actor, role, OPERATION_DELETE);
     requireMutableRole(role);
+
+    if (!roleManagementPort.lockRoleRow(role.id(), actor.tenantId())) {
+      throw new ResourceNotFoundException(CODE_ROLE_NOT_FOUND, MESSAGE_NO_SUCH_ROLE);
+    }
 
     SetLockRows setLock =
         subset.adminDefining() ? acquireSetLock(actor, role, subset.catalogueIds()) : null;

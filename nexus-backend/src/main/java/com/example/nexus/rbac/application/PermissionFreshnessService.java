@@ -262,7 +262,7 @@ public final class PermissionFreshnessService {
    * @param meterRegistry registry for the signals listed on the class
    * @param clock the time source of the state machine and the locally-seen map
    * @param failOpenWindow {@code nexus.rbac.epoch.fail-open-window}: time from {@code t0} until
-   *     degraded-open becomes degraded-closed
+   *     degraded-open becomes degraded-closed; zero fails closed at once (the prod default)
    * @param entryFailureThreshold {@code nexus.rbac.epoch.entry-failure-threshold}: failures in
    *     the window that enter (or relapse into) a degraded state
    * @param entryFailureWindow {@code nexus.rbac.epoch.entry-failure-window}: the sliding window
@@ -276,8 +276,8 @@ public final class PermissionFreshnessService {
    *     roles whose holder read is queued for replay
    * @param lastSeenTenantPercent {@code nexus.rbac.epoch.last-seen-tenant-percent}: the share of
    *     the locally-seen map one tenant may fill, 1 to 100
-   * @throws IllegalArgumentException if the threshold is below 1, a duration is not positive or
-   *     the percentage is outside 1 to 100
+   * @throws IllegalArgumentException if the threshold is below 1, the fail-open window is
+   *     negative, another duration is not positive or the percentage is outside 1 to 100
    */
   public PermissionFreshnessService(
       PermissionEpochPort epochPort,
@@ -294,7 +294,7 @@ public final class PermissionFreshnessService {
       @Value("${nexus.rbac.epoch.replay-capacity-roles:1000}") int replayCapacityRoles,
       @Value("${nexus.rbac.epoch.last-seen-tenant-percent:10}") int lastSeenTenantPercent) {
     if (entryFailureThreshold < 1
-        || !failOpenWindow.isPositive()
+        || failOpenWindow.isNegative()
         || !entryFailureWindow.isPositive()
         || !recoverySustain.isPositive()
         || keyTtlSeconds < 1
@@ -471,6 +471,9 @@ public final class PermissionFreshnessService {
         if (known != null && (known.epoch() > read.getAsLong() || known.failedBumpAt() != null)) {
           if (known.epoch() > read.getAsLong()) {
             storeRegressedCounter.increment();
+            if (known.ownBump()) {
+              autoHealRegressedEpoch(tenantId, userId);
+            }
           }
           return new MintEpoch(Math.max(known.epoch(), read.getAsLong()), false);
         }
@@ -567,6 +570,9 @@ public final class PermissionFreshnessService {
         SeenEpoch known = lastSeenEntry(key, now);
         if (known != null && known.epoch() > current.getAsLong()) {
           storeRegressedCounter.increment();
+          if (known.ownBump()) {
+            autoHealRegressedEpoch(key.tenantId(), key.userId());
+          }
         }
         yield tokenEpoch < current.getAsLong() || staleByLocalKnowledge(known, tokenEpoch, issuedAt)
             ? FreshnessVerdict.STALE
@@ -1002,11 +1008,33 @@ public final class PermissionFreshnessService {
    * After a successful bump: exactly what the store wrote (H-2). A user the store did not report,
    * which a conforming store never does, gets the lower bound instead.
    */
+  private void autoHealRegressedEpoch(UUID tenantId, UUID userId) {
+    try {
+      Written written = bump(tenantId, List.of(userId));
+      if (written.epochs() != null && written.epochs().containsKey(userId)) {
+        rememberBump(tenantId, List.of(userId), written);
+        Long repairedEpoch = written.epochs().get(userId);
+        log.atWarn()
+            .addKeyValue(LOG_KEY_EVENT, "RBAC_EPOCH_REGRESSION_AUTO_HEALED")
+            .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
+            .addKeyValue("userId", userId)
+            .addKeyValue("repairedEpoch", repairedEpoch)
+            .log("Auto-healed regressed Redis epoch following store regression/failover");
+      }
+    } catch (RuntimeException e) {
+      log.atWarn()
+          .addKeyValue(LOG_KEY_EVENT, "RBAC_EPOCH_AUTO_HEAL_FAILED")
+          .addKeyValue(LOG_KEY_TENANT_ID, tenantId)
+          .addKeyValue("userId", userId)
+          .log("Failed to auto-heal regressed Redis epoch", e);
+    }
+  }
+
   private void rememberBump(UUID tenantId, Collection<UUID> userIds, Written written) {
     Instant now = clock.instant();
     for (UUID userId : userIds) {
       UserKey key = new UserKey(tenantId, userId);
-      Long epoch = written.epochs().get(userId);
+      Long epoch = written.epochs() != null ? written.epochs().get(userId) : null;
       remember(key, epoch != null ? epoch : lowerBound(key, now), now, true);
     }
   }

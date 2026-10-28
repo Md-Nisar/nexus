@@ -212,6 +212,9 @@ nexus:
       # authenticate (RC-34.1, RC-45.1, RC-45.2; US-018 T-014). application-prod.yml sets true.
       # Env override: NEXUS_RBAC_REDIS_REQUIRE_AUTH.
       require-auth: ${NEXUS_RBAC_REDIS_REQUIRE_AUTH:false}
+      # When true, startup fails unless all Redis connections use SSL/TLS (OR-3.3-01).
+      # application-prod.yml sets true. Env override: NEXUS_RBAC_REDIS_REQUIRE_SSL.
+      require-ssl: ${NEXUS_RBAC_REDIS_REQUIRE_SSL:false}
   identity:
     # --- Encryption ---
     encryption:

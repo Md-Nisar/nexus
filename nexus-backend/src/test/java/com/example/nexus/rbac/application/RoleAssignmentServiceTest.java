@@ -145,6 +145,9 @@ class RoleAssignmentServiceTest {
         .when(userRoleAssignmentPort.findPermissionIdsForRole(any(), any()))
         .thenReturn(Optional.of(Set.of()));
     Mockito.lenient().when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(CATALOGUE);
+    Mockito.lenient()
+        .when(userRoleAssignmentPort.lockRoleRow(any(), any()))
+        .thenReturn(true);
   }
 
   // ---------------------------------------------------------------------------------------
@@ -1521,6 +1524,19 @@ class RoleAssignmentServiceTest {
         .hasFieldOrPropertyWithValue("code", "ROLE_ASSIGNMENT_NOT_FOUND");
 
     verifyNoInteractions(permissionCachePort, rbacAuditPort);
+  }
+
+  @Test
+  void should_abortRevocationWithRoleClassificationChanged_when_rolePromotedConcurrentlyWhileRevoking() {
+    ActiveAssignmentRef ref = stubBenignRevokeTarget();
+    when(userRoleAssignmentPort.lockRolePermissionsForRoles(tenantId, List.of(roleId)))
+        .thenReturn(wholeCatalogue(roleId));
+
+    assertThatThrownBy(() -> service.revoke(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(RoleClassificationChangedException.class);
+
+    verify(userRoleAssignmentPort, never()).revoke(eq(ref.id()), any());
+    verifyNoInteractions(rbacAuditPort);
   }
 
   /** Fail closed on revoke: a failing classification read is never treated as "allow". */
@@ -3049,6 +3065,19 @@ class RoleAssignmentServiceTest {
 
     verifyNoInteractions(rbacAuditPort, permissionCachePort);
     assertThat(classificationChangedCount("assign")).isEqualTo(1.0);
+  }
+
+  @Test
+  void should_abortAssignWithRoleClassificationChanged_when_roleGainedPermissionCallerLacksWhileAssigning() {
+    stubBenignAssignTarget();
+    stubInsertOnly();
+    stubCurrentRolePermissions(P1);
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(RoleClassificationChangedException.class);
+
+    verify(userRoleAssignmentPort, never()).findActiveAssignmentView(any(), any(), any());
+    verifyNoInteractions(rbacAuditPort);
   }
 
   @Test

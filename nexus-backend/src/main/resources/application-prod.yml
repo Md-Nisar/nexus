@@ -10,6 +10,11 @@ spring:
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
 
+  data:
+    redis:
+      ssl:
+        enabled: true
+
 # JSON structured logging (Elastic Common Schema) for log aggregation
 logging:
   structured:
@@ -27,15 +32,26 @@ management:
   endpoint:
     health:
       show-details: never
+      group:
+        readiness:
+          include: readinessState, redis
+  health:
+    redis:
+      enabled: true
 
-# RBAC permission-epoch hardening (US-018 A9): refuse to start against an unauthenticated Redis,
-# so a misconfigured prod cannot silently fail open. (require-shared-store is added with M8.)
+# RBAC permission-epoch hardening (US-018 A9, OR-3.3-01, OR-3.3-02):
+# - Refuse to start against an unauthenticated or unencrypted Redis
+# - Fail closed immediately (0s window) if Redis fails in prod
 nexus:
   rbac:
+    epoch:
+      fail-open-window: ${NEXUS_RBAC_EPOCH_FAIL_OPEN_WINDOW:PT0S}
     redis:
       require-auth: true
+      require-ssl: true
     throttle:
       require-shared-store: true
   security:
     rate-limit:
       store-type: redis
+     

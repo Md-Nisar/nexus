@@ -939,6 +939,31 @@ class PermissionFreshnessServiceTest {
   }
 
   @Test
+  void should_rejectNegativeFailOpenWindow_when_constructed() {
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> new PermissionFreshnessService(
+            port, userRoles, cachePort, registry, clock, Duration.ofSeconds(-1), 3,
+            Duration.ofSeconds(10), Duration.ofSeconds(60), KEY_TTL_SECONDS, REPLAY_CAPACITY,
+            ROLE_REPLAY_CAPACITY, TENANT_PERCENT))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void should_failClosedOnNextCheck_when_failOpenWindowIsZero() {
+    // OR-3.3-02: application-prod.yml defaults fail-open-window to PT0S; the context must start.
+    service = new PermissionFreshnessService(
+        port, userRoles, cachePort, registry, clock, Duration.ZERO, 3, Duration.ofSeconds(10),
+        Duration.ofSeconds(60), KEY_TTL_SECONDS, REPLAY_CAPACITY, ROLE_REPLAY_CAPACITY,
+        TENANT_PERCENT);
+    failRead();
+    failedCheckAt(0);
+    failedCheckAt(4);
+    failedCheckAt(8);
+
+    assertThat(failedCheckAt(9)).isEqualTo(FreshnessVerdict.UNAVAILABLE);
+    assertThat(service.state()).isEqualTo(DegradedState.DEGRADED_CLOSED);
+  }
+
+  @Test
   void should_rejectNonPositiveReplayCapacity_when_constructed() {
     org.assertj.core.api.Assertions.assertThatThrownBy(() -> newService(registry, 0))
         .isInstanceOf(IllegalArgumentException.class);
@@ -1125,6 +1150,21 @@ class PermissionFreshnessServiceTest {
     assertThat(minted.verified()).isFalse();
     assertThat(service.check(TENANT, USER, minted.epoch())).isEqualTo(FreshnessVerdict.FRESH);
     assertThat(storeRegressed()).isEqualTo(2);
+  }
+
+  @Test
+  void should_autoHealRegressedEpochInStore_when_regressionDetected() {
+    clock.set(T);
+    when(port.bump(TENANT, List.of(USER))).thenReturn(Map.of(USER, PAST));
+    service.invalidateUser(TENANT, USER, "revoke");
+
+    // Redis regressed (e.g. following Sentinel failover to stale replica)
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(0L));
+    when(port.bump(TENANT, List.of(USER))).thenReturn(Map.of(USER, PAST + 10));
+
+    service.check(TENANT, USER, PAST);
+
+    verify(port, times(2)).bump(TENANT, List.of(USER));
   }
 
   @Test

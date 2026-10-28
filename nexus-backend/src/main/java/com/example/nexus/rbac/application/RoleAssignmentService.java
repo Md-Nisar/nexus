@@ -187,7 +187,7 @@ public class RoleAssignmentService {
     // bound, so the detector's read runs in a new read-only transaction.
     this.holderReadTransaction = new TransactionTemplate(transactionManager);
     this.holderReadTransaction.setPropagationBehavior(
-        TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        TransactionDefinition.PROPAGATION_NOT_SUPPORTED);
     this.holderReadTransaction.setReadOnly(true);
     this.meterRegistry = meterRegistry;
     this.throttlePort = throttlePort;
@@ -264,6 +264,10 @@ public class RoleAssignmentService {
     // throttled actor is blocked only on the paths that take the set lock or target themself.
     TargetClassification target = classifyTarget(actor, role, OPERATION_ASSIGN);
     boolean throttled = evaluateThrottle(actor, targetUserId, target, OPERATION_ASSIGN);
+    if (target.adminDefining()
+        && !userRoleAssignmentPort.lockRoleRow(role.getId(), actor.tenantId())) {
+      throw new ResourceNotFoundException("ROLE_NOT_FOUND", MESSAGE_NO_SUCH_ROLE);
+    }
     SetLock preLockClassified = target.adminDefining() ? acquireSetLock(actor, target, role) : null;
     Timer.Sample lockHoldSample = preLockClassified == null ? null : preLockClassified.holdTimer();
 
@@ -431,6 +435,28 @@ public class RoleAssignmentService {
               .log("Blocked revocation of the tenant's last active administrator assignment");
           Counter.builder(COUNTER_LAST_ADMIN_LOCKOUT_BLOCKED).register(meterRegistry).increment();
           throw new LastAdminRoleException();
+        }
+      }
+
+      if (setLock == null) {
+        Set<UUID> current = new HashSet<>();
+        userRoleAssignmentPort
+            .lockRolePermissionsForRoles(actor.tenantId(), List.of(role.getId()))
+            .forEach(r -> current.add(r.permissionId()));
+        if (RbacAdministrators.isAdminDefining(current, target.catalogueIds())) {
+          log.atInfo()
+              .addKeyValue(LOG_KEY_EVENT, "RBAC_ROLE_CLASSIFICATION_CHANGED")
+              .addKeyValue(LOG_KEY_TENANT_ID, actor.tenantId())
+              .addKeyValue(LOG_KEY_ACTOR_USER_ID, actor.userId())
+              .addKeyValue(LOG_KEY_TARGET_USER_ID, targetUserId)
+              .addKeyValue(LOG_KEY_ROLE_ID, role.getId())
+              .addKeyValue(LOG_KEY_OPERATION, OPERATION_REVOKE)
+              .log("Rolled back a revoke: the role changed class while the revoke waited");
+          Counter.builder(COUNTER_ROLE_CLASSIFICATION_CHANGED)
+              .tag(LOG_KEY_OPERATION, OPERATION_REVOKE)
+              .register(meterRegistry)
+              .increment();
+          throw new RoleClassificationChangedException();
         }
       }
 
@@ -866,11 +892,21 @@ public class RoleAssignmentService {
     userRoleAssignmentPort
         .lockRolePermissionsForRoles(actor.tenantId(), List.of(role.getId()))
         .forEach(ref -> current.add(ref.permissionId()));
+    boolean isCallerAdmin = callerIsAdministrator(actor, null, heldRolePermissions, target);
     PiiPermissionGrantRule.Outcome currentPiiGrant =
-        piiGrantRule.evaluate(
-            current, () -> callerIsAdministrator(actor, null, heldRolePermissions, target));
+        piiGrantRule.evaluate(current, () -> isCallerAdmin);
+
+    Set<UUID> heldPermissionIds =
+        heldRolePermissions.stream().map(RolePermissionRef::permissionId).collect(Collectors.toSet());
+    boolean grantWithinCaller = isCallerAdmin
+        || current.stream()
+            .filter(p -> !(currentPiiGrant == PiiPermissionGrantRule.Outcome.DELEGATED
+                && p.equals(RbacSeededPermissionIds.USER_DIRECTORY_READ)))
+            .allMatch(heldPermissionIds::contains);
+
     if (!RbacAdministrators.isAdminDefining(current, target.catalogueIds())
-        && currentPiiGrant != PiiPermissionGrantRule.Outcome.DENIED) {
+        && currentPiiGrant != PiiPermissionGrantRule.Outcome.DENIED
+        && grantWithinCaller) {
       return currentPiiGrant == PiiPermissionGrantRule.Outcome.DELEGATED
           ? currentPiiGrant
           : snapshotPiiGrant;

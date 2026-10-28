@@ -572,7 +572,7 @@ describe('UsersListPage (US-020 design §12.7)', () => {
       await vi.waitFor(
         () => {
           harness.detectChanges();
-          expect(byTestId(el(), 'users-lookup-wait')?.textContent).toContain(
+          expect(byTestId(el(), 'users-lookup-wait')?.textContent ?? '').toContain(
             'Try again in 1 second.',
           );
         },
