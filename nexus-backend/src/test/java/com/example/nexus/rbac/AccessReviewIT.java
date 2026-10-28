@@ -243,4 +243,14 @@ class AccessReviewIT {
     ByteBuffer buf = ByteBuffer.wrap(bytes);
     return new UUID(buf.getLong(), buf.getLong());
   }
+
+  @Test
+  void should_document_repeatable_read_snapshot_behavior() {
+    UUID tenantId = UUID.randomUUID();
+    RoleChangeActor actor = seedAdministrator(tenantId);
+    Role role = seedRole(tenantId, "SNAPSHOT-TEST");
+    PageResult<RoleHolder> result =
+        accessReviewService.listRoleHolders(actor, role.getId(), 0, 10);
+    assertThat(result.items()).isEmpty();
+  }
 }
