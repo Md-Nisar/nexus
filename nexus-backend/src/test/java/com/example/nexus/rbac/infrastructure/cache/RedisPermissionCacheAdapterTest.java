@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -51,10 +52,10 @@ class RedisPermissionCacheAdapterTest {
   private static final UUID TENANT_ID = UUID.randomUUID();
   private static final UUID USER_ID = UUID.randomUUID();
   private static final String ROLE_KEY =
-      KEY_PREFIX + ":rbac:roleset:" + TENANT_ID + ":" + USER_ID + ":" + EPOCH;
+      KEY_PREFIX + ":rbac:roleset:{" + TENANT_ID + "}:" + USER_ID + ":" + EPOCH;
   private static final String PERM_KEY =
-      KEY_PREFIX + ":rbac:permset:" + TENANT_ID + ":" + USER_ID + ":" + EPOCH;
-  private static final String EPOCH_KEY = KEY_PREFIX + ":rbac:epoch:" + TENANT_ID + ":" + USER_ID;
+      KEY_PREFIX + ":rbac:permset:{" + TENANT_ID + "}:" + USER_ID + ":" + EPOCH;
+  private static final String EPOCH_KEY = KEY_PREFIX + ":rbac:epoch:{" + TENANT_ID + "}:" + USER_ID;
 
   @Mock private StringRedisTemplate redisTemplate;
   @Mock private SetOperations<String, String> setOperations;
@@ -132,40 +133,45 @@ class RedisPermissionCacheAdapterTest {
 
   @Test
   void should_writeBothSetsAndSetTtl_when_puttingNonEmptyResult() {
-    when(redisTemplate.opsForSet()).thenReturn(setOperations);
-
     adapter.put(TENANT_ID, USER_ID, EPOCH,
         new ResolvedPermissions(List.of("TENANT_ADMIN"), List.of("tenant:read", "tenant:write")));
 
-    verify(setOperations).add(eq(ROLE_KEY), eq("TENANT_ADMIN"));
-    verify(setOperations).add(eq(PERM_KEY), eq("tenant:read"), eq("tenant:write"));
-    verify(redisTemplate).expire(eq(ROLE_KEY), eq(Duration.ofSeconds(TTL_SECONDS)));
-    verify(redisTemplate).expire(eq(PERM_KEY), eq(Duration.ofSeconds(TTL_SECONDS)));
+    ArgumentCaptor<List<String>> keys = keysCaptor();
+    ArgumentCaptor<Object[]> args = ArgumentCaptor.forClass(Object[].class);
+    verify(redisTemplate, times(2)).execute(any(RedisScript.class), keys.capture(), args.capture());
+    assertThat(keys.getAllValues()).containsExactly(List.of(ROLE_KEY), List.of(PERM_KEY));
+    assertThat(args.getAllValues().get(0)).containsExactly(Long.toString(TTL_SECONDS), "TENANT_ADMIN");
+    assertThat(args.getAllValues().get(1))
+        .containsExactly(Long.toString(TTL_SECONDS), "tenant:read", "tenant:write");
   }
 
   @Test
   void should_addEmptyMarker_when_puttingEmptyResult() {
-    when(redisTemplate.opsForSet()).thenReturn(setOperations);
-
     adapter.put(TENANT_ID, USER_ID, EPOCH, ResolvedPermissions.empty());
 
-    verify(setOperations).add(eq(ROLE_KEY), eq("__EMPTY__"));
-    verify(setOperations).add(eq(PERM_KEY), eq("__EMPTY__"));
+    ArgumentCaptor<List<String>> keys = keysCaptor();
+    ArgumentCaptor<Object[]> args = ArgumentCaptor.forClass(Object[].class);
+    verify(redisTemplate, times(2)).execute(any(RedisScript.class), keys.capture(), args.capture());
+    assertThat(keys.getAllValues()).containsExactly(List.of(ROLE_KEY), List.of(PERM_KEY));
+    assertThat(args.getAllValues().get(0)).containsExactly(Long.toString(TTL_SECONDS), "__EMPTY__");
+    assertThat(args.getAllValues().get(1)).containsExactly(Long.toString(TTL_SECONDS), "__EMPTY__");
   }
 
   @Test
-  void should_deleteBothKeysBeforeWriting_when_putting() {
-    when(redisTemplate.opsForSet()).thenReturn(setOperations);
+  void should_setKeyWithTtlInSingleOperation_when_putting() {
+    adapter.put(TENANT_ID, USER_ID, EPOCH,
+        new ResolvedPermissions(List.of("TENANT_ADMIN"), List.of("tenant:read")));
 
-    adapter.put(TENANT_ID, USER_ID, EPOCH, new ResolvedPermissions(List.of(), List.of("user:read")));
-
-    verify(redisTemplate).delete(ROLE_KEY);
-    verify(redisTemplate).delete(PERM_KEY);
+    // Verifies atomic single-RTT execution via Lua script without multi-RTT separate commands (OR-3.1-03)
+    verify(redisTemplate, times(2)).execute(any(RedisScript.class), anyList(), any(Object[].class));
+    verify(redisTemplate, never()).expire(anyString(), any(Duration.class));
+    verify(redisTemplate, never()).delete(anyString());
   }
 
   @Test
   void should_notThrow_when_putThrows() {
-    when(redisTemplate.opsForSet()).thenThrow(new RuntimeException("connection refused"));
+    when(redisTemplate.execute(any(RedisScript.class), anyList(), any(Object[].class)))
+        .thenThrow(new RuntimeException("connection refused"));
 
     assertThatCode(() -> adapter.put(TENANT_ID, USER_ID, EPOCH,
         new ResolvedPermissions(List.of(), List.of("user:read"))))
@@ -186,8 +192,9 @@ class RedisPermissionCacheAdapterTest {
         new ResolvedPermissions(List.of("MEMBER"), List.of("user:read")));
     Optional<ResolvedPermissions> result = adapter.get(TENANT_ID, USER_ID, EPOCH);
 
-    verify(setOperations).add(eq(ROLE_KEY), eq("MEMBER"));
-    verify(setOperations).add(eq(PERM_KEY), eq("user:read"));
+    ArgumentCaptor<List<String>> keys = keysCaptor();
+    verify(redisTemplate, times(2)).execute(any(RedisScript.class), keys.capture(), any(Object[].class));
+    assertThat(keys.getAllValues()).containsExactly(List.of(ROLE_KEY), List.of(PERM_KEY));
     assertThat(result).contains(new ResolvedPermissions(List.of("MEMBER"), List.of("user:read")));
   }
 
@@ -212,8 +219,35 @@ class RedisPermissionCacheAdapterTest {
     verify(redisTemplate).execute(any(RedisScript.class), keys.capture(), args.capture());
     assertThat(keys.getValue()).containsExactly(EPOCH_KEY);
     assertThat(args.getValue()).containsExactly(
-        KEY_PREFIX + ":rbac:roleset:" + TENANT_ID + ":" + USER_ID + ":",
-        KEY_PREFIX + ":rbac:permset:" + TENANT_ID + ":" + USER_ID + ":");
+        KEY_PREFIX + ":rbac:roleset:{" + TENANT_ID + "}:" + USER_ID + ":",
+        KEY_PREFIX + ":rbac:permset:{" + TENANT_ID + "}:" + USER_ID + ":");
+  }
+
+  @Test
+  void should_only_evict_affected_role_holders() {
+    UUID affectedUser1 = UUID.randomUUID();
+    UUID affectedUser2 = UUID.randomUUID();
+    UUID unaffectedUser = UUID.randomUUID();
+
+    adapter.evict(TENANT_ID, List.of(affectedUser1, affectedUser2));
+
+    ArgumentCaptor<List<String>> keys = keysCaptor();
+    ArgumentCaptor<Object[]> args = ArgumentCaptor.forClass(Object[].class);
+    verify(redisTemplate).execute(any(RedisScript.class), keys.capture(), args.capture());
+
+    List<String> targetKeys = keys.getValue();
+    assertThat(targetKeys)
+        .containsExactly(
+            KEY_PREFIX + ":rbac:epoch:{" + TENANT_ID + "}:" + affectedUser1,
+            KEY_PREFIX + ":rbac:epoch:{" + TENANT_ID + "}:" + affectedUser2)
+        .doesNotContain(KEY_PREFIX + ":rbac:epoch:{" + TENANT_ID + "}:" + unaffectedUser)
+        .noneMatch(k -> k.contains("*"));
+
+    List<Object> stems = List.of(args.getValue());
+    assertThat(stems)
+        .contains(KEY_PREFIX + ":rbac:roleset:{" + TENANT_ID + "}:" + affectedUser1 + ":")
+        .doesNotContain(KEY_PREFIX + ":rbac:roleset:{" + TENANT_ID + "}:" + unaffectedUser + ":")
+        .noneMatch(s -> s.toString().contains("*"));
   }
 
   @Test
@@ -228,7 +262,7 @@ class RedisPermissionCacheAdapterTest {
     assertThat(keys.getAllValues()).extracting(List::size).containsExactly(500, 500, 1);
     assertThat(args.getAllValues()).extracting(a -> a.length).containsExactly(1000, 1000, 2);
     assertThat(keys.getAllValues().get(2))
-        .containsExactly(KEY_PREFIX + ":rbac:epoch:" + TENANT_ID + ":" + holders.get(1000));
+        .containsExactly(KEY_PREFIX + ":rbac:epoch:{" + TENANT_ID + "}:" + holders.get(1000));
   }
 
   @Test

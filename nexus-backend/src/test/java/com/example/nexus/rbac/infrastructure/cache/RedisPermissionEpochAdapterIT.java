@@ -97,7 +97,7 @@ class RedisPermissionEpochAdapterIT {
   }
 
   private static String key(UUID tenantId, UUID userId) {
-    return KEY_PREFIX + ":rbac:epoch:" + tenantId + ":" + userId;
+    return KEY_PREFIX + ":rbac:epoch:{" + tenantId + "}:" + userId;
   }
 
   private static long redisTimeMillis() {
@@ -403,7 +403,7 @@ class RedisPermissionEpochAdapterIT {
 
     adapter(templates).bump(tenantId, List.of());
 
-    assertThat(templates.read().keys(KEY_PREFIX + ":rbac:epoch:" + tenantId + ":*")).isEmpty();
+    assertThat(templates.read().keys(KEY_PREFIX + ":rbac:epoch:{" + tenantId + "}:*")).isEmpty();
   }
 
   @Test
@@ -650,6 +650,6 @@ class RedisPermissionEpochAdapterIT {
   }
 
   private static String cacheKey(String set, UUID tenantId, UUID userId, long epoch) {
-    return KEY_PREFIX + ":rbac:" + set + ":" + tenantId + ":" + userId + ":" + epoch;
+    return KEY_PREFIX + ":rbac:" + set + ":{" + tenantId + "}:" + userId + ":" + epoch;
   }
 }

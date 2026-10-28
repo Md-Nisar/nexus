@@ -255,14 +255,14 @@ class RedisPermissionCacheAdapterIT {
   }
 
   private static String roleKey(UUID tenantId, UUID userId, long epoch) {
-    return KEY_PREFIX + ":rbac:roleset:" + tenantId + ":" + userId + ":" + epoch;
+    return KEY_PREFIX + ":rbac:roleset:{" + tenantId + "}:" + userId + ":" + epoch;
   }
 
   private static String permKey(UUID tenantId, UUID userId, long epoch) {
-    return KEY_PREFIX + ":rbac:permset:" + tenantId + ":" + userId + ":" + epoch;
+    return KEY_PREFIX + ":rbac:permset:{" + tenantId + "}:" + userId + ":" + epoch;
   }
 
   private static String epochKey(UUID tenantId, UUID userId) {
-    return KEY_PREFIX + ":rbac:epoch:" + tenantId + ":" + userId;
+    return KEY_PREFIX + ":rbac:epoch:{" + tenantId + "}:" + userId;
   }
 }

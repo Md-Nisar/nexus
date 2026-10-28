@@ -13,7 +13,6 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.dao.DataAccessException;
 import org.springframework.dao.InvalidDataAccessResourceUsageException;
 import org.springframework.data.redis.RedisConnectionFailureException;
 import org.springframework.data.redis.connection.RedisConnection;
@@ -113,9 +112,9 @@ public class RedisPermissionEpochAdapter implements PermissionEpochPort {
     String value;
     try {
       value = templates.read().opsForValue().get(keys.epoch(tenantId, userId));
-    } catch (DataAccessException e) {
-      // One line per failed request at DEBUG only; the signal is the nexus.rbac.epoch.check
-      // counter with outcome skipped_error.
+    } catch (RuntimeException e) {
+      // Any failure, not only DataAccessException: returns empty so PermissionFreshnessService
+      // records the read failure and enters degraded state instead of crashing with unhandled driver exception.
       log.debug("permission epoch read failed exception={}", e.getClass().getSimpleName());
       return OptionalLong.empty();
     }
@@ -165,12 +164,26 @@ public class RedisPermissionEpochAdapter implements PermissionEpochPort {
     }
   }
 
+  static final int BUMP_BATCH_SIZE = 100;
+
   @Override
   public Map<UUID, Long> bump(UUID tenantId, Collection<UUID> userIds) {
     if (!templates.bumpReady()) {
       throw new RedisConnectionFailureException("permission epoch store is not connected yet");
     }
     List<UUID> users = List.copyOf(userIds);
+    if (users.isEmpty()) {
+      return Map.of();
+    }
+    Map<UUID, Long> epochs = HashMap.newHashMap(users.size());
+    for (int from = 0; from < users.size(); from += BUMP_BATCH_SIZE) {
+      List<UUID> batch = users.subList(from, Math.min(from + BUMP_BATCH_SIZE, users.size()));
+      epochs.putAll(bumpBatch(tenantId, batch));
+    }
+    return epochs;
+  }
+
+  private Map<UUID, Long> bumpBatch(UUID tenantId, List<UUID> users) {
     List<String> epochKeys = new ArrayList<>(users.size());
     List<Object> args = new ArrayList<>(1 + users.size() * 2);
     args.add(keyTtlSeconds);

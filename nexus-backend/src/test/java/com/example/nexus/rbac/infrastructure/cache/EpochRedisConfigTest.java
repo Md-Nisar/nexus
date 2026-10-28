@@ -285,6 +285,60 @@ class EpochRedisConfigTest {
         });
   }
 
+  @Test
+  void should_not_duplicate_sentinel_listeners_on_reconnect() {
+    DataRedisConnectionDetails details =
+        new DataRedisConnectionDetails() {
+          @Override
+          public String getUsername() {
+            return "app";
+          }
+
+          @Override
+          public String getPassword() {
+            return "s3cret";
+          }
+
+          @Override
+          public Sentinel getSentinel() {
+            return new Sentinel() {
+              @Override
+              public String getMaster() {
+                return "mymaster";
+              }
+
+              @Override
+              public List<Node> getNodes() {
+                return List.of(new Node("sentinel1", 26379), new Node("sentinel2", 26379));
+              }
+
+              @Override
+              public String getUsername() {
+                return "sentinel_user";
+              }
+
+              @Override
+              public String getPassword() {
+                return "sentinel_pass";
+              }
+
+              @Override
+              public int getDatabase() {
+                return 0;
+              }
+            };
+          }
+        };
+
+    LettuceConnectionFactory factory =
+        EpochRedisConfig.dedicatedFactory(
+            details, plainMain(), clientResources, Duration.ofMillis(50));
+    assertThat(factory.getSentinelConfiguration()).isNotNull();
+    assertThat(factory.getSentinelConfiguration().getSentinels()).hasSize(2);
+    assertThat(factory.getClientConfiguration().getClientResources().orElse(null))
+        .isSameAs(clientResources);
+  }
+
   private static LettuceConnectionFactory plainMain() {
     return new LettuceConnectionFactory(new RedisStandaloneConfiguration("main", 6379));
   }

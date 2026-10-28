@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.example.nexus.rbac.application.RoleReplayQueue.Entry;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -226,5 +227,22 @@ class RoleReplayQueueTest {
   void should_rejectNonPositiveTenantShare() {
     assertThatThrownBy(() -> new RoleReplayQueue(10, 0))
         .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
+  void should_evict_stale_entries_under_prolonged_downtime() {
+    RoleReplayQueue queue = new RoleReplayQueue(1, 1, Duration.ofHours(1));
+
+    assertThat(queue.offer(TENANT, ROLE, T)).isTrue();
+    assertThat(queue.size()).isEqualTo(1);
+
+    assertThat(queue.offer(OTHER_TENANT, OTHER_ROLE, T.plusSeconds(30))).isFalse();
+
+    assertThat(queue.offer(OTHER_TENANT, OTHER_ROLE, T.plus(Duration.ofHours(2)))).isTrue();
+    assertThat(queue.size()).isEqualTo(1);
+
+    Entry entry = queue.poll(NEVER_EXPIRED).orElseThrow();
+    assertThat(entry.tenantId()).isEqualTo(OTHER_TENANT);
+    assertThat(entry.roleId()).isEqualTo(OTHER_ROLE);
   }
 }

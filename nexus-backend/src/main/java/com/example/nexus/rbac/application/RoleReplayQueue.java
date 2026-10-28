@@ -1,5 +1,6 @@
 package com.example.nexus.rbac.application;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -24,9 +25,12 @@ import java.util.UUID;
  */
 final class RoleReplayQueue {
 
+  private static final Duration DEFAULT_MAX_RETENTION = Duration.ofHours(1);
+
   private final int capacity;
   private final int tenantCapacity;
   private final int borrowLimit;
+  private final Duration maxRetention;
   // Guarded by `this`; insertion-ordered, so the oldest role is polled first.
   private final Map<RoleKey, Times> roles = new LinkedHashMap<>();
 
@@ -37,24 +41,32 @@ final class RoleReplayQueue {
    * @throws IllegalArgumentException if {@code capacity} is below 1
    */
   RoleReplayQueue(int capacity) {
-    this(capacity, capacity);
+    this(capacity, capacity, DEFAULT_MAX_RETENTION);
+  }
+
+  RoleReplayQueue(int capacity, int tenantCapacity) {
+    this(capacity, tenantCapacity, DEFAULT_MAX_RETENTION);
   }
 
   /**
-   * Creates the queue with a share per tenant, so that one tenant's failed holder reads cannot
-   * take the whole queue from the others (pre-PR security review L-2).
+   * Creates the queue with a share per tenant and a maximum retention TTL for eviction.
    *
    * @param capacity the most distinct roles held at once
    * @param tenantCapacity the most distinct roles of one tenant held at once
-   * @throws IllegalArgumentException if either is below 1
+   * @param maxRetention maximum duration an entry may remain queued before eviction
+   * @throws IllegalArgumentException if either capacity is below 1 or maxRetention is not positive
    */
-  RoleReplayQueue(int capacity, int tenantCapacity) {
+  RoleReplayQueue(int capacity, int tenantCapacity, Duration maxRetention) {
     if (capacity < 1 || tenantCapacity < 1) {
       throw new IllegalArgumentException("role replay capacity must be positive");
+    }
+    if (maxRetention == null || !maxRetention.isPositive()) {
+      throw new IllegalArgumentException("max retention must be positive");
     }
     this.capacity = capacity;
     this.tenantCapacity = tenantCapacity;
     this.borrowLimit = Math.max(tenantCapacity, capacity / 2);
+    this.maxRetention = maxRetention;
   }
 
   /**
@@ -66,6 +78,7 @@ final class RoleReplayQueue {
    * @return {@code false} if the role is new and the queue is full (the role is not queued)
    */
   synchronized boolean offer(UUID tenantId, UUID roleId, Instant failedAt) {
+    evictStale(failedAt.minus(maxRetention));
     RoleKey key = new RoleKey(tenantId, roleId);
     Times queued = roles.get(key);
     if (queued != null) {
@@ -79,7 +92,7 @@ final class RoleReplayQueue {
     if (roles.size() >= borrowLimit && queuedFor(tenantId) >= tenantCapacity) {
       return false;
     }
-    roles.put(key, new Times(failedAt, failedAt));
+    roles.put(key, new Times(failedAt, failedAt, 0, null));
     return true;
   }
 
@@ -92,14 +105,35 @@ final class RoleReplayQueue {
    * @return the entry, or empty when nothing live is queued
    */
   synchronized Optional<Entry> poll(Instant expiredAtOrBefore) {
+    return poll(Instant.MAX, expiredAtOrBefore);
+  }
+
+  /**
+   * Removes the oldest queued role eligible for retry under backoff.
+   *
+   * @param now current time for evaluating retry backoff
+   * @param expiredAtOrBefore entries with {@code newestFailedAt} not after this are discarded
+   * @return the entry, or empty when nothing live and eligible is queued
+   */
+  synchronized Optional<Entry> poll(Instant now, Instant expiredAtOrBefore) {
     Iterator<Map.Entry<RoleKey, Times>> it = roles.entrySet().iterator();
     while (it.hasNext()) {
       Map.Entry<RoleKey, Times> next = it.next();
-      it.remove();
-      if (next.getValue().newest().isAfter(expiredAtOrBefore)) {
-        RoleKey key = next.getKey();
-        return Optional.of(new Entry(
-            key.tenantId(), key.roleId(), next.getValue().oldest(), next.getValue().newest()));
+      if (!next.getValue().newest().isAfter(expiredAtOrBefore)) {
+        it.remove();
+        continue;
+      }
+      RoleKey key = next.getKey();
+      Entry entry = new Entry(
+          key.tenantId(),
+          key.roleId(),
+          next.getValue().oldest(),
+          next.getValue().newest(),
+          next.getValue().attempts(),
+          next.getValue().lastAttemptAt());
+      if (entry.isEligibleForRetry(now)) {
+        it.remove();
+        return Optional.of(entry);
       }
     }
     return Optional.empty();
@@ -113,13 +147,33 @@ final class RoleReplayQueue {
    * @param entry the entry returned by {@link #poll}
    */
   synchronized void requeue(Entry entry) {
+    requeue(entry, entry.newestFailedAt());
+  }
+
+  /**
+   * Puts a polled entry back after its replay failed, recording the attempt timestamp.
+   *
+   * @param entry the entry returned by {@link #poll}
+   * @param attemptedAt timestamp when the replay attempt failed
+   */
+  synchronized void requeue(Entry entry, Instant attemptedAt) {
     RoleKey key = new RoleKey(entry.tenantId(), entry.roleId());
     Times queued = roles.get(key);
-    roles.put(
-        key,
-        queued == null
-            ? new Times(entry.oldestFailedAt(), entry.newestFailedAt())
-            : queued.merge(entry.oldestFailedAt(), entry.newestFailedAt()));
+    int newAttempts = entry.attempts() + 1;
+    if (queued == null) {
+      roles.put(key, new Times(
+          entry.oldestFailedAt(), entry.newestFailedAt(), newAttempts, attemptedAt));
+    } else {
+      roles.put(
+          key,
+          new Times(
+              entry.oldestFailedAt().isBefore(queued.oldest())
+                  ? entry.oldestFailedAt() : queued.oldest(),
+              entry.newestFailedAt().isAfter(queued.newest())
+                  ? entry.newestFailedAt() : queued.newest(),
+              Math.max(queued.attempts(), newAttempts),
+              attemptedAt));
+    }
   }
 
   /** Bounded by the capacity, at most 1,000 in practice, and only reached for a new role. */
@@ -138,6 +192,20 @@ final class RoleReplayQueue {
     return roles.size();
   }
 
+  /** Evicts entries whose newest failure is at or before {@code expiredAtOrBefore}. */
+  synchronized int evictStale(Instant expiredAtOrBefore) {
+    int evicted = 0;
+    Iterator<Map.Entry<RoleKey, Times>> it = roles.entrySet().iterator();
+    while (it.hasNext()) {
+      Map.Entry<RoleKey, Times> next = it.next();
+      if (!next.getValue().newest().isAfter(expiredAtOrBefore)) {
+        it.remove();
+        evicted++;
+      }
+    }
+    return evicted;
+  }
+
   /** Returns whether nothing is queued. */
   synchronized boolean isEmpty() {
     return roles.isEmpty();
@@ -145,15 +213,41 @@ final class RoleReplayQueue {
 
   private record RoleKey(UUID tenantId, UUID roleId) {}
 
-  private record Times(Instant oldest, Instant newest) {
+  private record Times(
+      Instant oldest, Instant newest, int attempts, Instant lastAttemptAt) {
 
     Times merge(Instant otherOldest, Instant otherNewest) {
       return new Times(
           otherOldest.isBefore(oldest) ? otherOldest : oldest,
-          otherNewest.isAfter(newest) ? otherNewest : newest);
+          otherNewest.isAfter(newest) ? otherNewest : newest,
+          this.attempts,
+          this.lastAttemptAt);
     }
   }
 
-  /** One queued role: when its first and its latest holder read failed. */
-  record Entry(UUID tenantId, UUID roleId, Instant oldestFailedAt, Instant newestFailedAt) {}
+  /** One queued role: failure window and backoff state. */
+  record Entry(
+      UUID tenantId,
+      UUID roleId,
+      Instant oldestFailedAt,
+      Instant newestFailedAt,
+      int attempts,
+      Instant lastAttemptAt) {
+
+    Entry(UUID tenantId, UUID roleId, Instant oldestFailedAt, Instant newestFailedAt) {
+      this(tenantId, roleId, oldestFailedAt, newestFailedAt, 0, null);
+    }
+
+    Duration backoffDuration() {
+      long seconds = Math.min(60, (long) Math.pow(2, attempts));
+      return Duration.ofSeconds(seconds);
+    }
+
+    boolean isEligibleForRetry(Instant now) {
+      if (lastAttemptAt == null || attempts == 0) {
+        return true;
+      }
+      return !now.isBefore(lastAttemptAt.plus(backoffDuration()));
+    }
+  }
 }

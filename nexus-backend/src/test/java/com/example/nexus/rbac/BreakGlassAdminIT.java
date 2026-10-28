@@ -645,11 +645,11 @@ class BreakGlassAdminIT {
   }
 
   /**
-   * O-7 decision (2026-10-15): a temporarily LOCKED sole administrator still counts as an
-   * administrator for break-glass; a lockout recovers by itself.
+   * [OR-2.2-01]: a LOCKED sole administrator allows break-glass so emergency admin
+   * recovery is not bricked.
    */
   @Test
-  void should_refuseWithExit5_when_theSoleAdministratorIsLocked() {
+  void should_allow_break_glass_when_sole_admin_is_locked() {
     UUID tenantId = uuidGenerator.newId();
     Role tenantAdmin = seedSystemTenantAdminRole(tenantId);
     User admin = seedActiveUser(tenantId, "locked-admin");
@@ -659,7 +659,7 @@ class BreakGlassAdminIT {
 
     int exitCode = runCli(target.getId().toString(), freshChangeRef());
 
-    assertThat(exitCode).isEqualTo(5);
+    assertThat(exitCode).isZero();
   }
 
   /**

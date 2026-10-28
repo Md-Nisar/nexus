@@ -21,7 +21,7 @@ class RbacRedisKeysTest {
   @Test
   void should_buildTenantScopedEpochKey() {
     assertThat(keys.epoch(TENANT, USER))
-        .isEqualTo("nexus-test:rbac:epoch:" + TENANT + ":" + USER);
+        .isEqualTo("nexus-test:rbac:epoch:{" + TENANT + "}:" + USER);
   }
 
   @Test
@@ -49,9 +49,18 @@ class RbacRedisKeysTest {
   @Test
   void should_buildThrottleKeysUnderTheDocumentedShape() {
     assertThat(keys.throttle(TENANT, USER))
-        .isEqualTo("nexus-test:rbac:throttle:" + TENANT + ":" + USER);
+        .isEqualTo("nexus-test:rbac:throttle:{" + TENANT + "}:" + USER);
     assertThat(keys.throttleUntil(TENANT, USER)).isEqualTo(keys.throttle(TENANT, USER) + ":until");
     assertThat(keys.throttleSuppressed(TENANT, USER))
         .isEqualTo(keys.throttle(TENANT, USER) + ":suppressed");
+  }
+
+  @Test
+  void should_includeClusterHashTagAroundTenantId() {
+    String expectedTag = "{" + TENANT + "}";
+    assertThat(keys.epoch(TENANT, USER)).contains(expectedTag);
+    assertThat(keys.roleset(TENANT, USER, 100L)).contains(expectedTag);
+    assertThat(keys.permset(TENANT, USER, 100L)).contains(expectedTag);
+    assertThat(keys.throttle(TENANT, USER)).contains(expectedTag);
   }
 }
