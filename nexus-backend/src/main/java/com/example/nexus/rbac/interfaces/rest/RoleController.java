@@ -121,6 +121,11 @@ public class RoleController {
       codes = {"RBAC_006", "RBAC_007", "RBAC_008"},
       description =
           "Duplicate (RBAC_006) or reserved (RBAC_007) role name, or the tenant's role limit reached (RBAC_008)")
+  @ProblemResponse(
+      status = 429,
+      codes = {"ROLE_CHANGE_THROTTLED"},
+      description =
+          "Too many role changes requested; see Retry-After")
   public ResponseEntity<RoleResponse> createRole(
       @Valid @RequestBody CreateRoleRequest request,
       Authentication authentication,
@@ -314,6 +319,11 @@ public class RoleController {
       codes = {"PRECONDITION_REQUIRED"},
       description =
           "If-Match absent, *, a list, weak, empty or unparseable; the body has no state")
+  @ProblemResponse(
+      status = 429,
+      codes = {"ROLE_CHANGE_THROTTLED"},
+      description =
+          "Too many role changes requested; see Retry-After")
   public ResponseEntity<PermissionListResponse> replaceRolePermissions(
       @PathVariable String roleId,
       @Valid @RequestBody ReplaceRolePermissionsRequest request,
@@ -402,6 +412,11 @@ public class RoleController {
       codes = {"RBAC_003", "RBAC_005", "RBAC_010", "RBAC_012"},
       description =
           "System role (RBAC_003), already attached (RBAC_005), the attach would make the role an administrator role while a holder was assigned by a non-administrator (RBAC_010), or the role's classification changed while the request waited, retry (RBAC_012)")
+  @ProblemResponse(
+      status = 429,
+      codes = {"ROLE_CHANGE_THROTTLED"},
+      description =
+          "Too many role changes requested; see Retry-After")
   public ResponseEntity<PermissionResponse> attachPermission(
       @PathVariable String roleId,
       @Valid @RequestBody AttachPermissionRequest request,
@@ -451,6 +466,11 @@ public class RoleController {
       codes = {"RBAC_003"},
       description =
           "System role (RBAC_003)")
+  @ProblemResponse(
+      status = 429,
+      codes = {"ROLE_CHANGE_THROTTLED"},
+      description =
+          "Too many role changes requested; see Retry-After")
   public void detachPermission(
       @PathVariable String roleId,
       @PathVariable String permissionId,
@@ -497,6 +517,11 @@ public class RoleController {
       codes = {"RBAC_003", "RBAC_006", "RBAC_007"},
       description =
           "System role (RBAC_003), name already used by a live role (RBAC_006) or reserved (RBAC_007)")
+  @ProblemResponse(
+      status = 429,
+      codes = {"ROLE_CHANGE_THROTTLED"},
+      description =
+          "Too many role changes requested; see Retry-After")
   public RoleResponse updateRole(
       @PathVariable String roleId,
       @Valid @RequestBody UpdateRoleRequest request,
@@ -546,6 +571,11 @@ public class RoleController {
       codes = {"RBAC_003", "RBAC_009"},
       description =
           "System role (RBAC_003), or the role still has active holders (RBAC_009)")
+  @ProblemResponse(
+      status = 429,
+      codes = {"ROLE_CHANGE_THROTTLED"},
+      description =
+          "Too many role changes requested; see Retry-After")
   public void softDeleteRole(
       @PathVariable String roleId, Authentication authentication, HttpServletRequest httpRequest) {
     RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, ROLE_WRITE);
