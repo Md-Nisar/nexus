@@ -293,4 +293,13 @@ class AuthenticatedRequestDetailsTest {
 
     assertThat(result.hasPermission("user:write")).isFalse();
   }
+
+  @Test
+  void should_parse_valid_details_without_redundant_casts() {
+    Authentication authentication =
+        authenticatedWith("tenant-1", List.of("role:read", "role:write"));
+    AuthenticatedRequestDetails result =
+        AuthenticatedRequestDetails.fromAuthentication(authentication, REQUIRED_PERMISSION);
+    assertThat(result.permissions()).containsExactlyInAnyOrder("role:read", "role:write");
+  }
 }
