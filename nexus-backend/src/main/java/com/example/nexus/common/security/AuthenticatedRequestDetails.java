@@ -63,7 +63,7 @@ public record AuthenticatedRequestDetails(String tenantId, Set<String> permissio
           requiredPermission, DenialReason.MALFORMED_AUTHENTICATION);
     }
     Set<String> permissions =
-        rawPermissions.stream().map(String.class::cast).collect(Collectors.toSet());
+        rawPermissions.stream().map(s -> (String) s).collect(Collectors.toSet());
     return new AuthenticatedRequestDetails(tenantId, permissions);
   }
 
