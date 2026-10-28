@@ -213,6 +213,17 @@ class CrossTenantNotFoundEquivalenceIT {
     assertThat(comparableBody(gone)).isEqualTo(comparableBody(missing));
   }
 
+  @Test
+  void should_return_identical_messages_for_all_entities() {
+    ResponseEntity<Map> roleResp = get("/api/v1/roles/" + foreignRole.getId());
+    ResponseEntity<Map> userResp = get("/api/v1/users/" + foreignUser.getId() + "/roles");
+
+    assertThat(roleResp.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(userResp.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    assertThat(roleResp.getBody()).isNotNull();
+    assertThat(userResp.getBody()).isNotNull();
+  }
+
   // ── The equivalence check ────────────────────────────────────────────
 
   private void assertEquivalent(
