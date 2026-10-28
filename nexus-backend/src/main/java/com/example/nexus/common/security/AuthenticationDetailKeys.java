@@ -16,6 +16,7 @@ public final class AuthenticationDetailKeys {
   public static final String EMAIL_VERIFIED = "emailVerified";
   public static final String TOKEN_VERSION = "tokenVersion";
   public static final String PERMISSIONS = "permissions";
+  public static final String EPOCH = "perm_epoch";
 
   /** MDC key under which {@code JwtAuthenticationFilter} puts the authenticated user's id. */
   public static final String MDC_USER_ID = "userId";
