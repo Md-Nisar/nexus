@@ -140,9 +140,13 @@ class RedisPermissionCacheAdapterTest {
     ArgumentCaptor<Object[]> args = ArgumentCaptor.forClass(Object[].class);
     verify(redisTemplate, times(2)).execute(any(RedisScript.class), keys.capture(), args.capture());
     assertThat(keys.getAllValues()).containsExactly(List.of(ROLE_KEY), List.of(PERM_KEY));
-    assertThat(args.getAllValues().get(0)).containsExactly(Long.toString(TTL_SECONDS), "TENANT_ADMIN");
-    assertThat(args.getAllValues().get(1))
-        .containsExactly(Long.toString(TTL_SECONDS), "tenant:read", "tenant:write");
+    long ttlRole = Long.parseLong((String) args.getAllValues().get(0)[0]);
+    long ttlPerm = Long.parseLong((String) args.getAllValues().get(1)[0]);
+    assertThat(ttlRole).isEqualTo(ttlPerm);
+    assertThat(ttlRole).isBetween(TTL_SECONDS - 60, TTL_SECONDS + 60);
+    assertThat(args.getAllValues().get(0)[1]).isEqualTo("TENANT_ADMIN");
+    assertThat(List.of(args.getAllValues().get(1)[1], args.getAllValues().get(1)[2]))
+        .containsExactly("tenant:read", "tenant:write");
   }
 
   @Test
@@ -153,8 +157,27 @@ class RedisPermissionCacheAdapterTest {
     ArgumentCaptor<Object[]> args = ArgumentCaptor.forClass(Object[].class);
     verify(redisTemplate, times(2)).execute(any(RedisScript.class), keys.capture(), args.capture());
     assertThat(keys.getAllValues()).containsExactly(List.of(ROLE_KEY), List.of(PERM_KEY));
-    assertThat(args.getAllValues().get(0)).containsExactly(Long.toString(TTL_SECONDS), "__EMPTY__");
-    assertThat(args.getAllValues().get(1)).containsExactly(Long.toString(TTL_SECONDS), "__EMPTY__");
+    long ttlRole = Long.parseLong((String) args.getAllValues().get(0)[0]);
+    long ttlPerm = Long.parseLong((String) args.getAllValues().get(1)[0]);
+    assertThat(ttlRole).isEqualTo(ttlPerm);
+    assertThat(ttlRole).isBetween(TTL_SECONDS - 60, TTL_SECONDS + 60);
+    assertThat(args.getAllValues().get(0)[1]).isEqualTo("__EMPTY__");
+    assertThat(args.getAllValues().get(1)[1]).isEqualTo("__EMPTY__");
+  }
+
+  @Test
+  void should_apply_jitter_to_cache_ttl() {
+    adapter.put(TENANT_ID, USER_ID, EPOCH,
+        new ResolvedPermissions(List.of("TENANT_ADMIN"), List.of("tenant:read")));
+
+    ArgumentCaptor<Object[]> args = ArgumentCaptor.forClass(Object[].class);
+    verify(redisTemplate, times(2)).execute(any(RedisScript.class), anyList(), args.capture());
+
+    long ttlRole = Long.parseLong((String) args.getAllValues().get(0)[0]);
+    long ttlPerm = Long.parseLong((String) args.getAllValues().get(1)[0]);
+
+    assertThat(ttlRole).isEqualTo(ttlPerm);
+    assertThat(ttlRole).isBetween(TTL_SECONDS - 60, TTL_SECONDS + 60);
   }
 
   @Test

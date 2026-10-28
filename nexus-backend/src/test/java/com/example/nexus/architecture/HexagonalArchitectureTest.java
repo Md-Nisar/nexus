@@ -198,6 +198,14 @@ class HexagonalArchitectureTest {
                             + "platform's role-definition surface.")
                     .allowEmptyShould(true);
 
+    // [OR-24]: Ensure @RequiresPermission is strictly placed on public methods only.
+    @ArchTest
+    static final ArchRule requires_permission_must_only_be_placed_on_public_methods =
+            methods().that().areAnnotatedWith(RequiresPermission.class)
+                    .should().bePublic()
+                    .because("Spring AOP cannot intercept private or protected methods (OR-24)")
+                    .allowEmptyShould(true);
+
     @ArchTest
     static final ArchRule requires_permission_declaring_classes_must_not_be_final =
             classes().that().containAnyMethodsThat(annotatedWith(RequiresPermission.class))

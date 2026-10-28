@@ -2,6 +2,7 @@ package com.example.nexus.rbac.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -41,13 +42,28 @@ class RoleResolutionServiceTest {
   void should_readDbAndTouchNoCache_when_resolvedUncached() {
     UUID userId = UUID.randomUUID();
     UUID tenantId = UUID.randomUUID();
-    when(userRoleQueryPort.findActiveRoleNames(userId, tenantId)).thenReturn(List.of("MEMBER"));
-    when(userRoleQueryPort.findActivePermissionNames(userId, tenantId))
-        .thenReturn(List.of("user:read"));
+    when(userRoleQueryPort.findActiveRoleAndPermissionNames(userId, tenantId))
+        .thenReturn(new ResolvedPermissions(List.of("MEMBER"), List.of("user:read")));
 
     ResolvedPermissions resolved = service.resolveUncached(userId, tenantId);
 
     assertThat(resolved.permissions()).containsExactly("user:read");
+    verifyNoInteractions(permissionCachePort);
+  }
+
+  @Test
+  void should_fetch_roles_and_permissions_in_single_roundtrip() {
+    UUID userId = UUID.randomUUID();
+    UUID tenantId = UUID.randomUUID();
+    ResolvedPermissions expected = new ResolvedPermissions(List.of("MEMBER"), List.of("user:read"));
+    when(userRoleQueryPort.findActiveRoleAndPermissionNames(userId, tenantId)).thenReturn(expected);
+
+    ResolvedPermissions resolved = service.resolveUncached(userId, tenantId);
+
+    assertThat(resolved).isEqualTo(expected);
+    verify(userRoleQueryPort).findActiveRoleAndPermissionNames(userId, tenantId);
+    verify(userRoleQueryPort, never()).findActiveRoleNames(any(), any());
+    verify(userRoleQueryPort, never()).findActivePermissionNames(any(), any());
     verifyNoInteractions(permissionCachePort);
   }
 

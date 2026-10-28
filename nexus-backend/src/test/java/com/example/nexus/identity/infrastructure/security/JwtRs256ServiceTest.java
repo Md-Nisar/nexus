@@ -9,6 +9,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import com.example.nexus.common.domain.AuthenticationException;
+import com.example.nexus.common.domain.TenantSuspendedException;
 import com.example.nexus.identity.domain.AccessTokenResult;
 import com.example.nexus.identity.domain.JwtClaims;
 import com.example.nexus.identity.domain.UserStatus;
@@ -202,6 +203,18 @@ class JwtRs256ServiceTest {
     JwtClaims claims = svc.verify(result.token());
 
     assertThat(claims.emailVerified()).isFalse();
+  }
+
+  @Test
+  void should_reject_token_minting_for_suspended_tenant() {
+    JwtRs256Service svc = service(Clock.systemUTC());
+    User suspendedUser = mock(User.class);
+    when(suspendedUser.getId()).thenReturn(UUID.randomUUID());
+    when(suspendedUser.getTenantId()).thenReturn(UUID.randomUUID());
+    when(suspendedUser.getStatus()).thenReturn(UserStatus.DISABLED);
+
+    assertThatThrownBy(() -> svc.issue(suspendedUser))
+        .isInstanceOf(TenantSuspendedException.class);
   }
 
   @Test

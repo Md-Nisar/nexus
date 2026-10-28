@@ -99,6 +99,24 @@ class JwtAuthenticationFilterTest {
   }
 
   @Test
+  void should_accept_lowercase_bearer_prefix() throws Exception {
+    JwtClaims claims = claims();
+
+    MockHttpServletRequest req = new MockHttpServletRequest();
+    req.addHeader("Authorization", "bearer valid.jwt.token");
+    MockHttpServletResponse res = new MockHttpServletResponse();
+    FilterChain chain = mock(FilterChain.class);
+
+    when(jwtPort.verify("valid.jwt.token")).thenReturn(claims);
+
+    filter.doFilterInternal(req, res, chain);
+
+    verify(chain).doFilter(req, res);
+    assertThat(SecurityContextHolder.getContext().getAuthentication()).isNotNull();
+    assertThat(SecurityContextHolder.getContext().getAuthentication().getName()).isEqualTo(USER_ID);
+  }
+
+  @Test
   void doFilter_nonBearerScheme_passesThrough_withoutCallingJwt() throws Exception {
     MockHttpServletRequest req = new MockHttpServletRequest();
     req.addHeader("Authorization", "Basic dXNlcjpwYXNz");

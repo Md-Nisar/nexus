@@ -77,6 +77,9 @@ final class EpochReplayQueue {
    * @return the number of users dropped because the queue was full (the newest arrivals)
    */
   synchronized int offer(UUID tenantId, Collection<UUID> userIds, Instant failedAt) {
+    if (tenantId == null || userIds == null || failedAt == null) {
+      return 0;
+    }
     Map<UUID, Times> users = byTenant.computeIfAbsent(tenantId, id -> new LinkedHashMap<>());
     int dropped = 0;
     for (UUID userId : userIds) {
@@ -108,6 +111,10 @@ final class EpochReplayQueue {
   synchronized Optional<Batch> poll(int max, Instant expiredAtOrBefore) {
     while (!byTenant.isEmpty()) {
       Map.Entry<UUID, Map<UUID, Times>> first = byTenant.entrySet().iterator().next();
+      if (first.getKey() == null || first.getValue() == null) {
+        byTenant.remove(first.getKey());
+        continue;
+      }
       List<Entry> taken = new ArrayList<>();
       Iterator<Map.Entry<UUID, Times>> it = first.getValue().entrySet().iterator();
       while (it.hasNext() && taken.size() < max) {
@@ -141,6 +148,9 @@ final class EpochReplayQueue {
    * @param batch the batch returned by {@link #poll}
    */
   synchronized void requeue(Batch batch) {
+    if (batch == null || batch.tenantId() == null) {
+      return;
+    }
     Map<UUID, Times> users = byTenant.remove(batch.tenantId());
     if (users == null) {
       users = new LinkedHashMap<>();

@@ -38,6 +38,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -87,6 +88,8 @@ public class RoleController {
 
   private final RoleManagementService roleManagementService;
   private final MeterRegistry meterRegistry;
+  private final Map<String, ResponseEntity<RoleResponse>> idempotencyCache =
+      new ConcurrentHashMap<>();
 
   public RoleController(RoleManagementService roleManagementService, MeterRegistry meterRegistry) {
     this.roleManagementService = roleManagementService;
@@ -124,12 +127,30 @@ public class RoleController {
       HttpServletRequest httpRequest) {
     RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, ROLE_WRITE);
 
+    String idempotencyKey = httpRequest != null ? httpRequest.getHeader("Idempotency-Key") : null;
+    String cacheKey = (idempotencyKey != null && !idempotencyKey.isBlank())
+        ? actor.tenantId() + ":" + idempotencyKey.strip()
+        : null;
+    if (cacheKey != null) {
+      ResponseEntity<RoleResponse> cached = idempotencyCache.get(cacheKey);
+      if (cached != null) {
+        return cached;
+      }
+    }
+
     RoleView role =
         roleManagementService.createRole(
             actor, request.name(), request.description(), RbacControllerSupport.requestContext(httpRequest));
 
-    return ResponseEntity.created(URI.create("/api/v1/roles/" + role.id()))
-        .body(toResponse(role, null));
+    ResponseEntity<RoleResponse> response =
+        ResponseEntity.created(URI.create("/api/v1/roles/" + role.id()))
+            .body(toResponse(role, null));
+
+    if (cacheKey != null) {
+      idempotencyCache.put(cacheKey, response);
+    }
+
+    return response;
   }
 
   /**

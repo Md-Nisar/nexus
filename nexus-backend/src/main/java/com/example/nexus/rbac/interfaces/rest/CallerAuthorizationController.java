@@ -54,10 +54,15 @@ public class CallerAuthorizationController {
       description =
           "No or invalid bearer token")
   @ProblemResponse(
-      status = 404,
-      codes = {"RESOURCE_NOT_FOUND"},
+      status = 403,
+      codes = {"TENANT_SUSPENDED"},
       description =
-          "Feature disabled")
+          "Caller tenant suspended or inactive")
+  @ProblemResponse(
+      status = 404,
+      codes = {"RESOURCE_NOT_FOUND", "TENANT_NOT_FOUND"},
+      description =
+          "Feature disabled or tenant not found")
   public CallerAuthorizationResponse authorization(Authentication authentication) {
     RoleChangeActor actor = RbacControllerSupport.resolveActor(authentication, AUTHENTICATED);
     CallerAuthorization profile = callerAuthorizationService.read(actor);

@@ -1,5 +1,6 @@
 package com.example.nexus.rbac.application;
 
+import com.example.nexus.rbac.application.event.PermissionFreshnessStateTransitionEvent;
 import com.example.nexus.rbac.application.port.out.EpochUnparseableException;
 import com.example.nexus.rbac.application.port.out.PermissionCachePort;
 import com.example.nexus.rbac.application.port.out.PermissionEpochPort;
@@ -26,6 +27,8 @@ import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -39,6 +42,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
+import org.springframework.context.ApplicationEventPublisherAware;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -129,7 +134,7 @@ import org.springframework.stereotype.Service;
  * tenant per minute with the number of occurrences it suppressed (M7 part 2 review L-2).
  */
 @Service
-public final class PermissionFreshnessService {
+public class PermissionFreshnessService implements ApplicationEventPublisherAware {
 
   private static final Logger log = LoggerFactory.getLogger(PermissionFreshnessService.class);
 
@@ -260,6 +265,8 @@ public final class PermissionFreshnessService {
   private final AtomicBoolean isDrainingRole = new AtomicBoolean(false);
   private final Deque<Instant> recentFailures = new ArrayDeque<>();
   private final Deque<Instant> recentEntries = new ArrayDeque<>();
+  private ApplicationEventPublisher eventPublisher;
+  private Executor eventExecutor = ForkJoinPool.commonPool();
 
   /**
    * Creates the service.
@@ -468,6 +475,15 @@ public final class PermissionFreshnessService {
   }
 
   /** Stops the thread that reads role holders for the replay with graceful termination. */
+  @Override
+  public void setApplicationEventPublisher(ApplicationEventPublisher eventPublisher) {
+    this.eventPublisher = eventPublisher;
+  }
+
+  public void setEventExecutor(Executor eventExecutor) {
+    this.eventExecutor = (eventExecutor != null) ? eventExecutor : ForkJoinPool.commonPool();
+  }
+
   @PreDestroy
   void shutdown() {
     roleReadExecutor.shutdownNow();
@@ -857,6 +873,17 @@ public final class PermissionFreshnessService {
     } else if (target == DegradedState.RECOVERING) {
       recoveringFromClosed = (from == DegradedState.DEGRADED_CLOSED || (t0 != null && windowElapsed(now)));
     }
+    if (from != target && eventPublisher != null) {
+      PermissionFreshnessStateTransitionEvent event =
+          new PermissionFreshnessStateTransitionEvent(from, target, cause, now);
+      eventExecutor.execute(() -> {
+        try {
+          eventPublisher.publishEvent(event);
+        } catch (Exception e) {
+          log.warn("Failed to publish freshness state transition event", e);
+        }
+      });
+    }
     if (target == DegradedState.HEALTHY) {
       log.atInfo()
           .addKeyValue(LOG_KEY_EVENT, "RBAC_EPOCH_DEGRADED_EXIT")
@@ -1143,21 +1170,51 @@ public final class PermissionFreshnessService {
     for (UUID userId : userIds) {
       UserKey key = new UserKey(tenantId, userId);
       Long epoch = written.epochs() != null ? written.epochs().get(userId) : null;
-      remember(key, epoch != null ? epoch : lowerBound(key, now), now, true);
+      if (epoch != null) {
+        remember(key, epoch, now, true);
+      } else {
+        rememberIncrement(key, now);
+      }
     }
   }
 
   /**
-   * After a failed bump (L-5): {@code seen + 1}. It can never exceed what the store holds or will
-   * hold, so it cannot make a token the store would accept look stale; it does make stale every
-   * token minted below what this instance has seen, and, for a user it has not seen, a token with
-   * epoch 0.
+   * After a failed bump (L-5): atomic increment in fallback mode ([OR-2.1-10]).
    */
   private void rememberFailedBump(UUID tenantId, Collection<UUID> userIds) {
     Instant now = clock.instant();
     for (UUID userId : userIds) {
       UserKey key = new UserKey(tenantId, userId);
-      remember(key, lowerBound(key, now), now, true, now);
+      rememberIncrement(key, now);
+    }
+  }
+
+  private void rememberIncrement(UserKey key, Instant now) {
+    Counter[] dropped = {null};
+    boolean[] moveRefused = {false};
+    lastSeen.compute(key, (k, old) -> {
+      if (old == null || !now.isBefore(old.expiresAt())) {
+        if (old != null) {
+          release(k.tenantId(), old.ownBump());
+        }
+        dropped[0] = claim(k.tenantId(), true);
+        if (dropped[0] != null) {
+          return null;
+        }
+        return new SeenEpoch(1L, now.plus(lastSeenTtl), true, now);
+      }
+      long nextEpoch = old.epoch() + 1;
+      SeenEpoch fresh = new SeenEpoch(nextEpoch, now.plus(lastSeenTtl), true, now);
+      return merge(k, old, fresh, moveRefused);
+    });
+    if (dropped[0] != null) {
+      dropped[0].increment();
+      if (dropped[0] == lastSeenDroppedBump) {
+        markRevocationLost(key.tenantId(), now);
+      }
+    }
+    if (moveRefused[0]) {
+      lastSeenDroppedBump.increment();
     }
   }
 

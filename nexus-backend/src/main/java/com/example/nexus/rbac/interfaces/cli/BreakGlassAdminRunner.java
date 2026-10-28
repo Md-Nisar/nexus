@@ -1,14 +1,23 @@
 package com.example.nexus.rbac.interfaces.cli;
 
+import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.Appender;
+import ch.qos.logback.core.OutputStreamAppender;
 import com.example.nexus.common.Profiles;
 import com.example.nexus.rbac.application.BootstrapAdminService;
 import com.example.nexus.rbac.application.BreakGlassOutcome;
 import com.example.nexus.rbac.application.BreakGlassRefusalReason;
 import com.example.nexus.rbac.application.ChangeRef;
+import java.io.Flushable;
+import java.io.PrintStream;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.slf4j.ILoggerFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.InitializingBean;
@@ -56,6 +65,8 @@ public class BreakGlassAdminRunner
   private final BootstrapAdminService bootstrapAdminService;
   private final WebApplicationType webApplicationType;
   private final Duration logFlushWait;
+  private final PrintStream out;
+  private final Runnable logFlusher;
 
   /** Reset to 1 at the start of every run, so a failed run cannot report success. */
   private int exitCode = BreakGlassRefusalReason.UNEXPECTED_ERROR.exitCode();
@@ -71,9 +82,28 @@ public class BreakGlassAdminRunner
       BootstrapAdminService bootstrapAdminService,
       ApplicationContext applicationContext,
       @Value("${nexus.rbac.break-glass.log-flush-wait}") Duration logFlushWait) {
+    this(bootstrapAdminService, applicationContext, logFlushWait, defaultOut(), null);
+  }
+
+  BreakGlassAdminRunner(
+      BootstrapAdminService bootstrapAdminService,
+      ApplicationContext applicationContext,
+      Duration logFlushWait,
+      PrintStream out) {
+    this(bootstrapAdminService, applicationContext, logFlushWait, out, null);
+  }
+
+  BreakGlassAdminRunner(
+      BootstrapAdminService bootstrapAdminService,
+      ApplicationContext applicationContext,
+      Duration logFlushWait,
+      PrintStream out,
+      Runnable logFlusher) {
     this.bootstrapAdminService = bootstrapAdminService;
     this.webApplicationType = effectiveWebApplicationType(applicationContext);
     this.logFlushWait = logFlushWait;
+    this.out = out != null ? out : defaultOut();
+    this.logFlusher = logFlusher != null ? logFlusher : this::flushAppenders;
   }
 
   /**
@@ -125,17 +155,63 @@ public class BreakGlassAdminRunner
         targetUserId.isPresent() && changeRef.isPresent()
             ? bootstrapAdminService.grantFirstAdmin(targetUserId.get(), changeRef.get())
             : bootstrapAdminService.recordInvalidArgument();
+    emitCompletionJson(outcome);
     return outcome.exitCode();
   }
 
+  private void emitCompletionJson(BreakGlassOutcome outcome) {
+    String timestamp = Instant.now().toString();
+    String level = outcome.exitCode() == 0 ? "INFO" : "WARN";
+    String eventOutcome = outcome.exitCode() == 0 ? "success" : "failure";
+    int code = outcome.exitCode();
+    String json =
+        String.format(
+            "{\"@timestamp\":\"%s\",\"log.level\":\"%s\",\"message\":\"Break-glass"
+                + " execution finished\",\"event\":{\"action\":\"break_glass\","
+                + "\"outcome\":\"%s\"},\"process\":{\"exit_code\":%d}}",
+            timestamp, level, eventOutcome, code);
+    out.println(json);
+  }
+
   private void waitForLogFlush() {
+    if (out != null) {
+      out.flush();
+    }
+    if (logFlusher != null) {
+      logFlusher.run();
+    }
     try {
-      Thread.sleep(logFlushWait);
+      if (!logFlushWait.isZero() && !logFlushWait.isNegative()) {
+        Thread.sleep(logFlushWait);
+      }
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       log.atWarn()
           .addKeyValue("event", "RBAC_BREAK_GLASS_FLUSH_WAIT_INTERRUPTED")
           .log("Break-glass log-flush wait interrupted; the page may not have been shipped");
+    }
+  }
+
+  private void flushAppenders() {
+    try {
+      ILoggerFactory factory = LoggerFactory.getILoggerFactory();
+      if (factory instanceof LoggerContext context) {
+        for (ch.qos.logback.classic.Logger l : context.getLoggerList()) {
+          for (Iterator<Appender<ILoggingEvent>> it = l.iteratorForAppenders(); it.hasNext();) {
+            Appender<ILoggingEvent> appender = it.next();
+            if (appender instanceof Flushable flushable) {
+              flushable.flush();
+            } else if (appender instanceof OutputStreamAppender<ILoggingEvent> osa) {
+              java.io.OutputStream os = osa.getOutputStream();
+              if (os != null) {
+                os.flush();
+              }
+            }
+          }
+        }
+      }
+    } catch (Exception ignored) {
+      // Best-effort flush probe
     }
   }
 
@@ -170,5 +246,11 @@ public class BreakGlassAdminRunner
       return WebApplicationType.REACTIVE;
     }
     return WebApplicationType.NONE;
+  }
+  private static PrintStream defaultOut() {
+    return new PrintStream(
+        new java.io.FileOutputStream(java.io.FileDescriptor.out),
+        false,
+        java.nio.charset.StandardCharsets.UTF_8);
   }
 }

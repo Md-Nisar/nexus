@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -96,6 +97,28 @@ class BreakGlassAdminRunnerTest {
   }
 
   // ── Exit codes ──────────────────────────────────────────────────────────────────────────
+
+  @Test
+  void should_emit_structured_json_to_stdout() throws Exception {
+    java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+    java.io.PrintStream testOut =
+        new java.io.PrintStream(baos, true, java.nio.charset.StandardCharsets.UTF_8);
+    BreakGlassAdminRunner customRunner =
+        new BreakGlassAdminRunner(service, new GenericApplicationContext(), Duration.ZERO, testOut);
+
+    UUID target = UUID.fromString(VALID_TARGET);
+    when(service.grantFirstAdmin(target, new ChangeRef(VALID_REF)))
+        .thenReturn(new BreakGlassOutcome.Granted(UUID.randomUUID(), target, UUID.randomUUID()));
+
+    customRunner.run(args("--target-user-id=" + VALID_TARGET, "--change-ref=" + VALID_REF));
+
+    String stdout = baos.toString(java.nio.charset.StandardCharsets.UTF_8);
+    assertThat(stdout)
+        .contains("\"@timestamp\"")
+        .contains("\"log.level\":\"INFO\"")
+        .contains("\"event\":{\"action\":\"break_glass\",\"outcome\":\"success\"}")
+        .contains("\"process\":{\"exit_code\":0}");
+  }
 
   @Test
   void should_exit0_when_serviceGrants() throws Exception {
@@ -444,5 +467,15 @@ class BreakGlassAdminRunnerTest {
 
   private static Logger runnerLogger() {
     return (Logger) LoggerFactory.getLogger(BreakGlassAdminRunner.class);
+  }
+  @Test
+  void should_verify_flush_completion_before_exit() throws Exception {
+    Runnable logFlusher = mock(Runnable.class);
+    BreakGlassAdminRunner customRunner =
+        new BreakGlassAdminRunner(service, new GenericApplicationContext(), Duration.ZERO, null, logFlusher);
+
+    customRunner.run(args());
+
+    verify(logFlusher, atLeastOnce()).run();
   }
 }

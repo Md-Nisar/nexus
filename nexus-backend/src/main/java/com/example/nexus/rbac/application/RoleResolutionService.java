@@ -85,9 +85,7 @@ public class RoleResolutionService {
   public ResolvedPermissions resolveUncached(UUID userId, UUID tenantId) {
     Objects.requireNonNull(userId, "userId must not be null");
     Objects.requireNonNull(tenantId, "tenantId must not be null");
-    return new ResolvedPermissions(
-        userRoleQueryPort.findActiveRoleNames(userId, tenantId),
-        userRoleQueryPort.findActivePermissionNames(userId, tenantId));
+    return userRoleQueryPort.findActiveRoleAndPermissionNames(userId, tenantId);
   }
 
   /** Order-independent comparison — both inputs are deduplicated by {@link ResolvedPermissions}. */

@@ -58,6 +58,8 @@ public class AccessReviewService {
   private static final String ENDPOINT_ROLE_HOLDERS = "role_holders";
   private static final String ENDPOINT_PERMISSION_HOLDERS = "permission_holders";
   private static final String ENDPOINT_EFFECTIVE_PERMISSIONS = "effective_permissions";
+
+  public static final int MAX_EFFECTIVE_PERMISSIONS = 1000;
   private static final String COUNTER_ACCESS_REVIEW_QUERY = "nexus.rbac.access_review_query";
   private static final String COUNTER_PERMISSION_DENIED = "nexus.rbac.permission_denied";
   private static final String MESSAGE_NO_SUCH_ROLE = "No such role";
@@ -137,11 +139,16 @@ public class AccessReviewService {
     Map<String, List<UUID>> rolesByPermission = new LinkedHashMap<>();
     for (PermissionViaRole row :
         userRoleQueryPort.findActivePermissionsViaRoles(userId, actor.tenantId())) {
+      if (rolesByPermission.size() >= MAX_EFFECTIVE_PERMISSIONS
+          && !rolesByPermission.containsKey(row.permissionName())) {
+        break;
+      }
       rolesByPermission
           .computeIfAbsent(row.permissionName(), name -> new ArrayList<>())
           .add(row.roleId());
     }
     return rolesByPermission.entrySet().stream()
+        .limit(MAX_EFFECTIVE_PERMISSIONS)
         .map(e -> new EffectivePermission(e.getKey(), e.getValue()))
         .toList();
   }

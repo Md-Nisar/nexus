@@ -163,6 +163,17 @@ class RbacSchemaMigrationIT {
   }
 
   @Test
+  void should_have_index_on_assigned_by_column() {
+    List<String> assignedByIndexes =
+        jdbc.queryForList(
+            "SELECT INDEX_NAME FROM information_schema.STATISTICS "
+                + "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'user_roles' "
+                + "AND COLUMN_NAME = 'assigned_by' AND SEQ_IN_INDEX = 1",
+            String.class);
+    assertThat(assignedByIndexes).contains("idx_user_roles_assigned_by");
+  }
+
+  @Test
   void should_haveFlywayMigrationV5Applied_successfully() {
     List<String> versions =
         jdbc.queryForList(
