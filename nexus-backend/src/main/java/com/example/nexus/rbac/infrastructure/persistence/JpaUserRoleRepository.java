@@ -441,6 +441,10 @@ public interface JpaUserRoleRepository
    * roleIds}, one statement. A holder is an active assignment; the user's status is ignored (no
    * join to {@code users}: {@code rbac} must not read {@code identity}). Tenant predicate on both
    * tables. Non-locking.
+   *
+   * <p><b>Repeatable Read Snapshot Semantics:</b> Executed under default REPEATABLE READ isolation
+   * without locking. Concurrent inserts or updates committed after the transaction snapshot is
+   * established are invisible to this read; counts represent the consistent snapshot.
    */
   @Query(
       """

@@ -32,6 +32,10 @@ import org.springframework.transaction.annotation.Transactional;
  * controller), ids only (no email, no name; the client joins ids to names under identity's own
  * permissions). Every method is read-only and non-locking.
  *
+ * <p><b>Repeatable Read Snapshot Semantics:</b> Reads are executed under transaction-level snapshot
+ * isolation ({@code readOnly = true}) without locking. Concurrent modifications committed after the
+ * snapshot is established are invisible to the review display.
+ *
  * <p><b>Disclosure (RES-37, Low, accepted).</b> This is the first live use of {@code audit:read}, and
  * the role-holders and permission-holders reads disclose the tenant's administrator roster. The one
  * control inside this class is the {@code assignedBy} redaction: it is shown only to an administrator

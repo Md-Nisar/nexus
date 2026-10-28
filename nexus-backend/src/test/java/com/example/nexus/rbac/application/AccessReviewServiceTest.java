@@ -315,4 +315,15 @@ class AccessReviewServiceTest {
                 .count())
         .isEqualTo(1.0);
   }
+
+  @Test
+  void should_document_repeatable_read_snapshot_behavior() {
+    when(assignmentPort.findRole(roleId)).thenReturn(Optional.of(role(tenantId)));
+    when(assignmentPort.findActiveRoleHolders(roleId, tenantId, 0, 20))
+        .thenReturn(holders(UUID.randomUUID()));
+    callerIsAdministrator(true);
+
+    PageResult<RoleHolder> result = service.listRoleHolders(actor, roleId, 0, 20);
+    assertThat(result.items()).hasSize(1);
+  }
 }
