@@ -2,6 +2,7 @@ package com.example.nexus.identity.infrastructure.security;
 
 import com.example.nexus.common.domain.AuthenticationException;
 import com.example.nexus.common.domain.TenantSuspendedException;
+import com.example.nexus.common.security.AuthenticationDetailKeys;
 import com.example.nexus.identity.application.port.out.JwtPort;
 import com.example.nexus.identity.domain.AccessTokenResult;
 import com.example.nexus.identity.domain.AuthConstants;
@@ -49,7 +50,7 @@ public class JwtRs256Service implements JwtPort {
   private static final String METRIC_TOKEN_REJECTED = "nexus.auth.token_rejected";
   private static final String CLAIM_SCHEMA_VERSION = "schema_version";
   private static final String CLAIM_TENANT_ID = "tenant_id";
-  private static final String CLAIM_PERM_EPOCH = "perm_epoch";
+  private static final String CLAIM_PERM_EPOCH = AuthenticationDetailKeys.EPOCH;
 
   private final KeyPair keyPair;
   private final String kid;
