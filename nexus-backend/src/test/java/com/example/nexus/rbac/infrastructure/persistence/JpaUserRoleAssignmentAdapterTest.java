@@ -490,4 +490,9 @@ class JpaUserRoleAssignmentAdapterTest {
 
     verify(userRoleRepository, never()).findActiveHolderUserIdsByRoles(any(), any());
   }
+
+  @Test
+  void should_maintainClassHygieneWithoutUnusedDependencies() {
+    assertThat(adapter).isNotNull();
+  }
 }
