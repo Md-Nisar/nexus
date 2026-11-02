@@ -68,7 +68,7 @@ sealed interface DirectoryPageRequest
       throw new FieldValidationException(
           VALIDATION_FAILED, "size", "must be between 1 and " + MAX_SIZE);
     }
-    if ((long) page * size > MAX_OFFSET) {
+    if ((long) page * (long) size > (long) MAX_OFFSET) {
       throw new FieldValidationException(
           VALIDATION_FAILED, "page", "page times size must not exceed " + MAX_OFFSET);
     }

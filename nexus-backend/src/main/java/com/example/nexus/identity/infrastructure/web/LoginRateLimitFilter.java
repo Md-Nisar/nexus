@@ -161,13 +161,16 @@ public class LoginRateLimitFilter extends OncePerRequestFilter {
     String emailHmac = extractEmailHmac(body);
 
     RateLimitResult ipResult = rateLimitStore.tryConsume("IP:" + clientIp, ipWindowSeconds, ipMaxAttempts);
+    if (!ipResult.allowed()) {
+      writeTooManyRequests(response, ipResult.retryAfterSeconds());
+      return;
+    }
     RateLimitResult userResult = emailHmac != null
         ? rateLimitStore.tryConsume("USER:" + emailHmac, userWindowSeconds, userMaxAttempts)
         : RateLimitResult.permit();
 
-    if (!ipResult.allowed() || !userResult.allowed()) {
-      long retryAfter = Math.max(ipResult.retryAfterSeconds(), userResult.retryAfterSeconds());
-      writeTooManyRequests(response, retryAfter);
+    if (!userResult.allowed()) {
+      writeTooManyRequests(response, userResult.retryAfterSeconds());
       return;
     }
     // Replay body so the controller's @RequestBody can still read it
@@ -191,13 +194,16 @@ public class LoginRateLimitFilter extends OncePerRequestFilter {
 
     RateLimitResult ipResult = rateLimitStore.tryConsume(
         "FORGOT_IP:" + clientIp, ipWindowSeconds, forgotIpMaxAttempts);
+    if (!ipResult.allowed()) {
+      writeTooManyRequests(response, ipResult.retryAfterSeconds());
+      return;
+    }
     RateLimitResult userResult = emailHmac != null
         ? rateLimitStore.tryConsume("FORGOT_USER:" + emailHmac, userWindowSeconds, userMaxAttempts)
         : RateLimitResult.permit();
 
-    if (!ipResult.allowed() || !userResult.allowed()) {
-      long retryAfter = Math.max(ipResult.retryAfterSeconds(), userResult.retryAfterSeconds());
-      writeTooManyRequests(response, retryAfter);
+    if (!userResult.allowed()) {
+      writeTooManyRequests(response, userResult.retryAfterSeconds());
       return;
     }
     chain.doFilter(new ReplayableBodyRequest(request, body), response);

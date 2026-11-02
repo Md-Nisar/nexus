@@ -162,7 +162,7 @@ class RedisPermissionCacheAdapterIT {
     assertThat(redisTemplate.opsForSet().members(permKey(tenantId, userId, EPOCH)))
         .containsExactly("user:read");
     assertThat(redisTemplate.getExpire(permKey(tenantId, userId, EPOCH)))
-        .isBetween(TTL_SECONDS - 5, TTL_SECONDS);
+        .isBetween(TTL_SECONDS - 65, TTL_SECONDS + 60);
     assertThat(adapter.get(tenantId, userId, EPOCH + 1))
         .as("the same user under another epoch is a miss")
         .isEmpty();

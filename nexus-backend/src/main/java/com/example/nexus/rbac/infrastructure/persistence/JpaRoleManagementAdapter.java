@@ -76,6 +76,9 @@ public class JpaRoleManagementAdapter implements RoleManagementPort {
 
   @Override
   public UUID createRole(UUID tenantId, String name, String description) {
+    if (roleRepository.findIdByTenantIdAndName(tenantId, name).isPresent()) {
+      throw new DuplicateRoleNameException();
+    }
     try {
       Role role = new Role(idGenerator.newId(), tenantId, name, description, false);
       return roleRepository.saveAndFlush(role).getId();
@@ -102,6 +105,12 @@ public class JpaRoleManagementAdapter implements RoleManagementPort {
 
   @Override
   public int updateRole(UUID roleId, UUID tenantId, String name, String description) {
+    if (name != null) {
+      Optional<UUID> existing = roleRepository.findIdByTenantIdAndName(tenantId, name);
+      if (existing.isPresent() && !existing.get().equals(roleId)) {
+        throw new DuplicateRoleNameException();
+      }
+    }
     try {
       return roleRepository.updateNameAndDescription(roleId, tenantId, name, description);
     } catch (DataIntegrityViolationException e) {

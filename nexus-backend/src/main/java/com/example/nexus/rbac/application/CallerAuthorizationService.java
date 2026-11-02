@@ -1,5 +1,8 @@
 package com.example.nexus.rbac.application;
 
+import com.example.nexus.common.domain.ResourceNotFoundException;
+import com.example.nexus.rbac.application.port.out.DirectoryUser;
+import com.example.nexus.rbac.application.port.out.UserDirectoryPort;
 import com.example.nexus.rbac.application.port.out.UserRoleAssignmentPort;
 import com.example.nexus.rbac.application.port.out.UserRoleQueryPort;
 import com.example.nexus.rbac.domain.RoleChangeActor;
@@ -7,8 +10,10 @@ import com.example.nexus.rbac.domain.RoleRef;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.util.List;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.example.nexus.common.domain.TenantSuspendedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,14 +40,17 @@ public class CallerAuthorizationService {
   private final UserRoleQueryPort userRoleQueryPort;
   private final UserRoleAssignmentPort userRoleAssignmentPort;
   private final MeterRegistry meterRegistry;
+  private final UserDirectoryPort userDirectoryPort;
 
   public CallerAuthorizationService(
       UserRoleQueryPort userRoleQueryPort,
       UserRoleAssignmentPort userRoleAssignmentPort,
-      MeterRegistry meterRegistry) {
+      MeterRegistry meterRegistry,
+      UserDirectoryPort userDirectoryPort) {
     this.userRoleQueryPort = userRoleQueryPort;
     this.userRoleAssignmentPort = userRoleAssignmentPort;
     this.meterRegistry = meterRegistry;
+    this.userDirectoryPort = userDirectoryPort;
   }
 
   /**
@@ -50,6 +58,17 @@ public class CallerAuthorizationService {
    * (sorted), and whether one of those roles is admin-defining.
    */
   public CallerAuthorization read(RoleChangeActor actor) {
+    if (userDirectoryPort != null) {
+      Optional<DirectoryUser> user = userDirectoryPort.findUser(actor.userId());
+      if (user.isPresent()) {
+        if (!user.get().tenantId().equals(actor.tenantId())) {
+          throw new ResourceNotFoundException("TENANT_NOT_FOUND", "Tenant not found");
+        }
+        if (!user.get().active()) {
+          throw new TenantSuspendedException("Tenant suspended or disabled");
+        }
+      }
+    }
     List<RoleRef> roles = userRoleQueryPort.findActiveRoles(actor.userId(), actor.tenantId());
     List<String> permissions =
         userRoleQueryPort.findActivePermissionNames(actor.userId(), actor.tenantId()).stream()

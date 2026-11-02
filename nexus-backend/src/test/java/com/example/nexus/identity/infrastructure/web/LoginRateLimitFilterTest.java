@@ -127,6 +127,7 @@ class LoginRateLimitFilterTest {
     assertThat(res.getHeader("Retry-After")).isEqualTo("300");
     assertThat(res.getContentType()).contains("application/problem+json");
     assertThat(res.getContentAsString()).contains("RATE_001");
+    verify(rateLimitStore, never()).tryConsume(startsWith("USER:"), anyInt(), anyInt());
     verify(chain, never()).doFilter(
         any(jakarta.servlet.ServletRequest.class),
         any(jakarta.servlet.ServletResponse.class));

@@ -17,6 +17,7 @@ local count = redis.call('ZCARD', key)
 if count >= maxAttempts then
   local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
   local retryAfterMs = window - (now - tonumber(oldest[2]))
+  redis.call('PEXPIRE', key, window)
   return {0, math.max(1, math.ceil(retryAfterMs / 1000))}
 else
   redis.call('ZADD', key, now, now .. '-' .. math.random(100000))

@@ -101,7 +101,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
       HttpServletRequest req, HttpServletResponse res, FilterChain chain)
       throws ServletException, IOException {
     String header = req.getHeader("Authorization");
-    if (header == null || !header.startsWith("Bearer ")) {
+    if (header == null || !header.regionMatches(true, 0, "Bearer ", 0, 7)) {
       chain.doFilter(req, res);
       return;
     }

@@ -444,4 +444,17 @@ class EpochReplayQueueTest {
   private static List<UUID> users(int count) {
     return IntStream.range(0, count).mapToObj(i -> UUID.randomUUID()).toList();
   }
+
+  @Test
+  void should_handle_corrupted_entries_gracefully() {
+    EpochReplayQueue queue = new EpochReplayQueue(10);
+    int dropped = queue.offer(null, List.of(USER), T);
+    assertThat(dropped).isEqualTo(0);
+    assertThat(queue.isEmpty()).isTrue();
+    assertThat(queue.poll(500, NEVER_EXPIRED)).isEmpty();
+
+    queue.requeue(new Batch(null, List.of(new EpochReplayQueue.Entry(null, USER, T, T))));
+    assertThat(queue.isEmpty()).isTrue();
+    assertThat(queue.poll(500, NEVER_EXPIRED)).isEmpty();
+  }
 }

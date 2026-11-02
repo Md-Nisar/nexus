@@ -4,6 +4,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -31,6 +32,7 @@ final class RoleReplayQueue {
   private final int tenantCapacity;
   private final int borrowLimit;
   private final Duration maxRetention;
+  private final RoleReplayStore store;
   // Guarded by `this`; insertion-ordered, so the oldest role is polled first.
   private final Map<RoleKey, Times> roles = new LinkedHashMap<>();
 
@@ -41,22 +43,31 @@ final class RoleReplayQueue {
    * @throws IllegalArgumentException if {@code capacity} is below 1
    */
   RoleReplayQueue(int capacity) {
-    this(capacity, capacity, DEFAULT_MAX_RETENTION);
+    this(capacity, capacity, DEFAULT_MAX_RETENTION, null);
   }
 
   RoleReplayQueue(int capacity, int tenantCapacity) {
-    this(capacity, tenantCapacity, DEFAULT_MAX_RETENTION);
+    this(capacity, tenantCapacity, DEFAULT_MAX_RETENTION, null);
+  }
+
+  RoleReplayQueue(int capacity, int tenantCapacity, Duration maxRetention) {
+    this(capacity, tenantCapacity, maxRetention, null);
   }
 
   /**
-   * Creates the queue with a share per tenant and a maximum retention TTL for eviction.
+   * Creates the queue with a share per tenant, a maximum retention TTL, and optional persistence store.
    *
    * @param capacity the most distinct roles held at once
    * @param tenantCapacity the most distinct roles of one tenant held at once
    * @param maxRetention maximum duration an entry may remain queued before eviction
+   * @param store optional persistence store backing the queue across restarts
    * @throws IllegalArgumentException if either capacity is below 1 or maxRetention is not positive
    */
-  RoleReplayQueue(int capacity, int tenantCapacity, Duration maxRetention) {
+  RoleReplayQueue(
+      int capacity,
+      int tenantCapacity,
+      Duration maxRetention,
+      RoleReplayStore store) {
     if (capacity < 1 || tenantCapacity < 1) {
       throw new IllegalArgumentException("role replay capacity must be positive");
     }
@@ -67,6 +78,19 @@ final class RoleReplayQueue {
     this.tenantCapacity = tenantCapacity;
     this.borrowLimit = Math.max(tenantCapacity, capacity / 2);
     this.maxRetention = maxRetention;
+    this.store = store;
+    if (store != null) {
+      List<Entry> loaded = store.loadAll();
+      if (loaded != null) {
+        for (Entry e : loaded) {
+          if (e != null && e.tenantId() != null && e.roleId() != null) {
+            roles.put(
+                new RoleKey(e.tenantId(), e.roleId()),
+                new Times(e.oldestFailedAt(), e.newestFailedAt(), e.attempts(), e.lastAttemptAt()));
+          }
+        }
+      }
+    }
   }
 
   /**
@@ -78,11 +102,18 @@ final class RoleReplayQueue {
    * @return {@code false} if the role is new and the queue is full (the role is not queued)
    */
   synchronized boolean offer(UUID tenantId, UUID roleId, Instant failedAt) {
+    if (tenantId == null || roleId == null || failedAt == null) {
+      return false;
+    }
     evictStale(failedAt.minus(maxRetention));
     RoleKey key = new RoleKey(tenantId, roleId);
     Times queued = roles.get(key);
     if (queued != null) {
-      roles.put(key, queued.merge(failedAt, failedAt));
+      Times merged = queued.merge(failedAt, failedAt);
+      roles.put(key, merged);
+      if (store != null) {
+        store.save(tenantId, roleId, merged.oldest(), merged.newest());
+      }
       return true;
     }
     if (roles.size() >= capacity) {
@@ -92,7 +123,11 @@ final class RoleReplayQueue {
     if (roles.size() >= borrowLimit && queuedFor(tenantId) >= tenantCapacity) {
       return false;
     }
-    roles.put(key, new Times(failedAt, failedAt, 0, null));
+    Times created = new Times(failedAt, failedAt, 0, null);
+    roles.put(key, created);
+    if (store != null) {
+      store.save(tenantId, roleId, created.oldest(), created.newest());
+    }
     return true;
   }
 
@@ -120,6 +155,9 @@ final class RoleReplayQueue {
     while (it.hasNext()) {
       Map.Entry<RoleKey, Times> next = it.next();
       if (!next.getValue().newest().isAfter(expiredAtOrBefore)) {
+        if (store != null) {
+          store.remove(next.getKey().tenantId(), next.getKey().roleId());
+        }
         it.remove();
         continue;
       }
@@ -132,6 +170,9 @@ final class RoleReplayQueue {
           next.getValue().attempts(),
           next.getValue().lastAttemptAt());
       if (entry.isEligibleForRetry(now)) {
+        if (store != null) {
+          store.remove(key.tenantId(), key.roleId());
+        }
         it.remove();
         return Optional.of(entry);
       }
@@ -157,30 +198,40 @@ final class RoleReplayQueue {
    * @param attemptedAt timestamp when the replay attempt failed
    */
   synchronized void requeue(Entry entry, Instant attemptedAt) {
+    if (entry == null || entry.tenantId() == null || entry.roleId() == null) {
+      return;
+    }
     RoleKey key = new RoleKey(entry.tenantId(), entry.roleId());
     Times queued = roles.get(key);
     int newAttempts = entry.attempts() + 1;
+    Times updated;
     if (queued == null) {
-      roles.put(key, new Times(
-          entry.oldestFailedAt(), entry.newestFailedAt(), newAttempts, attemptedAt));
+      updated = new Times(
+          entry.oldestFailedAt(), entry.newestFailedAt(), newAttempts, attemptedAt);
+      roles.put(key, updated);
     } else {
-      roles.put(
-          key,
-          new Times(
-              entry.oldestFailedAt().isBefore(queued.oldest())
-                  ? entry.oldestFailedAt() : queued.oldest(),
-              entry.newestFailedAt().isAfter(queued.newest())
-                  ? entry.newestFailedAt() : queued.newest(),
-              Math.max(queued.attempts(), newAttempts),
-              attemptedAt));
+      updated = new Times(
+          entry.oldestFailedAt().isBefore(queued.oldest())
+              ? entry.oldestFailedAt() : queued.oldest(),
+          entry.newestFailedAt().isAfter(queued.newest())
+              ? entry.newestFailedAt() : queued.newest(),
+          Math.max(queued.attempts(), newAttempts),
+          attemptedAt);
+      roles.put(key, updated);
+    }
+    if (store != null) {
+      store.save(entry.tenantId(), entry.roleId(), updated.oldest(), updated.newest());
     }
   }
 
   /** Bounded by the capacity, at most 1,000 in practice, and only reached for a new role. */
   private int queuedFor(UUID tenantId) {
+    if (tenantId == null) {
+      return 0;
+    }
     int count = 0;
     for (RoleKey key : roles.keySet()) {
-      if (key.tenantId().equals(tenantId)) {
+      if (key.tenantId() != null && key.tenantId().equals(tenantId)) {
         count++;
       }
     }
@@ -199,6 +250,9 @@ final class RoleReplayQueue {
     while (it.hasNext()) {
       Map.Entry<RoleKey, Times> next = it.next();
       if (!next.getValue().newest().isAfter(expiredAtOrBefore)) {
+        if (store != null) {
+          store.remove(next.getKey().tenantId(), next.getKey().roleId());
+        }
         it.remove();
         evicted++;
       }
@@ -249,5 +303,12 @@ final class RoleReplayQueue {
       }
       return !now.isBefore(lastAttemptAt.plus(backoffDuration()));
     }
+  }
+
+  /** Persistence store contract for backing RoleReplayQueue entries across restarts (OR-15). */
+  interface RoleReplayStore {
+    void save(UUID tenantId, UUID roleId, Instant oldestFailedAt, Instant newestFailedAt);
+    void remove(UUID tenantId, UUID roleId);
+    List<Entry> loadAll();
   }
 }

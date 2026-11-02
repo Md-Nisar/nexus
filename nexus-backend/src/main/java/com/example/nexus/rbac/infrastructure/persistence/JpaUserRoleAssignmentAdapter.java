@@ -16,6 +16,7 @@ import com.example.nexus.rbac.domain.RolePermissionRef;
 import com.example.nexus.rbac.domain.UserViaRole;
 import java.nio.ByteBuffer;
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -98,7 +99,11 @@ public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
     // IN-list to byte[] explicitly and maps the returned entities down to id/userId-only records
     // before they escape this adapter, preserving the repository method's "ids only, never
     // entities" contract.
-    List<byte[]> roleIdBytes = roleIds.stream().map(JpaUserRoleAssignmentAdapter::toBytes).toList();
+    List<byte[]> roleIdBytes =
+        roleIds.stream()
+            .map(JpaUserRoleAssignmentAdapter::toBytes)
+            .sorted(Arrays::compareUnsigned)
+            .toList();
     return userRoleRepository
         .lockActiveAssignmentHoldersByRoles(roleIdBytes, toBytes(tenantId))
         .stream()
@@ -115,7 +120,11 @@ public class JpaUserRoleAssignmentAdapter implements UserRoleAssignmentPort {
     if (roleIds.isEmpty()) {
       return List.of();
     }
-    List<byte[]> roleIdBytes = roleIds.stream().map(JpaUserRoleAssignmentAdapter::toBytes).toList();
+    List<byte[]> roleIdBytes =
+        roleIds.stream()
+            .map(JpaUserRoleAssignmentAdapter::toBytes)
+            .sorted(Arrays::compareUnsigned)
+            .toList();
     return userRoleRepository.lockRolePermissionsByRoleIds(roleIdBytes, toBytes(tenantId)).stream()
         .map(row -> new RolePermissionRef(fromBytes((byte[]) row[0]), fromBytes((byte[]) row[1])))
         .toList();
