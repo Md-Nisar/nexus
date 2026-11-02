@@ -1120,7 +1120,7 @@ class LastAdminLockoutIT {
    * retired with the gate (ledger rows 1 and 2): the administrator status now comes from M11's own
    * rows, so there is no second locking read to contain. The control that replaces D8's
    * containment proof is that nothing else locks {@code user_roles} on this path, which the
-   * "exactly one captured statement contains {@code for update}" lookup below asserts; the one
+   * "only the roles row lock and M11 contain {@code for update}" check below asserts; the one
    * {@code for share} allowed since US-019 RC-57.2 is the current read of {@code role_permissions},
    * which locks no {@code user_roles} row.
    *
@@ -1147,7 +1147,18 @@ class LastAdminLockoutIT {
 
     // M11 -- PESSIMISTIC_WRITE renders "for update"
     // (JpaUserRoleRepository#lockActiveAssignmentHoldersByRoles).
-    String m11Sql = findCapturedStatement(emittedSql, "for update");
+    // OR-4.1-02 adds the roles row lock (SELECT id FROM roles ... FOR UPDATE) ahead of M11, so M11
+    // is the one FOR UPDATE statement on user_roles and the role row lock is the only other.
+    List<String> forUpdate =
+        emittedSql.stream().filter(sql -> sql.toLowerCase(Locale.ROOT).contains("for update")).toList();
+    assertThat(forUpdate)
+        .as("only the roles row lock and M11 may take FOR UPDATE: " + emittedSql)
+        .hasSize(2);
+    assertThat(forUpdate.get(0).toLowerCase(Locale.ROOT))
+        .as("the roles row lock precedes M11")
+        .contains("from roles")
+        .doesNotContain("user_roles");
+    String m11Sql = forUpdate.get(1);
     // US-019 RC-57.2: the one other locking read is the current classification of the lock set,
     // a FOR SHARE on role_permissions only; nothing else locks user_roles on this path.
     String currentReadSql = findCapturedStatement(emittedSql, "for share");

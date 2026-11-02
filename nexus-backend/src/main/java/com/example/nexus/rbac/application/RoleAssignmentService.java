@@ -265,10 +265,6 @@ public class RoleAssignmentService {
     // throttled actor is blocked only on the paths that take the set lock or target themself.
     TargetClassification target = classifyTarget(actor, role, OPERATION_ASSIGN);
     boolean throttled = evaluateThrottle(actor, targetUserId, target, OPERATION_ASSIGN);
-    if (target.adminDefining()
-        && !userRoleAssignmentPort.lockRoleRow(role.getId(), actor.tenantId())) {
-      throw new ResourceNotFoundException("ROLE_NOT_FOUND", MESSAGE_NO_SUCH_ROLE);
-    }
     SetLock preLockClassified = target.adminDefining() ? acquireSetLock(actor, target, role) : null;
     Timer.Sample lockHoldSample = preLockClassified == null ? null : preLockClassified.holdTimer();
 
@@ -629,8 +625,14 @@ public class RoleAssignmentService {
     Set<UUID> adminDefiningRoleIds =
         resolveAdminDefiningRoleIds(userRoleAssignmentPort, actor.tenantId(), target.catalogueIds());
     List<UUID> lockSet = buildAscendingLockSet(adminDefiningRoleIds, role.getId());
+    // The target's own row is locked here, in ascending order with the rest of the set, and not
+    // before: locking it first would invert the order against a concurrent request whose target
+    // sorts lower (OR-4.1-02 deadlock). A deleted target is a 404; other set members may be gone.
     for (UUID roleIdInSet : lockSet) {
-      userRoleAssignmentPort.lockRoleRow(roleIdInSet, actor.tenantId());
+      boolean live = userRoleAssignmentPort.lockRoleRow(roleIdInSet, actor.tenantId());
+      if (!live && roleIdInSet.equals(role.getId())) {
+        throw new ResourceNotFoundException("ROLE_NOT_FOUND", MESSAGE_NO_SUCH_ROLE);
+      }
     }
     List<ActiveAssignmentHolder> lockedHolders =
         userRoleAssignmentPort.lockActiveAssignmentHolders(actor.tenantId(), lockSet);
