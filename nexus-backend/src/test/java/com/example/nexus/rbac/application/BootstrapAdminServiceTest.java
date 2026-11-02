@@ -821,9 +821,28 @@ class BootstrapAdminServiceTest {
     assertThat(outcome.exitCode()).isZero();
   }
 
-  /** LOCKED (self-recovering lockout), PENDING and ACTIVE holders still count: exit 5. */
+  @Test
+  void should_grantExit0_andWriteSuccessRow_when_theSoleAdministratorIsLocked() {
+    UUID lockedAdmin = UUID.randomUUID();
+    lockedHolders(holder(lockedAdmin, tenantAdminRoleId));
+    lockedStatuses(
+        Map.of(targetUserId, DirectoryUserStatus.ACTIVE, lockedAdmin, DirectoryUserStatus.LOCKED));
+
+    BreakGlassOutcome outcome = service.grantFirstAdmin(targetUserId, CHANGE_REF);
+
+    assertThat(outcome)
+        .isEqualTo(new BreakGlassOutcome.Granted(tenantId, targetUserId, tenantAdminRoleId));
+    assertThat(outcome.exitCode()).isZero();
+    verify(userRoleAssignmentPort).assign(targetUserId, tenantAdminRoleId, tenantId, targetUserId);
+    verify(rbacAuditPort)
+        .recordBreakGlassGrant(
+            new BreakGlassAuditEvent(tenantId, targetUserId, CHANGE_REF.value()));
+    verify(rbacAuditPort, never()).recordBreakGlassRefusal(any(), anyString());
+  }
+
+  /** PENDING and ACTIVE holders still count: exit 5 ([OR-2.2-01]). */
   @ParameterizedTest(name = "{0}")
-  @EnumSource(value = DirectoryUserStatus.class, names = "DISABLED", mode = EnumSource.Mode.EXCLUDE)
+  @EnumSource(value = DirectoryUserStatus.class, names = {"DISABLED", "LOCKED"}, mode = EnumSource.Mode.EXCLUDE)
   void should_refuseWithExit5_andInsertNothing_when_theSoleAdministratorIsNotDisabled(
       DirectoryUserStatus status) {
     UUID admin = UUID.randomUUID();

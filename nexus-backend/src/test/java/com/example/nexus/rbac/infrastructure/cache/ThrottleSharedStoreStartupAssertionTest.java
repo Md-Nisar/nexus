@@ -81,7 +81,10 @@ class ThrottleSharedStoreStartupAssertionTest {
    *
    * and remove this {@code @Disabled}. The runbook keeps it as a deployment check.
    */
-  @Disabled("application-prod.yml needs nexus.rbac.throttle.require-shared-store: true (human edit)")
+  @Test
+  void should_enforce_shared_throttle_store_in_prod() {
+    assertThat(resolveRequireSharedStore("prod")).isTrue();
+  }
   @Test
   void should_resolveRequireSharedStoreTrue_when_prodProfileActive() {
     assertThat(resolveRequireSharedStore("prod")).isTrue();

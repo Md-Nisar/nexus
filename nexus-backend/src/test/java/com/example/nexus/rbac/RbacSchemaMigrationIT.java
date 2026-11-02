@@ -235,6 +235,30 @@ class RbacSchemaMigrationIT {
   }
 
   @Test
+  void should_use_index_for_deleted_roles_health_query() {
+    List<String> columns =
+        jdbc.queryForList(
+            "SELECT column_name FROM information_schema.statistics "
+                + "WHERE table_schema = DATABASE() AND table_name = 'roles' "
+                + "AND index_name = 'idx_roles_deleted_at_id' ORDER BY seq_in_index",
+            String.class);
+    assertThat(columns).containsExactly("deleted_at", "id");
+
+    List<Map<String, Object>> explain =
+        jdbc.queryForList(
+            "EXPLAIN SELECT COUNT(*) FROM user_roles ur JOIN roles r ON r.id = ur.role_id "
+                + "WHERE r.deleted_at IS NOT NULL AND ur.revoked_at IS NULL");
+    assertThat(explain)
+        .anySatisfy(
+            row -> {
+              if ("r".equals(row.get("table"))) {
+                assertThat(String.valueOf(row.get("possible_keys")))
+                    .contains("idx_roles_deleted_at_id");
+              }
+            });
+  }
+
+  @Test
   void should_keepSingleColumnRoleForeignKey_when_v8Applied() {
     Integer count =
         jdbc.queryForObject(

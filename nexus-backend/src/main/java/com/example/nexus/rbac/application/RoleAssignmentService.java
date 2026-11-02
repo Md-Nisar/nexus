@@ -264,10 +264,6 @@ public class RoleAssignmentService {
     // throttled actor is blocked only on the paths that take the set lock or target themself.
     TargetClassification target = classifyTarget(actor, role, OPERATION_ASSIGN);
     boolean throttled = evaluateThrottle(actor, targetUserId, target, OPERATION_ASSIGN);
-    if (target.adminDefining()
-        && !userRoleAssignmentPort.lockRoleRow(role.getId(), actor.tenantId())) {
-      throw new ResourceNotFoundException("ROLE_NOT_FOUND", MESSAGE_NO_SUCH_ROLE);
-    }
     SetLock preLockClassified = target.adminDefining() ? acquireSetLock(actor, target, role) : null;
     Timer.Sample lockHoldSample = preLockClassified == null ? null : preLockClassified.holdTimer();
 
@@ -320,6 +316,11 @@ public class RoleAssignmentService {
       // disagree (US-017 RES-25). It records a signal for a request A4 has already decided.
       if (selfTarget) {
         captureIndependentAdministratorCheck(actor, role, callerIsAdministrator);
+      }
+
+      if (preLockClassified == null
+          && !userRoleAssignmentPort.lockRoleRow(role.getId(), actor.tenantId())) {
+        throw new ResourceNotFoundException("ROLE_NOT_FOUND", MESSAGE_NO_SUCH_ROLE);
       }
 
       // assignedBy is ALWAYS actor.userId(), never derived from targetUserId or any
@@ -623,6 +624,15 @@ public class RoleAssignmentService {
     Set<UUID> adminDefiningRoleIds =
         resolveAdminDefiningRoleIds(userRoleAssignmentPort, actor.tenantId(), target.catalogueIds());
     List<UUID> lockSet = buildAscendingLockSet(adminDefiningRoleIds, role.getId());
+    // The target's own row is locked here, in ascending order with the rest of the set, and not
+    // before: locking it first would invert the order against a concurrent request whose target
+    // sorts lower (OR-4.1-02 deadlock). A deleted target is a 404; other set members may be gone.
+    for (UUID roleIdInSet : lockSet) {
+      boolean live = userRoleAssignmentPort.lockRoleRow(roleIdInSet, actor.tenantId());
+      if (!live && roleIdInSet.equals(role.getId())) {
+        throw new ResourceNotFoundException("ROLE_NOT_FOUND", MESSAGE_NO_SUCH_ROLE);
+      }
+    }
     List<ActiveAssignmentHolder> lockedHolders =
         userRoleAssignmentPort.lockActiveAssignmentHolders(actor.tenantId(), lockSet);
     recordLockSetSize(lockedHolders.size());
@@ -892,12 +902,21 @@ public class RoleAssignmentService {
     userRoleAssignmentPort
         .lockRolePermissionsForRoles(actor.tenantId(), List.of(role.getId()))
         .forEach(ref -> current.add(ref.permissionId()));
-    boolean isCallerAdmin = callerIsAdministrator(actor, null, heldRolePermissions, target);
+
+    List<RolePermissionRef> effectiveHeld = heldRolePermissions;
+    boolean initialAdmin = callerIsAdministrator(actor, null, heldRolePermissions, target);
+    if (!initialAdmin && current.contains(RbacSeededPermissionIds.USER_DIRECTORY_READ)) {
+      effectiveHeld =
+          userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(
+              actor.userId(), actor.tenantId());
+    }
+    final boolean isCallerAdmin =
+        initialAdmin || RbacAdministrators.isAdministrator(effectiveHeld, target.catalogueIds());
     PiiPermissionGrantRule.Outcome currentPiiGrant =
         piiGrantRule.evaluate(current, () -> isCallerAdmin);
 
     Set<UUID> heldPermissionIds =
-        heldRolePermissions.stream().map(RolePermissionRef::permissionId).collect(Collectors.toSet());
+        effectiveHeld.stream().map(RolePermissionRef::permissionId).collect(Collectors.toSet());
     boolean grantWithinCaller = isCallerAdmin
         || current.stream()
             .filter(p -> !(currentPiiGrant == PiiPermissionGrantRule.Outcome.DELEGATED

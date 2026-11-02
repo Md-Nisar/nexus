@@ -724,11 +724,11 @@ class TokenFreshnessIT {
   }
 
   private String permsetKey(UUID userId, long epoch) {
-    return keyPrefix + ":rbac:permset:" + TENANT_ID + ":" + userId + ":" + epoch;
+    return keyPrefix + ":rbac:permset:{" + TENANT_ID + "}:" + userId + ":" + epoch;
   }
 
   private String rolesetKey(UUID userId, long epoch) {
-    return keyPrefix + ":rbac:roleset:" + TENANT_ID + ":" + userId + ":" + epoch;
+    return keyPrefix + ":rbac:roleset:{" + TENANT_ID + "}:" + userId + ":" + epoch;
   }
 
   private void revoke(Holder holder) {
@@ -742,7 +742,7 @@ class TokenFreshnessIT {
   }
 
   private String epochKey(UUID userId) {
-    return keyPrefix + ":rbac:epoch:" + TENANT_ID + ":" + userId;
+    return keyPrefix + ":rbac:epoch:{" + TENANT_ID + "}:" + userId;
   }
 
   /** A token signed with the application's own key, as an earlier mint would have produced. */

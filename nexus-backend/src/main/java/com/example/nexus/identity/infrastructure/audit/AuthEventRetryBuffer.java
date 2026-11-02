@@ -10,6 +10,7 @@ import com.example.nexus.identity.infrastructure.persistence.JpaAuthEventReposit
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tags;
+import jakarta.annotation.PreDestroy;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -287,6 +288,47 @@ public class AuthEventRetryBuffer {
     var schedule = properties.backoffSchedule();
     int index = Math.min(attemptNumber - 1, schedule.size() - 1);
     return schedule.get(index);
+  }
+
+  /**
+   * Graceful shutdown hook ([OR-3.3-05]). Drains all pending events from both lanes.
+   * Attempts a final save to database; unpersisted events are logged at ERROR.
+   */
+  @PreDestroy
+  public void shutdown() {
+    int totalPending = depth(AuditLane.PRIORITY) + depth(AuditLane.STANDARD);
+    if (totalPending == 0) {
+      log.debug("AuthEventRetryBuffer shutdown: no pending events to drain");
+      return;
+    }
+    log.info("AuthEventRetryBuffer shutdown initiated: draining {} pending events",
+        totalPending);
+    flushLaneOnShutdown(AuditLane.PRIORITY);
+    flushLaneOnShutdown(AuditLane.STANDARD);
+  }
+
+  private void flushLaneOnShutdown(AuditLane lane) {
+    BlockingQueue<BufferedAuthEvent> queue = queues.get(lane);
+    BufferedAuthEvent buffered;
+    while ((buffered = queue.poll()) != null) {
+      try {
+        repository.save(buffered.event());
+        retrySuccessCounters.get(lane).increment();
+        log.info("Saved pending audit event on shutdown [lane={}, id={}, type={}]",
+            lane, buffered.event().getId(), buffered.event().getEventType());
+      } catch (Exception e) {
+        log.error("Failed to persist audit event during shutdown flush, emergency log: "
+            + "[lane={}, id={}, type={}, userId={}, tenantId={}, outcome={}, metadata={}]",
+            lane,
+            buffered.event().getId(),
+            buffered.event().getEventType(),
+            buffered.event().getUserId(),
+            buffered.event().getTenantId(),
+            buffered.event().getOutcome(),
+            buffered.event().getMetadata(),
+            e);
+      }
+    }
   }
 
   private void registerMetrics(MeterRegistry meterRegistry) {

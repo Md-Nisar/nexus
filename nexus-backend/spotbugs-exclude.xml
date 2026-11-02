@@ -116,6 +116,17 @@
         <Bug pattern="EI_EXPOSE_REP2" />
     </Match>
     <!--
+      OR-4.2-03: PermissionFreshnessService validates its outage-policy settings in the constructor
+      and throws IllegalArgumentException, failing context startup on a bad config. The finalizer
+      attack CT_CONSTRUCTOR_THROW guards against needs an attacker-controlled subclass; this is a
+      Spring-managed singleton constructed once by the container, and making it final would block
+      proxying. Scoped to this one class.
+    -->
+    <Match>
+        <Class name="com.example.nexus.rbac.application.PermissionFreshnessService" />
+        <Bug pattern="CT_CONSTRUCTOR_THROW" />
+    </Match>
+    <!--
       US-011 T-005: GlobalExceptionHandler constructor-injects the Spring-managed singleton
       MeterRegistry bean (to record the nexus.rbac.permission_denied counter) and stores it
       directly. Same rationale as ExecutionObserver above: MeterRegistry is a metrics registry/

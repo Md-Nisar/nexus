@@ -143,7 +143,7 @@ class RedisRoleChangeThrottleAdapterIT {
 
     denyTimes(replica, tenantId, actorId, MAX_DENIALS + 1);
 
-    String windowKey = "nexus-test:rbac:throttle:" + tenantId + ":" + actorId;
+    String windowKey = "nexus-test:rbac:throttle:{" + tenantId + "}:" + actorId;
     assertThat(redisTemplate.hasKey(windowKey)).isTrue();
     assertThat(redisTemplate.getExpire(windowKey)).isBetween(1L, (long) WINDOW_SECONDS);
     assertThat(redisTemplate.getExpire(windowKey + ":until")).isBetween(1L, (long) WINDOW_SECONDS);
@@ -161,14 +161,14 @@ class RedisRoleChangeThrottleAdapterIT {
     assertThat(replicaB.recordSuppressedDenial(tenantId, actorId))
         .as("the second suppressed denial in the window, on another replica, does not log")
         .isEqualTo(2);
-    assertThat(redisTemplate.getExpire("nexus-test:rbac:throttle:" + tenantId + ":" + actorId + ":suppressed"))
+    assertThat(redisTemplate.getExpire("nexus-test:rbac:throttle:{" + tenantId + "}:" + actorId + ":suppressed"))
         .isBetween(1L, (long) WINDOW_SECONDS);
   }
 
   // US-019 B7 (design §9.3): one PTTL on the throttled-until marker answers both questions.
 
   private static String untilKey(UUID tenantId, UUID actorId) {
-    return KEY_PREFIX + ":rbac:throttle:" + tenantId + ":" + actorId + ":until";
+    return KEY_PREFIX + ":rbac:throttle:{" + tenantId + "}:" + actorId + ":until";
   }
 
   @Test
@@ -229,6 +229,24 @@ class RedisRoleChangeThrottleAdapterIT {
           .isEqualTo(ThrottleStatus.NOT_THROTTLED);
     } finally {
       deadFactory.destroy();
+    }
+  }
+
+  @Test
+  void should_use_server_time_to_prevent_clock_drift() {
+    UUID tenantId = UUID.randomUUID();
+    UUID actorId = UUID.randomUUID();
+    RedisRoleChangeThrottleAdapter replicaA = newReplica();
+    RedisRoleChangeThrottleAdapter replicaB = newReplica();
+
+    replicaA.recordDenial(tenantId, actorId);
+    replicaB.recordDenial(tenantId, actorId);
+
+    String windowKey = "nexus-test:rbac:throttle:{" + tenantId + "}:" + actorId;
+    var scores = redisTemplate.opsForZSet().rangeWithScores(windowKey, 0, -1);
+    assertThat(scores).hasSize(2);
+    for (var score : scores) {
+      assertThat(score.getScore()).isNotNull().isGreaterThan(1_700_000_000_000.0);
     }
   }
 }

@@ -2,6 +2,7 @@ package com.example.nexus.rbac.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
@@ -41,6 +42,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -636,6 +638,75 @@ class PermissionFreshnessServiceTest {
   }
 
   @Test
+  void should_require_hysteresis_threshold_before_recovering() {
+    PermissionFreshnessService hysteresisService = new PermissionFreshnessService(
+        port, userRoles, cachePort, registry, clock, WINDOW, 3, Duration.ofSeconds(10), Duration.ofSeconds(60),
+        KEY_TTL_SECONDS, REPLAY_CAPACITY, ROLE_REPLAY_CAPACITY, TENANT_PERCENT, 5);
+
+    // Trip into DEGRADED_OPEN
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.empty());
+    for (int i = 0; i < 3; i++) {
+      clock.set(T.plusSeconds(i));
+      hysteresisService.check(TENANT, USER, EPOCH);
+    }
+    assertThat(hysteresisService.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+
+    when(port.probe()).thenReturn(true);
+
+    // 4 successful probes: must remain DEGRADED_OPEN
+    for (int i = 0; i < 4; i++) {
+      clock.set(T.plusSeconds(10 + i));
+      hysteresisService.probe();
+      assertThat(hysteresisService.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+    }
+
+    // 5th successful probe: now transitions to RECOVERING
+    clock.set(T.plusSeconds(14));
+    hysteresisService.probe();
+    assertThat(hysteresisService.state()).isEqualTo(DegradedState.RECOVERING);
+  }
+
+  @Test
+  void should_reset_hysteresis_counter_when_probe_fails_before_threshold() {
+    PermissionFreshnessService hysteresisService = new PermissionFreshnessService(
+        port, userRoles, cachePort, registry, clock, WINDOW, 3, Duration.ofSeconds(10), Duration.ofSeconds(60),
+        KEY_TTL_SECONDS, REPLAY_CAPACITY, ROLE_REPLAY_CAPACITY, TENANT_PERCENT, 3);
+
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.empty());
+    for (int i = 0; i < 3; i++) {
+      clock.set(T.plusSeconds(i));
+      hysteresisService.check(TENANT, USER, EPOCH);
+    }
+    assertThat(hysteresisService.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+
+    // 2 successful probes
+    when(port.probe()).thenReturn(true);
+    clock.set(T.plusSeconds(10));
+    hysteresisService.probe();
+    clock.set(T.plusSeconds(11));
+    hysteresisService.probe();
+    assertThat(hysteresisService.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+
+    // 1 probe fails: resets count
+    when(port.probe()).thenReturn(false);
+    clock.set(T.plusSeconds(12));
+    hysteresisService.probe();
+    assertThat(hysteresisService.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+
+    // Needs 3 consecutive successes again
+    when(port.probe()).thenReturn(true);
+    clock.set(T.plusSeconds(13));
+    hysteresisService.probe();
+    clock.set(T.plusSeconds(14));
+    hysteresisService.probe();
+    assertThat(hysteresisService.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+
+    clock.set(T.plusSeconds(15));
+    hysteresisService.probe();
+    assertThat(hysteresisService.state()).isEqualTo(DegradedState.RECOVERING);
+  }
+
+  @Test
   void should_stayDegraded_when_probeFails() {
     tripAtT();
     when(port.probe()).thenReturn(false);
@@ -688,6 +759,23 @@ class PermissionFreshnessServiceTest {
   }
 
   @Test
+  void should_notEnterHealthy_when_sustainElapsedButReplayQueueNotEmpty() {
+    tripAtT();
+    clock.set(T.plusSeconds(100));
+    recoverNow();
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+
+    when(port.bump(any(), any())).thenThrow(new org.springframework.data.redis.RedisConnectionFailureException("bump down"));
+    service.invalidateHolders(TENANT, List.of(UUID.randomUUID()), "detach");
+
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+    clock.set(T.plusSeconds(160));
+    service.check(TENANT, USER, EPOCH);
+
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+  }
+
+  @Test
   void should_restartSustain_when_singleFailureInRecovering() {
     tripAtT();
     clock.set(T.plusSeconds(100));
@@ -704,6 +792,77 @@ class PermissionFreshnessServiceTest {
     service.check(TENANT, USER, EPOCH);
 
     assertThat(service.state()).isEqualTo(DegradedState.HEALTHY);
+  }
+
+  @Test
+  void should_tolerate_isolated_timeout_outlier() {
+    PermissionFreshnessService outlierTolerantService = new PermissionFreshnessService(
+        port, userRoles, cachePort, registry, clock, WINDOW, 3, Duration.ofSeconds(10),
+        Duration.ofSeconds(60), KEY_TTL_SECONDS, REPLAY_CAPACITY, ROLE_REPLAY_CAPACITY,
+        TENANT_PERCENT, 1, 2);
+
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.empty());
+    for (int i = 0; i < 3; i++) {
+      clock.set(T.plusSeconds(i));
+      outlierTolerantService.check(TENANT, USER, EPOCH);
+    }
+    assertThat(outlierTolerantService.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+
+    when(port.probe()).thenReturn(true);
+    clock.set(T.plusSeconds(100));
+    outlierTolerantService.probe();
+    assertThat(outlierTolerantService.state()).isEqualTo(DegradedState.RECOVERING);
+
+    // 1 isolated timeout failure at T+130
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.empty());
+    clock.set(T.plusSeconds(130));
+    outlierTolerantService.check(TENANT, USER, EPOCH);
+
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+
+    // Sustain window of 60s from T+100 completes at T+160 (tolerated 1 outlier)
+    clock.set(T.plusSeconds(160));
+    outlierTolerantService.check(TENANT, USER, EPOCH);
+    assertThat(outlierTolerantService.state()).isEqualTo(DegradedState.HEALTHY);
+  }
+
+  @Test
+  void should_restartSustain_when_failuresReachRecoveryRestartThreshold() {
+    PermissionFreshnessService outlierTolerantService = new PermissionFreshnessService(
+        port, userRoles, cachePort, registry, clock, WINDOW, 3, Duration.ofSeconds(10),
+        Duration.ofSeconds(60), KEY_TTL_SECONDS, REPLAY_CAPACITY, ROLE_REPLAY_CAPACITY,
+        TENANT_PERCENT, 1, 2);
+
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.empty());
+    for (int i = 0; i < 3; i++) {
+      clock.set(T.plusSeconds(i));
+      outlierTolerantService.check(TENANT, USER, EPOCH);
+    }
+    assertThat(outlierTolerantService.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+
+    when(port.probe()).thenReturn(true);
+    clock.set(T.plusSeconds(100));
+    outlierTolerantService.probe();
+    assertThat(outlierTolerantService.state()).isEqualTo(DegradedState.RECOVERING);
+
+    // 2 read failures within entryFailureWindow at T+130: reaches recoveryRestartThreshold
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.empty());
+    clock.set(T.plusSeconds(130));
+    outlierTolerantService.check(TENANT, USER, EPOCH);
+    clock.set(T.plusSeconds(131));
+    outlierTolerantService.check(TENANT, USER, EPOCH);
+
+    when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+
+    // At T+160: only 29s since restart at T+131, must still be RECOVERING
+    clock.set(T.plusSeconds(160));
+    outlierTolerantService.check(TENANT, USER, EPOCH);
+    assertThat(outlierTolerantService.state()).isEqualTo(DegradedState.RECOVERING);
+
+    // At T+191: 60s since restart at T+131, now transitions to HEALTHY
+    clock.set(T.plusSeconds(191));
+    outlierTolerantService.check(TENANT, USER, EPOCH);
+    assertThat(outlierTolerantService.state()).isEqualTo(DegradedState.HEALTHY);
   }
 
   @Test
@@ -735,6 +894,20 @@ class PermissionFreshnessServiceTest {
     failedCheckAt(afterWindow + 2);
 
     assertThat(service.state()).isEqualTo(DegradedState.DEGRADED_CLOSED);
+  }
+
+  @Test
+  void should_remainFailClosed_during_recoveringStateFailures_when_previouslyClosed() {
+    tripAtT();
+    clock.set(T.plus(WINDOW).plusSeconds(10));
+    service.check(TENANT, USER, EPOCH);
+    assertThat(service.state()).isEqualTo(DegradedState.DEGRADED_CLOSED);
+
+    recoverNow();
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+
+    failRead();
+    assertThat(service.check(TENANT, USER, EPOCH)).isEqualTo(FreshnessVerdict.UNAVAILABLE);
   }
 
   @Test
@@ -788,6 +961,8 @@ class PermissionFreshnessServiceTest {
     clock.set(T.plusSeconds(150));
     service.invalidateUser(TENANT, USER, "revoke");
     when(port.current(TENANT, USER)).thenReturn(OptionalLong.of(EPOCH));
+    bumpsSucceed();
+    service.probe();
 
     clock.set(T.plusSeconds(160));
     service.check(TENANT, USER, EPOCH);
@@ -1700,6 +1875,30 @@ class PermissionFreshnessServiceTest {
     verify(port).bump(TENANT, List.of(USER));
   }
 
+  @Test
+  void should_bound_role_read_executor_queue() throws Exception {
+    CountDownLatch blockerStarted = new CountDownLatch(1);
+    CountDownLatch release = new CountDownLatch(1);
+    service.runOnRoleReadThread(() -> {
+      blockerStarted.countDown();
+      try {
+        release.await(30, TimeUnit.SECONDS);
+      } catch (InterruptedException ignored) {
+        Thread.currentThread().interrupt();
+      }
+    });
+    assertThat(blockerStarted.await(5, TimeUnit.SECONDS)).isTrue();
+
+    for (int i = 0; i < service.roleReadQueueCapacity(); i++) {
+      service.runOnRoleReadThread(() -> {});
+    }
+
+    assertThatThrownBy(() -> service.runOnRoleReadThread(() -> {}))
+        .isInstanceOf(RejectedExecutionException.class);
+
+    release.countDown();
+  }
+
   // --- tenant slot accounting under concurrency (coordinator review, finding 2) ---
 
   @Test
@@ -2223,6 +2422,9 @@ class PermissionFreshnessServiceTest {
     clock.set(T.plusSeconds(160));
     service.probe();
 
+    assertThat(service.state()).isEqualTo(DegradedState.RECOVERING);
+    bumpsSucceed();
+    service.probe();
     assertThat(service.state()).isEqualTo(DegradedState.HEALTHY);
   }
 
@@ -2490,6 +2692,40 @@ class PermissionFreshnessServiceTest {
     service.probe();
 
     assertThat(service.state()).isEqualTo(DegradedState.DEGRADED_OPEN);
+  }
+
+  @Test
+  void should_preventDuplicateReplayRuns_when_concurrentDrainAttempted() throws Exception {
+    when(port.bump(any(), any())).thenThrow(new org.springframework.data.redis.RedisConnectionFailureException("down"));
+    service.invalidateHolders(TENANT, List.of(UUID.randomUUID()), "detach");
+
+    java.util.concurrent.CountDownLatch firstEnter = new java.util.concurrent.CountDownLatch(1);
+    java.util.concurrent.CountDownLatch unblock = new java.util.concurrent.CountDownLatch(1);
+    java.util.concurrent.atomic.AtomicInteger bumpCalls = new java.util.concurrent.atomic.AtomicInteger(0);
+
+    doAnswer(invocation -> {
+      bumpCalls.incrementAndGet();
+      firstEnter.countDown();
+      unblock.await(2, TimeUnit.SECONDS);
+      Map<UUID, Long> written = new HashMap<>();
+      for (Object userId : (java.util.Collection<?>) invocation.getArgument(1)) {
+        written.put((UUID) userId, EPOCH);
+      }
+      return written;
+    }).when(port).bump(any(), anyCollection());
+
+    java.util.concurrent.CompletableFuture<Void> firstDrain =
+        java.util.concurrent.CompletableFuture.runAsync(() -> service.probe());
+
+    assertThat(firstEnter.await(2, TimeUnit.SECONDS)).isTrue();
+
+    // Second thread invokes probe concurrently while first drain is in progress
+    service.probe();
+
+    unblock.countDown();
+    firstDrain.get(2, TimeUnit.SECONDS);
+
+    assertThat(bumpCalls.get()).isEqualTo(1);
   }
 
   @Test

@@ -34,6 +34,17 @@ class PageParamsTest {
     assertThat(parsed.size()).isEqualTo(Integer.parseInt(size));
   }
 
+  @Test
+  void should_reject_size_exceeding_maximum_allowed_limit_preventing_unbounded_allocation() {
+    assertThatThrownBy(() -> PageParams.parse("0", "1000000"))
+        .isInstanceOfSatisfying(
+            FieldValidationException.class,
+            e -> {
+              assertThat(e.code()).isEqualTo("VALIDATION_FAILED");
+              assertThat(e.field()).isEqualTo("size");
+            });
+  }
+
   @ParameterizedTest
   @CsvSource({"-1,20,page", "x,20,page", "1.5,20,page", "0,0,size", "0,101,size", "0,-1,size", "0,abc,size"})
   void should_rejectWithTheOffendingField_when_outOfRangeOrNotAnInteger(

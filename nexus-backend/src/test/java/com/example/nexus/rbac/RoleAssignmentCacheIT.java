@@ -360,10 +360,10 @@ class RoleAssignmentCacheIT {
   }
 
   private String roleKey(UUID tenantId, UUID userId) {
-    return keyPrefix + ":rbac:roleset:" + tenantId + ":" + userId + ":0";
+    return keyPrefix + ":rbac:roleset:{" + tenantId + "}:" + userId + ":0";
   }
 
   private String permKey(UUID tenantId, UUID userId) {
-    return keyPrefix + ":rbac:permset:" + tenantId + ":" + userId + ":0";
+    return keyPrefix + ":rbac:permset:{" + tenantId + "}:" + userId + ":0";
   }
 }

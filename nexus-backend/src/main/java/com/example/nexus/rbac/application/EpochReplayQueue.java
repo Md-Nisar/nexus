@@ -121,6 +121,9 @@ final class EpochReplayQueue {
       }
       if (first.getValue().isEmpty()) {
         byTenant.remove(first.getKey());
+      } else {
+        byTenant.remove(first.getKey());
+        byTenant.put(first.getKey(), first.getValue());
       }
       if (!taken.isEmpty()) {
         return Optional.of(new Batch(first.getKey(), List.copyOf(taken)));
@@ -138,8 +141,10 @@ final class EpochReplayQueue {
    * @param batch the batch returned by {@link #poll}
    */
   synchronized void requeue(Batch batch) {
-    Map<UUID, Times> users =
-        byTenant.computeIfAbsent(batch.tenantId(), id -> new LinkedHashMap<>());
+    Map<UUID, Times> users = byTenant.remove(batch.tenantId());
+    if (users == null) {
+      users = new LinkedHashMap<>();
+    }
     for (Entry entry : batch.entries()) {
       Times queued = users.get(entry.userId());
       if (queued == null) {
@@ -148,6 +153,9 @@ final class EpochReplayQueue {
       } else {
         users.put(entry.userId(), queued.merge(entry.oldestFailedAt(), entry.newestFailedAt()));
       }
+    }
+    if (!users.isEmpty()) {
+      byTenant.put(batch.tenantId(), users);
     }
   }
 

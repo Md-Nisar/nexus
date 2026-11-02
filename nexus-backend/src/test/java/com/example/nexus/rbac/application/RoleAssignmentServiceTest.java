@@ -145,9 +145,7 @@ class RoleAssignmentServiceTest {
         .when(userRoleAssignmentPort.findPermissionIdsForRole(any(), any()))
         .thenReturn(Optional.of(Set.of()));
     Mockito.lenient().when(userRoleAssignmentPort.findCatalogueIds()).thenReturn(CATALOGUE);
-    Mockito.lenient()
-        .when(userRoleAssignmentPort.lockRoleRow(any(), any()))
-        .thenReturn(true);
+    Mockito.lenient().when(userRoleAssignmentPort.lockRoleRow(any(), any())).thenReturn(true);
   }
 
   // ---------------------------------------------------------------------------------------
@@ -462,6 +460,20 @@ class RoleAssignmentServiceTest {
    * returns.
    */
   @Test
+  void should_execute_side_effects_when_transaction_synchronization_inactive() {
+    assertThat(TransactionSynchronizationManager.isSynchronizationActive())
+        .as("sanity check: a plain unit test has no active transaction synchronization")
+        .isFalse();
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    verify(permissionCachePort, times(1)).evict(tenantId, targetUserId);
+    verify(rbacAuditPort, times(1)).recordRoleAssigned(any());
+  }
+
+  @Test
   void should_fireSideEffectsInlineSynchronously_when_noActiveTransactionSynchronization() {
     assertThat(TransactionSynchronizationManager.isSynchronizationActive())
         .as("sanity check: a plain unit test has no active transaction synchronization")
@@ -530,6 +542,37 @@ class RoleAssignmentServiceTest {
   }
 
   /** Row 1 and 4: an admin-defining target is classified, then M10' and M11 run before any decision. */
+  @Test
+  void should_throw404RoleNotFound_when_assigningToRoleSoftDeletedUnderLock() {
+    stubTargetUserAndRole(targetUserId, role("NON_ADMIN"));
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(withUserRoleAssign(List.of(ref(UUID.randomUUID(), P1))));
+    when(userRoleAssignmentPort.findPermissionIdsForRole(roleId, tenantId))
+        .thenReturn(Optional.of(Set.of(P1)));
+    when(userRoleAssignmentPort.lockRoleRow(roleId, tenantId)).thenReturn(false);
+
+    assertThatThrownBy(() -> service.assign(actor, targetUserId, roleId, ctx))
+        .isInstanceOf(ResourceNotFoundException.class)
+        .hasFieldOrPropertyWithValue("code", "ROLE_NOT_FOUND");
+
+    verify(userRoleAssignmentPort, never()).assign(any(), any(), any(), any());
+  }
+
+  @Test
+  void should_lockRoleRowsInAscendingOrderBeforeSetLock_when_targetIsAdminDefining() {
+    stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
+    stubAdminDefiningTarget(List.of(holder(actorId, roleId)));
+    stubCallerIsAdministrator();
+    stubSuccessfulInsert();
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    InOrder inOrder = Mockito.inOrder(userRoleAssignmentPort);
+    inOrder.verify(userRoleAssignmentPort).findRolePermissionIdsForTenantRoles(tenantId);
+    inOrder.verify(userRoleAssignmentPort).lockRoleRow(eq(roleId), eq(tenantId));
+    inOrder.verify(userRoleAssignmentPort).lockActiveAssignmentHolders(eq(tenantId), any());
+  }
+
   @Test
   void should_takeM10PrimeThenM11BeforeEveryDecisionRead_when_targetIsAdminDefining() {
     stubTargetUserAndRole(targetUserId, role("ADMIN_LIKE"));
@@ -3078,6 +3121,26 @@ class RoleAssignmentServiceTest {
 
     verify(userRoleAssignmentPort, never()).findActiveAssignmentView(any(), any(), any());
     verifyNoInteractions(rbacAuditPort);
+  }
+
+  @Test
+  void should_assign_when_callerConcurrentlyPromotedToAdministratorWhileAssigningRoleWithPii() {
+    stubBenignAssignTarget();
+    stubSuccessfulInsert();
+    stubCurrentRolePermissions(PII);
+
+    UUID adminDefiningRoleId = UUID.randomUUID();
+    List<RolePermissionRef> nonAdminHeld = withUserRoleAssign(List.of());
+    List<RolePermissionRef> adminHeld = withUserRoleAssign(wholeCatalogue(adminDefiningRoleId));
+
+    when(userRoleAssignmentPort.findHeldRolePermissionIdsForAuthorization(actorId, tenantId))
+        .thenReturn(nonAdminHeld)
+        .thenReturn(adminHeld);
+
+    service.assign(actor, targetUserId, roleId, ctx);
+
+    verify(rbacAuditPort).recordRoleAssigned(any());
+    assertThat(classificationChangedCount("assign")).isZero();
   }
 
   @Test

@@ -207,13 +207,13 @@ class RoleResolutionServiceIT {
 
     roleResolutionService.resolve(user.getId(), BOOTSTRAP_TENANT_ID, epoch);
 
-    String suffix = BOOTSTRAP_TENANT_ID + ":" + user.getId() + ":" + epoch;
+    String suffix = "{" + BOOTSTRAP_TENANT_ID + "}:" + user.getId() + ":" + epoch;
     assertThat(redisTemplate.opsForSet().members(keyPrefix + ":rbac:permset:" + suffix))
         .containsExactly("user:read");
     assertThat(redisTemplate.opsForSet().members(keyPrefix + ":rbac:roleset:" + suffix))
         .containsExactly("MEMBER");
     assertThat(redisTemplate.hasKey(
-            keyPrefix + ":rbac:permset:" + BOOTSTRAP_TENANT_ID + ":" + user.getId()))
+            keyPrefix + ":rbac:permset:{" + BOOTSTRAP_TENANT_ID + "}:" + user.getId()))
         .as("no entry without an epoch suffix is written")
         .isFalse();
   }

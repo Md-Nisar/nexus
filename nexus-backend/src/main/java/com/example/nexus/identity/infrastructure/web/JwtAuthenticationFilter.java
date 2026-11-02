@@ -22,6 +22,7 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.web.AuthenticationEntryPoint;
+import org.springframework.util.AntPathMatcher;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
@@ -55,6 +56,13 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
   private static final String AUTH_003 = "AUTH_003";
   private static final String AUTH_005 = "AUTH_005";
   private static final long UNAVAILABLE_RETRY_AFTER_SECONDS = 30;
+  private static final List<String> INFRA_PUBLIC_PATTERNS = List.of(
+      "/actuator/health/**",
+      "/actuator/info",
+      "/v3/api-docs/**",
+      "/swagger-ui/**",
+      "/swagger-ui.html");
+  private static final AntPathMatcher PATH_MATCHER = new AntPathMatcher();
 
   private final JwtPort jwtPort;
   private final AuthenticationEntryPoint authenticationEntryPoint;
@@ -98,7 +106,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
       return;
     }
     String rawJwt = header.substring(7);
-    if (publicEndpoints.matches(req)) {
+    if (publicEndpoints.matches(req) || isInfrastructurePublic(req)) {
       filterPublic(rawJwt, req, res, chain);
       return;
     }
@@ -140,6 +148,19 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
   }
 
   /** A {@code @PublicEndpoint} request: never rejected, never epoch-checked, permission-free. */
+  private boolean isInfrastructurePublic(HttpServletRequest request) {
+    String uri = request.getRequestURI();
+    if (uri == null) {
+      return false;
+    }
+    for (String pattern : INFRA_PUBLIC_PATTERNS) {
+      if (PATH_MATCHER.match(pattern, uri)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private void filterPublic(
       String rawJwt, HttpServletRequest req, HttpServletResponse res, FilterChain chain)
       throws ServletException, IOException {

@@ -5,7 +5,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import java.util.ArrayList;
 
 import com.example.nexus.rbac.infrastructure.cache.EpochRedisConfig.EpochTemplates;
 import java.util.List;
@@ -64,5 +67,30 @@ class RedisPermissionEpochAdapterBumpResultTest {
 
     assertThatThrownBy(() -> adapter.bump(TENANT, List.of(FIRST, SECOND)))
         .isInstanceOf(InvalidDataAccessResourceUsageException.class);
+  }
+  @Test
+  void should_partitionLargeBumpRequestsIntoBatches_when_userCountExceedsBatchSize() {
+    when(templates.bumpReady()).thenReturn(true);
+    when(templates.bump()).thenReturn(bump);
+    when(bump.execute(any(RedisScript.class), anyList(), any(Object[].class)))
+        .thenAnswer(
+            invocation -> {
+              List<?> keys = invocation.getArgument(1);
+              List<String> res = new ArrayList<>(keys.size());
+              for (int i = 0; i < keys.size(); i++) {
+                res.add("100");
+              }
+              return res;
+            });
+
+    List<UUID> users = new ArrayList<>();
+    for (int i = 0; i < 250; i++) {
+      users.add(UUID.randomUUID());
+    }
+
+    Map<UUID, Long> result = adapter.bump(TENANT, users);
+
+    assertThat(result).hasSize(250);
+    verify(bump, times(3)).execute(any(RedisScript.class), anyList(), any(Object[].class));
   }
 }

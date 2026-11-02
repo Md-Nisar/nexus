@@ -26,9 +26,9 @@ import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -37,6 +37,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -202,6 +203,7 @@ public final class PermissionFreshnessService {
   private static final String EVENT_BUMP_FAILED = "RBAC_EPOCH_BUMP_FAILED";
   private static final String LAST_SEEN_DROPPED_DESCRIPTION =
       "Locally-seen epochs not recorded because a bound of the map was reached";
+  private static final int ROLE_READ_QUEUE_CAPACITY = 1000;
 
   private final PermissionEpochPort epochPort;
   private final BiFunction<String, String, Counter> bumpFailedCounters;
@@ -210,6 +212,9 @@ public final class PermissionFreshnessService {
   private final int entryFailureThreshold;
   private final Duration entryFailureWindow;
   private final Duration recoverySustain;
+  private final int recoveryProbeThreshold;
+  private final int recoveryRestartThreshold;
+  private int consecutiveProbeSuccesses;
   private final Duration lastSeenTtl;
   private final Map<FreshnessVerdict, Counter> outcomeCounters;
   private final Timer checkLatency;
@@ -240,7 +245,7 @@ public final class PermissionFreshnessService {
   private final Map<UUID, Instant> lostRevocations = new ConcurrentHashMap<>();
   private volatile Instant lostAllUntil = Instant.MIN;
   private final int lastSeenBumpCeiling;
-  private final ExecutorService roleReadExecutor;
+  private final ThreadPoolExecutor roleReadExecutor;
   private final AtomicReference<RoleRead> currentRoleRead = new AtomicReference<>();
   private final Map<UUID, UnparseableWindow> unparseableWindows = new ConcurrentHashMap<>();
 
@@ -250,6 +255,9 @@ public final class PermissionFreshnessService {
   private volatile DegradedState state = DegradedState.HEALTHY;
   private Instant t0;
   private Instant recoverySince;
+  private volatile boolean recoveringFromClosed;
+  private final AtomicBoolean isDrainingReplay = new AtomicBoolean(false);
+  private final AtomicBoolean isDrainingRole = new AtomicBoolean(false);
   private final Deque<Instant> recentFailures = new ArrayDeque<>();
   private final Deque<Instant> recentEntries = new ArrayDeque<>();
 
@@ -285,6 +293,49 @@ public final class PermissionFreshnessService {
       PermissionCachePort permissionCachePort,
       MeterRegistry meterRegistry,
       Clock clock,
+      Duration failOpenWindow,
+      int entryFailureThreshold,
+      Duration entryFailureWindow,
+      Duration recoverySustain,
+      long keyTtlSeconds,
+      int replayCapacityUsers,
+      int replayCapacityRoles,
+      int lastSeenTenantPercent) {
+    this(
+        epochPort, userRoleAssignmentPort, permissionCachePort, meterRegistry, clock,
+        failOpenWindow, entryFailureThreshold, entryFailureWindow, recoverySustain,
+        keyTtlSeconds, replayCapacityUsers, replayCapacityRoles, lastSeenTenantPercent, 1);
+  }
+
+  public PermissionFreshnessService(
+      PermissionEpochPort epochPort,
+      UserRoleAssignmentPort userRoleAssignmentPort,
+      PermissionCachePort permissionCachePort,
+      MeterRegistry meterRegistry,
+      Clock clock,
+      Duration failOpenWindow,
+      int entryFailureThreshold,
+      Duration entryFailureWindow,
+      Duration recoverySustain,
+      long keyTtlSeconds,
+      int replayCapacityUsers,
+      int replayCapacityRoles,
+      int lastSeenTenantPercent,
+      int recoveryProbeThreshold) {
+    this(
+        epochPort, userRoleAssignmentPort, permissionCachePort, meterRegistry, clock,
+        failOpenWindow, entryFailureThreshold, entryFailureWindow, recoverySustain,
+        keyTtlSeconds, replayCapacityUsers, replayCapacityRoles, lastSeenTenantPercent,
+        recoveryProbeThreshold, 1);
+  }
+
+  @Autowired
+  public PermissionFreshnessService(
+      PermissionEpochPort epochPort,
+      UserRoleAssignmentPort userRoleAssignmentPort,
+      PermissionCachePort permissionCachePort,
+      MeterRegistry meterRegistry,
+      Clock clock,
       @Value("${nexus.rbac.epoch.fail-open-window}") Duration failOpenWindow,
       @Value("${nexus.rbac.epoch.entry-failure-threshold}") int entryFailureThreshold,
       @Value("${nexus.rbac.epoch.entry-failure-window}") Duration entryFailureWindow,
@@ -292,8 +343,12 @@ public final class PermissionFreshnessService {
       @Value("${nexus.rbac.epoch.key-ttl-seconds}") long keyTtlSeconds,
       @Value("${nexus.rbac.epoch.replay-capacity-users}") int replayCapacityUsers,
       @Value("${nexus.rbac.epoch.replay-capacity-roles:1000}") int replayCapacityRoles,
-      @Value("${nexus.rbac.epoch.last-seen-tenant-percent:10}") int lastSeenTenantPercent) {
+      @Value("${nexus.rbac.epoch.last-seen-tenant-percent:10}") int lastSeenTenantPercent,
+      @Value("${nexus.rbac.epoch.recovery-probe-threshold:1}") int recoveryProbeThreshold,
+      @Value("${nexus.rbac.epoch.recovery-restart-threshold:2}") int recoveryRestartThreshold) {
     if (entryFailureThreshold < 1
+        || recoveryProbeThreshold < 1
+        || recoveryRestartThreshold < 1
         || failOpenWindow.isNegative()
         || !entryFailureWindow.isPositive()
         || !recoverySustain.isPositive()
@@ -302,7 +357,8 @@ public final class PermissionFreshnessService {
         || replayCapacityRoles < 1
         || lastSeenTenantPercent < 1
         || lastSeenTenantPercent > 100) {
-      throw new IllegalArgumentException("permission epoch outage policy settings must be positive");
+      throw new IllegalArgumentException(
+          "permission epoch outage policy settings must be positive");
     }
     this.epochPort = epochPort;
     this.userRoleAssignmentPort = userRoleAssignmentPort;
@@ -320,6 +376,8 @@ public final class PermissionFreshnessService {
     this.entryFailureThreshold = entryFailureThreshold;
     this.entryFailureWindow = entryFailureWindow;
     this.recoverySustain = recoverySustain;
+    this.recoveryProbeThreshold = recoveryProbeThreshold;
+    this.recoveryRestartThreshold = recoveryRestartThreshold;
     this.lastSeenTtl = Duration.ofSeconds(keyTtlSeconds);
     this.outcomeCounters = new EnumMap<>(FreshnessVerdict.class);
     for (FreshnessVerdict verdict : FreshnessVerdict.values()) {
@@ -369,11 +427,18 @@ public final class PermissionFreshnessService {
         .tag(TAG_REASON, REASON_CAPACITY)
         .register(meterRegistry);
     this.lastSeenDroppedBump = lastSeenCounter(meterRegistry, "bump_dropped");
-    this.roleReadExecutor = Executors.newSingleThreadExecutor(runnable -> {
-      Thread thread = new Thread(runnable, "epoch-role-replay-read");
-      thread.setDaemon(true);
-      return thread;
-    });
+    this.roleReadExecutor = new ThreadPoolExecutor(
+        1,
+        1,
+        0L,
+        TimeUnit.MILLISECONDS,
+        new LinkedBlockingQueue<>(ROLE_READ_QUEUE_CAPACITY),
+        runnable -> {
+          Thread thread = new Thread(runnable, "epoch-role-replay-read");
+          thread.setDaemon(true);
+          return thread;
+        },
+        new ThreadPoolExecutor.AbortPolicy());
     // Each tenant's share of both queues is the same percentage as its last-seen share (L-2).
     this.replayQueue = new EpochReplayQueue(
         replayCapacityUsers, Math.max(1, replayCapacityUsers * lastSeenTenantPercent / 100));
@@ -402,10 +467,27 @@ public final class PermissionFreshnessService {
         .register(meterRegistry);
   }
 
-  /** Stops the thread that reads role holders for the replay. */
+  /** Stops the thread that reads role holders for the replay with graceful termination. */
   @PreDestroy
   void shutdown() {
     roleReadExecutor.shutdownNow();
+    try {
+      if (!roleReadExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+        log.warn("roleReadExecutor did not terminate within timeout");
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  /** Test hook: whether the executor has initiated shutdown. */
+  boolean isExecutorShutdown() {
+    return roleReadExecutor.isShutdown();
+  }
+
+  /** Test hook: whether all tasks have finished after shutdown. */
+  boolean isExecutorTerminated() {
+    return roleReadExecutor.isTerminated();
   }
 
   /** Test hook: a role holder read is running on the replay thread. */
@@ -416,6 +498,11 @@ public final class PermissionFreshnessService {
   /** Test hook: occupies the replay thread, to leave a role read queued behind it. */
   Future<Void> runOnRoleReadThread(Runnable task) {
     return roleReadExecutor.submit(task, null);
+  }
+
+  /** Test hook: capacity of the role read executor queue. */
+  int roleReadQueueCapacity() {
+    return ROLE_READ_QUEUE_CAPACITY;
   }
 
   /** Returns the outage state of this instance. */
@@ -561,7 +648,11 @@ public final class PermissionFreshnessService {
         if (current.isEmpty()) {
           // Also an adapter that is not connected yet: it answers empty at once (design §9.5).
           recordReadFailure(now);
-          yield unverified(key, tokenEpoch, issuedAt, FreshnessVerdict.SKIPPED_ERROR, now);
+          FreshnessVerdict fallback =
+              (state == DegradedState.RECOVERING && (recoveringFromClosed || (t0 != null && windowElapsed(now))))
+                  ? FreshnessVerdict.UNAVAILABLE
+                  : FreshnessVerdict.SKIPPED_ERROR;
+          yield unverified(key, tokenEpoch, issuedAt, fallback, now);
         }
         recordReadSuccess(now);
         remember(key, current.getAsLong(), now, false);
@@ -646,6 +737,9 @@ public final class PermissionFreshnessService {
     }
     boolean answered = epochPort.probe();
     if (!answered) {
+      synchronized (lock) {
+        consecutiveProbeSuccesses = 0;
+      }
       recordReadFailure(clock.instant());
       return;
     }
@@ -677,12 +771,10 @@ public final class PermissionFreshnessService {
 
   private void recordReadFailure(Instant now) {
     synchronized (lock) {
+      consecutiveProbeSuccesses = 0;
       DegradedState current = state;
       if (current != DegradedState.HEALTHY && current != DegradedState.RECOVERING) {
         return;
-      }
-      if (current == DegradedState.RECOVERING) {
-        recoverySince = now;
       }
       while (!recentFailures.isEmpty()
           && !Duration.between(recentFailures.peekFirst(), now).minus(entryFailureWindow)
@@ -690,6 +782,10 @@ public final class PermissionFreshnessService {
         recentFailures.removeFirst();
       }
       recentFailures.addLast(now);
+      if (current == DegradedState.RECOVERING
+          && recentFailures.size() >= recoveryRestartThreshold) {
+        recoverySince = now;
+      }
       if (recentFailures.size() < entryFailureThreshold) {
         return;
       }
@@ -714,7 +810,8 @@ public final class PermissionFreshnessService {
     }
     synchronized (lock) {
       if (state == DegradedState.RECOVERING
-          && !Duration.between(recoverySince, now).minus(recoverySustain).isNegative()) {
+          && !Duration.between(recoverySince, now).minus(recoverySustain).isNegative()
+          && drainComplete()) {
         t0 = null;
         recentFailures.clear();
         moveTo(DegradedState.HEALTHY, "sustained_health", false, now);
@@ -726,7 +823,9 @@ public final class PermissionFreshnessService {
     synchronized (lock) {
       switch (state) {
         case DEGRADED_OPEN, DEGRADED_CLOSED -> {
-          if (drainComplete()) {
+          consecutiveProbeSuccesses++;
+          if (consecutiveProbeSuccesses >= recoveryProbeThreshold && drainComplete()) {
+            consecutiveProbeSuccesses = 0;
             recoverySince = now;
             recentFailures.clear();
             moveTo(DegradedState.RECOVERING, "probe_succeeded", false, now);
@@ -749,6 +848,15 @@ public final class PermissionFreshnessService {
   private void moveTo(DegradedState target, String cause, boolean entry, Instant now) {
     DegradedState from = state;
     state = target;
+    if (target == DegradedState.HEALTHY || target == DegradedState.DEGRADED_OPEN) {
+      recoveringFromClosed = false;
+      consecutiveProbeSuccesses = 0;
+    } else if (target == DegradedState.DEGRADED_CLOSED) {
+      recoveringFromClosed = true;
+      consecutiveProbeSuccesses = 0;
+    } else if (target == DegradedState.RECOVERING) {
+      recoveringFromClosed = (from == DegradedState.DEGRADED_CLOSED || (t0 != null && windowElapsed(now)));
+    }
     if (target == DegradedState.HEALTHY) {
       log.atInfo()
           .addKeyValue(LOG_KEY_EVENT, "RBAC_EPOCH_DEGRADED_EXIT")
@@ -1211,7 +1319,11 @@ public final class PermissionFreshnessService {
    * polled stays queued. Called only from the scheduler.
    */
   private void drainReplayQueue() {
-    while (!replayQueue.isEmpty()) {
+    if (!isDrainingReplay.compareAndSet(false, true)) {
+      return;
+    }
+    try {
+      while (!replayQueue.isEmpty()) {
       Instant now = clock.instant();
       Optional<EpochReplayQueue.Batch> polled =
           replayQueue.poll(FANOUT_BATCH_SIZE, now.minus(lastSeenTtl));
@@ -1243,6 +1355,9 @@ public final class PermissionFreshnessService {
           .addKeyValue(LOG_KEY_USER_COUNT, userIds.size())
           .addKeyValue("ageMs", Duration.between(batch.oldestFailedAt(), now).toMillis())
           .log("Permission epoch bump replayed");
+      }
+    } finally {
+      isDrainingReplay.set(false);
     }
   }
 
@@ -1253,9 +1368,14 @@ public final class PermissionFreshnessService {
    * one read and one ERROR line a second. Called only from the scheduler.
    */
   private void drainRoleQueue() {
-    while (!roleReplayQueue.isEmpty()) {
+    if (!isDrainingRole.compareAndSet(false, true)) {
+      return;
+    }
+    try {
+      while (!roleReplayQueue.isEmpty()) {
       Instant now = clock.instant();
-      Optional<RoleReplayQueue.Entry> polled = roleReplayQueue.poll(now.minus(lastSeenTtl));
+      Optional<RoleReplayQueue.Entry> polled =
+          roleReplayQueue.poll(now.minus(lastSeenTtl));
       if (polled.isEmpty()) {
         return;
       }
@@ -1264,7 +1384,7 @@ public final class PermissionFreshnessService {
       try {
         holders = readHoldersBounded(entry.roleId());
       } catch (RuntimeException e) {
-        roleReplayQueue.requeue(entry);
+        roleReplayQueue.requeue(entry, now);
         bumpFailedCounter(OPERATION_ROLE_REPLAY, REASON_HOLDER_READ).increment();
         log.atError()
             .addKeyValue(LOG_KEY_EVENT, "RBAC_HOLDER_READ_FAILED")
@@ -1284,6 +1404,9 @@ public final class PermissionFreshnessService {
           .addKeyValue("holderCount", holders.size())
           .addKeyValue("ageMs", Duration.between(entry.oldestFailedAt(), now).toMillis())
           .log("Role holders read and bumped by the replay");
+      }
+    } finally {
+      isDrainingRole.set(false);
     }
   }
 
