@@ -21,6 +21,7 @@ import org.slf4j.ILoggerFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.InitializingBean;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
@@ -78,6 +79,7 @@ public class BreakGlassAdminRunner
    * @param applicationContext the context this bean lives in
    * @param logFlushWait {@code nexus.rbac.break-glass.log-flush-wait} (RC-37.4)
    */
+  @Autowired
   public BreakGlassAdminRunner(
       BootstrapAdminService bootstrapAdminService,
       ApplicationContext applicationContext,
