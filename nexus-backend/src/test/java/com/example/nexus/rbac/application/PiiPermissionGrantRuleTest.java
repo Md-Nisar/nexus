@@ -52,6 +52,22 @@ class PiiPermissionGrantRuleTest {
   // --- evaluate ---
 
   @Test
+  void should_resolve_pii_permissions_dynamically() {
+    UUID dynamicPiiId = UUID.randomUUID();
+    PiiPermissionGrantRule dynamicRule =
+        new PiiPermissionGrantRule(true, meterRegistry, Set.of(dynamicPiiId));
+
+    Outcome denied = dynamicRule.evaluate(List.of(dynamicPiiId), () -> false);
+    assertThat(denied).isEqualTo(Outcome.DENIED);
+
+    Outcome allowed = dynamicRule.evaluate(List.of(dynamicPiiId), () -> true);
+    assertThat(allowed).isEqualTo(Outcome.ADMINISTRATOR_GRANT);
+
+    Outcome notPii = dynamicRule.evaluate(List.of(UUID.randomUUID()), () -> false);
+    assertThat(notPii).isEqualTo(Outcome.NOT_A_PII_GRANT);
+  }
+
+  @Test
   void should_beNotAPiiGrant_when_grantedIdsLackThePermission() {
     AtomicInteger administratorReads = new AtomicInteger();
 

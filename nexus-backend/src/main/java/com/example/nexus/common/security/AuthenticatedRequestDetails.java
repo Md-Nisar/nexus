@@ -43,6 +43,12 @@ public record AuthenticatedRequestDetails(String tenantId, Set<String> permissio
       throw new InsufficientPermissionException(
           requiredPermission, DenialReason.MALFORMED_AUTHENTICATION);
     }
+    if (authentication.getPrincipal() == null
+        || (authentication.getPrincipal() instanceof String principalStr
+            && principalStr.isBlank())) {
+      throw new InsufficientPermissionException(
+          requiredPermission, DenialReason.MALFORMED_AUTHENTICATION);
+    }
     if (!(authentication.getDetails() instanceof Map<?, ?> details)) {
       throw new InsufficientPermissionException(
           requiredPermission, DenialReason.MALFORMED_AUTHENTICATION);

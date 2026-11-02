@@ -5,7 +5,9 @@ import static com.example.nexus.common.security.AuthenticationTestFixtures.authe
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import org.assertj.core.api.InstanceOfAssertFactories;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -99,6 +101,23 @@ class TenantAwarePermissionEvaluatorTest {
             ex ->
                 assertThat(((InsufficientPermissionException) ex).getReason())
                     .isEqualTo(DenialReason.MISSING_TENANT));
+  }
+
+  @Test
+  void should_reject_unverified_authentication_details() {
+    UsernamePasswordAuthenticationToken unverified =
+        new UsernamePasswordAuthenticationToken(null, null, List.of());
+    Map<String, Object> details = new HashMap<>();
+    details.put(AuthenticationDetailKeys.TENANT_ID, "tenant-a");
+    details.put(AuthenticationDetailKeys.PERMISSIONS, List.of("tenant:write"));
+    unverified.setDetails(details);
+
+    assertThatThrownBy(() -> evaluator.hasPermission(unverified, "tenant:write"))
+        .isInstanceOf(InsufficientPermissionException.class)
+        .satisfies(
+            ex ->
+                assertThat(((InsufficientPermissionException) ex).getReason())
+                    .isEqualTo(DenialReason.MALFORMED_AUTHENTICATION));
   }
 
   @Test

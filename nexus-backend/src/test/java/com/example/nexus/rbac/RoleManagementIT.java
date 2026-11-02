@@ -26,6 +26,7 @@ import com.example.nexus.rbac.infrastructure.persistence.JpaRoleRepository;
 import com.example.nexus.rbac.infrastructure.persistence.JpaUserRoleRepository;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -101,6 +102,20 @@ class RoleManagementIT {
 
     assertThatThrownBy(
             () -> roleManagementService.createRole(actor, name, null, requestContext()))
+        .isInstanceOf(com.example.nexus.rbac.domain.DuplicateRoleNameException.class);
+  }
+
+  @Test
+  void should_reject_case_variant_duplicate_role_names() {
+    UUID tenantId = uuidGenerator.newId();
+    RoleChangeActor actor = new RoleChangeActor(uuidGenerator.newId(), tenantId);
+    String base = "RMIT-CASE-" + UUID.randomUUID().toString().replace("-", "");
+    roleManagementService.createRole(actor, base.toUpperCase(Locale.ROOT), null, requestContext());
+
+    assertThatThrownBy(
+            () ->
+                roleManagementService.createRole(
+                    actor, base.toLowerCase(Locale.ROOT), null, requestContext()))
         .isInstanceOf(com.example.nexus.rbac.domain.DuplicateRoleNameException.class);
   }
 

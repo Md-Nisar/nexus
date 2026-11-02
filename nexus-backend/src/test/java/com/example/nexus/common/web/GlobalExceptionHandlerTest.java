@@ -40,6 +40,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.springframework.boot.test.system.CapturedOutput;
 import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.core.MethodParameter;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpInputMessage;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
@@ -108,6 +109,17 @@ class GlobalExceptionHandlerTest {
 
         assertThat(problem.getStatus()).isEqualTo(409);
         assertThat(problem.getProperties()).containsEntry("code", "DUPLICATE_EMAIL");
+    }
+
+    @Test
+    void should_map_unique_constraint_to_409_conflict() {
+        ProblemDetail problem =
+                handler.handleDataIntegrityViolation(
+                        new DataIntegrityViolationException(
+                                "Duplicate entry 'x' for key 'uq_user_role_active'"));
+
+        assertThat(problem.getStatus()).isEqualTo(409);
+        assertThat(problem.getProperties()).containsEntry("code", "CONFLICT");
     }
 
     @Test

@@ -86,6 +86,41 @@ class RoleControllerTest {
   // ── createRole ───────────────────────────────────────────────────────
 
   @Test
+  void should_support_idempotent_role_creation() throws Exception {
+    Authentication auth = authentication();
+    when(roleManagementService.createRole(any(), eq("Billing Manager"), any(), any()))
+        .thenReturn(roleView(ROLE_ID, "Billing Manager", "Manages invoices", false));
+
+    // First request with Idempotency-Key
+    mockMvc
+        .perform(
+            post("/api/v1/roles")
+                .header("Idempotency-Key", "idemp-key-12345")
+                .principal(auth)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"Billing Manager\",\"description\":\"Manages invoices\"}"))
+        .andExpect(status().isCreated())
+        .andExpect(header().string("Location", "/api/v1/roles/" + ROLE_ID))
+        .andExpect(jsonPath("$.id").value(ROLE_ID.toString()));
+
+    // Second request with same Idempotency-Key
+    mockMvc
+        .perform(
+            post("/api/v1/roles")
+                .header("Idempotency-Key", "idemp-key-12345")
+                .principal(auth)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"name\":\"Billing Manager\",\"description\":\"Manages invoices\"}"))
+        .andExpect(status().isCreated())
+        .andExpect(header().string("Location", "/api/v1/roles/" + ROLE_ID))
+        .andExpect(jsonPath("$.id").value(ROLE_ID.toString()));
+
+    // Verify service was only called once
+    verify(roleManagementService, org.mockito.Mockito.times(1))
+        .createRole(any(), eq("Billing Manager"), any(), any());
+  }
+
+  @Test
   void should_return201WithLocationAndBody_when_createRoleSucceeds() throws Exception {
     Authentication auth = authentication();
     when(roleManagementService.createRole(any(), eq("Billing Manager"), any(), any()))

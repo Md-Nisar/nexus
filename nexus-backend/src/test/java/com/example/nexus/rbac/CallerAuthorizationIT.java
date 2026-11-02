@@ -198,6 +198,19 @@ class CallerAuthorizationIT {
     assertThat((Boolean) JsonPath.read(body, "$.isAdministrator")).isFalse();
   }
 
+  @Test
+  void should_return_error_when_tenant_is_inactive() throws Exception {
+    UUID tenantId = uuidGenerator.newId();
+    User caller = seedUser(tenantId);
+    jdbc.update(
+        "UPDATE users SET status = 'DISABLED' WHERE id = ?",
+        (Object) toBytes(caller.getId()));
+
+    MockHttpServletResponse response = perform(caller, tenantId, List.of(ROLE_READ));
+
+    assertThat(response.getStatus()).isEqualTo(403);
+  }
+
   // ── helpers ───────────────────────────────────────────────────────────────────────────
 
   private String read(User caller, UUID tenantId, List<String> tokenPermissions) throws Exception {
@@ -244,8 +257,10 @@ class CallerAuthorizationIT {
   private User seedUser(UUID tenantId) {
     String email = "ca-" + UUID.randomUUID() + "@example.test";
     String hmac = "hmac-" + UUID.randomUUID().toString().replace("-", "");
-    return userRepository.save(
-        new User(uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac, "test-hash", null));
+    User user =
+        new User(uuidGenerator.newId(), tenantId, new EmailCipher(email), hmac, "test-hash", null);
+    user.verify(java.time.Instant.now());
+    return userRepository.save(user);
   }
 
   /** A custom role named {@code tag-<random>}, granted {@code permissionName} when not null. */

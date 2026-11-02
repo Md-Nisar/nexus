@@ -12,6 +12,7 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -1158,5 +1159,16 @@ class BootstrapAdminServiceTest {
         new RolePermissionRef(roleId, PERMISSION_A),
         new RolePermissionRef(roleId, PERMISSION_B),
         new RolePermissionRef(roleId, PERMISSION_C));
+  }
+  @Test
+  void should_retry_audit_write_on_transient_failure() {
+    doThrow(new CannotAcquireLockException("transient failover"))
+        .doNothing()
+        .when(rbacAuditPort)
+        .recordBreakGlassRefusal(any(), any());
+
+    service.recordInvalidArgument();
+
+    verify(rbacAuditPort, times(2)).recordBreakGlassRefusal(any(), any());
   }
 }

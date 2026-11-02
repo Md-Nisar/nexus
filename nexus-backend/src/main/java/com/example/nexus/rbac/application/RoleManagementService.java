@@ -38,6 +38,7 @@ import com.example.nexus.rbac.domain.SystemRoleImmutableException;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.HashMap;
@@ -1099,6 +1100,14 @@ public class RoleManagementService {
         Timer.builder(TIMER_LOCK_HOLD)
             .tag(LOG_KEY_OPERATION, OPERATION_REPLACE)
             .tag(TAG_OUTCOME, outcome)
+            .publishPercentileHistogram()
+            .sla(
+                Duration.ofMillis(100),
+                Duration.ofSeconds(1),
+                Duration.ofSeconds(5),
+                Duration.ofSeconds(10),
+                Duration.ofSeconds(30),
+                Duration.ofSeconds(35))
             .register(meterRegistry));
   }
 

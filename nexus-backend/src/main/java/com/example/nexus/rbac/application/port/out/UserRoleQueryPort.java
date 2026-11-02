@@ -1,6 +1,7 @@
 package com.example.nexus.rbac.application.port.out;
 
 import com.example.nexus.rbac.domain.PermissionViaRole;
+import com.example.nexus.rbac.domain.ResolvedPermissions;
 import com.example.nexus.rbac.domain.RoleRef;
 import java.util.List;
 import java.util.UUID;
@@ -34,4 +35,14 @@ public interface UserRoleQueryPort {
    * The access-review effective-permissions read groups it by name.
    */
   List<PermissionViaRole> findActivePermissionsViaRoles(UUID userId, UUID tenantId);
+
+  /**
+   * OR-3.1-05 — fetches active role names and active permission names for {@code userId} in
+   * {@code tenantId} in a single roundtrip.
+   */
+  default ResolvedPermissions findActiveRoleAndPermissionNames(UUID userId, UUID tenantId) {
+    return new ResolvedPermissions(
+        findActiveRoleNames(userId, tenantId),
+        findActivePermissionNames(userId, tenantId));
+  }
 }

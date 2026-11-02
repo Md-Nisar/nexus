@@ -285,11 +285,39 @@ public class BootstrapAdminService {
    * user_roles} on any path that reaches here. {@code null} values are omitted from the row and
    * the page.
    */
+  static final int MAX_AUDIT_RETRIES = 3;
+
+  private void recordBreakGlassRefusalWithRetry(BreakGlassAuditEvent event, String reason) {
+    int attempts = 0;
+    while (attempts < MAX_AUDIT_RETRIES) {
+      attempts++;
+      try {
+        rbacAuditPort.recordBreakGlassRefusal(event, reason);
+        return;
+      } catch (RuntimeException e) {
+        if (attempts >= MAX_AUDIT_RETRIES) {
+          log.atWarn()
+              .addKeyValue(LOG_KEY_EVENT, "RBAC_AUDIT_WRITE_LOST")
+              .addKeyValue(LOG_KEY_TENANT_ID, event.tenantId())
+              .setCause(e)
+              .log("Failed to record break-glass refusal audit after {} attempts", attempts);
+          return;
+        }
+        try {
+          Thread.sleep(10L * attempts);
+        } catch (InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          return;
+        }
+      }
+    }
+  }
+
   private BreakGlassOutcome refuse(
       UUID tenantId, UUID targetUserId, ChangeRef changeRef, BreakGlassRefusalReason reason) {
     String changeRefValue = changeRef == null ? null : changeRef.value();
-    rbacAuditPort.recordBreakGlassRefusal(
-        new BreakGlassAuditEvent(tenantId, targetUserId, changeRefValue), reason.name());
+    BreakGlassAuditEvent event = new BreakGlassAuditEvent(tenantId, targetUserId, changeRefValue);
+    recordBreakGlassRefusalWithRetry(event, reason.name());
     try {
       breakGlassAlertPort.alert(
           new BreakGlassAlert(

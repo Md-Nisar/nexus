@@ -88,6 +88,22 @@ class RedisRateLimitStoreIT {
   }
 
   @Test
+  void should_refresh_ttl_on_rejected_requests() {
+    var store = newStore();
+    String rawKey = "user:" + UUID.randomUUID();
+    String redisKey = KEY_PREFIX + ":identity:ratelimit:" + rawKey;
+
+    for (int i = 0; i < MAX; i++) {
+      store.tryConsume(rawKey, WINDOW, MAX);
+    }
+    RateLimitResult overflow = store.tryConsume(rawKey, WINDOW, MAX);
+    assertThat(overflow.allowed()).isFalse();
+
+    Long expire = redisTemplate.getExpire(redisKey);
+    assertThat(expire).isNotNull().isPositive();
+  }
+
+  @Test
   void should_isolate_distinct_keys() {
     var store = newStore();
     String keyA = "user:" + UUID.randomUUID();

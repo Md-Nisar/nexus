@@ -10,6 +10,7 @@ import com.example.nexus.common.domain.PreconditionFailedException;
 import com.example.nexus.common.domain.PreconditionRequiredException;
 import com.example.nexus.common.domain.RateLimitException;
 import com.example.nexus.common.domain.ResourceNotFoundException;
+import com.example.nexus.common.domain.TenantSuspendedException;
 import com.example.nexus.common.domain.TokenExpiredException;
 import com.example.nexus.common.security.AuthenticationDetailKeys;
 import com.example.nexus.common.security.CallerFacingDenialReason;
@@ -24,6 +25,7 @@ import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
@@ -86,6 +88,16 @@ public class GlobalExceptionHandler {
     return problem(HttpStatus.CONFLICT, e.code(), e.getMessage());
   }
 
+  @ExceptionHandler(DataIntegrityViolationException.class)
+  ProblemDetail handleDataIntegrityViolation(DataIntegrityViolationException e) {
+    logHandledException(e, "WARN", "CONFLICT");
+    Counter.builder("nexus.domain.conflict")
+        .tag("code", "CONFLICT")
+        .register(meterRegistry)
+        .increment();
+    return problem(HttpStatus.CONFLICT, "CONFLICT", "A resource conflict occurred.");
+  }
+
   /**
    * US-019 RC-58.2: the body is the standard problem fields only, never the current ETag, ids or a
    * count. The replace counter is incremented by the service, keeping this class context-free.
@@ -146,6 +158,12 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler(AccountNotVerifiedException.class)
   ProblemDetail handleAccountNotVerified(AccountNotVerifiedException e) {
+    logHandledException(e, "WARN", e.code());
+    return problem(HttpStatus.FORBIDDEN, e.code(), e.getMessage());
+  }
+
+  @ExceptionHandler(TenantSuspendedException.class)
+  ProblemDetail handleTenantSuspended(TenantSuspendedException e) {
     logHandledException(e, "WARN", e.code());
     return problem(HttpStatus.FORBIDDEN, e.code(), e.getMessage());
   }
